@@ -7,6 +7,7 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 import sys
 import inspect
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -437,6 +438,38 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     assert adapter._resolve_thread_ts(
         reply_to="171.000",
         metadata={"thread_id": "171.000"},
+    ) is None
+
+    # The real gateway metadata builder must preserve the triggering message ts;
+    # post-stream media has no separate reply_to, so the adapter needs this field
+    # to suppress the synthetic top-level thread.
+    from gateway.platforms.base import _thread_metadata_for_source
+
+    source = SimpleNamespace(
+        platform=Platform.SLACK,
+        thread_id="171.000",
+        scope_id="T1",
+        chat_type="dm",
+        profile=None,
+    )
+    media_metadata = _thread_metadata_for_source(source, reply_to_message_id="171.000")
+    assert media_metadata is not None
+    assert media_metadata["message_id"] == "171.000"
+    assert adapter._resolve_thread_ts(metadata=media_metadata) is None
+    assert adapter._resolve_thread_ts(
+        metadata={"thread_ts": "171.000", "message_id": "171.000"},
+    ) is None
+
+    # Post-stream media that originated inside a real thread carries the parent
+    # and child timestamps separately, so it must remain in the existing thread.
+    assert adapter._resolve_thread_ts(
+        metadata={"thread_id": "171.000", "message_id": "171.500"},
+    ) == "171.000"
+
+    # Direct sends prefer their explicit reply anchor over metadata.message_id.
+    assert adapter._resolve_thread_ts(
+        reply_to="171.000",
+        metadata={"thread_id": "171.000", "message_id": "171.500"},
     ) is None
 
     # Real thread replies (reply_to differs from thread parent) must still

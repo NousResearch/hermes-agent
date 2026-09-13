@@ -477,7 +477,8 @@ describe('ClarifyTool recommended option', () => {
     expect(recommended.querySelector('.text-\\(--ui-text-tertiary\\)')?.textContent).toBe('(Recommended)')
 
     fireEvent.click(recommended)
-    fireEvent.keyDown(window, { key: 'Enter' })
+    recommended.focus()
+    fireEvent.keyDown(recommended, { key: 'Enter' })
 
     // The decorated string goes back verbatim; the tool strips the label before
     // the agent ever sees the answer.

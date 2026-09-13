@@ -908,6 +908,76 @@ class TestSkillTextDescription:
         assert "uv tool install browser-use" in desc
 
 
+class TestBrowserUseManagedLifecycle:
+    @pytest.fixture(autouse=True)
+    def _reset_lifecycle(self):
+        bu_cli._browser_use_sessions.clear()
+        yield
+        bu_cli._browser_use_sessions.clear()
+
+    def test_runtime_is_scoped_to_profile_process_and_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        env = {}
+
+        state = bu_cli._managed_browser_use_state("research", env, ["browser-use"])
+
+        assert state is not None
+        assert state["session"] == "research"
+        assert env["BH_RUNTIME_DIR"] == env["BH_TMP_DIR"]
+        assert str(os.getpid()) in env["BH_RUNTIME_DIR"]
+        assert env["BH_RUNTIME_DIR"].endswith("research")
+        if os.name != "nt":
+            assert len(f"{env['BH_RUNTIME_DIR']}/bu.sock".encode()) < 104
+
+    def test_operator_runtime_override_opts_out(self):
+        env = {"BH_RUNTIME_DIR": "/operator/runtime"}
+
+        assert bu_cli._managed_browser_use_state("research", env, ["browser-use"]) is None
+        assert env == {"BH_RUNTIME_DIR": "/operator/runtime"}
+
+    def test_idle_cleanup_removes_state_only_after_confirmed_reload(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        state = bu_cli._managed_browser_use_state("research", {}, ["browser-use"])
+        assert state is not None
+        state["last_activity"] = 0.0
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda current: True)
+
+        bu_cli._expire_idle_browser_use_sessions(now=31.0)
+
+        assert bu_cli._browser_use_sessions == {}
+
+    def test_idle_cleanup_retains_state_when_reload_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        state = bu_cli._managed_browser_use_state("research", {}, ["browser-use"])
+        assert state is not None
+        state["last_activity"] = 0.0
+        monkeypatch.setattr(bu_cli, "_browser_use_inactivity_timeout", lambda: 30)
+        monkeypatch.setattr(bu_cli, "_stop_browser_use_state", lambda current: False)
+
+        bu_cli._expire_idle_browser_use_sessions(now=31.0)
+
+        assert len(bu_cli._browser_use_sessions) == 1
+
+    def test_browser_exec_holds_session_lock_for_full_cli_call(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, "cat > /dev/null\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        state = bu_cli._managed_browser_use_state("research", {}, [cli])
+        assert state is not None
+        monkeypatch.setattr(bu_cli, "_managed_browser_use_state", lambda *_args: state)
+        real_run = bu_cli.subprocess.run
+
+        def checked_run(*args, **kwargs):
+            assert state["operation_lock"].acquire(blocking=False) is False
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", checked_run)
+
+        result = json.loads(bu_cli.browser_exec("print(1)", session="research"))
+
+        assert result["success"] is True
+
+
 class TestBrowserExec:
     def test_missing_cli_returns_install_hint(self, monkeypatch):
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
@@ -950,11 +1020,15 @@ class TestBrowserExec:
         assert "boom" in result["stderr"]
 
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
-        cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
+        cli = _fake_cli(
+            tmp_path,
+            'if [ "${1:-}" = "--reload" ]; then exit 0; fi\ncat > /dev/null\nsleep 30\n',
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 1)
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
         assert "timed out" in result["error"]
+        assert "daemon was stopped" in result["error"]
 
 
 class TestFindCliManagedBin:
@@ -1402,10 +1476,10 @@ class TestTimeoutProcessGroupKill:
         # Pre-fix, this hangs until the 60s sleeps expire — and forever with a daemon child.
         assert elapsed < 30
         # The pipe-holding grandchild died with the group instead of leaking.
-        pid = int(pid_file.read_text().strip())
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
         time.sleep(0.5)
         with pytest.raises(OSError):
-            os.kill(pid, 0)
+            os.kill(pid, 0)  # windows-footgun: ok — this test is skipped on Windows
 
     def test_post_kill_drain_is_bounded(self, monkeypatch):
         """If even the post-kill drain misses its deadline, give up instead of wedging."""

@@ -107,7 +107,7 @@ class TestDietBudget(unittest.TestCase):
         from model_tools import get_tool_definitions
 
         targets = {
-            "drive_preview", "tour", "annotate_preview", "setup_mcp", "tip",
+            "drive_preview", "tour", "annotate_preview", "tip",
             "desktop_preview", "desktop_project", "read_window_below", "apply_layout",
             "read_terminal", "focus_pane",
         }

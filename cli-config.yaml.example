@@ -1640,6 +1640,15 @@ code_execution:
   # max_session_kernels: 4      # Process-wide LRU cap on live kernels
 
 # =============================================================================
+# Connections (manage_connections tool)
+# =============================================================================
+# One call = one connection operation: managed connector links, or an approval card for
+# local MCP servers on the desktop. The deadline is fixed when the operation is created;
+# reopening the chat or restarting the desktop never extends it. Floor 5s, no ceiling.
+connections:
+  wait_timeout_seconds: 120
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

@@ -647,6 +647,17 @@ def _approval_request_payload(data: dict | None) -> dict:
     return payload
 
 
+def _pending_request_payload(sid: str, event: str) -> dict | None:
+    """Read-only snapshot of one blocking-bridge prompt still parked on *sid* (``clarify.request``,
+    ``connection.request``): a client detached when it was emitted would otherwise never see it."""
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            pending_event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
+            if owner_sid == sid and pending_event == event:
+                return dict(prompt_payload)
+    return None
+
+
 def _pending_clarify_request_payload(sid: str) -> dict | None:
     """Read-only snapshot of the clarify prompt still blocking a session: a client detached when
     `clarify.request` was emitted would otherwise never see it (agent parked until timeout). Same replay
@@ -666,6 +677,12 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
             pending = session.get("_compute_host_pending_clarify")
             return dict(pending) if isinstance(pending, dict) else None
     return None
+
+
+def _pending_connection_request_payload(sid: str) -> dict | None:
+    """The connection operation (manage_connections MCP approval card) still blocking *sid*, if any.
+    The payload carries the server-owned ``deadline_at``; a restored card keeps that deadline."""
+    return _pending_request_payload(sid, "connection.request")
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:
@@ -1254,7 +1271,7 @@ def _enable_gateway_prompts() -> None:
 _EXPIRING_REQUESTS = frozenset({
     "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "vault.code.request", "clarify.request",
     "terminal.read.request",
-    "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
+    "preview.read.request", "preview.act.request", "window.read.request", "connection.request",
     "tour.request",
 })
 
@@ -1889,8 +1906,8 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / setup_mcp cards from the tool-call part."""
-    return name in ("clarify", "setup_mcp")
+    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
+    return name in ("clarify", "manage_connections", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -2738,7 +2755,8 @@ def _live_session_payload(
     }
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
-                       ("pending_clarify", _pending_clarify_request_payload(sid))):
+                       ("pending_clarify", _pending_clarify_request_payload(sid)),
+                       ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
     return _attach_todo_state(payload, session)

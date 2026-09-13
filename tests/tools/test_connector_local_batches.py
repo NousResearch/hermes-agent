@@ -42,31 +42,39 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     db.create_session("past-session", source="cli")
     db.append_message("past-session", role="user", content="live-db-proof")
     callbacks = []
-    def setup(server, action, reason):
-        callbacks.append((server, action, reason))
-        return json.dumps({"status": "declined", "server": server})
+    def connection(payload):
+        callbacks.append(payload)
+        return json.dumps({"targets": [{"name": t["name"], "status": "declined"} for t in payload["targets"]]})
 
     agent = SimpleNamespace(
-        enabled_toolsets=["todo", "session_search", "desktop_ui"], disabled_toolsets=[],
+        enabled_toolsets=["todo", "session_search", "connections"], disabled_toolsets=[],
         session_id="current-session", _todo_store=TodoStore(), _memory_manager=None,
-        _get_session_db_for_recall=lambda: db, setup_mcp_callback=setup,
+        _get_session_db_for_recall=lambda: db, connection_callback=connection,
     )
     calls = [
         {"name": "session_search", "arguments": {"session_id": "past-session"}},
         {"name": "todo_list", "arguments": {"todos": [{"id": "a", "content": "live-store-proof", "status": "pending"}]}},
-        {"name": "setup_mcp", "arguments": {"server": "example", "action": "install", "reason": "live-callback-proof"}},
+        {"name": "manage_connections", "arguments": {
+            "action": "install", "connectors": [{"name": "linear", "mcp": True}], "reason": "live-callback-proof"}},
     ]
     results = []
     try:
         for entry in calls:
-            name, args, error = _unwrap_tool_search_call(
-                agent, "tool_call", {"calls": [entry]}, flatten_probe=flatten_probe)
+            if entry["name"] == "manage_connections":
+                # Never deferrable, so never a tool_call underlying: it reaches invoke_tool
+                # directly, and must still find the agent's GUI callback there.
+                name, args, error = entry["name"], entry["arguments"], None
+            else:
+                name, args, error = _unwrap_tool_search_call(
+                    agent, "tool_call", {"calls": [entry]}, flatten_probe=flatten_probe)
             assert name == entry["name"] and error is None
             results.append(json.loads(invoke_tool(
                 agent, name, args, "task", tool_call_id="call", pre_tool_block_checked=True)))
         assert "live-db-proof" in json.dumps(results[0])
         assert agent._todo_store.read()[0]["content"] == "live-store-proof"
-        assert results[2] == {"status": "declined", "server": "example"}
-        assert callbacks == [("example", "install", "live-callback-proof")]
+        assert results[2]["targets"][0] == {
+            "name": "linear", "kind": "mcp", "action": "install", "state": "skipped"}
+        assert [(c["reason"], [t["name"] for t in c["targets"]]) for c in callbacks] == [
+            ("live-callback-proof", ["linear"])]
     finally:
         db.close()

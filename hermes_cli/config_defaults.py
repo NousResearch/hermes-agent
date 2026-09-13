@@ -1838,6 +1838,12 @@ DEFAULT_CONFIG = {
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
+    # One `manage_connections` call = one connection operation (managed connectors and local
+    # MCP approvals). The operation's deadline is fixed here when it is created; the desktop
+    # card cannot extend it. Floor 5s, no ceiling. Additive key: no _config_version bump.
+    "connections": {
+        "wait_timeout_seconds": 120,
+    },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation

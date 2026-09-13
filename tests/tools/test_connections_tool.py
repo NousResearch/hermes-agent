@@ -132,15 +132,25 @@ def test_gateway_failure_is_a_model_actionable_error():
     assert "connector gateway request failed" in out["error"]
 
 
-def test_mcp_actions_are_not_this_tools_business():
-    # Local MCP setup belongs to setup_mcp, which owns the desktop consent
-    # callback. Folding those actions in here promised a flow this tool has no
-    # way to reach, so they are rejected as unknown actions.
+def test_mcp_actions_belong_to_mcp_targets_only():
+    # History: an earlier fold was rejected because "the desktop consent card arrives
+    # through a per-tool interception branch keyed on the name setup_mcp and
+    # registry.dispatch never forwards a callback". The fold now runs through the
+    # agent-level inline executor (agent/inline_tool_executors.py), so the MCP verbs
+    # are in the enum — for mcp:true targets only.
+    enum = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]["action"]["enum"]
+    assert {"install", "enable", "authorize"} <= set(enum)
+
+    out = json.loads(manage_connections({"action": "install", "connectors": ["linear"]}))
+    assert "mcp" in out["error"] and "install" in out["error"]
+
     out = json.loads(
-        manage_connections({"action": "install", "server": "linear"})
+        manage_connections({"action": "connect", "connectors": [{"name": "linear", "mcp": True}]})
     )
+    assert "managed-connector action" in out["error"]
+
+    out = json.loads(manage_connections({"action": "uninstall", "connectors": ["gmail"]}))
     assert "action must be one of" in out["error"]
-    assert "install" not in MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]["action"]["enum"]
 
 
 # ---------------------------------------------------------------------------
@@ -491,9 +501,11 @@ def test_focus_mode_coding_posture_gets_the_tool(monkeypatch):
     assert "manage_connections" in _session_tool_names(selection, connectors=True)
 
 
-def test_signed_out_session_sees_nothing(tmp_path, monkeypatch):
-    """check_fn is the only entitlement gate, on every surface."""
+def test_signed_out_session_keeps_the_tool_but_the_managed_leg_refuses(tmp_path, monkeypatch):
+    """The portal gate moved from check_fn into the managed leg: local MCP approvals need no
+    sign-in, so the schema stays; a managed action in a signed-out session is a plain error."""
     from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import registry
     from tui_gateway.server import _load_enabled_toolsets
 
     monkeypatch.chdir(tmp_path)
@@ -504,9 +516,11 @@ def test_signed_out_session_sees_nothing(tmp_path, monkeypatch):
         ["coding"],
     ]
     for selection in selections:
-        assert "manage_connections" not in _session_tool_names(
-            selection, connectors=False
-        ), selection
+        assert "manage_connections" in _session_tool_names(selection, connectors=False), selection
+
+    with patch("tools.connections_tool._connectors_available", return_value=False):
+        out = json.loads(registry.dispatch("manage_connections", {"action": "status"}))
+    assert "not available in this session" in out["error"]
 
 
 def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):

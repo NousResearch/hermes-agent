@@ -15,11 +15,12 @@ import { type ToolImageContext, type ToolImageState, useToolImagePage } from './
 
 interface ToolImagePreviewsProps {
   active: boolean
+  revision?: number
   sources: string[]
   toolCallId: string
 }
 
-export function ToolImagePreviews({ active, sources, toolCallId }: ToolImagePreviewsProps) {
+export function ToolImagePreviews({ active, revision = 0, sources, toolCallId }: ToolImagePreviewsProps) {
   const { $storedId, $runtimeId } = useSessionView()
   const sessionId = useStore($storedId)
   const runtimeId = useStore($runtimeId)
@@ -27,7 +28,7 @@ export function ToolImagePreviews({ active, sources, toolCallId }: ToolImagePrev
   return (
     <ToolImageGallery
       active={active}
-      context={{ sessionId, runtimeId }}
+      context={{ sessionId, runtimeId, revision }}
       key={`${runtimeId}:${sessionId}:${toolCallId}`}
       sources={sources}
       toolCallId={toolCallId}

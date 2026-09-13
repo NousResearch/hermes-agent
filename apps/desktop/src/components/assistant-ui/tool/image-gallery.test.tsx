@@ -142,3 +142,33 @@ it('labels the visible thumbnail range and updates it on page navigation', async
   expect(await screen.findByText('Previews 6–7 of 7')).toBeTruthy()
   await screen.findByRole('img', { name: /Image 7 of 7/ })
 })
+
+it('refreshes provisional file pixels on completion without resetting gallery selection', async () => {
+  $activeSessionId.set('runtime-overwrite')
+  $selectedStoredSessionId.set('stored-overwrite')
+  $cronSessions.set([{ id: 'stored-overwrite', connection_id: 'image-owner', profile: 'artist' } as never])
+
+  const before =
+    'data:image/svg+xml,' +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>'
+    )
+
+  const after = before.replace('red', 'blue')
+  let current = before
+  const api = vi.fn(async () => ({ dataUrl: current }))
+  window.hermesDesktop = { api } as unknown as typeof window.hermesDesktop
+  // A generic renderer can declare its output files before returning its result.
+  const args = { image_paths: ['./first.svg', './diagram.svg'] }
+  const component = render(<ToolFallback {...props} args={args} toolName="render_frames" />)
+  fireEvent.click(screen.getByRole('button', { name: 'Open image (2)' }))
+  await waitFor(() => expect(api).toHaveBeenCalledTimes(2))
+  fireEvent.click(screen.getByRole('button', { name: 'Open image 2/2' }))
+  await waitFor(() => expect(screen.getByRole('img', { name: /Image 2 of 2/ }).getAttribute('src')).toBe(before))
+  current = after
+  component.rerender(<ToolFallback {...props} args={args} result={{ success: true }} toolName="render_frames" />)
+  await waitFor(() => expect(screen.getByRole('img', { name: /Image 2 of 2/ }).getAttribute('src')).toBe(after))
+  expect(api).toHaveBeenCalledTimes(4)
+  component.rerender(<ToolFallback {...props} args={args} result={{ success: true }} toolName="render_frames" />)
+  expect(api).toHaveBeenCalledTimes(4)
+})

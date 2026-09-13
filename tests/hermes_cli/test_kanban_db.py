@@ -1905,6 +1905,39 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+@pytest.mark.parametrize("classification", ["review", "remediation", "successor"])
+def test_respawn_guard_allows_explicit_followup_with_active_pr(
+    kanban_home, classification,
+):
+    """A valid follow-up may work on an existing PR instead of duplicating it."""
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title=f"{classification} existing PR", assignee="alice",
+            classification=classification,
+        )
+        kb.add_comment(
+            conn, t, "worker",
+            "Continue https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_allows_recovery_successor_with_recent_success(kanban_home):
+    """A recovery successor must not inherit the source's success guard."""
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="Recovery: fix review", assignee="alice",
+            created_by="recovery-queue", initial_status="ready",
+        )
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:

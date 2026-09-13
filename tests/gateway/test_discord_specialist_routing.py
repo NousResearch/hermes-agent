@@ -58,36 +58,39 @@ def _adapter(monkeypatch):
     return value
 
 
-def test_specialist_route_creates_one_handoff_and_acknowledges(monkeypatch):
-    from gateway.specialist_handoff import HandoffResult
+def test_specialist_route_creates_one_handoff_and_acknowledges(monkeypatch, tmp_path):
+    import json
+    from pathlib import Path
+    from gateway.configured_board import configured_board_db_path
     from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+    from hermes_cli.kanban_db_connect import connect_closing
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes" / "profiles" / "task-orchestrator").mkdir(parents=True)
     adapter = _adapter(monkeypatch)
+    settings = adapter._specialist_routing_settings()
+    settings["capabilities"]["task-orchestrator"] = dict(
+        settings["capabilities"]["burndown-patch-steward"])
+    registry = adapter._specialist_capability_registry(settings)
+    registry.register_configured_profile("task-orchestrator")
     adapter._classify_specialist_event = AsyncMock(
         return_value=SpecialistRouteDecision(
-            kind=RouteKind.SPECIALIST,
-            profile="burndown-patch-steward",
-            confidence=0.95,
-            reason="bounded patch",
-            title="Patch confirmed failure",
+            kind=RouteKind.SPECIALIST, profile="burndown-patch-steward",
+            confidence=0.95, reason="bounded patch", title="Patch confirmed failure",
         )
     )
-    create = AsyncMock(return_value=HandoffResult(True, task_id="t_abc", created=True))
-
-    async def fake_to_thread(func, **kwargs):
-        return await create(**kwargs)
-
-    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
-
-    handled = asyncio.run(adapter._maybe_route_specialist_event(_event()))
-
-    assert handled is True
-    create.assert_awaited_once()
-    adapter.send.assert_awaited_once_with(
-        "project-updates",
-        content="Planning `t_abc` with the task orchestrator. I’ll post the worker plan and progress here.",
-        reply_to="message-1",
-    )
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is True
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is True
+    with connect_closing(configured_board_db_path(settings["board"]), board=settings["board"]) as conn:
+        tasks = conn.execute("SELECT body, assignee FROM tasks").fetchall()
+        candidates = conn.execute("SELECT request_id, requested_profile_id FROM candidate_profile_requests").fetchall()
+    assert len(tasks) == len(candidates) == 1
+    assert tasks[0]["assignee"] == "task-orchestrator"
+    assert json.loads(tasks[0]["body"])["candidate_request_id"] == candidates[0]["request_id"]
+    assert candidates[0]["requested_profile_id"] == "burndown-patch-steward"
+    signature = registry.configured_signature("burndown-patch-steward")
+    assert registry.resolve(signature, profile_id="burndown-patch-steward").status == "no_match"
 
 
 def test_general_route_preserves_normal_chat_path(monkeypatch):

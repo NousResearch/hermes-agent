@@ -132,6 +132,57 @@ def test_force_refresh_replaces_only_its_own_entry(catalog):
     assert len(catalog) == 3, "the anonymous entry should have survived"
 
 
+@pytest.mark.parametrize("provider", ["nous", "openrouter"])
+@pytest.mark.parametrize("api_key", ["sk-test", ""])
+def test_provider_cached_only_reads_its_fetched_catalog(monkeypatch, catalog, provider, api_key):
+    monkeypatch.setattr(models_pricing, "_pricing_provider_cache_keys", {})
+    monkeypatch.setattr(models_pricing, "_resolve_openrouter_api_key", lambda: api_key)
+    monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials", lambda: (api_key, BASE))
+    fetched = models_pricing.get_pricing_for_provider(provider)
+    assert sorted(fetched) == sorted(_FILTERED if api_key else _FULL)
+    if provider == "nous":
+        monkeypatch.setattr("hermes_cli.auth._nous_inference_env_override", lambda: None)
+        monkeypatch.setattr(models_pricing, "get_cached_nous_inference_base_url", lambda: "")
+        assert models_pricing.pricing_cache_scope(provider) == BASE
+
+    def unexpected_auth():
+        pytest.fail("cached-only reads must not resolve or refresh credentials")
+
+    monkeypatch.setattr(models_pricing, "_resolve_openrouter_api_key", unexpected_auth)
+    monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials", unexpected_auth)
+    assert models_pricing.get_pricing_for_provider(provider, cached_only=True) == fetched
+    assert len(catalog) == 1
+    if provider == "nous":
+        now = models_pricing.time.monotonic()
+        monkeypatch.setattr(models_pricing.time, "monotonic", lambda: now + 301)
+        assert models_pricing.get_pricing_for_provider(provider, cached_only=True) == {}
+        assert len(catalog) == 1
+
+
+@pytest.mark.parametrize("provider", ["nous", "openrouter"])
+def test_provider_cached_only_keeps_profile_ownership(monkeypatch, tmp_path, per_org_catalog, provider):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setattr(models_pricing, "_pricing_provider_cache_keys", {})
+    expected = {}
+    for profile in ("a", "b"):
+        token = set_hermes_home_override(tmp_path / profile)
+        try:
+            monkeypatch.setattr(models_pricing, "_resolve_openrouter_api_key", lambda: f"tok-{profile}")
+            monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials", lambda: (f"tok-{profile}", BASE))
+            expected[profile] = models_pricing.get_pricing_for_provider(provider)
+        finally:
+            reset_hermes_home_override(token)
+    assert expected["a"] != expected["b"]
+    for profile in ("a", "b"):
+        token = set_hermes_home_override(tmp_path / profile)
+        try:
+            assert models_pricing.get_pricing_for_provider(provider, cached_only=True) == expected[profile]
+        finally:
+            reset_hermes_home_override(token)
+    assert len(per_org_catalog) == 2
+
+
 class TestPeekCachedPricing:
     def test_returns_empty_when_nothing_cached(self):
         assert peek_cached_pricing(BASE) == {}

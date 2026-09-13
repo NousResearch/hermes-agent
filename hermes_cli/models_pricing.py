@@ -19,7 +19,7 @@ from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
 
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
-# (profile key, provider) → endpoint cache key last fetched, so cached_only reads find the right entry.
+# (profile key, provider) → exact catalog key (including credential fingerprint when authenticated).
 _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 
 # A failed fetch caches its empty result too, so an unreachable endpoint isn't re-dialed on every
@@ -373,9 +373,10 @@ def _remember_provider_cache_key(provider: str, cache_key: str) -> None:
 
 
 def _fetch_openrouter_pricing(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
-    _remember_provider_cache_key("openrouter", _OPENROUTER_PRICING_BASE)
+    api_key = _resolve_openrouter_api_key()
+    _remember_provider_cache_key("openrouter", _OPENROUTER_PRICING_BASE + _pricing_auth_fingerprint(api_key))
     return fetch_models_with_pricing(
-        api_key=_resolve_openrouter_api_key(),
+        api_key=api_key,
         base_url=_OPENROUTER_PRICING_BASE,
         force_refresh=force_refresh,
     )
@@ -400,7 +401,7 @@ def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
         return {}
-    _remember_provider_cache_key("nous", base_url.rstrip("/"))
+    _remember_provider_cache_key("nous", base_url.rstrip("/") + _pricing_auth_fingerprint(api_key))
     return _fetch_nous_pricing(api_key, base_url, force_refresh=force_refresh)
 
 
@@ -465,7 +466,9 @@ def pricing_cache_scope(provider: str, *, current_provider: str = "", current_ba
         persisted_base = get_cached_nous_inference_base_url()
         if persisted_base:
             return persisted_base
-        return _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        # Prewarm scopes are endpoint identities, not authenticated payload keys.
+        return cache_key.partition(_PRICING_AUTH_KEY_PREFIX)[0]
     return ""
 
 

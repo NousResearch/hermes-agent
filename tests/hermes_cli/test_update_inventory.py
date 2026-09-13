@@ -8,12 +8,13 @@ import pytest
 import hermes_cli.update_inventory as ui
 
 
-def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None):
-    record = {"pid": pid}
+def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None, **extra):
+    record = {"pid": pid, "kind": "hermes-gateway", "argv": ["hermes", "gateway", "run"], "gateway_state": "running"}
     if sha:
         record["code_sha"] = sha
     if version:
         record["code_version"] = version
+    record.update(extra)
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
 
 
@@ -80,6 +81,29 @@ class TestCollectInventory:
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
         plan = ui.collect_runtime_inventory()
         assert plan.runtimes == []
+
+    def test_stopped_runtime_status_with_reused_pid_excluded(self, fleet, monkeypatch):
+        """A stopped gateway_state.json row must not become a planned runtime just because its PID was reused."""
+        from hermes_cli.profiles import _get_default_hermes_home
+
+        _write_state(_get_default_hermes_home(), 100, gateway_state="stopped")
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
+
+        plan = ui.collect_runtime_inventory()
+
+        assert [runtime.profile for runtime in plan.runtimes] == ["work"]
+
+    def test_runtime_status_pid_reuse_excluded_by_start_time(self, fleet, monkeypatch):
+        """Inventory reuses the runtime-status start-time guard instead of trusting bare PID liveness."""
+        from hermes_cli.profiles import _get_default_hermes_home
+
+        _write_state(_get_default_hermes_home(), 100, start_time=111)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
+        monkeypatch.setattr("gateway.status._get_process_start_time", lambda pid: 222 if pid == 100 else None)
+
+        plan = ui.collect_runtime_inventory()
+
+        assert [runtime.profile for runtime in plan.runtimes] == ["work"]
 
     def test_pid_file_fallback_covers_unstamped_profiles(self, fleet, monkeypatch):
         """Gateways with a PID file but no runtime-status record still appear."""

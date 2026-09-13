@@ -172,7 +172,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import get_runtime_status_running_pid, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
@@ -186,11 +186,8 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 sup = str(declared) if declared else supervisor(pid)
             else:
                 record = read_runtime_status(home / "gateway_state.json") or {}
-                try:
-                    pid = int(record.get("pid"))
-                except (TypeError, ValueError):
-                    continue
-                if not _pid_exists(pid):
+                pid = get_runtime_status_running_pid(record, expected_home=home)
+                if pid is None:
                     continue
                 seen.add(pid)
                 sup = supervisor(pid)

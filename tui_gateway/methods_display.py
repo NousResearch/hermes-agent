@@ -59,8 +59,12 @@ def _(rid, params: dict) -> dict:
 @method("display.thumbnail")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change."""
+    """One JPEG grab of the bot's screen (``data_url``: null while stopped). Read-only: no lease change.
+    Suppressed while a human holds the lease — the frame may show what they are typing."""
     try:
+        from tools.bot_desktop import lease as _bd_lease
+        if _bd_lease.human_holds():
+            return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
         from tools.bot_desktop.thumbnail import thumbnail_data_url
         return _ok(rid, {"data_url": thumbnail_data_url()})
     except Exception as e:

@@ -111,6 +111,18 @@ describe('duplicating a bot', () => {
     expect($botMeta.get()[name].chat).toBeUndefined()
   })
 
+  it('keeps a fallback display name well formed when adding the copy suffix', async () => {
+    await duplicateBot({ display_name: '😀'.repeat(64), name: 'emoji' } as RosterRow, [
+      { name: 'emoji' } as RosterRow
+    ])
+
+    const displayName = calls.find(call => call.method === 'profiles.create')?.params.display_name as string
+
+    expect(displayName).toBe(`${'😀'.repeat(57)} (copy)`)
+    expect(Array.from(displayName)).toHaveLength(64)
+    expect(displayName.endsWith(' (copy)')).toBe(true)
+  })
+
   it('walks past taken suffixes to the first free slot', async () => {
     const roster = ['ops', 'ops-2', 'ops-3'].map(name => ({ name }) as RosterRow)
 

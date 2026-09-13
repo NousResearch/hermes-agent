@@ -336,7 +336,10 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
   const meta = $botMeta.get()[botMetaKey(bot)]
   const sourceTitle = meta?.title?.trim() || bot.display_name?.trim() || ''
   const copySuffix = ' (copy)'
-  const title = sourceTitle ? `${sourceTitle.slice(0, 64 - copySuffix.length)}${copySuffix}` : ''
+  const titlePrefix = Array.from(sourceTitle)
+    .slice(0, 64 - copySuffix.length)
+    .join('')
+  const title = sourceTitle ? `${titlePrefix}${copySuffix}` : ''
 
   await requestForBot(bot, 'profiles.create', {
     name,

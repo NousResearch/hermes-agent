@@ -169,6 +169,34 @@ describe('remote HTML previews', () => {
   })
 })
 
+describe('Windows preview targets', () => {
+  it('keeps Windows drive-letter paths absolute instead of joining the cwd', () => {
+    expect(localPreviewTarget('C:\\Users\\someone\\notes\\spec.md', 'C:\\Users\\someone')).toMatchObject({
+      path: 'C:\\Users\\someone\\notes\\spec.md',
+      language: 'markdown',
+      previewKind: 'text'
+    })
+  })
+
+  it('keeps lower-case Windows drive-letter paths absolute', () => {
+    expect(localPreviewTarget('c:/users/someone/notes/spec.md', 'C:\\Users\\someone')).toMatchObject({
+      path: 'c:/users/someone/notes/spec.md'
+    })
+  })
+
+  it('keeps UNC share paths absolute', () => {
+    expect(localPreviewTarget('\\\\server\\share\\spec.md', 'C:\\Users\\someone')).toMatchObject({
+      path: '\\\\server\\share\\spec.md'
+    })
+  })
+
+  it('still resolves relative paths against the cwd', () => {
+    expect(localPreviewTarget('notes/spec.md', 'C:\\Users\\someone')).toMatchObject({
+      path: 'C:\\Users\\someone/notes/spec.md'
+    })
+  })
+})
+
 describe('PDF previews', () => {
   it('classifies PDF files as PDF previews', () => {
     expect(localPreviewTarget('/tmp/spec.pdf')).toMatchObject({

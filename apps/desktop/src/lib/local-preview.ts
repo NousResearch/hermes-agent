@@ -197,7 +197,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (!raw.startsWith('/') && !/^[a-z]:[/\\]/i.test(raw) && !raw.startsWith('\\\\') && cwd) {
     path = joinPath(cwd, raw)
   }
 

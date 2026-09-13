@@ -771,9 +771,13 @@ class TestDuplicateDrivePrefixGuard:
         import tools.file_tools as _ft
         importlib.reload(_ft)
         write_file_tool = _ft.write_file_tool
-        # Single, well-formed absolute path: must not be flagged.
+        # Single, well-formed absolute path: must not be flagged. The path is
+        # deliberately synthetic (no real user or CI directory): the guard is a
+        # pure string check that short-circuits before any I/O, so nothing needs
+        # to exist, and a contributor-specific path here would be meaningless on
+        # any other machine.
         result = write_file_tool(
-            path=r"C:\Users\bbask\hermes-acceptance\test-clean.py",
+            path=r"C:\hermes-ci\acceptance\test-clean.py",
             content="x",
             cross_profile=True,
         )
@@ -790,10 +794,12 @@ class TestDuplicateDrivePrefixGuard:
         write_file_tool = _ft.write_file_tool
         # This is the exact pattern observed in the 2026-09-11 path-pollution
         # bug: the agent sent an absolute path and the kernel/cwd logic
-        # prepended the cwd, producing a duplicated-drive prefix.
+        # prepended the cwd, producing a duplicated-drive prefix. Synthetic root
+        # so the fixture is not tied to a contributor's machine — what matters to
+        # the guard is that the drive prefix appears twice.
         mangled = (
-            r"C:\Users\bbask\Hermes-Workspace"
-            r"\C:\Users\bbask\hermes-acceptance\test-mangled.py"
+            r"C:\hermes-ci\acceptance"
+            r"\C:\hermes-ci\acceptance\test-mangled.py"
         )
         result = write_file_tool(
             path=mangled,

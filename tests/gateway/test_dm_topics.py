@@ -9,6 +9,7 @@ Covers:
 - _build_message_event: DM topic resolution in message events
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -539,4 +540,143 @@ def test_stampless_photo_does_not_inherit_another_users_lane():
     photo_msg = _make_mock_message(chat_id=111, user_id=99, thread_id=None, text="")
     event = adapter._build_message_event(photo_msg, MessageType.PHOTO)
 
+    assert event.source.thread_id is None
+
+
+# ── _build_message_event: lane inheritance is restricted to stamp-losing media types ──
+# Text, commands and location messages always carry a real stamp (or none at all when there is
+# genuinely no topic), so recalling a lane for them would misroute an ordinary plain-DM message
+# into a stale topic instead of leaving it in the default lane.
+
+
+def test_stampless_text_does_not_inherit_topic_lane():
+    """A stamp-less text message must NOT inherit a previously observed topic lane."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    stamped = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    adapter._build_message_event(stamped, MessageType.TEXT)
+
+    plain_text = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="hello again")
+    event = adapter._build_message_event(plain_text, MessageType.TEXT)
+
+    assert event.source.thread_id is None
+
+
+def test_stampless_command_does_not_inherit_topic_lane():
+    """A stamp-less command must NOT inherit a previously observed topic lane."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    stamped = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    adapter._build_message_event(stamped, MessageType.TEXT)
+
+    command_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="/start")
+    event = adapter._build_message_event(command_msg, MessageType.COMMAND)
+
+    assert event.source.thread_id is None
+
+
+def test_stampless_location_does_not_inherit_topic_lane():
+    """A stamp-less location/venue share must NOT inherit a previously observed topic lane."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    stamped = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    adapter._build_message_event(stamped, MessageType.TEXT)
+
+    location_msg = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="")
+    event = adapter._build_message_event(location_msg, MessageType.LOCATION)
+
+    assert event.source.thread_id is None
+
+
+# ── DM-topic lane inheritance through the real dispatch handlers (#109527 follow-up) ──
+# The tests above call _build_message_event() directly. These go through the actual
+# _handle_text_message / _handle_command / _handle_location_message entry points so the
+# restriction is proven at the point where routing/session-key decisions are made too.
+
+
+def _make_dispatch_message(chat_id=111, user_id=42, thread_id=None, text="hi", is_topic_message=None,
+                            venue=None, location=None):
+    msg = _make_mock_message(
+        chat_id=chat_id, chat_type="private", text=text, thread_id=thread_id, user_id=user_id,
+        is_topic_message=is_topic_message)
+    msg.caption = None
+    msg.entities = []
+    msg.caption_entities = []
+    msg.media_group_id = None
+    msg.venue = venue
+    msg.location = location
+    msg.photo = None
+    msg.video = None
+    msg.audio = None
+    msg.voice = None
+    msg.document = None
+    msg.sticker = None
+    return msg
+
+
+def _make_dispatch_update(msg, update_id=1):
+    return SimpleNamespace(update_id=update_id, message=msg, effective_message=msg)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stampless_text_does_not_inherit_topic_lane():
+    """Through _handle_text_message, a stamp-less DM text stays in the default lane."""
+    adapter = _make_adapter()
+    adapter._bot = None
+    adapter.handle_message = AsyncMock()
+    adapter._text_batch_delay_seconds = 0.01
+
+    stamped = _make_dispatch_message(thread_id=100, text="hi", is_topic_message=True)
+    await adapter._handle_text_message(_make_dispatch_update(stamped, update_id=1), SimpleNamespace())
+    await asyncio.sleep(0.05)
+
+    plain = _make_dispatch_message(thread_id=None, text="hello again")
+    await adapter._handle_text_message(_make_dispatch_update(plain, update_id=2), SimpleNamespace())
+    await asyncio.sleep(0.05)
+
+    assert adapter.handle_message.await_count == 2
+    last_event = adapter.handle_message.await_args_list[-1].args[0]
+    assert last_event.source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stampless_command_does_not_inherit_topic_lane():
+    """Through _handle_command, a stamp-less DM command stays in the default lane."""
+    adapter = _make_adapter()
+    adapter._bot = None
+    adapter.handle_message = AsyncMock()
+
+    stamped = _make_dispatch_message(thread_id=100, text="hi", is_topic_message=True)
+    await adapter._handle_text_message(_make_dispatch_update(stamped, update_id=1), SimpleNamespace())
+    await asyncio.sleep(0.05)
+
+    command_msg = _make_dispatch_message(thread_id=None, text="/start")
+    await adapter._handle_command(_make_dispatch_update(command_msg, update_id=2), SimpleNamespace())
+
+    event = adapter.handle_message.await_args_list[-1].args[0]
+    assert event.source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stampless_location_does_not_inherit_topic_lane():
+    """Through _handle_location_message, a stamp-less DM location stays in the default lane."""
+    adapter = _make_adapter()
+    adapter._bot = None
+    adapter.handle_message = AsyncMock()
+
+    stamped = _make_dispatch_message(thread_id=100, text="hi", is_topic_message=True)
+    await adapter._handle_text_message(_make_dispatch_update(stamped, update_id=1), SimpleNamespace())
+    await asyncio.sleep(0.05)
+
+    location_msg = _make_dispatch_message(thread_id=None, text="")
+    location_msg.location = SimpleNamespace(latitude=1.23, longitude=4.56)
+    await adapter._handle_location_message(_make_dispatch_update(location_msg, update_id=2), SimpleNamespace())
+
+    event = adapter.handle_message.await_args_list[-1].args[0]
     assert event.source.thread_id is None

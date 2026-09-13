@@ -380,6 +380,12 @@ class TelegramAdapter(BasePlatformAdapter):
     _GENERAL_TOPIC_THREAD_ID = "1"
     _DM_TOPIC_LANE_TTL_SECONDS = 300.0  # stale-ish lane still beats the plain-DM default (#109527)
     _DM_TOPIC_LANE_MAX_ENTRIES = 2000
+    # Only these lose their topic stamp; text/command/location always carry one, so recalling a
+    # lane for them would misroute an ordinary stamped-or-default message into a stale topic (#109527).
+    _DM_TOPIC_LANE_MEDIA_TYPES = frozenset({
+        MessageType.PHOTO, MessageType.VIDEO, MessageType.AUDIO, MessageType.VOICE,
+        MessageType.DOCUMENT, MessageType.STICKER,
+    })
     # send() can race a disconnect blip; failing "Not connected" (retryable=False) parks the answer in the
     # delivery ledger until next boot, so wait briefly for _bot (or a replacement adapter) instead.
     _RECONNECT_WAIT_SECONDS = 15.0
@@ -6367,7 +6373,7 @@ class TelegramAdapter(BasePlatformAdapter):
             lane_key = f"{chat.id}:{user.id if user else chat.id}"
             if thread_id_str is not None:
                 self._remember_dm_topic_lane(lane_key, thread_id_str)
-            else:
+            elif msg_type in self._DM_TOPIC_LANE_MEDIA_TYPES:
                 thread_id_str = self._recall_dm_topic_lane(lane_key)
         chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
         has_full_name = hasattr(chat, "full_name")

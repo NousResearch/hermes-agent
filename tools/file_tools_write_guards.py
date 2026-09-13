@@ -169,8 +169,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Use the terminal tool with sudo if you need to modify system files.")
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
-    # Principal profile + Austin's explicit turn-authorization lifts this block;
-    # otherwise we hard-deny to keep the existing test contract.
+    # The principal profile lifts this hard-deny (with an audit entry), but the keys that
+    # DEFINE that grant are protected separately by ``_check_authority_policy_write`` —
+    # otherwise "principal" would be self-granting by rewriting config.yaml.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and hermes_config in candidates:
         try:
@@ -185,6 +186,98 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+    return None
+
+
+# config.yaml keys that define WHAT THE AGENT IS ALLOWED TO DO. They are the source of the principal
+# grant itself, so no profile may let the agent rewrite them: otherwise principal is self-granting
+# (flip production -> principal) and the exec-approval gate this module protects becomes switchable
+# from inside the agent. Every other key in config.yaml stays editable under principal.
+_AUTHORITY_POLICY_KEYS: tuple[str, ...] = ("authority_profile", "approvals")
+
+
+def _authority_permits_config_edit() -> bool:
+    """True when the active profile lifts the config.yaml hard-deny (i.e. principal)."""
+    try:
+        from hermes_cli.authority import allows
+
+        return bool(allows("edit_config_yaml"))
+    except Exception:  # noqa: BLE001 — unknown authority state must deny, never crash the guard
+        return False
+
+
+def _config_policy_delta(existing: str | None, proposed: str) -> str | None:
+    """Name the policy key a config rewrite would change, or None when it changes none.
+
+    Only ``_AUTHORITY_POLICY_KEYS`` are compared, so unrelated config edits pass untouched. Fails
+    CLOSED: text that will not parse as a YAML mapping counts as a change, so a malformed rewrite is
+    refused rather than waved through.
+    """
+    import yaml  # local import keeps this module's hot-path import surface unchanged
+
+    try:
+        old = yaml.safe_load(existing) if existing else {}
+        new = yaml.safe_load(proposed) if proposed else {}
+    except Exception:  # noqa: BLE001
+        return "unparseable config"
+    if not isinstance(old, dict):
+        old = {}
+    if not isinstance(new, dict):
+        return "unparseable config"
+    for key in _AUTHORITY_POLICY_KEYS:
+        if old.get(key) != new.get(key):
+            return key
+    return None
+
+
+def _config_candidates(filepath: str, task_id: str) -> tuple[str, ...]:
+    return (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+
+
+def _check_authority_policy_write(filepath: str, content: str, task_id: str = "default") -> str | None:
+    """Refuse a config.yaml write that would change the authority profile or the approval policy.
+
+    Under production ``_check_sensitive_path`` already hard-denies the whole file, so this returns
+    None and never fires. Under principal this is the boundary that keeps the grant from being
+    self-modifying: principal may edit config.yaml, but not the keys that decide what principal means.
+    """
+    if not _authority_permits_config_edit():
+        return None
+    hermes_config = _get_hermes_config_resolved()
+    if not hermes_config or hermes_config not in _config_candidates(filepath, task_id):
+        return None
+    try:
+        existing = Path(hermes_config).read_text(encoding="utf-8")
+    except OSError:
+        existing = None
+    changed = _config_policy_delta(existing, content)
+    if changed is None:
+        return None
+    return (
+        f"Refusing to change '{changed}' in the Hermes config: {filepath}\n"
+        "authority_profile and approvals define what this agent may do, so the agent cannot rewrite "
+        "them under any profile. Change them yourself ('hermes config set', or edit the file); the "
+        "new value applies from the next agent start.")
+
+
+def _check_authority_policy_patch(paths: list[str], task_id: str = "default") -> str | None:
+    """Refuse fragment edits to config.yaml under principal.
+
+    ``patch_tool`` supplies only old/new fragments, so it cannot be proven that the policy keys are
+    untouched. Fail closed and require a whole-file ``write_file`` (which IS inspected) or a human edit.
+    """
+    if not _authority_permits_config_edit():
+        return None
+    hermes_config = _get_hermes_config_resolved()
+    if not hermes_config:
+        return None
+    for filepath in paths:
+        if hermes_config in _config_candidates(filepath, task_id):
+            return (
+                f"Refusing to patch the Hermes config: {filepath}\n"
+                "A fragment edit cannot be checked for changes to authority_profile/approvals. Use "
+                "write_file with the whole config, or edit it yourself."
+            )
     return None
 
 

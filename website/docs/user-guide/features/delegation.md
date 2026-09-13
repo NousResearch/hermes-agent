@@ -12,6 +12,22 @@ Top-level model calls run in the background automatically. Hermes returns a hand
 
 ## Completion delivery
 
+Ending a parent turn is not the same as finishing work that depends on its subagents.
+At turn end, Hermes reports outstanding delegation units through its status channel and
+the additive `pending_delegations` field in `run_conversation()` results. The snapshot
+distinguishes `active` units from terminal results `awaiting_delivery`; both are lists of
+delegation IDs. `status_known: false` means the snapshot could not be established, not
+that no work remains. `delegate_task(action="list")` includes the same snapshot alongside
+its live-child roster. Completion messages include remaining-work counts sampled when
+the notification was prepared, excluding that result (but not an interim failure notice).
+
+These snapshots are conversation/profile-scoped and follow compression lineage, not a
+reused chat or tab ID. They do not prove that delivered results were incorporated. If a
+required review is pending, the parent should report that status and end its turn so the
+result can arrive, rather than poll, re-dispatch just to wait, or claim the task is done.
+Hermes preserves the model's answer and the existing turn-level `completed` flag; this
+reporting does not impose a task-completion gate or a budget across successive turns.
+
 Messaging gateways acknowledge background completions only after their adapter actually
 schedules the event or inserts it into the session's queue. Missing handlers, mismatched
 session routes, and full queues leave the completion pending for retry; these admission

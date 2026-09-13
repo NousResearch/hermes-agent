@@ -58,6 +58,29 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # matching as "kill".
     r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
     r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # Branch E: Windows Scheduled Task ops on a Hermes gateway task — the Windows analog of
+    # Branch B/C. `hermes_cli/gateway_windows.py` installs and supervises the gateway as a
+    # Scheduled Task named `Hermes_Gateway` / `Hermes_Gateway_<profile>` (`_TASK_NAME_DEFAULT`),
+    # so `schtasks /end /tn Hermes_Gateway_alice` and `Stop-ScheduledTask -TaskName
+    # Hermes_Gateway*` ARE the operation this pattern already blocks as `launchctl bootout
+    # ...ai.hermes.gateway` on macOS and `systemctl stop hermes-gateway` on Linux. Without this
+    # branch the identical intent is hard-blocked on macOS/Linux and silently allowed on Windows,
+    # leaving only the bypassable approval layer (tools/approval.py, skipped on force=True) —
+    # the same asymmetry #80260 closed for `bootout`/`remove`/`disable`.
+    # Both token orders are matched because the task name may precede or follow the op flag
+    # (`schtasks /tn Hermes_Gateway /end`), and the cmdlets accept the label from a pipeline
+    # (`Get-ScheduledTask -TaskName Hermes_Gateway* | Stop-ScheduledTask`).
+    # `/change` counts only with `/disable`, which is what makes a stop durable across boots —
+    # the schtasks analog of launchctl `disable`.
+    # `/run`, `/create` and `Get-ScheduledTask` are deliberately absent: starting is benign per
+    # Branch A and querying is read-only. The `hermes[_.\-]?gateway` anchor (underscore included
+    # for the Windows task-name spelling) keeps `schtasks /end /tn BackupJob` unblocked.
+    r"|(?:\bschtasks\b[^\n]*/(?:end|delete)\b[^\n]*\bhermes[_.\-]?gateway)"
+    r"|(?:\bschtasks\b[^\n]*\bhermes[_.\-]?gateway[^\n]*/(?:end|delete)\b)"
+    r"|(?:\bschtasks\b[^\n]*/change\b[^\n]*/disable\b[^\n]*\bhermes[_.\-]?gateway)"
+    r"|(?:\bschtasks\b[^\n]*\bhermes[_.\-]?gateway[^\n]*/change\b[^\n]*/disable\b)"
+    r"|(?:\b(?:stop|unregister|disable)-scheduledtask\b[^\n]*\bhermes[_.\-]?gateway)"
+    r"|(?:\bhermes[_.\-]?gateway[^\n]*\b(?:stop|unregister|disable)-scheduledtask\b)"
 )
 
 # Every branch uses `[^\n]*` between verb and label so matches cannot span unrelated lines. A POSIX

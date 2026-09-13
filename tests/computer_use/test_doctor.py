@@ -429,3 +429,62 @@ class TestDoctorVersionIdentity:
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
 
+
+@pytest.mark.parametrize("configured,expected_mode", [
+    ("standard", "standard"),
+    ("bounded", "bounded"),
+    ("unrestricted", "standard"),  # unrestricted is a session toggle, not a config mode
+])
+def test_json_discloses_standalone_scope_with_real_config(
+    configured, expected_mode, tmp_path, monkeypatch, capsys,
+):
+    from tools.computer_use import doctor
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        f"computer_use:\n  permission_mode: {configured}\n", encoding="utf-8",
+    )
+    report = _ok_report()
+    proc = _fake_proc_with_responses(
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
+    )
+    with patch("shutil.which", return_value="/fake/cua-driver"), \
+         patch("subprocess.Popen", return_value=proc) as spawn:
+        assert doctor.run_doctor(json_output=True) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    scope = payload["hermes_runtime"]
+    assert scope["kind"] == "standalone"
+    assert scope["connection"] == "stdio_mcp"
+    assert scope["configured_permission_mode"] == expected_mode
+    assert scope["session_runtime_checked"] is False
+    assert "private" in scope["warning"] and "not checked" in scope["warning"]
+    assert {key: payload[key] for key in report} == report
+    assert spawn.call_count == 1
+    assert spawn.call_args.args[0] == ["/fake/cua-driver", "mcp"]
+
+
+@pytest.mark.parametrize("configured", ["standard", "bounded"])
+def test_text_discloses_unchecked_private_sessions(
+    configured, tmp_path, monkeypatch, capsys,
+):
+    from tools.computer_use import doctor
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        f"computer_use:\n  permission_mode: {configured}\n", encoding="utf-8",
+    )
+    proc = _fake_proc_with_responses(
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
+    )
+    with patch("shutil.which", return_value="/fake/cua-driver"), \
+         patch("subprocess.Popen", return_value=proc):
+        assert doctor.run_doctor(color=False) == 0
+
+    output = capsys.readouterr().out
+    assert "standalone" in output and "stdio_mcp" in output
+    assert f"configured permission mode: {configured}" in output
+    assert "bounded" in output and "unrestricted" in output
+    assert "private" in output and "not checked" in output

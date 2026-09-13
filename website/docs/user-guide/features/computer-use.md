@@ -84,7 +84,7 @@ platform-appropriate prereqs:
 
 | Platform | Prereqs |
 |---|---|
-| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Grant the identity named by `hermes computer-use doctor`. Standard mode uses CuaDriver.app; bounded and unrestricted modes use the Hermes host identity. |
+| **macOS** | System Settings → Privacy & Security → **Accessibility** + **Screen Recording**. Standard mode uses CuaDriver.app, the standalone identity checked by `hermes computer-use doctor`; bounded and unrestricted modes use the Hermes host identity. Grant permissions to the identity used by your session. |
 | **Windows** | None at install time. If you're driving over SSH (not RDP / console), you need the autostart pattern — see [cua.ai/docs/how-to-guides/driver/windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh) for the Session 0 ↔ Session 1+ proxy. |
 | **Linux** | A reachable display server: `DISPLAY` set for X11, or `XDG_SESSION_TYPE=wayland`. Wayland sessions need an XWayland bridge for capture. AT-SPI must be on (default on GNOME/KDE/Xfce). |
 
@@ -171,12 +171,18 @@ compromise you accept.
 ## `hermes computer-use doctor` — your first triage stop
 
 `hermes computer-use doctor` runs cua-driver's structured
-`health_report` MCP tool and prints a per-check matrix. It's the single
-fastest way to find out *why* an action isn't working.
+`health_report` MCP tool over a standalone stdio connection and prints a
+per-check matrix. The output identifies this runtime and the configured
+permission mode. It does **not** check an active session's runtime: bounded
+and unrestricted sessions use private daemons with separate permissions and
+sockets, so a healthy standalone report does not establish their health.
+Doctor does not start a private daemon or enable unrestricted mode.
 
 ```
 $ hermes computer-use doctor
 ⚠️  cua-driver VERSION on darwin: degraded
+  runtime: standalone (stdio_mcp); configured permission mode: bounded
+  ⚠️ Active session runtime was not checked; bounded and unrestricted sessions use private daemons with separate permissions and sockets.
   ✅ binary_version: cua-driver VERSION
   ✅ platform_supported: macOS 26.4.1 (arm64)
   ✅ session_active: MCP session is active.
@@ -188,7 +194,7 @@ $ hermes computer-use doctor
   ✅ screen_capture_capability: ScreenCaptureKit reachable; 1 display(s) shareable.
 ```
 
-- **Exit code 0** when overall is `ok` — everything's wired up.
+- **Exit code 0** when the standalone report's overall is `ok`.
 - **Exit code 1** when `degraded` or `failed` — at least one check failed; the hint on each failure tells you what to fix.
 - **Exit code 2** when the cua-driver binary itself isn't reachable.
 
@@ -196,8 +202,10 @@ Useful flags:
 
 - `--include CHECK` — run only the listed checks (repeat for multiple)
 - `--skip CHECK` — skip a check (wins over `--include`)
-- `--json` — emit the raw structured payload, same shape as the
-  `tools/call health_report` MCP response
+- `--json` — preserve the structured health report and add Hermes context.
+  `hermes_runtime` identifies the diagnosed runtime, connection, configured
+  permission mode, and `session_runtime_checked: false`, with the same scope
+  warning shown in text output.
 
 The check matrix is platform-aware: `bundle_identity` / `tcc_*` are
 `skip` on Windows + Linux because those concepts don't apply.
@@ -536,7 +544,8 @@ HERMES_CUA_DRIVER_CMD=/path/to/cua/libs/cua-driver/rust/target/debug/cua-driver
 - `hermes computer-use status` prints the resolved binary path and
   version.
 - `hermes computer-use doctor` confirms the binary is reachable and
-  exercises the full MCP path end-to-end.
+  exercises the standalone MCP path end-to-end; it does not check a
+  bounded or unrestricted session's private connection.
 - In a session, `computer_use(action="capture")` exercises the spawned
   `cua-driver mcp` child process.
 

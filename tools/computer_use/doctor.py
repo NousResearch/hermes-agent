@@ -287,10 +287,19 @@ def _wayland_environment_context(report: Report) -> Optional[Report]:
         return None
     return {"scope": "cli_process", "gateway_environment_checked": False}
 
+def _standalone_runtime_context() -> Report:
+    """Describe the connection we probe without starting or claiming to inspect an active session."""
+    from tools.computer_use.cua_backend import _cua_configured_permission_mode
+
+    return {"kind": "standalone", "connection": "stdio_mcp",
+            "configured_permission_mode": _cua_configured_permission_mode(), "session_runtime_checked": False,
+            "warning": "Active session runtime was not checked; bounded and unrestricted sessions use private "
+                       "daemons with separate permissions and sockets."}
+
 def _print_text_report(report: Report, color: bool, *, identity: Optional[Report] = None,
-                       environment: Optional[Report] = None) -> None:
+                       environment: Optional[Report] = None, runtime: Optional[Report] = None) -> None:
     """Render like `cua-driver call health_report`: header (CLI --version preferred over health_report's stale
-    ``driver_version``), identity block, environment note, one line per check + indented hint/``data`` rows
+    ``driver_version``), identity block, runtime/environment notes, one line per check + indented hint/``data`` rows
     (support staff need them)."""
     platform, report_v, overall = (report.get(k, "?") for k in ("platform", "driver_version", "overall"))
     identity = identity or {}
@@ -303,6 +312,10 @@ def _print_text_report(report: Report, color: bool, *, identity: Optional[Report
     lines = [f"{_OVERALL_GLYPH.get(overall, '•')} cua-driver {header_v} on {platform} — {col_for}{overall}{reset}"]
     if identity.get("resolved_binary"):
         lines.append(f"  {dim}binary: {identity['resolved_binary']}{reset}")
+    if runtime:
+        lines += [f"  {dim}runtime: {runtime['kind']} ({runtime['connection']}); "
+                  f"configured permission mode: {runtime['configured_permission_mode']}{reset}",
+                  f"  {yellow}⚠️ {runtime['warning']}{reset}"]
     if cli_v and report_v and str(report_v) not in str(cli_v) and str(cli_v) not in str(report_v):  # clearly differ
         lines += [f"  {dim}--version: {cli_v}{reset}", f"  {dim}health_report.driver_version: {report_v}{reset}"]
     if environment:
@@ -323,8 +336,8 @@ def _print_text_report(report: Report, color: bool, *, identity: Optional[Report
 
 def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (), skip: Sequence[str] = (), json_output: bool = False,
                color: Optional[bool] = None) -> int:
-    """Resolve the binary via the shared runtime resolver (diagnose what `computer_use` actually invokes), call
-    `health_report`, render; on 0.10.x (denied) a report is synthesized from probes."""
+    """Resolve the driver binary and diagnose its standalone MCP connection, not an active session's private
+    daemon. On 0.10.x (denied), synthesize a report from probes of that same standalone runtime."""
     # Windows' locale codec (cp1252, cp936, ...) cannot encode the ✅ ❌ ⚠️ ⏭️ glyphs — force UTF-8.
     for stream in (sys.stdout, sys.stderr):
         with suppress(AttributeError, OSError):
@@ -345,15 +358,16 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
     report = _apply_display_count_guard(report)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
+    runtime = _standalone_runtime_context()
     if json_output:
-        # Additive envelope: upstream keys preserved, identity under hermes_identity (and environment under
-        # hermes_environment when present) so overall/checks parsers keep working.
-        payload = {**report, "hermes_identity": identity}
+        # Additive envelope: upstream keys preserved; Hermes context cannot turn a standalone
+        # health result into a claim about a private session's health.
+        payload = {**report, "hermes_identity": identity, "hermes_runtime": runtime}
         if environment:
             payload["hermes_environment"] = environment
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
         _print_text_report(report, color=sys.stdout.isatty() if color is None else bool(color), identity=identity,
-                           environment=environment)
+                           environment=environment, runtime=runtime)
     return 0 if report.get("overall") == "ok" else 1  # unknown/missing overall must not look like success

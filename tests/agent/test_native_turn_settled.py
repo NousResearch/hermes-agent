@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -124,5 +125,77 @@ def test_gateway_settled_runs_on_loop_after_release_and_schedules_real_redaction
 
     try:
         asyncio.run(scenario())
+    finally:
+        db.close()
+
+
+def test_settled_hooks_select_owning_profile_and_scheduled_work_keeps_that_scope(tmp_path, monkeypatch):
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import get_hermes_home
+
+    home = tmp_path / ".hermes"
+    secondary = home / "profiles" / "secondary"
+    secondary.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))
+    runner, db = _runner(tmp_path)
+    runner.session_store.config.multiplex_profiles = True
+    immediate, deferred, native, tasks, managers = [], [], [], [], {}
+
+    def register(name, profile_home):
+        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+            manager = plugins.get_plugin_manager()
+            manager._discovered = True
+            managers[name] = manager
+            ctx = PluginContext(PluginManifest(name="settled-profile-test"), manager)
+
+            def gateway_settled(session_key, **_kwargs):
+                immediate.append((name, get_hermes_home(), session_key))
+
+                async def reconciliation():
+                    await asyncio.sleep(0)
+                    deferred.append((name, get_hermes_home(), plugins.get_plugin_manager() is manager))
+
+                tasks.append(asyncio.create_task(reconciliation()))
+
+            ctx.register_hook("on_gateway_turn_settled", gateway_settled)
+            ctx.register_hook("on_native_turn_settled", lambda **_: native.append((name, get_hermes_home())))
+
+    register("default", home)
+    register("secondary", secondary)
+    assert managers["default"] is not managers["secondary"]
+
+    async def release_turn(key, generation):
+        token = await runner._turn_leases.acquire("source", owner_key=key, generation=generation)
+        state = SimpleNamespace(turn=SimpleNamespace(lease_token=token, lease_generation=generation))
+        runner._peek_session_state = lambda candidate: state if candidate == key else None
+        assert runner._release_turn_lease(key, generation) is True
+
+    async def scenario():
+        secondary_key = "agent:secondary:telegram:dm:owner"
+        default_key = "agent:main:telegram:dm:owner"
+        # Both releases happen after their agent worker's profile scope has exited.
+        assert get_hermes_home() == home
+        await release_turn(secondary_key, 1)
+        await release_turn(default_key, 2)
+        await asyncio.gather(*tasks)
+        assert immediate == [("secondary", secondary, secondary_key), ("default", home, default_key)]
+        assert deferred == [("secondary", secondary, True), ("default", home, True)]
+        assert get_hermes_home() == home
+        # Missing named profiles must not dispatch through the ambient default manager.
+        await release_turn("agent:missing:telegram:dm:owner", 3)
+        assert len(immediate) == 2
+
+    try:
+        asyncio.run(scenario())
+        monkeypatch.setattr("agent.conversation_loop.run_conversation",
+                            lambda *args, **kwargs: {"final_response": "fixture", "messages": [], "failed": False})
+        # CLI facade settlement still runs within its caller's profile; no gateway scope needed.
+        with _profile_runtime_scope(secondary, hydrate_secrets=False):
+            agent = _agent_with_db(db, session_id="source", platform="cli")
+            AIAgent.run_conversation(agent, "settle")
+        assert native == [("secondary", secondary)]
+        assert get_hermes_home() == home
     finally:
         db.close()

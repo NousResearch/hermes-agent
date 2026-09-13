@@ -25,6 +25,7 @@ import { decrqm, oscColor, TerminalQuerier, xtversion } from '../terminal-querie
 import {
   isXtermJs,
   parseOscColor,
+  setSynchronizedOutputSupported,
   setTerminalBackgroundHex,
   setTerminalForegroundHex,
   setXtversionName,
@@ -360,12 +361,34 @@ export default class App extends PureComponent<Props, State> {
           // FOREGROUND is the polarity tiebreaker for transparent profiles:
           // those report the unset-default background (pure black) but the
           // theme's real foreground, whose luminance reveals the pole.
+          // DECRQM mode 2026 rides the same batch. Env detection can't see
+          // synchronized-output support over SSH (sshd forwards TERM but not
+          // TERM_PROGRAM/KITTY_WINDOW_ID/VTE_VERSION/WT_SESSION), so remote
+          // sessions fall back to un-atomic frame writes and visibly flicker.
+          // The query reaches the client terminal through the pty; the DA1
+          // sentinel bounds it, and no reply simply leaves the env guess.
           void Promise.all([
             this.querier.send(xtversion()),
             this.querier.send(oscColor(11)),
             this.querier.send(oscColor(10)),
+            this.querier.send(decrqm(DEC.SYNCHRONIZED_UPDATE)),
             this.querier.flush()
-          ]).then(([r, bg, fg]) => {
+          ]).then(([r, bg, fg, sync]) => {
+            // NOT_RECOGNIZED / PERMANENTLY_RESET mean the terminal can't do
+            // DEC 2026; SET or RESET both prove it knows the mode.
+            if (sync) {
+              const supported =
+                sync.status !== DECRPM_STATUS.NOT_RECOGNIZED &&
+                sync.status !== DECRPM_STATUS.PERMANENTLY_RESET
+
+              setSynchronizedOutputSupported(supported)
+              logForDebugging(
+                `DECRQM 2026: synchronized output ${supported ? 'supported' : 'unsupported'} (status ${sync.status})`
+              )
+            } else {
+              logForDebugging('DECRQM 2026: no reply (terminal ignored query)')
+            }
+
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)

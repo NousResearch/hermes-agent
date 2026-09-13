@@ -83,25 +83,32 @@ async def mutate_session(authority, actor, ref, params):
             principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
             expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
             operation=operation, payload=params['payload'], _live_guard=live_guard, _prepare_only=True)
-        if 'snapshot' not in prepared:
-            return prepared
-        from gateway.session_mutation_model import prepare_model
-        from gateway.session_mutation_compress import prepare_compress
-        prepare = {'model': prepare_model, 'compress': prepare_compress}[operation]
-        prepared = await prepare(authority, live, params['payload'], prepared)
-        applied = False
-    result = mutate_runtime_session(authority.db, epoch=authority.epoch,
-        principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
-        expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
-        operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=prepared,
-        _authorize_write=authorize_write if cold_history or operation == 'import' else None)
-    if operation == 'model' and applied:
+        if 'snapshot' in prepared:
+            from gateway.session_mutation_model import prepare_model
+            from gateway.session_mutation_compress import prepare_compress
+            prepare = {'model': prepare_model, 'compress': prepare_compress}[operation]
+            prepared = await prepare(authority, live, params['payload'], prepared)
+            applied = False
+    if prepared is not None and 'snapshot' not in prepared:
+        # Exact retry: the durable receipt is the result. Never re-prepare (compress
+        # would summarize again); the runtime repairs below still run, because the
+        # first attempt may have committed and then failed before publishing them.
+        result = prepared
+    else:
+        result = mutate_runtime_session(authority.db, epoch=authority.epoch,
+            principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
+            expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
+            operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=prepared,
+            _authorize_write=authorize_write if cold_history or operation == 'import' else None)
+    # Post-commit projections are idempotent reads of the committed receipt, so exact
+    # retries repeat them (like delete's retirement); only the one-shot event is fenced.
+    if operation == 'model':
         from gateway.session_local import publish_local_policy
         publish_local_policy(authority, ref.session_id)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])
-    if operation in {'reset', 'compress'} and applied:
+    if operation in {'reset', 'compress'}:
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, ref.session_id)
         authority.runner._evict_cached_agent(authority.sessions[ref.session_id].route)
@@ -126,8 +133,9 @@ async def mutate_session(authority, actor, ref, params):
                 evict = getattr(authority.runner, '_evict_cached_agent', None)
                 if callable(evict):
                     evict(candidate.route)
-    if applied and live is not None:
+    if live is not None:
         if operation == 'rewind':
             authority.runner._evict_cached_agent(live.route)
-        live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+        if applied:
+            live.event_stream.publish(ref.session_id, result, event_type='session.updated')
     return result

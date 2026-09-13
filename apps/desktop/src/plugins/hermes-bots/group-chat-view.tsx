@@ -39,7 +39,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -513,9 +513,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     <Button disabled={mode !== 'canonical' || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
 
-      const sourceCurrent = () => gatewayActivationEpoch() === activationEpoch &&
-        route.connectionId === host.state.connectionId.get() &&
-        route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+      const sourceCurrent = groupCreationSource(route, activationEpoch)
 
       if (mode !== 'canonical' || !sourceCurrent()) {
         setError(b.canonical.driverUnavailable)

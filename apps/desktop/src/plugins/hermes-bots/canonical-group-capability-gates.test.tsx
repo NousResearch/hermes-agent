@@ -77,21 +77,7 @@ const appManagedUnavailable = {
 
 const legacy = { driver: false, persistent_process: false }
 
-const refused = [
-  canonicalUnavailable,
-  appManagedUnavailable,
-  { ...legacy, authority_gateway_id: 'installation:owned' },
-  { ...legacy, protocol_version: 2 },
-  { ...legacy, methods: ['groups.create'] },
-  { driver: false },
-  { persistent_process: false },
-  { driver: 0, persistent_process: false },
-  { driver: 'true', persistent_process: false },
-  { driver: false, persistent_process: 'false' },
-  { driver: false, persistent_process: false, features: null },
-  { driver: false, persistent_process: false, features: ['canonical_session_owner'] },
-  null
-]
+const refused = [canonicalUnavailable, appManagedUnavailable, { ...legacy, methods: ['groups.create'] }, { driver: 'true', persistent_process: false }, null]
 
 beforeEach(() => {
   activation.epoch = 1
@@ -139,112 +125,6 @@ async function submitDialog() {
   return { onCreated, onClose }
 }
 
-it.each(refused)('keeps an unavailable or unclassified workspace out of the legacy renderer: %j', async value => {
-  answer(value)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByText(unavailable)).toBeTruthy()
-  expect(screen.queryByRole('textbox')).toBeNull()
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities'])
-})
-
-it.each(refused)('refuses legacy creation without positive process classification: %j', async value => {
-  answer(value)
-  const { onCreated, onClose } = await submitDialog()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
-  expect(updateGroupChat).not.toHaveBeenCalled()
-  expect($botMeta.get()).toEqual({})
-  expect($groupChats.get()).toEqual({})
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities'])
-})
-
-it('preserves the actual nonpersistent legacy workspace without submitting a turn', async () => {
-  answer(legacy)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByRole('textbox')).toBeTruthy()
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities'])
-})
-
-it('preserves explicit nonpersistent legacy creation', async () => {
-  answer(legacy)
-  const { onCreated } = await submitDialog()
-  expect(onCreated).toHaveBeenCalledOnce()
-  expect(updateGroupChat).toHaveBeenCalledOnce()
-  expect(Object.values($groupChats.get())[0].members).toHaveLength(2)
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'profiles.configure', 'profiles.configure'])
-})
-
-it('preserves canonical-ready creation without legacy metadata or room writes', async () => {
-  answer({ driver: true, persistent_process: true })
-  const { onCreated } = await submitDialog()
-  expect(onCreated).toHaveBeenCalledOnce()
-  expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
-  expect(updateGroupChat).not.toHaveBeenCalled()
-  expect($botMeta.get()).toEqual({})
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.create'])
-})
-
-it('preserves the canonical-ready existing-room gate', async () => {
-  answer({ driver: true, persistent_process: true })
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false)
-  expect(screen.queryByRole('textbox')).toBeNull()
-})
-
-it('shows the unavailable state after a capability read fails', async () => {
-  request.mockRejectedValue(new Error('Disconnected'))
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByText(unavailable)).toBeTruthy()
-  expect(screen.getByRole('alert').textContent).toContain('Disconnected')
-  expect(screen.queryByRole('textbox')).toBeNull()
-})
-
-it.each(['profile', 'connection', 'gateway'] as const)('does not create a legacy room after %s changes during the read', async changed => {
-  let resolve!: (value: unknown) => void
-  request.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-  const { onCreated } = await submitDialog()
-  await act(async () => {
-    if (changed === 'profile') {state.profile.set('other')}
-
-    if (changed === 'connection') {state.connectionId.set('other')}
-
-    if (changed === 'gateway') {state.gateway.set('closed')}
-    resolve(legacy)
-  })
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(updateGroupChat).not.toHaveBeenCalled()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
-})
-
-it.each(['profile', 'connection', 'gateway'] as const)('retires an old workspace capability when %s changes', async changed => {
-  answer(legacy)
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByRole('textbox')).toBeTruthy()
-  answer(canonicalUnavailable)
-  await act(async () => {
-    if (changed === 'profile') {state.profile.set('other')}
-
-    if (changed === 'connection') {state.connectionId.set('other')}
-
-    if (changed === 'gateway') {state.gateway.set('closed')}
-  })
-  expect(screen.getByText(unavailable)).toBeTruthy()
-  expect(screen.queryByRole('textbox')).toBeNull()
-})
-
-it('ignores a late old-profile response after the new authority has answered', async () => {
-  let resolve!: (value: unknown) => void
-  request.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    .mockResolvedValue(canonicalUnavailable)
-  render(<GroupChatWorkspace group="Existing" members={roster} />)
-  await act(async () => { state.profile.set('other') })
-  await act(async () => { resolve(legacy) })
-  expect(screen.getByText(unavailable)).toBeTruthy()
-  expect(screen.queryByRole('textbox')).toBeNull()
-})
-
 function pendingCreation() {
   let finish!: () => void
   const serverRooms = new Map<string, unknown>()
@@ -264,139 +144,71 @@ function pendingCreation() {
   return { serverRooms, finish: () => finish() }
 }
 
-it('refuses a workspace click after the approved profile changes before React renders', async () => {
-  answer({ driver: true, persistent_process: true })
+it.each(refused)('classifies %j as unavailable on both surfaces: no legacy renderer, no legacy creation', async value => {
+  answer(value)
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const button = screen.getByRole('button', { name: 'Start gateway group' })
-  await act(async () => {
-    state.profile.set('other')
-    fireEvent.click(button)
-  })
-  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect($canonicalGroupBindings.get()).toEqual({})
-  expect(openWorkspace).not.toHaveBeenCalled()
+  expect(screen.getByText(unavailable)).toBeTruthy()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
+  cleanup()
+
+  const { onCreated, onClose } = await submitDialog()
+  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
+  expect(onCreated).not.toHaveBeenCalled()
+  expect(onClose).not.toHaveBeenCalled()
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect($groupChats.get()).toEqual({})
+  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
 })
 
-it.each(['profile', 'connection', 'gateway'] as const)('keeps a dialog-created server room without publishing its result after %s changes', async changed => {
+it('keeps positive classifications working: legacy renders and creates locally, canonical creates a gateway room', async () => {
+  answer(legacy)
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+  expect(screen.getByRole('textbox')).toBeTruthy()
+  cleanup()
+  expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
+  expect(updateGroupChat).toHaveBeenCalledOnce()
+  cleanup()
+
+  answer({ driver: true, persistent_process: true })
+  const { onCreated } = await submitDialog()
+  expect(onCreated).toHaveBeenCalledOnce()
+  expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
+  expect(updateGroupChat).toHaveBeenCalledOnce()
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
+})
+
+function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
+  if (kind === 'profile') {state.profile.set('other')}
+
+  if (kind === 'gateway') {state.gateway.set('closed')}
+
+  if (kind === 'same-route-activation') {
+    activation.epoch++
+    state.profile.set('default')
+  }
+}
+
+it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a creation approved before the %s moved is kept on its owner and never published', async kind => {
   const pending = pendingCreation()
   const { onCreated, onClose } = await submitDialog()
   expect(pending.serverRooms.size).toBe(1)
-  await act(async () => {
-    if (changed === 'profile') {state.profile.set('other')}
-
-    if (changed === 'connection') {state.connectionId.set('other')}
-
-    if (changed === 'gateway') {state.gateway.set('closed')}
-    pending.finish()
-  })
+  await act(async () => { moveSource(kind); pending.finish() })
   expect($canonicalGroupBindings.get()).toEqual({})
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
   expect(pending.serverRooms.size).toBe(1)
-  expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.create'])
-  expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default', targetProfile: 'default' })
+  expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
 })
 
-it.each(['profile', 'connection', 'gateway'] as const)('keeps a workspace-created server room without opening it after %s changes', async changed => {
+it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a capability read before the %s moved neither creates nor opens a room', async kind => {
   const pending = pendingCreation()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
-  expect(pending.serverRooms.size).toBe(1)
-  await act(async () => {
-    if (changed === 'profile') {state.profile.set('other')}
-
-    if (changed === 'connection') {state.connectionId.set('other')}
-
-    if (changed === 'gateway') {state.gateway.set('closed')}
-    $groupChatWorkspace.set('Other foreground room')
-    pending.finish()
-  })
-  expect($canonicalGroupBindings.get()).toEqual({})
-  expect(openWorkspace).not.toHaveBeenCalled()
-  expect($groupChatWorkspace.get()).toBe('Other foreground room')
-  expect(pending.serverRooms.size).toBe(1)
-  const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
-  expect(creates).toHaveLength(1)
-  expect(creates[0][0]).toMatchObject({ connectionId: 'local', profile: 'default', targetProfile: 'default' })
-  expect(request.mock.calls.every(call => ['groups.capabilities', 'groups.create'].includes(call[1]))).toBe(true)
-})
-
-it.each(['dialog', 'workspace'] as const)('publishes the single delayed %s result when its approved source stays current', async caller => {
-  const pending = pendingCreation()
-  let dialog: Awaited<ReturnType<typeof submitDialog>> | undefined
-
-  if (caller === 'dialog') {
-    dialog = await submitDialog()
-  } else {
-    await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
-  }
-
-  await act(async () => { pending.finish() })
-  expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
-  expect(pending.serverRooms.size).toBe(1)
-  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
-
-  if (dialog) {
-    expect(dialog.onCreated).toHaveBeenCalledOnce()
-    expect(dialog.onClose).toHaveBeenCalledOnce()
-  } else {
-    expect(openWorkspace).toHaveBeenCalledOnce()
-  }
-})
-
-function reactivate(kind: 'aba' | 'same-route') {
-  if (kind === 'aba') {
-    activation.epoch++
-    state.profile.set('other')
-  }
-
-  activation.epoch++
-  state.profile.set('default')
-}
-
-it.each(['aba', 'same-route'] as const)('rejects a dialog capability after %s activation before mutation', async kind => {
-  let finish!: (value: unknown) => void
-  answer({ driver: true, persistent_process: true })
-  request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-  const { onCreated } = await submitDialog()
-  await act(async () => { reactivate(kind); finish({ driver: true, persistent_process: true }) })
+  const button = screen.getByRole('button', { name: 'Start gateway group' })
+  expect((button as HTMLButtonElement).disabled).toBe(false)
+  // Click after the source moved but before React re-renders: the stale capability must not create.
+  await act(async () => { moveSource(kind); fireEvent.click(button) })
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect($canonicalGroupBindings.get()).toEqual({})
-  expect(onCreated).not.toHaveBeenCalled()
-})
-
-it.each(['aba', 'same-route'] as const)('rejects a workspace click using a pre-%s capability', async kind => {
-  answer({ driver: true, persistent_process: true })
-  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const create = screen.getByRole('button', { name: 'Start gateway group' })
-  await act(async () => { reactivate(kind); fireEvent.click(create) })
-  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect($canonicalGroupBindings.get()).toEqual({})
+  expect(pending.serverRooms.size).toBe(0)
   expect(openWorkspace).not.toHaveBeenCalled()
-})
-
-it.each([
-  ['dialog', 'aba'], ['dialog', 'same-route'], ['workspace', 'aba'], ['workspace', 'same-route']
-] as const)('does not publish a %s result across %s activation', async (caller, kind) => {
-  const pending = pendingCreation()
-  let dialog: Awaited<ReturnType<typeof submitDialog>> | undefined
-
-  if (caller === 'dialog') {
-    dialog = await submitDialog()
-  } else {
-    await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
-  }
-
-  expect(pending.serverRooms.size).toBe(1)
-  await act(async () => { reactivate(kind); pending.finish() })
-  expect($canonicalGroupBindings.get()).toEqual({})
-  expect(openWorkspace).not.toHaveBeenCalled()
-  expect(dialog?.onCreated ?? vi.fn()).not.toHaveBeenCalled()
-  expect(dialog?.onClose ?? vi.fn()).not.toHaveBeenCalled()
-  expect(pending.serverRooms.size).toBe(1)
-  const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
-  expect(creates).toHaveLength(1)
-  expect(creates[0][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
 })

@@ -2,7 +2,9 @@
 import asyncio
 from contextvars import ContextVar
 from contextlib import contextmanager
+import hmac
 import json
+import re
 import uuid
 
 from gateway.config import Platform
@@ -16,6 +18,7 @@ _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provid
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
                  'session_history_delivery')
+_OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
 def api_settings(authority, ref):
@@ -34,15 +37,20 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author', 'media'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope'}
                 or not {'history', 'settings'} <= set(data)
-                or (data['history'] is not None and not isinstance(data['history'], list))):
+                or (data['history'] is not None and not isinstance(data['history'], list))
+                or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))):
             raise RuntimeStoreError('invalid_params')
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
     settings = payload.get('api_turn_v1', {}).get('settings') or api_settings(authority, ref)
     check_api_settings(adapter, settings)
     return adapter
+
+
+def _valid_owner_scope(value):
+    return isinstance(value, str) and _OWNER_SCOPE_RE.fullmatch(value) is not None
 
 
 def check_api_settings(adapter, settings):
@@ -101,6 +109,13 @@ def admit_api_turn(adapter, **kwargs):
         settings['route'] = {k: v for k, v in route.items() if k != 'api_key'}
     payload = json.loads(_json({'text': kwargs['user_message'], 'api_turn_v1': {
         'history': None if kwargs.get('history_from_session') else kwargs['conversation_history'], 'settings': settings}}))
+    run_owner_scope = kwargs.get('run_owner_scope')
+    if run_owner_scope is not None:
+        if not _valid_owner_scope(run_owner_scope):
+            raise RuntimeStoreError('invalid_params')
+        # This opaque namespace is persisted in the same row/transaction as
+        # admission. It is never a bearer credential or execution input.
+        payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
     if isinstance(kwargs['user_message'], list):
         from gateway.session_api_media import commit_api_images
         payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
@@ -123,6 +138,25 @@ def admit_api_turn(adapter, **kwargs):
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
                               session_id=sid, request_id=request_id, payload=payload)
     return authority, ref, row
+
+
+def owns_api_run(adapter, run_id, owner_scope):
+    """Match a caller scope against one canonical API admission, failing closed."""
+    if not _valid_owner_scope(owner_scope):
+        return False
+    from gateway.platforms.api_server_authority_runs import run_admission
+    try:
+        owned = run_admission(adapter, run_id)
+    except RuntimeStoreError:
+        # Duplicate admissions for one run are an unanswered ownership question.
+        return False
+    if owned is None:
+        return False
+    try:
+        stored = owned[1]['payload']['api_turn_v1']['run_owner_scope']
+    except (KeyError, TypeError):
+        return False
+    return _valid_owner_scope(stored) and hmac.compare_digest(stored, owner_scope)
 
 
 def recover_api_turns(adapter):
@@ -173,13 +207,20 @@ async def observe_api_turn(admitted, **kwargs):
     observers = getattr(authority, 'api_observers', None)
     if observers is None:
         observers = authority.api_observers = {}
-    observers.setdefault(row['admission_id'], []).append({
-        key: kwargs[key] for key in ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback')
-        if kwargs.get(key) is not None})
-    authority._publish_pending(ref)
-    authority._schedule(ref)
-    await asyncio.shield(waiter)
-    observers.pop(row['admission_id'], None)
+    observer = {key: kwargs[key] for key in ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback')
+                if kwargs.get(key) is not None}
+    registered = observers.setdefault(row['admission_id'], [])
+    registered.append(observer)
+    try:
+        authority._publish_pending(ref)
+        authority._schedule(ref)
+        await asyncio.shield(waiter)
+    finally:
+        # Shielding keeps the canonical turn alive past a cancelled request; only this
+        # request's observer leaves, and the entry itself goes once the last one is gone.
+        registered.remove(observer)
+        if not registered:
+            observers.pop(row['admission_id'], None)
     saved = admission_result(authority.db, row['admission_id'])
     if saved is None:
         from hermes_state_runtime import get_session_admission
@@ -238,13 +279,22 @@ def _api_observers(authority, session_id):
     return tuple(getattr(authority, 'api_observers', {}).get(admission_id, ()))
 
 
-def publish_api_event(authority, session_id, event_type, payload):
-    if event_type != 'message.delta':
-        return
+def _notify_observers(authority, session_id, key, *args):
+    """Observer callbacks are request-owned sinks; one that raises (closed socket, torn-down
+    loop) must not abort canonical execution or starve the other observers."""
+    import logging
     for observer in _api_observers(authority, session_id):
-        callback = observer.get('stream_delta_callback')
+        callback = observer.get(key)
         if callback:
-            callback(payload['text'])
+            try:
+                callback(*args)
+            except Exception:
+                logging.getLogger(__name__).warning('API observer %s failed for %s', key, session_id, exc_info=True)
+
+
+def publish_api_event(authority, session_id, event_type, payload):
+    if event_type == 'message.delta':
+        _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
 
 
 def publish_api_tool_event(authority, session_id, generation, event_type, call_id, tool_name, args, result=None):
@@ -256,15 +306,10 @@ def publish_api_tool_event(authority, session_id, generation, event_type, call_i
             authority.check_approval_generation(session_id, generation)
         except RuntimeStoreError:
             return
-        for observer in _api_observers(authority, session_id):
-            if event_type == 'tool.start':
-                callback = observer.get('tool_start_callback')
-                if callback:
-                    callback(call_id, tool_name, args or {})
-            elif event_type == 'tool.complete':
-                callback = observer.get('tool_complete_callback')
-                if callback:
-                    callback(call_id, tool_name, args or {}, result)
+        if event_type == 'tool.start':
+            _notify_observers(authority, session_id, 'tool_start_callback', call_id, tool_name, args or {})
+        elif event_type == 'tool.complete':
+            _notify_observers(authority, session_id, 'tool_complete_callback', call_id, tool_name, args or {}, result)
 
 
 def prepare_api_runtime(model, runtime_kwargs):

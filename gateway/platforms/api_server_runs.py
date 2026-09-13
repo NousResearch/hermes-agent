@@ -92,12 +92,11 @@ def _initialize_run_state(self, *, store_factory) -> None:
         self._run_owner_started = int(get_process_start_time(self._run_owner_pid) or 0)
     except Exception:
         self._run_owner_started = 0
-    # All keyed by run_id: SSE queues (+creation time for the TTL sweep), connected
-    # subscribers, live agent/task refs for cooperative stop (the executor thread may
-    # outlive the request, hence the separate stopping set), pollable statuses, and
-    # approval session keys (approval core resolves by session key, clients by run_id).
+    # All keyed by run_id: SSE fanout streams (+creation time for the TTL sweep), live
+    # agent/task refs for cooperative stop (the executor thread may outlive the request,
+    # hence the separate stopping set), pollable statuses, and approval session keys
+    # (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
-    self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
@@ -112,6 +111,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
+        ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
 
 
@@ -187,11 +187,17 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     return _callback
 
 
+# Answering a prompt the run raised is one capability whichever tool asked: approvals
+# and clarify share the grant's ``approve`` permission. Acknowledging a lost owner epoch
+# ends the run like a stop, so ``/resolve-unknown`` rides the ``stop`` permission.
+_ROOM_CONTROL_PERMISSIONS = {
+    "/stop": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
+
+
 def _room_permission_for(request: "web.Request") -> str:
-    if request.path.endswith("/stop"):
-        return "stop"
-    if request.path.endswith("/approval"):
-        return "approve"
+    for suffix, permission in _ROOM_CONTROL_PERMISSIONS.items():
+        if request.path.endswith(suffix):
+            return permission
     return "status" if request.method == "GET" else "dispatch"
 
 
@@ -319,6 +325,29 @@ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _op
     return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
 
 
+class _RunStream:
+    """Fanout transport for one run: every subscriber reads the whole ordered event log,
+    including events published before it connected; ``None`` is the close sentinel. A
+    shared ``asyncio.Queue`` would hand each event to exactly one reader and let the first
+    disconnect tear the stream down under the others."""
+
+    def __init__(self) -> None:
+        self.events: List[Optional[Dict]] = []
+        self.subscribers: set["asyncio.Queue[Optional[Dict]]"] = set()
+
+    def put_nowait(self, event: Optional[Dict]) -> None:
+        self.events.append(event)
+        for queue in self.subscribers:
+            queue.put_nowait(event)
+
+    def subscribe(self) -> "asyncio.Queue[Optional[Dict]]":
+        queue: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        for event in self.events:
+            queue.put_nowait(event)
+        self.subscribers.add(queue)
+        return queue
+
+
 @dataclass(slots=True)
 class _RunLaunch:
     """State for an admitted run's background task; contextvars are captured here
@@ -326,7 +355,7 @@ class _RunLaunch:
 
     owner: Any
     run_id: str
-    queue: "asyncio.Queue[Optional[Dict]]"
+    queue: _RunStream
     session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
@@ -483,7 +512,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
-    q = self._run_streams[run_id] = asyncio.Queue()
+    q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
@@ -517,6 +546,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             with self._profile_scope(launch.request_profile):
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
+                    run_owner_scope=self._run_owners[run_id],
                     turn_author=launch.turn_author,
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',
@@ -746,7 +776,10 @@ def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
     # Run state that exists without an owner stamp is an unanswered authorization question, not a run anyone
     # may control — under gateway.multiplex_profiles every served profile holds a valid key, so admitting it
     # would make the boundary allow-all (#93689).
-    return self._run_idempotency_store.owns_run(scope, run_id)
+    if self._run_idempotency_store.owns_run(scope, run_id):
+        return True
+    from gateway.session_api_turn import owns_api_run
+    return owns_api_run(self, run_id, scope)
 
 
 def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
@@ -779,7 +812,8 @@ async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.
 
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":
     """GET /v1/runs/{run_id}/events — stream structured agent lifecycle events."""
-    auth_err = self._check_auth(request)
+    # Same door as GET /v1/runs/{id}: a room grant that may poll the run may stream it.
+    auth_err = self._check_run_auth(request, permission="status")
     if auth_err:
         return auth_err
     run_id = request.match_info["run_id"]
@@ -796,8 +830,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         await asyncio.sleep(0.05)
     else:
         return _run_not_found(_api_server._openai_error, run_id)
-    q = self._run_streams[run_id]
-    self._run_stream_subscribers.add(run_id)
+    stream = self._run_streams[run_id]
+    q = stream.subscribe()
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     await response.prepare(request)
@@ -815,8 +849,9 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     except Exception as exc:
         logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
-        self._run_stream_subscribers.discard(run_id)
-        _drop_run_transport(self, run_id)
+        stream.subscribers.discard(q)
+        if not stream.subscribers:
+            _drop_run_transport(self, run_id)
     return response
 
 
@@ -899,7 +934,7 @@ async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
 
 async def _handle_run_clarify(self, request, *, _api_server):
     run_id, _, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission=None, active_fallback=False)
+        self, request, _api_server=_api_server, permission="approve", active_fallback=False)
     if err is not None:
         return err
     body, err = await self._read_json_body(request)
@@ -986,6 +1021,28 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
     return web.json_response({"run_id": run_id, "status": "stopping"})
 
 
+async def _handle_resolve_unknown_run(
+    self, request: "web.Request", *, _api_server
+) -> "web.Response":
+    """POST /v1/runs/{run_id}/resolve-unknown — acknowledge one lost owner epoch."""
+    run_id, _, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    from gateway.platforms.api_server_authority_runs import resolve_unknown_run
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        result = await resolve_unknown_run(self, run_id, body)
+        return web.json_response({'run_id': run_id, **result})
+    except RuntimeStoreError as exc:
+        return _json_error(
+            _api_server._openai_error, exc.reason, code=exc.reason, status=409)
+
+
 async def _sweep_orphaned_runs(self) -> None:
     """Periodically expire transport buffers and terminal status records."""
     while True:
@@ -998,7 +1055,7 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
     if now is None:
         now = time.time()
     for run_id, created_at in list(self._run_streams_created.items()):
-        if now - created_at <= self._RUN_STREAM_TTL or run_id in self._run_stream_subscribers:
+        if now - created_at <= self._RUN_STREAM_TTL or self._run_streams[run_id].subscribers:
             continue
         logger.debug("[api_server] sweeping expired run transport %s", run_id)
         task = self._active_run_tasks.get(run_id)

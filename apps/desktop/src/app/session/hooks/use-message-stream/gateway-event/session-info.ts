@@ -348,8 +348,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const withinPreStartGrace =
             typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
 
-          const authoritative = typeof (payload as Record<string, unknown>)?.execution_epoch === 'string' &&
-            typeof (payload as Record<string, unknown>)?.execution_generation === 'number'
+          // The owner stamps its claimed execution on the event params, not the payload.
+          const authoritative = typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
 
           if (!authoritative && state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive && withinPreStartGrace) {
             return state

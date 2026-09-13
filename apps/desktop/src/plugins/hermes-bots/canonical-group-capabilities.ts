@@ -1,3 +1,5 @@
+import { gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
+
 export type GroupExecutionMode = 'canonical' | 'legacy' | 'unavailable'
 
 export function groupExecutionMode(value: unknown): GroupExecutionMode {
@@ -27,4 +29,15 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
   }
 
   return 'unavailable'
+}
+
+/** Fence a group-creation flow to the source that approved it. Pass the epoch the
+ *  capability was read under (default: now); the predicate turns false once the
+ *  connection, profile, socket or activation epoch moves, so a late result is
+ *  neither acted on nor published. */
+export function groupCreationSource(route: { connectionId: string; profile: string },
+  activationEpoch = gatewayActivationEpoch()) {
+  return () => gatewayActivationEpoch() === activationEpoch &&
+    route.connectionId === host.state.connectionId.get() &&
+    route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
 }

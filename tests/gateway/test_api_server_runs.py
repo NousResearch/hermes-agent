@@ -20,6 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
+from gateway.platforms.api_server_runs import _RunStream
 from gateway.platforms.api_server import (
     APIServerAdapter,
     _api_request_profile,
@@ -442,6 +443,43 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_two_subscribers_each_receive_every_event_and_survive_one_disconnect(self, adapter):
+        """/events is fanout, not a work queue: every subscriber sees the whole ordered stream,
+        and one client's disconnect never tears down the stream another client still reads."""
+
+        from gateway.platforms.api_server_runs import _mark_run_event
+
+        async def frame(resp):
+            return (await asyncio.wait_for(resp.content.readuntil(b"\n\n"), timeout=2.0)).decode()
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hello"})).json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+                assert first.status == second.status == 200
+
+                _mark_run_event(adapter, run_id, "run.steered", accepted=True)
+                assert "run.steered" in await frame(first)
+                assert "run.steered" in await frame(second)
+
+                first.close()
+                # The server only notices the dropped socket on its next write.
+                _mark_run_event(adapter, run_id, "run.steered", accepted=False)
+                assert "run.steered" in await frame(second)
+                await asyncio.sleep(0.05)
+                _mark_run_event(adapter, run_id, "approval.responded", choice="once")
+                assert "approval.responded" in await frame(second)
+
+                assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
+                tail = await asyncio.wait_for(second.content.read(), timeout=5.0)
+                assert b"stream closed" in tail
 
 
     @pytest.mark.asyncio
@@ -2010,9 +2048,54 @@ class TestHostedRoomRuns:
         assert repaired.status == 200
 
     @pytest.mark.asyncio
+    async def test_status_room_grant_opens_the_run_event_stream(self, auth_adapter, tmp_path):
+        """A grant that may poll a room-scoped run may also read its /events stream, with no
+        gateway API key; revoking the grant closes that door again."""
+        adapter = auth_adapter
+        _use_idempotency_db(adapter, tmp_path / "idem.db")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            invitation = await cli.post(
+                "/v1/room-members/invitations",
+                json={
+                    "room_id": "room-1",
+                    "home_install_id": "install-home",
+                    "authority_gateway_id": "gateway-home",
+                    "authority_epoch": 1,
+                    "member_id": "member-reviewer",
+                },
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            grant = (await invitation.json())["grant"]
+            room_headers = {"Authorization": f"HermesRoom {grant}"}
+            run_id = "run_room_stream"
+            scope_request = MagicMock()
+            scope_request.headers = room_headers
+            scope_request.path = f"/v1/runs/{run_id}/events"
+            scope_request.method = "GET"
+            adapter._run_owners[run_id] = adapter._run_idempotency_scope(scope_request)
+            adapter._run_streams[run_id] = _RunStream()
+            adapter._run_streams_created[run_id] = time.time()
+            adapter._set_run_status(run_id, "running")
+
+            polled = await cli.get(f"/v1/runs/{run_id}", headers=room_headers)
+            assert polled.status == 200
+            stream = await cli.get(f"/v1/runs/{run_id}/events", headers=room_headers)
+            assert stream.status == 200
+            adapter._run_streams[run_id].put_nowait(None)
+            assert b"stream closed" in await asyncio.wait_for(stream.content.read(), timeout=5.0)
+
+            revoked = await cli.post("/v1/room-members/grants/revoke", json={}, headers=room_headers)
+            assert revoked.status == 200
+            adapter._run_streams[run_id] = _RunStream()
+            denied = await cli.get(f"/v1/runs/{run_id}/events", headers=room_headers)
+            assert denied.status == 403
+            assert (await denied.json())["error"]["code"] == "room_reauthorization_required"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method", "suffix"),
-        [("GET", ""), ("POST", "/stop")],
+        [("GET", ""), ("POST", "/stop"), ("POST", "/resolve-unknown")],
     )
     async def test_room_grant_cannot_access_ownerless_compat_run(
         self, auth_adapter, tmp_path, method, suffix

@@ -155,8 +155,10 @@ def probe(tmp_path):
             asyncio.run(after_restart(desc))
             assert len(peer.requests) == count
         leaks = []
+        backups = home / 'backups' / 'config'  # copies of config.yaml itself (#109463), not a daemon leak
         for path in home.rglob('*'):
-            if path.is_file() and any(key.encode() in path.read_bytes() for key in keys.values()):
+            if path.is_file() and backups not in path.parents \
+                    and any(key.encode() in path.read_bytes() for key in keys.values()):
                 leaks.append(str(path.relative_to(home)))
         assert not leaks, leaks
         return {'pids': pids, 'requests': count, 'concurrent_policies': True, 'auth_endpoint_model_reasoning': True,

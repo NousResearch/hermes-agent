@@ -20,6 +20,9 @@ class SessionEvents:
         # Synchronous same-thread recipients (API run projections): unlike fanout peers they
         # cannot lose a frame to a detach that races the writer thread.
         self.observers = set()
+        # Set by the authority that attaches transports: retires the subscription of a
+        # peer whose bounded backlog overflowed, so it cannot linger looking subscribed.
+        self.on_overflow = None
 
     def watermark(self):
         with self.lock:
@@ -45,7 +48,16 @@ class SessionEvents:
             # private while both replay and live recipients see canonical IDs.
             frame['params']['session_id'] = session_id
             self.sequence = frame['params']['seq']
-            self.fanout.write(frame)
+
+            def overflow(transport):
+                # The peer's socket is healthy; only its event subscription ended. Same
+                # shape as the client's own synthetic gap so one consumer handles both.
+                if self.on_overflow is not None:
+                    self.on_overflow(transport)
+                return {'jsonrpc': '2.0', 'method': 'event', 'params': {
+                    'type': 'session.replay_gap', 'session_id': session_id,
+                    'payload': {'replay_epoch': self.epoch, 'latest_seq': self.sequence}}}
+            self.fanout.write(frame, overflow=overflow)
             for observer in tuple(self.observers):
                 observer(frame)
 

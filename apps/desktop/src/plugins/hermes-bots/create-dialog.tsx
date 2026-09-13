@@ -20,7 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
-  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -44,7 +43,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
@@ -1174,11 +1173,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
 
     const route = captureCanonicalGroupRoute()
-    const activationEpoch = gatewayActivationEpoch()
-
-    const sourceCurrent = () => gatewayActivationEpoch() === activationEpoch &&
-      route.connectionId === host.state.connectionId.get() &&
-      route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+    const sourceCurrent = groupCreationSource(route)
 
     const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
     const mode = groupExecutionMode(capabilities)

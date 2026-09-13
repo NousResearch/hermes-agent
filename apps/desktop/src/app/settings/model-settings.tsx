@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 
+import { ModelSelectItem } from '@/components/model-select-item'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -34,6 +35,7 @@ import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, findCatalogProvider } from '@/lib/model-options'
 import { composerServiceTier } from '@/lib/model-status-label'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
@@ -439,6 +441,17 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     },
     [m.loadFailed, scopeProfile, setCaughtError]
   )
+
+  const refreshCatalog = useCallback(async () => {
+    const epoch = profileEpoch.current
+    const options = await getGlobalModelOptions(undefined, scopeProfile)
+
+    if (profileEpoch.current === epoch) {
+      setProviders(options.providers ?? [])
+    }
+  }, [scopeProfile])
+
+  useNousPricingRefresh({ providers, refetch: refreshCatalog, scope: scopeProfile })
 
   useEffect(() => {
     void refresh()

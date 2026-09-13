@@ -4,6 +4,10 @@ export interface ModelMenuTranslations {
   editModels: string
   followDefault: string
   refreshModels: string
+  priceUnit: string
+  inputPrice: string
+  outputPrice: string
+  cachePrice: string
   favorites: string
   addFavorite: string
   removeFavorite: string

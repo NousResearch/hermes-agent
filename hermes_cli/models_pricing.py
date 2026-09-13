@@ -597,7 +597,8 @@ def pricing_cache_scope(
         persisted_base = get_cached_nous_inference_base_url()
         if persisted_base:
             return persisted_base
-        return _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        return cache_key.split(_PRICING_AUTH_KEY_PREFIX, 1)[0]
     return ""
 
 

@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
+import { NousModelPrice } from '@/components/nous-model-price'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -27,6 +28,7 @@ import {
   resetModelVisibilityKeepingCustoms,
   withCustomModels
 } from '@/store/custom-models'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -69,6 +71,13 @@ export function ModelVisibilityDialog({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, profile, sessionId }),
     enabled: open
+  })
+
+  useNousPricingRefresh({
+    providers: modelOptions.data?.providers,
+    refetch: modelOptions.refetch,
+    enabled: open,
+    scope: JSON.stringify([profile, sessionId, ownerConnectionId])
   })
 
   const providers = useMemo(
@@ -172,6 +181,11 @@ export function ModelVisibilityDialog({
                       <span className="min-w-0 truncate">
                         <HighlightMatches foldSeparators query={search} text={provider.name} />
                       </span>
+                      {provider.slug === 'nous' && !provider.free_tier_row && (
+                        <span className="ml-auto shrink-0 text-[0.5625rem] font-normal normal-case tracking-normal">
+                          {t.shell.modelMenu.priceUnit}
+                        </span>
+                      )}
                       <DisclosureCaret
                         className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
                         open={!collapsed}
@@ -193,10 +207,15 @@ export function ModelVisibilityDialog({
                           className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
                           key={key}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
-                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                            </span>
+                            {provider.slug === 'nous' && !provider.free_tier_row && (
+                              <NousModelPrice price={provider.pricing?.[family.id]} />
+                            )}
+                          </div>
                           {isCustomModel(customModels, provider.slug, family.id) && (
                             <Button
                               aria-label={copy.removeCustomModel}

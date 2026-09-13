@@ -1,5 +1,7 @@
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 
+import type { SpokenReplyAnchor } from '../spoken-reply'
+
 import type { ChatMessage, ChatMessagePart } from './types'
 
 export function textPart(text: string, timestamp?: number): ChatMessagePart {
@@ -56,8 +58,27 @@ export interface UnspokenTurnSpeech {
   text: string
 }
 
+/** Index of the nth visible assistant bubble (the anchor's durable "slot"), or -1. */
+function indexOfAssistantOrdinal(messages: ChatMessage[], ordinal: number): number {
+  let seen = -1
+
+  for (const [index, message] of messages.entries()) {
+    if (message.role !== 'assistant' || message.hidden) {
+      continue
+    }
+
+    seen += 1
+
+    if (seen === ordinal) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 /**
- * Collect every unspoken assistant bubble after `lastSpokenId`, in order.
+ * Collect every unspoken assistant bubble after the spoken anchor, in order.
  *
  * A turn with tool calls produces several assistant bubbles — narration
  * ("Let me check…") sealed as interims, then the final answer as a fresh
@@ -67,21 +88,38 @@ export interface UnspokenTurnSpeech {
  * join is a sentence boundary for the server's cutter, so a sealed bubble's
  * tail is flushed as soon as the next bubble starts.
  *
- * If `lastSpokenId` is missing or stale (session id assigned mid-turn,
- * live-tail rewrite missed), do **not** fall back to index -1 — that replays
- * every earlier assistant turn as one speech string. Bound to the current
- * turn (assistant bubbles after the last user message) instead. Hidden user
- * rows count: a widget intent (`display_kind: hidden`) is a real turn for the
- * agent even though no bubble renders. A slice with no user row (mid-turn
- * interims only) still collects those assistants.
+ * If the anchor cannot be located — its row id was rewritten (stream → durable,
+ * a re-hydration reassigned it) and its ordinal no longer lands on a visible
+ * assistant bubble — say NOTHING. Re-reading a turn the session already spoke is
+ * the worse failure (the text is on screen either way); the current-turn bound
+ * below stays reserved for a session that has genuinely spoken nothing yet.
+ * The row id alone is not a usable boundary: it is reassigned by every rewrite,
+ * which is why the anchor carries the assistant ordinal (`spoken-reply.ts`) and
+ * why this resolves by id FIRST and by that slot second. Id-only resolution is
+ * how a spoken turn got read a second time, minutes after it had been read once.
+ *
+ * With a null anchor, bound to the current turn (assistant bubbles after the last
+ * user message). Hidden user rows count: a widget intent (`display_kind: hidden`)
+ * is a real turn for the agent even though no bubble renders. A slice with no
+ * user row (mid-turn interims only) still collects those assistants.
  */
 export function collectUnspokenTurnSpeech(
   messages: ChatMessage[],
-  lastSpokenId: string | null
+  lastSpoken: SpokenReplyAnchor | null
 ): UnspokenTurnSpeech | null {
-  let spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
+  let spokenIndex = -1
 
-  if (spokenIndex < 0) {
+  if (lastSpoken) {
+    spokenIndex = messages.findLastIndex(m => m.id === lastSpoken.id)
+
+    if (spokenIndex < 0) {
+      spokenIndex = indexOfAssistantOrdinal(messages, lastSpoken.ordinal)
+    }
+
+    if (spokenIndex < 0) {
+      return null
+    }
+  } else {
     const lastUser = messages.findLastIndex(m => m.role === 'user')
 
     if (lastUser >= 0) {

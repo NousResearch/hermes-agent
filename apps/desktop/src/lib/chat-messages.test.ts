@@ -1321,7 +1321,7 @@ describe('collectUnspokenTurnSpeech', () => {
       assistant('a3', 'The real reply.')
     ]
 
-    const speech = collectUnspokenTurnSpeech(messages, 'a0')
+    const speech = collectUnspokenTurnSpeech(messages, { id: 'a0', ordinal: 0 })
 
     expect(speech?.id).toBe('a3')
     expect(speech?.text).toBe('The real reply.')
@@ -1339,7 +1339,7 @@ describe('collectUnspokenTurnSpeech', () => {
 
   it('returns null when everything is spoken or there is no assistant text', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
-    expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
+    expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], { id: 'a1', ordinal: 0 })).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
 
@@ -1352,8 +1352,47 @@ describe('collectUnspokenTurnSpeech', () => {
     ]
 
     expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
-    expect(collectUnspokenTurnSpeech(messages, 'vanished-stream-id')?.text).toBe('Live reply only.')
-    expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, { id: 'a1', ordinal: 0 })?.text).toBe('Live reply only.')
+  })
+
+  // Production regression (voice conversation, 2026-09-13): the narration of a turn is spoken the
+  // moment it seals, the final answer becomes its own bubble, and the row ids are rewritten on
+  // hydrate. Resolving the anchor by id alone lost it, and the current-turn fallback then spoke
+  // the narration AND the answer a second time — minutes after they had both been read.
+  it('speaks only the answer after the narration slot was spoken and its row id was rewritten', () => {
+    const messages = [
+      user('u1', 'se sigue leyendo dos veces'),
+      assistant('assistant-stream-n1', 'Eso me dice que el segundo pase sigue vivo.', { interim: true }),
+      assistant('durable-answer-9', 'Vigía corriendo, la traza ya está capturando frases.')
+    ]
+
+    // Narration spoken (slot 0); its stream id no longer exists in the list.
+    const speech = collectUnspokenTurnSpeech(messages, { id: 'assistant-stream-n1', ordinal: 0 })
+
+    expect(speech?.id).toBe('durable-answer-9')
+    expect(speech?.text).toBe('Vigía corriendo, la traza ya está capturando frases.')
+  })
+
+  it('resolves a re-issued durable id to its slot and says nothing when that slot was the tip', () => {
+    const messages = [
+      user('u1', 'go'),
+      assistant('a1', 'Narration.', { interim: true }),
+      assistant('a2', 'The answer.')
+    ]
+
+    // The answer's row id was reassigned by a re-hydration; its slot still holds the answer.
+    expect(collectUnspokenTurnSpeech(messages, { id: 'rehydrated-away', ordinal: 1 })).toBeNull()
+  })
+
+  it('stays silent rather than replaying the turn for an anchor it can neither name nor slot', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      user('u2', 'new question'),
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, { id: 'vanished-stream-id', ordinal: 7 })).toBeNull()
   })
 
   it('bounds to a hidden user turn too (widget intents render no bubble)', () => {

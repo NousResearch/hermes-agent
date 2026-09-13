@@ -794,6 +794,38 @@ memory:
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
+## Session Storage Backend
+
+Sessions, messages, and agent state live in a SQLite file under the active
+Hermes home (`~/.hermes/state.db` for the default profile). Select PostgreSQL
+in `config.yaml` when a deployment needs shared session storage:
+
+```yaml
+sessions:
+  state_backend: sqlite   # "sqlite" (default) or "postgres"
+```
+
+Supply the credential-bearing DSN through `HERMES_STATE_DATABASE_URL` or its
+alias `HERMES_STATE_POSTGRES_DSN` in the profile's `.env` file or a secret
+store. Resolution follows that order, then falls back to
+`sessions.postgres_dsn` in `config.yaml`. Backend selection remains in
+`sessions.state_backend`; a DSN alone does not enable PostgreSQL. The DSN is
+passed unchanged, including its `sslmode`, host, port and credentials.
+
+The PostgreSQL path is opt-in: installs that leave `state_backend` at `sqlite`
+never load the driver. Enabling it requires the `postgres` extra
+(`pip install 'hermes-agent[postgres]'`), which Hermes will also try to install
+on first use.
+
+For an existing store, stop writers and back up SQLite before running
+`hermes migrate state-to-postgres`. The command copies durable conversation
+and routing state and checks every copied row's values. Switch backends only
+after it reports success. Process leases and SQLite-local outboxes are not
+transferred, so keep the source file.
+
+See [PostgreSQL State Backend](/user-guide/features/postgres-backend) for
+requirements, migration details, and behavioral notes.
+
 ## Context File Truncation
 
 Controls how much content Hermes loads from each automatic context file before applying head/tail truncation. This applies to files injected into the system prompt such as `SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`. It does **not** affect the `read_file` tool.

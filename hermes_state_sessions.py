@@ -1007,9 +1007,9 @@ class SessionSessionsMixin:
         compression ancestry/chains, then hydrate activity/previews for that bounded set. Lineage traversal
         uses ``UNION`` plus a total-row ceiling so a corrupt cycle or a deep/branching lineage cannot defeat
         the bound; a lineage that hits the ceiling before a terminal root/tip is omitted, not expanded.
-        A cooperative SQLite progress deadline interrupts sustained work past ``timeout_seconds`` and raises
-        ``TimeoutError`` (cheap statements may finish between callbacks). Supports only the agent-tool
-        browse filters; rich callers keep using :meth:`list_sessions_rich`."""
+        SQLite uses a cooperative progress deadline; PostgreSQL uses a transaction-local statement
+        timeout. Sustained work past ``timeout_seconds`` raises ``TimeoutError``. Supports only the
+        agent-tool browse filters; rich callers keep using :meth:`list_sessions_rich`."""
         limit = max(1, int(limit))
         timeout_seconds = max(0.0, float(timeout_seconds))
         if candidate_limit is None:
@@ -1046,6 +1046,23 @@ class SessionSessionsMixin:
             AND COALESCE(child.source, '') != 'tool'
         """
 
+        postgres = getattr(self, "_is_postgres", False)
+        ancestors_name, chain_name = "ancestors", "chain"
+        ancestors_limit, chain_limit = "LIMIT ?", "LIMIT ?"
+        if postgres:
+            # PostgreSQL rejects LIMIT on a recursive UNION. Close each walk
+            # before applying its cap in a materialized, nonrecursive consumer;
+            # it pulls at most the same total row budget from the walk. UNION
+            # still deduplicates cycles, and the server deadline bounds work.
+            ancestors_name, chain_name = "ancestors_walk", "chain_walk"
+            ancestors_limit = (
+                "), ancestors AS MATERIALIZED ("
+                "SELECT candidate_id, cur_id FROM ancestors_walk LIMIT ?"
+            )
+            chain_limit = (
+                "), chain AS MATERIALIZED (SELECT root_id, cur_id FROM chain_walk LIMIT ?"
+            )
+
         query = f"""
             WITH RECURSIVE
             recent_candidates(id) AS (
@@ -1056,14 +1073,14 @@ class SessionSessionsMixin:
                          s.started_at DESC, s.id DESC
                 LIMIT ?
             ),
-            ancestors(candidate_id, cur_id) AS (
+            {ancestors_name}(candidate_id, cur_id) AS (
                 SELECT id, id FROM recent_candidates
                 UNION
                 SELECT a.candidate_id, parent.id
-                FROM ancestors a
+                FROM {ancestors_name} a
                 JOIN sessions child ON child.id = a.cur_id
                 JOIN sessions parent ON {compression_parent_edge}
-                LIMIT ?
+                {ancestors_limit}
             ),
             candidate_roots(root_id) AS (
                 SELECT DISTINCT a.cur_id
@@ -1075,14 +1092,14 @@ class SessionSessionsMixin:
                     WHERE {compression_parent_edge}
                 )
             ),
-            chain(root_id, cur_id) AS (
+            {chain_name}(root_id, cur_id) AS (
                 SELECT root_id, root_id FROM candidate_roots
                 UNION
                 SELECT c.root_id, child.id
-                FROM chain c
+                FROM {chain_name} c
                 JOIN sessions parent ON parent.id = c.cur_id
                 JOIN sessions child ON {compression_parent_edge}
-                LIMIT ?
+                {chain_limit}
             ),
             chain_rows AS (
                 SELECT
@@ -1146,29 +1163,34 @@ class SessionSessionsMixin:
             lineage_limit,
             limit,
         ]
-        deadline = time.monotonic() + timeout_seconds
-        interrupted_by_deadline = False
-
-        def _deadline_progress_handler() -> int:
-            nonlocal interrupted_by_deadline
-            if time.monotonic() >= deadline:
-                interrupted_by_deadline = True
-                return 1
-            return 0
-
-        try:
+        if postgres:
+            from hermes_state_pg_sessions import read_bounded_sessions_postgres
             with self._read_ctx() as conn:
-                conn.set_progress_handler(_deadline_progress_handler, 1000)
-                try:
-                    rows = conn.execute(query, params).fetchall()
-                finally:
-                    conn.set_progress_handler(None, 0)
-        except sqlite3.OperationalError as exc:
-            if interrupted_by_deadline and "interrupt" in str(exc).lower():
-                raise TimeoutError(
-                    f"recent-session browse exceeded {timeout_seconds:g}s deadline"
-                ) from exc
-            raise
+                rows = read_bounded_sessions_postgres(conn, query, params, timeout_seconds=timeout_seconds)
+        else:
+            deadline = time.monotonic() + timeout_seconds
+            interrupted_by_deadline = False
+
+            def _deadline_progress_handler() -> int:
+                nonlocal interrupted_by_deadline
+                if time.monotonic() >= deadline:
+                    interrupted_by_deadline = True
+                    return 1
+                return 0
+
+            try:
+                with self._read_ctx() as conn:
+                    conn.set_progress_handler(_deadline_progress_handler, 1000)
+                    try:
+                        rows = conn.execute(query, params).fetchall()
+                    finally:
+                        conn.set_progress_handler(None, 0)
+            except sqlite3.OperationalError as exc:
+                if interrupted_by_deadline and "interrupt" in str(exc).lower():
+                    raise TimeoutError(
+                        f"recent-session browse exceeded {timeout_seconds:g}s deadline"
+                    ) from exc
+                raise
 
         sessions = []
         for row in rows:

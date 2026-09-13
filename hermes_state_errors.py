@@ -229,7 +229,10 @@ _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("deleted state.db-wal", "deleted state.db-shm"), "deleted_wal"),
     (("was replaced underneath",), "replaced"),
     (_DB_CORRUPTION_MARKERS, "corrupt"),
-    (("locked", "busy"), "locked"),
+    (("locked", "busy", "shutting down", "starting up", "reconnect failed", "connection refused",
+      "server closed the connection", "terminating connection", "connection already closed",
+      "no connection to the server", "could not connect to server", "connection timed out",
+      "too many clients", "deadlock detected"), "locked"),
 )
 
 

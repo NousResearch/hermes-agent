@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import time
 from pathlib import Path
@@ -298,7 +299,9 @@ class SessionMaintenanceMixin:
         return count
 
     def _page_pragmas(self, names: Tuple[str, ...], fail_msg: str) -> Optional[list]:
-        """Integer PRAGMAs over the existing connection (never a byte probe); None + debug log on failure."""
+        """SQLite page metrics over the existing connection; unavailable on PostgreSQL."""
+        if self._is_postgres:
+            return None
         try:
             with self._read_ctx() as conn:
                 if self._conn is None:
@@ -344,6 +347,13 @@ class SessionMaintenanceMixin:
         amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
         self._raise_if_db_corrupt()
         self._raise_if_db_replaced()
+        if self._is_postgres:
+            # PostgreSQL VACUUM runs in autocommit and has no FTS5/WAL sidecars
+            # or local state.db identity to refresh. Probing that identity here
+            # would reenter the writer lock on a PostgreSQL-only home.
+            with self._lock:
+                self._conn.execute("VACUUM")
+            return 0
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock
@@ -360,6 +370,37 @@ class SessionMaintenanceMixin:
             # write-path generation guard does not halt this connection.
             self._record_db_file_identity()
         return optimized
+
+    @contextmanager
+    def _auto_maintenance_lock(self):
+        """Serialize the whole pass, including its separate write transactions."""
+        if self._is_postgres:
+            from hermes_state_postgres import connect_postgres
+
+            # A file lock cannot coordinate different hosts. Use a dedicated
+            # connection: advisory locks are reentrant on the writer connection,
+            # so concurrent calls sharing this SessionDB would both acquire one.
+            # Keep it transaction-scoped for transaction-pooling proxies too.
+            conn = connect_postgres(self._postgres_dsn)
+            try:
+                conn.execute("BEGIN")
+                row = conn.execute(
+                    "SELECT pg_try_advisory_xact_lock(hashtext(?))",
+                    ("hermes:state:auto-maintenance",),
+                ).fetchone()
+                yield bool(row and row[0])
+            finally:
+                conn.close()  # closes the transaction and releases its lock
+            return
+
+        from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
+
+        handle = _try_acquire_auto_maintenance_lock(self.db_path)
+        try:
+            yield handle is not None
+        finally:
+            if handle is not None:
+                _release_auto_maintenance_lock(handle)
 
     def maybe_auto_prune_and_vacuum(
         self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
@@ -384,54 +425,51 @@ class SessionMaintenanceMixin:
         ``request_dump_*``) for pruned sessions are removed as part of the same sweep (issue #3015).
         Messaging and UI sources are never touched here. See #54189.
         """
-        from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
-        maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
-        if maintenance_lock is None:
-            result["skipped"] = True
-            return result
         try:
-            now = time.time()
-            since_prune = _seconds_since(now, self.get_meta("last_auto_prune"))
-            if since_prune is not None and since_prune < min_interval_hours * 3600:
-                result["skipped"] = True
-                return result
-            # Prune first: orphans closed below get a full retention window.
-            result["pruned"] = pruned = self.prune_sessions(
-                older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
-            closed = self.sweep_orphaned_sessions(
-                max_idle_seconds=float(retention_days) * 86400.0,
-                sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
-                respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
-            )
-            result["closed"] = len(closed)
-            # VACUUM only if rows were freed, the time throttle passed AND the
-            # freelist ratio passed — it holds an exclusive lock for a full rewrite.
-            since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
-            vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
-            if vacuum and pruned > 0 and vacuum_due:
-                result["freelist_ratio"] = ratio = self._freelist_ratio()
-                if ratio is None or ratio > min_vacuum_freelist_ratio:
-                    try:
-                        self.vacuum()
-                        result["vacuumed"] = True
-                        self.set_meta("last_vacuum", str(now))
-                    except Exception as exc:
-                        logger.warning("state.db VACUUM failed: %s", exc)
-                else:
-                    logger.debug("state.db auto-maintenance: skipping VACUUM, only "
-                                 "%.1f%% of pages reclaimable (threshold %.0f%%)",
-                                 ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
-            # Record even when pruned == 0 so the throttle holds.
-            self.set_meta("last_auto_prune", str(now))
-            if closed or pruned > 0:
-                logger.info("state.db auto-maintenance: closed %d stale open session(s), "
-                            "pruned %d session(s) inactive for %d days%s",
-                            len(closed), pruned, retention_days, " + VACUUM" if result["vacuumed"] else "")
+            with self._auto_maintenance_lock() as acquired:
+                if not acquired:
+                    result["skipped"] = True
+                    return result
+                now = time.time()
+                since_prune = _seconds_since(now, self.get_meta("last_auto_prune"))
+                if since_prune is not None and since_prune < min_interval_hours * 3600:
+                    result["skipped"] = True
+                    return result
+                # Prune first: orphans closed below get a full retention window.
+                result["pruned"] = pruned = self.prune_sessions(
+                    older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+                closed = self.sweep_orphaned_sessions(
+                    max_idle_seconds=float(retention_days) * 86400.0,
+                    sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
+                    respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
+                )
+                result["closed"] = len(closed)
+                # VACUUM only if rows were freed, the time throttle passed AND the
+                # freelist ratio passed — it holds an exclusive lock for a full rewrite.
+                since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
+                vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
+                if vacuum and pruned > 0 and vacuum_due:
+                    result["freelist_ratio"] = ratio = self._freelist_ratio()
+                    if ratio is None or ratio > min_vacuum_freelist_ratio:
+                        try:
+                            self.vacuum()
+                            result["vacuumed"] = True
+                            self.set_meta("last_vacuum", str(now))
+                        except Exception as exc:
+                            logger.warning("state.db VACUUM failed: %s", exc)
+                    else:
+                        logger.debug("state.db auto-maintenance: skipping VACUUM, only "
+                                     "%.1f%% of pages reclaimable (threshold %.0f%%)",
+                                     ratio * 100.0, min_vacuum_freelist_ratio * 100.0)
+                # Record even when pruned == 0 so the throttle holds.
+                self.set_meta("last_auto_prune", str(now))
+                if closed or pruned > 0:
+                    logger.info("state.db auto-maintenance: closed %d stale open session(s), "
+                                "pruned %d session(s) inactive for %d days%s",
+                                len(closed), pruned, retention_days, " + VACUUM" if result["vacuumed"] else "")
         except Exception as exc:
             # Maintenance must never block startup.
             logger.warning("state.db auto-maintenance failed: %s", exc)
             result["error"] = str(exc)
-        finally:
-            _release_auto_maintenance_lock(maintenance_lock)
         return result

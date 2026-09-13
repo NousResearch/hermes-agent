@@ -734,10 +734,11 @@ class SessionSchemaMixin:
                 os.replace(tmp, cache_path)
         return table_columns
 
-    def _reconcile_columns(self, cursor: sqlite3.Cursor) -> None:
+    def _reconcile_columns(self, cursor: sqlite3.Cursor) -> List[str]:
         """ADD every SCHEMA_SQL column missing from the live tables (SCHEMA_SQL is the single
         source of truth; column additions need no version-gated migration)."""
         expected = self._parse_schema_columns(SCHEMA_SQL)
+        added: List[str] = []
         for table_name, declared_cols in expected.items():
             try:
                 rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
@@ -750,6 +751,7 @@ class SessionSchemaMixin:
                     continue
                 try:
                     cursor.execute(f'ALTER TABLE "{table_name}" ADD COLUMN {_q(col_name)} {col_type}')
+                    added.append(f"{table_name}.{col_name}")
                 except sqlite3.OperationalError as exc:
                     message = str(exc).lower()
                     if "duplicate column" in message:
@@ -764,6 +766,10 @@ class SessionSchemaMixin:
                     logger.warning(
                         "reconcile %s.%s failed; store remains behind SCHEMA_SQL: %s", table_name, col_name, exc,
                     )
+
+        if added:
+            logger.info("sqlite reconcile: added missing columns: %s", ", ".join(added))
+        return added
 
     @staticmethod
     def _live_pk_columns(cursor: sqlite3.Cursor, table: str) -> Optional[List[str]]:

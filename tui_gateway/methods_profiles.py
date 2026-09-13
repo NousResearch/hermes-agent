@@ -123,10 +123,9 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
         tip_id = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip = (_try(lambda: db.get_session(tip_id), None) or row) if tip_id != session_id else row
         from hermes_state import SessionDB
-        from hermes_state_registry import acquire
         if (tip.get("end_reason") or "") not in SessionDB.RECOVERABLE_END_REASONS:
             return False
-        wdb = acquire(Path(profile_path) / "state.db")
+        wdb = _open_profile_session_db(profile_path)
         try:
             return bool(wdb.unarchive_recoverable_session(session_id))
         finally:
@@ -208,10 +207,10 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
-    db_path = Path(profile_path) / "state.db"
-    db = None
-    if _try(db_path.exists, False):
-        db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+    # The configured backend may have no local state.db. A failed read still
+    # leaves the roster available, with empty session fields for this profile.
+    db = _try(lambda: _lazy("hermes_state_postgres", "open_store_for_home")(
+        profile_path, read_only=True), None)
     try:
         row["last_session"], row["worker_session"] = _latest_profile_session_rows(db)
         # Resolved server-side on every listing so no client carries a session pointer.

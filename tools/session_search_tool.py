@@ -327,16 +327,12 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
 
 
 def _resolve_profile_db(profile: str):
-    """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
+    """Open the named profile's configured session store read-only; None = current."""
     if profile is None or not str(profile).strip():
         return None
-    from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
-    canon = profiles_mod.normalize_profile_name(profile)
-    profiles_mod.validate_profile_name(canon)
-    if not profiles_mod.profile_exists(canon):
-        raise ValueError(f"profile '{canon}' does not exist")
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    from hermes_state_postgres import open_store_for_profile
+
+    return open_store_for_profile(profile, read_only=True)
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:

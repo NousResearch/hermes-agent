@@ -146,9 +146,9 @@ def _search_filter_clauses(
     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
     where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:
-        where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+        where.append(f"s.source IN ({','.join('?' for _ in source_filter)})" if source_filter else "FALSE")
         params.extend(source_filter)
-    if exclude_sources is not None:
+    if exclude_sources:
         where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
         params.extend(exclude_sources)
     if role_filter:
@@ -857,6 +857,8 @@ class SessionSearchMixin:
     def _describe_search_path(self, query: str) -> str:
         """Best-effort name of the routing path a query takes (log-only)."""
         try:
+            if self._is_postgres:
+                return "postgres"
             if self._fts_stale:
                 return "like_scan_fts_stale"
             sanitized = self._sanitize_fts5_query(query or "")
@@ -1039,6 +1041,18 @@ class SessionSearchMixin:
         CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
         by default; compaction-archived rows ARE included; ``include_inactive`` = every row."""
         result_fields = self._search_message_fields(fields)
+        if self._is_postgres:
+            from hermes_state_postgres import search_messages_postgres
+
+            with self._read_ctx() as conn:
+                matches = search_messages_postgres(
+                    conn, self._decode_content, query, source_filter=source_filter,
+                    exclude_sources=exclude_sources, role_filter=role_filter, limit=limit,
+                    offset=offset, sort=sort, include_inactive=include_inactive,
+                    include_context=result_fields is None or "context" in result_fields)
+            if result_fields is not None:
+                return [{field: row[field] for field in result_fields if field in row} for row in matches]
+            return matches
         if not query or not query.strip():
             return []
         query = self._sanitize_fts5_query(query)

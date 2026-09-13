@@ -13,7 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 from hermes_cli.auth_constants import (
-    AuthError, DEFAULT_QWEN_BASE_URL, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_OAUTH_CLIENT_ID,
+    AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL, AuthError, DEFAULT_QWEN_BASE_URL,
+    QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_OAUTH_CLIENT_ID,
     QWEN_OAUTH_TOKEN_URL, _FORM_JSON_HEADERS, _qwen_err, httpx,
 )
 
@@ -30,7 +31,11 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
     from hermes_cli.auth import _qwen_cli_auth_path
     auth_path = _qwen_cli_auth_path()
     if not auth_path.exists():
-        raise _qwen_err("Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.", "qwen_auth_missing")
+        raise _qwen_err(
+            "Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.",
+            "qwen_auth_missing",
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
     try:
         data = json.loads(auth_path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -124,7 +129,11 @@ def resolve_qwen_runtime_credentials(
         tokens = _refresh_qwen_cli_tokens(tokens)
     access_token = str(tokens.get("access_token", "") or "").strip()
     if not access_token:
-        raise _qwen_err(f"Qwen OAuth access token missing. {_RERUN}", "qwen_access_token_missing")
+        raise _qwen_err(
+            f"Qwen OAuth access token missing. {_RERUN}",
+            "qwen_access_token_missing",
+            category=AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL,
+        )
 
     return {
         "provider": "qwen-oauth",

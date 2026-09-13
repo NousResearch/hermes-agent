@@ -288,9 +288,9 @@ class CLIAgentSetupMixin:
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError
+        from hermes_cli.auth import AuthError, should_try_fallback_on_auth_error
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        if not isinstance(primary_exc, AuthError):
+        if not isinstance(primary_exc, AuthError) or not should_try_fallback_on_auth_error(primary_exc):
             return None
         _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
         for _fb in _fb_chain:

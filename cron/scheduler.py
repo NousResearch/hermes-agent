@@ -1493,7 +1493,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     snapshot > persisted global config."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, should_try_fallback_on_auth_error
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
@@ -1520,6 +1520,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         is_auth = isinstance(resolve_exc, AuthError)
         is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
         if not (is_auth or is_transient_net):
+            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+        if is_auth and not should_try_fallback_on_auth_error(resolve_exc):
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         logger.warning(

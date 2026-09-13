@@ -104,7 +104,9 @@ from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL, DEFAULT_SPOTIFY_API_BASE_URL, SPOTIFY_DOCS_URL,
     DEFAULT_SPOTIFY_SCOPE, SERVICE_PROVIDER_NAMES, LMSTUDIO_NOAUTH_PLACEHOLDER,
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
+    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE,
+    AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL, missing_credential_category_for_state,
+    AuthError, _nous_err, httpx)
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +435,28 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
     re-authenticating cannot fix it, so callers should say "retry later", not ``hermes auth``."""
     return (isinstance(error, AuthError) and not error.relogin_required
             and error.code == CODEX_RATE_LIMITED_CODE)
+
+
+# Resolve-time operator misconfig: fail closed. Do not silently spend a different paid provider.
+NON_FALLBACK_AUTH_CODES = frozenset({
+    "missing_api_key",
+    "no_provider_configured",
+    "invalid_provider",
+})
+
+
+def is_configuration_auth_error(error: Exception) -> bool:
+    return (
+        isinstance(error, AuthError)
+        and (
+            getattr(error, "category", None) == AUTH_ERROR_CATEGORY_MISSING_CREDENTIAL
+            or getattr(error, "code", None) in NON_FALLBACK_AUTH_CODES
+        )
+    )
+
+
+def should_try_fallback_on_auth_error(error: Exception) -> bool:
+    return not is_configuration_auth_error(error)
 
 
 # Entitlement failures: Nous gets a Portal-aware message; other providers a fixed generic one (or

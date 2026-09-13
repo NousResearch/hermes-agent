@@ -2250,11 +2250,15 @@ def _resolve_runtime_agent_kwargs() -> dict:
     ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error, _get_model_config)
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error, should_try_fallback_on_auth_error
 
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
+        # Configuration AuthError (missing key / no provider / invalid provider) is operator
+        # misconfig: fail closed instead of silently routing to a different paid provider.
+        if not should_try_fallback_on_auth_error(auth_exc):
+            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         # Rate-limit cap vs real auth failure: both use the fallback chain; the log must not mislabel.
         # Distinguish a transient rate-limit/quota cap (credentials are fine, re-auth cannot help) from a
         # genuine auth failure (expired/revoked token). See #32790.

@@ -169,6 +169,30 @@ Like the rest of the approval config, changes take effect immediately (the confi
 Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables (including GNU `env -S` `${NAME}` expansion), aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax, clustered launcher options, or options embedded inside an `env -S` string). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access. This matching behavior does not change the configured approval mode or the empty-deny-list default.
 :::
 
+### Approval-Required Rules (`approvals.command_approval_required`)
+
+The built-in dangerous-command patterns are code-shipped. `approvals.command_approval_required` adds your own: glob patterns for commands that are not universally dangerous but need a look in *your* deployment — restarting your own gateway, touching a production cluster. A match goes through the normal approval prompt instead of running silently.
+
+```yaml
+approvals:
+  command_approval_required:
+    # A bare string is reviewed by a human, every time.
+    - "systemctl --user restart hermes-gateway*"
+    # A rule may name who reviews it: human (default) or smart.
+    - pattern: "kubectl *--context[= ]prod*"
+      description: kubectl against the production cluster
+      review: smart
+```
+
+- Patterns use the same syntax and matching as `approvals.deny`: case-insensitive fnmatch globs, run over the whole command and over each executable segment, so `cd repo && systemctl --user restart hermes-gateway` and `timeout 30 kubectl --context prod ...` still match.
+- `review: human` (the default, and what a bare string means): the Smart Approvals guardian is **never** consulted, even under `approvals.mode: smart`, and the prompt never offers **Always** — a person sees every match. *Session* approval still works within one conversation. A `command_allowlist` entry cannot silence the rule either.
+- `review: smart`: the rule behaves like a built-in dangerous pattern. Under `approvals.mode: smart` the guardian assesses the command first (the rule's `description` is what it is told the command was flagged for); APPROVE runs it, DENY or ESCALATE reach you. **Always** is offered and persists.
+- The review policy is part of an approval's identity, and changing it revokes. The config is live-reloaded: as soon as the running agent sees a rule under a new `review` (the next guarded command, matching or not — including one waved through by `--yolo`, `/yolo` or `approvals.mode: off`, since the rules are read before those bypasses — or the allowlist load at startup after the change was made while it was down), it discards every session and permanent grant the pattern earned under the previous policy — so tightening `smart` → `human` asks a person again, and switching back to `smart` afterwards starts from zero (the old grant does not revive, even across a restart).
+- Unattended contexts (`cron_mode`, `single_query_mode`, `unattended_mode`) treat a match like any dangerous command: `deny` blocks it, `approve` lets it run.
+- Unknown `review` values fall back to `human` with a warning. Malformed entries are skipped.
+
+`hermes approvals test -- <command>` shows which rule a command would hit and who would review it.
+
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).

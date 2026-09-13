@@ -184,9 +184,9 @@ class TestForkPath:
             {"role": "assistant", "content": "fixed"},
         ]
         with patch("agent.background_review.build_cache_parity_fork", fake_build), \
-             patch("hermes_cli.plugins.set_thread_tool_whitelist",
+             patch("hermes_cli.plugins_pre_tool_call.set_thread_tool_whitelist",
                    side_effect=lambda allowed, **kw: whitelists.append(allowed)), \
-             patch("hermes_cli.plugins.clear_thread_tool_whitelist"), \
+             patch("hermes_cli.plugins_pre_tool_call.clear_thread_tool_whitelist"), \
              patch("agent.background_review._snapshot_review_usage", return_value={}), \
              patch("agent.background_review._record_review_usage_to_parent"):
             answer = _answer_via_fork(object(), "which file?", history)

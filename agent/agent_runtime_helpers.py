@@ -2210,7 +2210,7 @@ def switch_model(
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+        from hermes_cli.plugins_pre_tool_call import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
             function_name, function_args, task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",

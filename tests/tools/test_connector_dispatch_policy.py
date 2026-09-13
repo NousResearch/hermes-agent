@@ -9,6 +9,7 @@ import pytest
 def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blocked_by):
     import model_tools
     import hermes_cli.plugins as plugins
+    import hermes_cli.plugins_pre_tool_call as plugins_pre_tool_call
     from tools.registry import invalidate_check_fn_cache
     from tools.tool_gateway import bridge, config
 
@@ -47,7 +48,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
 
     monkeypatch.setattr(plugins.get_plugin_manager(), "_middleware", {
         "tool_request": [request], "tool_execution": [execution]})
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks", hook)
+    monkeypatch.setattr(plugins_pre_tool_call, "_dispatch_pre_tool_call_hooks", hook)
 
     class Client:
         def execute(self, planned):

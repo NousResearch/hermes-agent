@@ -108,7 +108,7 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
     from agent.background_review import (
         _digest_history, _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
     )
-    from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
+    from hermes_cli.plugins_pre_tool_call import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
     fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
                                                 max_iterations=_FORK_MAX_ITERATIONS, write_origin="side_question")

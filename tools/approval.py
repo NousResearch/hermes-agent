@@ -31,8 +31,9 @@ from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
-    _user_deny_block_result,
+    _approval_required_rules, _command_matches_permanent_allowlist, _hardline_block_result,
+    _match_approval_required_rule, _match_user_deny_rule, _observe_approval_required_policies,
+    _sudo_stdin_block_result, _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
@@ -321,6 +322,32 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
     return any(alias in approved for alias in aliases)
 
 
+def is_session_approved(session_key: str, pattern_key: str) -> bool:
+    """Session-scoped approval only — for keys that must never be honoured from the permanent
+    allowlist (``review: human`` approval-required rules)."""
+    aliases = _approval_key_aliases(pattern_key)
+    with _lock:
+        approved = set(_session_approved.get(session_key, set()))
+    return any(alias in approved for alias in aliases)
+
+
+def _revoke_superseded_grants(required) -> None:
+    """A review-policy transition is a revocation. The config is live-reloaded and the grant key
+    carries the review policy, so a grant taken under the previous policy is merely *hidden* while
+    the other policy is active — and would revive once the operator switches back. Called by the
+    rule parser the moment it sees a pattern under a different review than before (whether or not
+    any command matches), and from :func:`load_permanent_allowlist` so a restart sweeps the persisted
+    allowlist too: drops the superseded key from every session and from the persisted allowlist."""
+    key = required.superseded_key
+    with _lock:
+        for approved in _session_approved.values():
+            approved.discard(key)
+        persisted = key in _permanent_approved
+        _permanent_approved.discard(key)
+    if persisted:
+        save_permanent_allowlist(_permanent_approved)
+
+
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
@@ -334,14 +361,15 @@ def load_permanent(patterns: set):
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
-    """Persist a human ``session``/``always`` choice for each ``(key, _, is_tirith)``. Tirith
+    """Persist a human ``session``/``always`` choice for each ``(key, _, session_only)``. Tirith
     findings are session-max by design (no broad permanent allowlisting of content-level
-    findings), so ``always`` downgrades them to session. ``once`` persists nothing."""
-    for key, _, is_tirith in warnings:
+    findings), as are ``review: human`` approval-required rules (a human must see every match),
+    so ``always`` downgrades them to session. ``once`` persists nothing."""
+    for key, _, session_only in warnings:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always" and not is_tirith:
+        if choice == "always" and not session_only:
             approve_permanent(key)
             with _lock:
                 snapshot = set(_permanent_set())
@@ -380,6 +408,10 @@ def load_permanent_allowlist() -> set:
         patterns = _read_permanent_allowlist()
         if patterns:
             load_permanent(patterns)
+            # A review-policy change made while this process was down must not leave the other
+            # policy's Always grant in the persisted allowlist: parsing the rules revokes it.
+            _approval_required_rules()
+            patterns &= _permanent_approved
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -531,13 +563,13 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
+def _unattended_deny(command: str, ctx: _Unattended, required=None) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow.
 
-    Pattern detection first, then tirith so content-level threats (homograph URLs,
-    pipe-to-interpreter, terminal injection) are caught even when the pattern detector misses.
-    An un-importable tirith honours ``security.tirith_fail_open``: fail-closed means block,
-    since nobody can approve.
+    A matching ``command_approval_required`` rule blocks first, then pattern detection, then
+    tirith so content-level threats (homograph URLs, pipe-to-interpreter, terminal injection)
+    are caught even when the pattern detector misses. An un-importable tirith honours
+    ``security.tirith_fail_open``: fail-closed means block, since nobody can approve.
     """
     if ctx.mode() != "deny":
         return None
@@ -547,7 +579,10 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, _pk, description = detect_dangerous_command(command)
+    if required is not None:
+        is_dangerous, _pk, description = True, required.key, required.prompt_description
+    else:
+        is_dangerous, _pk, description = detect_dangerous_command(command)
     if is_dangerous:
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
@@ -651,7 +686,7 @@ _ACTION_GATE = _GateSpec(
         "BLOCKED: User denied this potentially dangerous action (matched "
         "'{description}'). Do NOT retry — the user has explicitly rejected it."
     ),
-    smart_log="",
+    smart_log="Smart approval: auto-approved plugin-flagged action '{command}' ({description})",
 )
 
 
@@ -694,9 +729,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     permanent_capable: bool = True, pending_body=None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
-    ``warnings`` are the ``(key, _, is_tirith)`` tuples :func:`_persist_choice` stores on
+    ``warnings`` are the ``(key, _, session_only)`` tuples :func:`_persist_choice` stores on
     session/always. ``permanent_capable`` hides [a]lways when no key could be permanently
-    allowlisted (pure-tirith prompts); a smart-DENY owner override reduces every surface to
+    allowlisted (pure-tirith or ``review: human`` prompts); a smart-DENY owner override reduces every surface to
     once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
     """
@@ -833,22 +868,25 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
+    smart: bool = False, permanent_capable: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
 
     Order: yolo bypass → session-cache short-circuit → interactive/gateway/unattended branch →
-    prompt → persistence. Input-shape checks (hardline, allowlist, pattern detection) are the
-    caller's job. ``fail_closed_when_no_human``: a non-interactive, non-gateway, non-cron
-    context BLOCKS instead of auto-approving, so a plugin-flagged action never runs ungated.
-    Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
-    an explicit ``*_deny_message`` (the file-tool write gates word their own).
+    guardian LLM (``smart``) → prompt → persistence. Input-shape checks (hardline, allowlist,
+    pattern detection) are the caller's job. ``fail_closed_when_no_human``: a non-interactive,
+    non-gateway, non-cron context BLOCKS instead of auto-approving, so a plugin-flagged action
+    never runs ungated. ``permanent_capable=False`` hides [a]lways and ignores the permanent
+    allowlist for this key (session approvals still apply). Unattended deny text is
+    ``ctx.block_message(subject, noun, advice)`` unless the caller passes an explicit
+    ``*_deny_message`` (the file-tool write gates word their own).
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     if _yolo_active():
         return _approved()
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if (is_approved if permanent_capable else is_session_approved)(session_key, pattern_key):
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
@@ -891,8 +929,9 @@ def _run_approval_gate(
 
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
-        pattern_keys=[pattern_key], warnings=[(pattern_key, None, False)], session_key=session_key,
+        pattern_keys=[pattern_key], warnings=[(pattern_key, None, not permanent_capable)], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        smart=smart, permanent_capable=permanent_capable,
     )
 
 
@@ -938,6 +977,7 @@ def check_dangerous_command(command: str, env_type: str,
     """Detect a dangerous command and handle approval (pattern layer only). ``has_host_access``:
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
+    _observe_approval_required_policies()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
@@ -945,9 +985,13 @@ def check_dangerous_command(command: str, env_type: str,
         return blocked
     if _yolo_active():
         return _approved()
-    if _command_matches_permanent_allowlist(command):
+    required = _match_approval_required_rule(command)
+    if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if required is not None:
+        is_dangerous, pattern_key, description = True, required.key, required.prompt_description
+    else:
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return _approved()
     return _run_approval_gate(
@@ -955,10 +999,14 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+        # A review: smart rule is a built-in dangerous pattern on this gate too: guardian first.
+        smart=required is not None and required.review == "smart" and approval_context._get_approval_mode() == "smart",
+        permanent_capable=required is None or required.review != "human",
     )
 
 
-def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
+def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", review: str = "human",
+                          approval_callback=None) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
     Entry point for a plugin ``pre_tool_call`` hook returning ``{"action": "approve", ...}``:
@@ -967,7 +1015,10 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     the LLM cannot skip it. Cron honors ``approvals.cron_mode``; any OTHER non-interactive
     non-gateway context fails CLOSED. ``rule_key`` controls the ``[a]lways`` allowlist grain;
     when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons on the same tool
-    persist independently. Returns the ``check_dangerous_command`` result shape.
+    persist independently. ``review="smart"`` lets the guardian LLM see the request first under
+    ``approvals.mode: smart`` (APPROVE runs it, DENY/ESCALATE fall through to the human), exactly
+    like a built-in dangerous pattern; the default ``"human"`` never consults the guardian.
+    Returns the ``check_dangerous_command`` result shape.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
     if not rule_key:
@@ -983,6 +1034,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         fail_closed_when_no_human=True,
         no_human_block_message=(f"BLOCKED: {subject} but no interactive user or gateway is present "
                                 "to approve it. A plugin flagged this action for human confirmation."),
+        smart=review == "smart" and approval_context._get_approval_mode() == "smart",
     )
 
 
@@ -1029,6 +1081,7 @@ def check_all_command_guards(command: str, env_type: str,
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    _observe_approval_required_policies()
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1039,7 +1092,10 @@ def check_all_command_guards(command: str, env_type: str,
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
         return _approved()
-    if _command_matches_permanent_allowlist(command):
+    # An operator's approval-required rule beats a command_allowlist glob: the rule is the more
+    # specific statement of intent. Only its own key, once [a]lways-approved, short-circuits it.
+    required = _match_approval_required_rule(command)
+    if required is None and _command_matches_permanent_allowlist(command):
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
@@ -1047,13 +1103,14 @@ def check_all_command_guards(command: str, env_type: str,
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
-            result = _unattended_deny(command, ctx)
+            result = _unattended_deny(command, ctx, required)
             if result is not None:
                 return result
         return _approved()
 
-    # Gather findings: warnings = [(pattern_key, description, is_tirith)]. Tirith block AND warn both go through the
-    # approval flow (block used to be a hard stop) so users can inspect the findings and approve.
+    # Gather findings: warnings = [(pattern_key, description, session_only)]. Tirith block AND warn both go through
+    # the approval flow (block used to be a hard stop) so users can inspect the findings and approve. session_only
+    # keys (tirith, review: human rules) are never permanently allowlisted and never smart-approved.
     tirith_result = _tirith_scan(command)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     warnings = []
@@ -1064,8 +1121,11 @@ def check_all_command_guards(command: str, env_type: str,
         tirith_key = f"tirith:{rule_id}"
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
+    human_required = required is not None and required.review == "human"
+    if required is not None and not (is_session_approved if human_required else is_approved)(session_key, required.key):
+        warnings.append((required.key, required.prompt_description, human_required))
     if is_dangerous and not is_approved(session_key, pattern_key):
-        warnings.append((pattern_key, description, False))
+        warnings.append((pattern_key, description, human_required))
     if not warnings:
         return _approved()
 
@@ -1076,12 +1136,15 @@ def check_all_command_guards(command: str, env_type: str,
     # "Always" is offered when at least one warning is a dangerous-pattern key the persistence layer would actually
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
     # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
+    # A review: human rule takes the whole prompt away from the guardian and from [a]lways: #5528 asks
+    # for a person, every time, so nothing in this prompt may persist beyond the session.
     return _human_decision(
         _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
-        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
-        permanent_capable=any(not is_t for _, _, is_t in warnings),
+        is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
+        smart=approval_mode == "smart" and not human_required,
+        permanent_capable=not human_required and any(not session_only for _, _, session_only in warnings),
     )
 
 
@@ -1109,6 +1172,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
 
+    # Command rules never match execute_code, but a process that only runs code during a review-policy
+    # interval must still observe the transition (see _observe_approval_required_policies).
+    _observe_approval_required_policies()
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
     if env_type == "vercel_sandbox":
         return _approved()

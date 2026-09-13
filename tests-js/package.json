@@ -12,8 +12,8 @@
   },
   "devDependencies": {
     "@types/plist": "3.0.5",
-    "plist": "3.1.1",
+    "plist": "^5.0.0",
     "typescript": "6.0.3",
-    "vitest": "4.1.10"
+    "vitest": "^4.1.11"
   }
 }

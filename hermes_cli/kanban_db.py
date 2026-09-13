@@ -350,6 +350,21 @@ def scoped_current_board(slug: str):
         _CURRENT_BOARD_OVERRIDE.reset(token)
 
 
+def has_explicit_board_context() -> bool:
+    """Return whether the caller explicitly pins Kanban board resolution.
+
+    An existing scoped board and both environment overrides are explicit
+    caller/worker choices and must remain authoritative over a project-local
+    turn scope. Keep this check next to the native board resolution code so
+    callers do not duplicate its context/env contract.
+    """
+    return bool(
+        _CURRENT_BOARD_OVERRIDE.get()
+        or os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        or os.environ.get("HERMES_KANBAN_DB", "").strip()
+    )
+
+
 # Slug = directory name: strict enough to stop traversal / separators, loose
 # enough for kebab-case. Display names (spaces, emoji) live in board.json.
 _BOARD_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")

@@ -24,7 +24,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
@@ -2890,6 +2890,119 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+# A missing argument means "resolve the active project" while an explicit
+# ``None`` means "there is no active project". The distinction lets the turn
+# wrapper resolve the project once and avoids a second profile DB lookup.
+_PROJECT_UNSET = object()
+_GATEWAY_PROJECT_CWD: ContextVar[str | None] = ContextVar(
+    "hermes_gateway_project_cwd", default=None
+)
+
+
+def _resolve_active_project_for_gateway():
+    """Return the non-archived active Project in the current profile, if any.
+
+    Project state is profile-local through ``projects_db.projects_db_path`` and
+    the surrounding profile runtime scope. Do not create a new projects DB on
+    every gateway turn for profiles that never used Projects; this helper is
+    deliberately fail-open so legacy profiles retain native cwd/board behavior.
+    """
+    try:
+        from hermes_cli import projects_db
+
+        db_path = Path(projects_db.projects_db_path())
+        if not db_path.exists():
+            return None
+        with projects_db.connect_closing(db_path) as conn:
+            active_id = projects_db.get_active_id(conn)
+            if not active_id:
+                return None
+            project = projects_db.get_project(conn, active_id)
+        if project is None or bool(getattr(project, "archived", False)):
+            return None
+        return project
+    except Exception:
+        logger.debug("gateway active Project lookup failed", exc_info=True)
+        return None
+
+
+def _resolve_gateway_project_cwd(project=_PROJECT_UNSET) -> str:
+    """Return an existing active Project primary path, or ``""``.
+
+    After an invalid Project path, the profile runtime scope's native terminal
+    cwd resolver remains in charge of ``terminal.cwd`` and the process cwd.
+    Passing the empty value through ``set_session_vars`` clears any inherited
+    task-local override without mutating ``TERMINAL_CWD``.
+    """
+    if project is _PROJECT_UNSET:
+        project = _resolve_active_project_for_gateway()
+    if project is None:
+        return ""
+
+    try:
+        primary = str(getattr(project, "primary_path", "") or "").strip()
+        if primary:
+            candidate = Path(primary).expanduser()
+            if candidate.is_dir():
+                return str(candidate.resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        pass
+    return ""
+
+
+@_contextmanager
+def _scoped_gateway_project_cwd(project) -> Any:
+    """Bind the resolved Project cwd for the duration of one async turn."""
+    cwd = _resolve_gateway_project_cwd(project)
+    from agent.runtime_cwd import set_session_cwd
+
+    cwd_token = set_session_cwd(cwd)
+    selection_token = _GATEWAY_PROJECT_CWD.set(cwd)
+    try:
+        yield
+    finally:
+        _GATEWAY_PROJECT_CWD.reset(selection_token)
+        cwd_token.var.reset(cwd_token)
+
+
+@_contextmanager
+def _scoped_gateway_project_board(project) -> Any:
+    """Temporarily apply an active Project's board to this async turn.
+
+    ``HERMES_KANBAN_BOARD`` and ``HERMES_KANBAN_DB`` are explicit dispatcher /
+    caller pins and therefore remain authoritative. The persisted
+    ``kanban/current`` selection is a default, so a valid Project association
+    may override it for the duration of this turn.
+    """
+    try:
+        board_slug = str(getattr(project, "board_slug", "") or "").strip()
+    except Exception:
+        logger.debug("gateway Project board association is malformed", exc_info=True)
+        yield
+        return
+    if not board_slug:
+        yield
+        return
+
+    try:
+        from hermes_cli.kanban_db import (
+            has_explicit_board_context,
+            scoped_current_board,
+        )
+        explicit_pin = has_explicit_board_context()
+    except Exception:
+        logger.debug("kanban board scope unavailable", exc_info=True)
+        yield
+        return
+
+    if explicit_pin:
+        yield
+        return
+
+    with scoped_current_board(board_slug):
+        yield
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml (single source of truth), else temporary AIAgents (e.g. /compress)
     use the hardcoded default, which fails under openai-codex."""
@@ -4208,6 +4321,7 @@ class GatewayRunner(
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=_GATEWAY_PROJECT_CWD.get() or "",
             async_delivery=_async_delivery,
             cron_session="")
 

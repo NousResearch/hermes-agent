@@ -1970,6 +1970,22 @@ class GatewayTurnMixin:
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+        """Run one agent turn inside the active Project's task-local scope."""
+        from gateway.run import (
+            _resolve_active_project_for_gateway,
+            _scoped_gateway_project_board,
+            _scoped_gateway_project_cwd,
+        )
+
+        project = _resolve_active_project_for_gateway()
+        with _scoped_gateway_project_cwd(project), _scoped_gateway_project_board(project):
+            return await self._handle_message_with_agent_inner(
+                event, source, _quick_key, run_generation,
+            )
+
+    async def _handle_message_with_agent_inner(
+        self, event, source, _quick_key: str, run_generation: int
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)

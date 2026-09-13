@@ -15,7 +15,6 @@ from typing import Any, Callable, Mapping
 
 from gateway import hosted_rooms
 from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
-from hermes_cli.sqlite_util import open_db, transaction
 
 
 MAX_ACTIVE_POLICY_EVENTS = 64
@@ -111,9 +110,14 @@ class HostedRoomPolicyCheckpoint:
                 conn.execute(ddl)
 
     def _connect(self) -> sqlite3.Connection:
+        # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
+        from hermes_cli.sqlite_util import open_db
+
         return open_db(self.db_path, db_label="shared-state.db (room policy checkpoint)", busy_timeout_ms=10_000)
 
     def _transaction(self):
+        from hermes_cli.sqlite_util import transaction
+
         return transaction(self._connect())
 
     @staticmethod

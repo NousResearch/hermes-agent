@@ -110,6 +110,24 @@ def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: An
     return pop(handle, **kwargs)
 
 
+# nemo-relay's pinned native binding reports the two LIFO states with two DIFFERENT messages.
+# They are not interchangeable, so the tolerant helper keys on which one it received:
+#   * already popped  — the handle is absent by the native layer's own account
+#   * live but buried — the handle is still on the stack, beneath a nested scope
+_ALREADY_POPPED_MARKER = "scope handle not found"
+_NOT_AT_TOP_MARKER = "scope handle is not at the top of the stack"
+
+
+def _log_treated_as_popped(handle: Any) -> None:
+    """Log the single line recording that a failed pop was read as an already-done pop."""
+    import logging
+
+    logging.getLogger(__name__).info(
+        "safe_pop_relay_scope: handle %r is no longer on the scope stack; treating as popped.",
+        handle,
+    )
+
+
 def _handle_still_on_stack(relay: Any, handle: Any) -> bool | None:
     """Whether *handle* is still present on the relay's scope stack.
 
@@ -137,13 +155,22 @@ def _handle_still_on_stack(relay: Any, handle: Any) -> bool | None:
 def safe_pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: Any = None, timestamp: Any = None) -> Any:
     """Like :func:`pop_relay_scope`, but tolerant of a stale/already-popped handle.
 
-    nemo-relay 0.8.3's native ``_native_pop_scope`` raises
-    ``RuntimeError("invalid argument: scope handle is not at the top of the stack")``
-    when the caller passes a handle that was already popped by an earlier interrupt
-    or drain path. For finalization/cleanup callers (``_finish_task`` and similar
-    observability sites) this is semantically a success: the scope is already gone,
-    and raising only costs one observability-loss log line and skips metrics export
-    for the finished task.
+    nemo-relay 0.8.3's native binding reports the two LIFO states with two different
+    ``RuntimeError`` messages:
+
+    * an **already-popped** handle raises ``RuntimeError("not found: scope handle not found")``
+    * a handle that is **still live beneath a nested scope** raises
+      ``RuntimeError("invalid argument: scope handle is not at the top of the stack")``
+
+    Only the first is the situation this helper exists for. When the caller is an
+    earlier interrupt or drain path, the scope is already gone, so raising costs one
+    observability-loss log line and skips metrics export for the finished task; the
+    native layer's own "not found" is sufficient evidence that the pop is complete.
+
+    The second message is **generic** — it also fires for a live-but-buried handle — so
+    it is tolerated only when :func:`_handle_still_on_stack` proves our handle is absent.
+    Treating it as success unconditionally would let a caller forget a task whose scope
+    is still on the stack.
 
     Callers that own drain semantics — e.g. ``_pop_with_drain``, which needs the
     RuntimeError signal to trigger orphan draining above the target — must keep
@@ -155,21 +182,29 @@ def safe_pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadat
     try:
         return pop_relay_scope(relay, handle, output=output, metadata=metadata, timestamp=timestamp)
     except RuntimeError as exc:
-        if "scope handle is not at the top of the stack" not in str(exc):
+        message = str(exc)
+        # The pinned native binding (nemo-relay 0.8.3) reports the two LIFO states with TWO
+        # DIFFERENT messages, and they mean different things:
+        #
+        #   already popped  -> "not found: scope handle not found"
+        #   live but buried -> "invalid argument: scope handle is not at the top of the stack"
+        #
+        # Tolerance therefore has to be conditional on which one we got. The first is the state
+        # this helper exists for: the native layer is telling us the handle is absent, so treating
+        # the pop as already-done is safe by construction.
+        if _ALREADY_POPPED_MARKER in message:
+            _log_treated_as_popped(handle)
+            return None
+        # The second is generic: it fires for an already-popped handle AND for a handle that is
+        # still live beneath a nested model/tool scope. Swallowing the second would let the caller
+        # forget a task whose scope is still on the stack, leaving later cleanup to orphan-cancel
+        # it and lose the completion metrics. So for this one, swallow ONLY when the handle is
+        # provably absent; an uninspectable stack re-raises rather than guessing.
+        if _NOT_AT_TOP_MARKER not in message:
             raise
-        # That message is the vendor's generic LIFO complaint, not a stale-handle diagnosis: it
-        # fires both when our handle is already gone AND when it is still live but buried under a
-        # nested model/tool scope. Treating the second case as success would let the caller forget a
-        # task whose scope is still on the stack, leaving later cleanup to orphan-cancel it and lose
-        # the completion metrics. So swallow ONLY when the handle is provably absent; an
-        # uninspectable stack re-raises rather than guessing.
         if _handle_still_on_stack(relay, handle) is not False:
             raise
-        import logging
-        logging.getLogger(__name__).info(
-            "safe_pop_relay_scope: handle %r is no longer on the scope stack; treating as popped.",
-            handle,
-        )
+        _log_treated_as_popped(handle)
         return None
 
 

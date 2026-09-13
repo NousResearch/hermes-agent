@@ -189,3 +189,42 @@ def test_finish_task_call_site_uses_the_safe_helper():
     assert "relay_runtime.safe_pop_relay_scope" in src
     # A bare strict call here would be the regression.
     assert "relay_runtime.pop_relay_scope(" not in src
+
+
+# ---- the native binding's SECOND message (found in review) ----------------
+#
+# The pinned binding (nemo-relay 0.8.3) reports the two LIFO states with two
+# DIFFERENT messages:
+#
+#   already popped  -> "not found: scope handle not found"
+#   live but buried -> "invalid argument: scope handle is not at the top of the stack"
+#
+# Modelling only the buried message is what let the original helper re-raise for
+# the exact case it exists to tolerate: the already-popped path raised a string it
+# did not recognise. These cases model the real one.
+
+_NATIVE_NOT_FOUND = RuntimeError("not found: scope handle not found")
+
+
+def test_pop_relay_scope_propagates_the_native_not_found_error():
+    """The strict helper must still surface it, so `_pop_with_drain` keeps its signal."""
+    relay = _make_relay(_NATIVE_NOT_FOUND)
+    with pytest.raises(RuntimeError, match="scope handle not found"):
+        relay_runtime.pop_relay_scope(relay, handle="h-x")
+
+
+def test_safe_pop_relay_scope_tolerates_the_native_not_found_error():
+    """Absence is asserted by the native layer, so no stack probe is required.
+
+    On the real binding ``get_scope_stack()`` returns an opaque ``ScopeStack``, which makes
+    :func:`_handle_still_on_stack` return ``None``. If tolerance demanded ``False`` for this
+    message too, the already-popped case would re-raise on the very binding this PR targets.
+    """
+    relay = _make_relay(_NATIVE_NOT_FOUND, stack=object())
+    assert relay_runtime.safe_pop_relay_scope(relay, handle="h-x") is None
+
+
+def test_safe_pop_relay_scope_tolerates_the_native_not_found_error_when_the_probe_raises():
+    """An uninspectable stack must not turn a native "not found" back into a raise."""
+    relay = _make_relay(_NATIVE_NOT_FOUND, stack_raises=AttributeError("opaque stack"))
+    assert relay_runtime.safe_pop_relay_scope(relay, handle="h-x") is None

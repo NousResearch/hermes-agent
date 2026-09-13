@@ -230,11 +230,16 @@ def normalize_base_url(value: Any) -> str:
     except ValueError:  # pragma: no cover - malformed URLs
         return _USERINFO_RE.sub("//", raw).rstrip("/").lower()
     if parts.scheme and parts.netloc:
-        # Rebuild without username/password: hostname + port only.
-        host = parts.hostname or ""
-        if parts.port:
-            host = f"{host}:{parts.port}"
-        return urlunsplit(parts._replace(netloc=host)).rstrip("/").lower()
+        try:
+            # Rebuild without username/password: hostname + port only. ``.port``
+            # raises ValueError for an out-of-range/garbage port, so a malformed
+            # base_url must fall through to the string path instead of raising.
+            host = parts.hostname or ""
+            if parts.port:
+                host = f"{host}:{parts.port}"
+            return urlunsplit(parts._replace(netloc=host)).rstrip("/").lower()
+        except ValueError:  # pragma: no cover - malformed authority
+            pass
     # No authority to parse (bare host / path / placeholder): still drop anything
     # shaped like ``//user:pass@`` before canonicalising.
     return _USERINFO_RE.sub("//", raw).rstrip("/").lower()

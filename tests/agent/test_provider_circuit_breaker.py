@@ -404,6 +404,8 @@ class TestReviewFollowUps:
         assert cb.normalize_base_url("HTTPS://Example.COM/v1/") == "https://example.com/v1"
         # Port is kept, credentials are not.
         assert cb.normalize_base_url("https://user:pw@example.com:8443/v1") == "https://example.com:8443/v1"
+        # Never raises on a malformed authority (out-of-range port).
+        assert cb.normalize_base_url("https://user:pw@example.com:99999/v1") is not None
 
     def test_state_file_never_persists_url_userinfo(self, tmp_path):
         """The state file must not leak a credential embedded in a base_url."""

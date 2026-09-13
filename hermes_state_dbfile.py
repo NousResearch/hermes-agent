@@ -239,19 +239,28 @@ def _darwin_libproc():
     return lib
 
 
-def _darwin_all_pids(lib) -> List[int]:
-    """Every pid ``proc_listpids`` will name (the kernel silently omits ones we may not inspect)."""
+def _darwin_grow_buffer(call, size: int) -> Optional[Tuple[bytes, int]]:
+    """Run a libproc list call, doubling the buffer until it fits; ``None`` when the kernel returns
+    nothing (process gone, or not ours to inspect)."""
     import ctypes
 
-    size = 4096 * 8
     while True:
         buffer = ctypes.create_string_buffer(size)
-        used = lib.proc_listpids(_DARWIN_ALL_PIDS, 0, buffer, size)
+        used = call(buffer, size)
         if used <= 0:
-            return []
+            return None
         if used < size:
-            return [pid for pid in struct.unpack_from(f"<{used // 4}i", buffer.raw) if pid > 0]
+            return buffer.raw, used
         size *= 2
+
+
+def _darwin_all_pids(lib) -> List[int]:
+    """Every pid ``proc_listpids`` will name (the kernel silently omits ones we may not inspect)."""
+    got = _darwin_grow_buffer(lambda buf, n: lib.proc_listpids(_DARWIN_ALL_PIDS, 0, buf, n), 4096 * 8)
+    if got is None:
+        return []
+    raw, used = got
+    return [pid for pid in struct.unpack_from(f"<{used // 4}i", raw) if pid > 0]
 
 
 def _darwin_fd_record(lib, pid: int, fd: int) -> Optional[Tuple[str, Tuple[int, int]]]:
@@ -298,23 +307,16 @@ def _iter_darwin_fd_targets():
     The pathname and the identity both stay readable after the path is unlinked, which is what
     makes an orphaned WAL generation visible at all on macOS.  Processes that cannot be inspected
     (gone, or not ours) and descriptors that are not vnodes are skipped silently."""
-    import ctypes
-
     lib = _darwin_libproc()
     if not _darwin_layout_verified(lib):
         return
     for pid in _darwin_all_pids(lib):
-        size = 4096
-        while True:
-            listing = ctypes.create_string_buffer(size)
-            used = lib.proc_pidinfo(pid, _DARWIN_PIDLISTFDS, 0, listing, size)
-            if used <= 0:
-                break  # process gone, or not ours to inspect
-            if used < size:
-                break
-            size *= 2
+        got = _darwin_grow_buffer(lambda buf, n: lib.proc_pidinfo(pid, _DARWIN_PIDLISTFDS, 0, buf, n), 4096)
+        if got is None:
+            continue
+        raw, used = got
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
-            fd = struct.unpack_from("<i", listing.raw, offset)[0]
+            fd = struct.unpack_from("<i", raw, offset)[0]
             decoded = _darwin_fd_record(lib, pid, fd)
             if decoded is not None:
                 yield pid, decoded[0], decoded[1]
@@ -327,11 +329,10 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     The watched side is resolved with ``os.path.realpath`` because libproc reports the kernel's
     path for the vnode, while ``os.path.abspath`` does not resolve symlinks -- a textual compare
     of the two silently misses every sidecar under a symlinked prefix (on macOS ``/var`` itself)."""
-    base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
-    watched = {os.path.normcase(path): path for path in (base + "-wal", base + "-shm")}
+    watched = _watched_sqlite_sidecar_paths(os.path.realpath(os.fspath(db_path)))
     holders: List[Tuple[int, str]] = []
     for pid, target, identity in _iter_darwin_fd_targets():
-        literal = watched.get(os.path.normcase(target))
+        literal = watched.get(_canonical_sqlite_path(target))
         if literal is not None and _identity_is_truly_unlinked(identity, literal):
             holders.append((pid, target))
     return holders

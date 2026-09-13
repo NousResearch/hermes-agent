@@ -25,7 +25,7 @@ def test_computer_use_capture_reaches_the_existing_backend(monkeypatch):
 
     monkeypatch.setattr(tool, "_get_backend", lambda session_id="": object())
 
-    def _dispatch(backend, action, args):
+    def _dispatch(backend, action, args, **kwargs):
         return json.dumps({"ok": True, "action": action, "reached_backend": True})
 
     monkeypatch.setattr(tool, "_dispatch", _dispatch)

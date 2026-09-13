@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 
 import bpy
@@ -83,7 +85,12 @@ def normalize(objects: list[bpy.types.Object], target: float, location: tuple[fl
         obj.location.z -= low.z
 
 
-def label(text: str, location: tuple[float, float, float], size: float = 0.18) -> None:
+def label(
+    text: str,
+    location: tuple[float, float, float],
+    size: float = 0.18,
+    asset_id: str | None = None,
+) -> bpy.types.Object:
     bpy.ops.object.text_add(location=location)
     obj = bpy.context.object
     obj.name = f"label_{text.lower().replace('-', '_').replace(' ', '_')}"
@@ -101,7 +108,13 @@ def label(text: str, location: tuple[float, float, float], size: float = 0.18) -
         bsdf.inputs["Emission Strength"].default_value = 0.35
     obj.data.materials.append(material)
     direction = Vector((0, -22, 12)) - Vector(location)
-    obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+    # Blender text faces local +Z. Tracking -Z makes the render readable only
+    # from behind and produces mirrored labels in the review preview.
+    obj.rotation_euler = direction.to_track_quat("Z", "Y").to_euler()
+    obj["reference_only"] = True
+    if asset_id:
+        obj["lunar_city_asset_id"] = asset_id
+    return obj
 
 
 def import_reference(asset_id: str, kind: str, filename: str, index: int) -> dict:
@@ -129,7 +142,7 @@ def import_reference(asset_id: str, kind: str, filename: str, index: int) -> dic
                 existing.objects.unlink(obj)
         obj["lunar_city_asset_id"] = asset_id
         obj["reference_only"] = True
-    label(asset_id, (x, row_y - 1.35, 0.05), 0.14 if kind == "building" else 0.16)
+    label(asset_id, (x, row_y - 1.35, 0.05), 0.14 if kind == "building" else 0.16, asset_id)
     low, high, dims = bounds(meshes)
     return {
         "id": asset_id,
@@ -193,10 +206,45 @@ def setup_scene() -> None:
 
 def export_board() -> None:
     bpy.ops.object.select_all(action="DESELECT")
+
+
+def strip_render_metadata() -> None:
+    """Remove Blender's workstation path and render-stamp chunks from PNG output."""
+    sips = shutil.which("sips")
+    if sips is None:
+        return
+    clean = BOARD_RENDER.with_name(f"{BOARD_RENDER.stem}.clean{BOARD_RENDER.suffix}")
+    subprocess.run(
+        [sips, "-s", "format", "png", str(BOARD_RENDER), "--out", str(clean)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    clean.replace(BOARD_RENDER)
+    labels = [obj for obj in bpy.context.scene.objects if obj.type == "FONT"]
+    for obj in labels:
+        obj.select_set(True)
+    if labels:
+        bpy.context.view_layer.objects.active = labels[0]
+        # glTF has no native text primitive. Export mesh copies so the review
+        # board carries the visible asset identifiers without mutating the
+        # editable text objects saved in the .blend.
+        bpy.ops.object.duplicate()
+        bpy.ops.object.convert(target="MESH")
+        for obj in bpy.context.selected_objects:
+            obj.name = f"{obj.name}_export"
     for obj in bpy.context.scene.objects:
-        if obj.type in {"MESH", "EMPTY"} and not obj.name.startswith("label_"):
+        if obj.type in {"MESH", "EMPTY"}:
             obj.select_set(True)
-    bpy.ops.export_scene.gltf(filepath=str(BOARD_GLB), export_format="GLB", use_selection=True)
+    bpy.ops.export_scene.gltf(
+        filepath=str(BOARD_GLB),
+        export_format="GLB",
+        use_selection=True,
+        export_extras=True,
+    )
+    for obj in bpy.context.scene.objects:
+        if obj.name.endswith("_export"):
+            bpy.data.objects.remove(obj, do_unlink=True)
     bpy.ops.object.select_all(action="DESELECT")
 
 
@@ -213,14 +261,17 @@ def main() -> None:
         "schemaVersion": 1,
         "generator": "build_lunar_city_hunyuan_reference_board.py",
         "status": "reference_only",
-        "blend": str(BOARD_BLEND.relative_to(GENERATED)),
-        "glb": str(BOARD_GLB.relative_to(GENERATED)),
+        # The editable .blend and exported .glb are local build products. Keep
+        # them out of the repository while still producing them for inspection.
+        "blend": None,
+        "glb": None,
         "preview": str(BOARD_RENDER.relative_to(GENERATED)),
         "assets": assets,
         "notes": [
             "Hunyuan3D-2mv shape-only reference pass from approved 2x2 turnarounds.",
             "Plan views were retained as QA references but not mislabeled as elevations.",
             "Meshes require visual review, retopology, PBR baking, scale/collision checks, and LODs before production promotion.",
+            "The builder emits local .blend/.glb products; only this metadata and the inspected preview are tracked.",
         ],
     }
     BOARD_METADATA.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
@@ -228,6 +279,7 @@ def main() -> None:
     export_board()
     bpy.context.scene.render.filepath = str(BOARD_RENDER)
     bpy.ops.render.render(write_still=True)
+    strip_render_metadata()
     print(json.dumps({"imported": sum(item["status"] == "imported" for item in assets), "missing": sum(item["status"] == "missing" for item in assets), "blend": str(BOARD_BLEND), "preview": str(BOARD_RENDER)}))
 
 

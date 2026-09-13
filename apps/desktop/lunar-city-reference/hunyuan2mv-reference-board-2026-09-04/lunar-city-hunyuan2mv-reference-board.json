@@ -131,10 +131,10 @@
     {
       "bounds": [
         1.7,
-        1.5204,
-        1.5066
+        1.1319,
+        1.4223
       ],
-      "faces": 1531206,
+      "faces": 425996,
       "id": "worker-audit",
       "kind": "worker",
       "meshObjects": 1,
@@ -142,15 +142,15 @@
       "referenceOnly": true,
       "source": "hunyuan2mv-worker-reference-2026-09-04/worker-audit.glb",
       "status": "imported",
-      "vertices": 765647
+      "vertices": 213044
     },
     {
       "bounds": [
         1.7,
-        1.5339,
-        1.5164
+        0.8799,
+        1.5343
       ],
-      "faces": 1652186,
+      "faces": 363504,
       "id": "worker-operations",
       "kind": "worker",
       "meshObjects": 1,
@@ -158,7 +158,7 @@
       "referenceOnly": true,
       "source": "hunyuan2mv-worker-reference-2026-09-04/worker-operations.glb",
       "status": "imported",
-      "vertices": 826101
+      "vertices": 181740
     },
     {
       "bounds": [
@@ -231,7 +231,8 @@
   "notes": [
     "Hunyuan3D-2mv shape-only reference pass from approved 2x2 turnarounds.",
     "Plan views were retained as QA references but not mislabeled as elevations.",
-    "Meshes require visual review, retopology, PBR baking, scale/collision checks, and LODs before production promotion."
+    "Meshes require visual review, retopology, PBR baking, scale/collision checks, and LODs before production promotion.",
+    "The builder emits local .blend/.glb products; only this metadata and the inspected preview are tracked."
   ],
   "preview": "hunyuan2mv-reference-board-2026-09-04/lunar-city-hunyuan2mv-reference-board.png",
   "schemaVersion": 1,

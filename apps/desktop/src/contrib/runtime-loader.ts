@@ -312,6 +312,23 @@ const disk = new Map<string, DiskPlugin>()
 let watching = false
 let scanning = false
 
+async function restartDiskPluginWatch(
+  desktop: NonNullable<Window['hermesDesktop']>,
+  record: DiskPlugin
+): Promise<void> {
+  if (record.watchId) {
+    await desktop.stopPreviewFileWatch(record.watchId)
+    record.watchId = null
+  }
+
+  try {
+    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+  } catch {
+    // Unwatchable — the poll still reconciles new folders; edits need a
+    // manual "Reload desktop plugins".
+  }
+}
+
 /** Drop a folder-named error record — unless that name is the live plugin id
  *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
  *  must not clobber its healthy namesake's inventory row). */
@@ -440,7 +457,7 @@ async function resolveDiskPluginEntry(
   return null
 }
 
-async function scanDiskPlugins(): Promise<void> {
+async function scanDiskPlugins(forceReload = false): Promise<void> {
   const desktop = window.hermesDesktop
 
   // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
@@ -484,7 +501,15 @@ async function scanDiskPlugins(): Promise<void> {
 
         seen.add(file)
 
-        if (disk.has(file)) {
+        const existing = disk.get(file)
+
+        if (existing) {
+          if (forceReload && (await loadDiskPlugin(existing))) {
+            // Atomic replacement can leave the old watch attached to the
+            // unlinked file, so a manual reload must bind a fresh watch too.
+            await restartDiskPluginWatch(desktop, existing)
+          }
+
           continue
         }
 
@@ -509,12 +534,7 @@ async function scanDiskPlugins(): Promise<void> {
           continue
         }
 
-        try {
-          record.watchId = (await desktop.watchPreviewFile(file)).id
-        } catch {
-          // Unwatchable — the poll still reconciles new folders; edits need a
-          // manual "Reload desktop plugins".
-        }
+        await restartDiskPluginWatch(desktop, record)
       }
     }
 
@@ -545,7 +565,7 @@ async function scanDiskPlugins(): Promise<void> {
 }
 
 /** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
-export const discoverRuntimePlugins = scanDiskPlugins
+export const discoverRuntimePlugins = () => scanDiskPlugins(true)
 
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */

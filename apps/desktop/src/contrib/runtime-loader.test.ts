@@ -204,6 +204,86 @@ describe('scanDiskPlugins (#66899)', () => {
       delete (globalThis as unknown as { __uniRegister?: unknown }).__uniRegister
     }
   })
+
+  it('manual discovery reloads an existing plugin after its entry file is replaced', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('')
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/desktop-plugins') {
+        return {
+          entries: [
+            {
+              isDirectory: true,
+              name: 'replaceable',
+              path: '/local/.hermes/desktop-plugins/replaceable'
+            }
+          ]
+        }
+      }
+
+      if (dir === '/local/.hermes/desktop-plugins/replaceable') {
+        return {
+          entries: [
+            {
+              isDirectory: false,
+              name: 'plugin.js',
+              path: '/local/.hermes/desktop-plugins/replaceable/plugin.js'
+            }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    const registerV1 = vi.fn()
+    const registerV2 = vi.fn()
+
+    Object.assign(globalThis, { __replaceableV1: registerV1, __replaceableV2: registerV2 })
+
+    let source = 'export default { id: "replaceable", register: globalThis.__replaceableV1 }'
+
+    readFileText.mockImplementation(async () => ({ text: source }))
+    watchPreviewFile.mockResolvedValue({ id: 'w-replaceable' })
+
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      await discoverRuntimePlugins()
+      expect(registerV1).toHaveBeenCalledTimes(1)
+
+      source = 'export default { id: "replaceable", register: globalThis.__replaceableV2 }'
+      await discoverRuntimePlugins()
+
+      expect(registerV2).toHaveBeenCalledTimes(1)
+      expect(readFileText).toHaveBeenCalledTimes(2)
+      expect(stopPreviewFileWatch).toHaveBeenCalledWith('w-replaceable')
+      expect(watchPreviewFile).toHaveBeenCalledTimes(2)
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      delete (globalThis as unknown as { __replaceableV1?: unknown }).__replaceableV1
+      delete (globalThis as unknown as { __replaceableV2?: unknown }).__replaceableV2
+    }
+  })
 })
 
 describe('watchRuntimePlugins dir watch (#66899)', () => {

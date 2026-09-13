@@ -18,7 +18,10 @@ import type { RosterRow } from './types'
 
 export interface DisplayLease {
   holder: 'agent' | 'human'
+  /** Raw holder id — only older backends still broadcast it; newer ones send `viewer_hash`. */
   viewer_id: null | string
+  /** First 12 hex of sha256(viewer_id): names the holder without leaking a usable id. */
+  viewer_hash?: null | string
   since: number
   reason: string
   pending_handoff: null | string
@@ -42,12 +45,36 @@ export interface DisplayStatus {
 export interface DisplayObserveResult extends DisplayStatus {
   ticket: string
   path: string
+  /** Server-minted per attach: the only id the lease will ever be compared against. */
   viewer_id: string
 }
 
-/** Stable per-window viewer identity: the lease names who holds control, and a
- *  reload must NOT silently inherit a stale holder's authority. */
-export const VIEWER_ID = `desktop-${Math.random().toString(36).slice(2, 10)}`
+/** This window's identity for one attach: the minted id plus its lease-payload hash. */
+export interface ScreenViewer {
+  id: string
+  hash: string
+}
+
+const VIEWER_HASH_HEX = 12
+
+/** `viewer_hash` as the lease broadcasts it: first 12 hex of sha256(viewer_id). */
+export async function viewerHash(viewerId: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(viewerId))
+
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, VIEWER_HASH_HEX)
+}
+
+/** Does `viewer` (this window's attach) hold `lease`? Newer backends name the
+ *  holder by hash only; a payload still carrying the raw id is compared raw. */
+export function leaseHeldBy(lease: DisplayLease | null | undefined, viewer: ScreenViewer | null | undefined): boolean {
+  if (!lease || !viewer || lease.holder !== 'human') {
+    return false
+  }
+
+  return lease.viewer_id != null ? lease.viewer_id === viewer.id : lease.viewer_hash === viewer.hash
+}
 
 /** Bare-profile fallback so a v1 local bot (no registry route) still resolves. */
 export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string {

@@ -2,6 +2,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { DisplayStatus } from './screen-connection'
+import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
 const sockets = vi.hoisted(() => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void }>)
@@ -34,8 +35,9 @@ vi.mock('./i18n', () => ({
     }
   })
 }))
-vi.mock('./screen-connection', () => ({
-  VIEWER_ID: 'this-viewer',
+vi.mock('./screen-connection', async importActual => ({
+  // Real pure helpers (viewerHash / leaseHeldBy); only the gateway legs are faked.
+  ...(await importActual<typeof ScreenConnection>()),
   displayRequest: vi.fn(),
   resolveScreenWsUrl: vi.fn(async () => 'ws://localhost/api/display/ws'),
   isEventForBotScreen: () => false

@@ -17,15 +17,15 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, isEventForBotScreen, VIEWER_ID } from './screen-connection'
+import { type DisplayLease, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, type ScreenViewer } from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
 
 export type PortalTone = 'live' | 'human' | 'other' | 'off' | 'missing' | 'unsupported' | 'unknown'
 
-/** Pure: map cached status + lease to what the portal says. */
-export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null): PortalTone {
+/** Pure: map cached status + lease (+ this window's minted viewer, if attached) to what the portal says. */
+export function portalTone(status: DisplayStatus | null, lease: DisplayLease | null, viewer: ScreenViewer | null = null): PortalTone {
   if (!status) {
     return 'unknown'
   }
@@ -43,7 +43,7 @@ export function portalTone(status: DisplayStatus | null, lease: DisplayLease | n
   }
 
   if (lease?.holder === 'human') {
-    return lease.viewer_id === VIEWER_ID ? 'human' : 'other'
+    return leaseHeldBy(lease, viewer) ? 'human' : 'other'
   }
 
   return 'live'
@@ -109,7 +109,7 @@ export function useScreenPortalState(bot: RosterRow) {
     [bot, profileKey]
   )
 
-  return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null) }
+  return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null) }
 }
 
 export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; meta?: BotMeta | null; compact?: boolean }) {

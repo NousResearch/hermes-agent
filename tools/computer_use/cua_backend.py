@@ -100,6 +100,18 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
+def desktop_identity(env: Optional[Dict[str, str]] = None) -> str:
+    """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
+    cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
+    noticed — the cached cua-driver still points at the old seat or at no display at all."""
+    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+
+
+def backend_display_stale(recorded: str, current: str) -> bool:
+    """True when a cached backend's recorded display identity no longer matches the one a fresh spawn would get."""
+    return (recorded or "") != (current or "")
+
+
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Env for spawning cua-driver: ``base_env`` (default ``os.environ``) plus ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when

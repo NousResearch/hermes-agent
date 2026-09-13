@@ -180,6 +180,12 @@ class _KanbanDispatcher:
         fingerprint = self.board_db_fingerprint(slug)
         if not self._quarantine_lifted(slug, fingerprint):
             return None
+        # Board-level dispatch override (narrowing-only: the global switch
+        # already gated whether this loop runs at all — see
+        # gateway/kanban_watchers.py's _kanban_dispatch_allowed() check).
+        # Default True (absent key / old board.json) means "inherit global".
+        if not self.kb.read_board_metadata(slug).get("dispatch_enabled", True):
+            return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
         try:
             # No explicit init_db(): connect() runs the migration once per
@@ -219,11 +225,11 @@ class _KanbanDispatcher:
         for a human reviewer is idle, not stuck.
         """
         kbd = _kbd()
-        _review_probe = kbd.review_dispatch_enabled()
         for slug in self._board_slugs():
             conn = None
             try:
                 conn = _kbc().connect(board=slug)
+                _review_probe = kbd.review_dispatch_enabled(board=slug)
                 if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
                     return True
             except Exception:
@@ -250,6 +256,9 @@ class _KanbanDispatcher:
         for slug in self._board_slugs():
             if attempted >= auto_decompose_per_tick:
                 break
+            # Same board-level override semantics as dispatch_enabled above.
+            if not self.kb.read_board_metadata(slug).get("auto_decompose_enabled", True):
+                continue
             # Pin the board via env for the call: the decomposer connects
             # with no board kwarg (same pattern as the dashboard specify endpoint).
             prev_env = os.environ.get("HERMES_KANBAN_BOARD")

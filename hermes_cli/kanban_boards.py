@@ -131,6 +131,12 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
         print(f"  Description:  {meta['description']}")
     print(f"  DB path:      {meta['db_path']}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
+    dispatch_word = "on" if meta.get("dispatch_enabled", True) else "off (board override)"
+    decompose_word = "on" if meta.get("auto_decompose_enabled", True) else "off (board override)"
+    review_word = "on" if meta.get("review_dispatch_enabled", True) else "off (board override)"
+    print(f"  Dispatch:     {dispatch_word}\n"
+          f"  Auto-decompose: {decompose_word}\n"
+          f"  Review-dispatch: {review_word}")
     return 0
 
 
@@ -152,6 +158,48 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_dispatch(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-dispatch", must_exist=True)
+    if rc:
+        return rc
+    enabled = args.state == "on"
+    meta = kb.write_board_metadata(normed, dispatch_enabled=enabled)
+    state_word = "enabled" if meta.get("dispatch_enabled", True) else "disabled"
+    print(f"Board {normed!r} dispatch {state_word}.")
+    if state_word == "disabled":
+        print("  Note: this only suppresses THIS board. The global dispatcher "
+              "switch (kanban.dispatch_in_gateway in config.yaml) still gates every board.")
+    return 0
+
+
+def _cmd_boards_set_auto_decompose(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-auto-decompose", must_exist=True)
+    if rc:
+        return rc
+    enabled = args.state == "on"
+    meta = kb.write_board_metadata(normed, auto_decompose_enabled=enabled)
+    state_word = "enabled" if meta.get("auto_decompose_enabled", True) else "disabled"
+    print(f"Board {normed!r} auto-decompose {state_word}.")
+    if state_word == "disabled":
+        print("  Note: this only suppresses THIS board. The global auto-decompose "
+              "switch (kanban.auto_decompose in config.yaml) still gates every board.")
+    return 0
+
+
+def _cmd_boards_set_review_dispatch(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-review-dispatch", must_exist=True)
+    if rc:
+        return rc
+    enabled = args.state == "on"
+    meta = kb.write_board_metadata(normed, review_dispatch_enabled=enabled)
+    state_word = "enabled" if meta.get("review_dispatch_enabled", True) else "disabled"
+    print(f"Board {normed!r} review-dispatch {state_word}.")
+    if state_word == "disabled":
+        print("  Note: this only suppresses THIS board. The global review-dispatch "
+              "switch (kanban.review_dispatch in config.yaml) still gates every board.")
     return 0
 
 
@@ -209,6 +257,9 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-dispatch": _cmd_boards_set_dispatch,
+    "set-auto-decompose": _cmd_boards_set_auto_decompose,
+    "set-review-dispatch": _cmd_boards_set_review_dispatch,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

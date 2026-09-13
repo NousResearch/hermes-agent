@@ -822,34 +822,38 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     if not (has_model or ctx_sent):
         return config
     try:
-        disk_model = load_config().get("model")
-        if isinstance(disk_model, dict):
-            if has_model:
-                prev_default = str(disk_model.get("default") or "").strip()
-                prev_provider = str(disk_model.get("provider") or "").strip()
-                if model_val != prev_default and prev_provider:
-                    new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
-                    if new_provider and new_provider.strip().lower() != prev_provider.lower():
-                        norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
-                        result = _validated_main_model_selection(load_config(), norm_provider, norm_model)
-                        disk_model = _apply_main_model_assignment(disk_model, result)
-                        model_val = result.new_model
-                disk_model["default"] = model_val
-            if ctx_sent:
-                if ctx_override > 0:
-                    disk_model["context_length"] = ctx_override
-                else:
-                    disk_model.pop("context_length", None)
-            config["model"] = disk_model
-        elif ctx_sent and ctx_override > 0:
-            # Model was a bare string (or absent) — upgrade to a dict for the override.
-            if has_model:
-                default = model_val
-            elif isinstance(disk_model, str) and disk_model:
-                default = disk_model
-            else:
-                default = ""
-            config["model"] = {"default": default, "context_length": ctx_override}
+        disk_cfg = load_config()
     except Exception:
-        pass  # can't read disk config — just use the string form
+        return config  # can't read disk config — just use the string form
+    # Only the disk READ has a fallback. A validation rejection below must propagate as its
+    # HTTPException(400): swallowing it here left ``model`` a flat string, and the caller's
+    # deep-merge then overwrote the whole on-disk ``model:`` dict (provider, base_url, slots).
+    disk_model = disk_cfg.get("model")
+    if isinstance(disk_model, dict):
+        if has_model:
+            prev_default = str(disk_model.get("default") or "").strip()
+            prev_provider = str(disk_model.get("provider") or "").strip()
+            if model_val != prev_default and prev_provider:
+                new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
+                if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                    norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
+                    result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)
+                    disk_model = _apply_main_model_assignment(disk_model, result)
+                    model_val = result.new_model
+            disk_model["default"] = model_val
+        if ctx_sent:
+            if ctx_override > 0:
+                disk_model["context_length"] = ctx_override
+            else:
+                disk_model.pop("context_length", None)
+        config["model"] = disk_model
+    elif ctx_sent and ctx_override > 0:
+        # Model was a bare string (or absent) — upgrade to a dict for the override.
+        if has_model:
+            default = model_val
+        elif isinstance(disk_model, str) and disk_model:
+            default = disk_model
+        else:
+            default = ""
+        config["model"] = {"default": default, "context_length": ctx_override}
     return config

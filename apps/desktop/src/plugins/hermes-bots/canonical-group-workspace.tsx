@@ -1,4 +1,4 @@
-import { Button } from '@hermes/plugin-sdk'
+import { Button, Codicon, Textarea, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
@@ -136,11 +136,16 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
     mutate(() => actCanonicalGroup(binding, action, choice))
 
-  return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
-    <header className="flex items-center gap-2">
-      {onBack && <Button onClick={onBack}>{labels.back}</Button>}
-      <h2>{state?.room.name || labels.loadingGroup}</h2>
-      <Button disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}>{labels.stop}</Button>
+  return <section className="flex h-full min-h-0 min-w-0 flex-col gap-3 p-3">
+    <header className="flex flex-wrap items-center gap-2">
+      {onBack && <Tip label={labels.back}>
+        <Button aria-label={labels.back} onClick={onBack} size="icon-sm" type="button" variant="ghost"><Codicon name="arrow-left" /></Button>
+      </Tip>}
+      <h2 className="min-w-0 flex-1 wrap-anywhere text-sm font-medium">{state?.room.name || labels.loadingGroup}</h2>
+      <Tip label={labels.stop}>
+        <Button aria-label={labels.stop} disabled={busy || !state?.driver_status} onClick={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))}
+          size="icon-sm" type="button" variant="ghost"><Codicon name="debug-stop" /></Button>
+      </Tip>
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
@@ -160,10 +165,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
-    <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={!restored || busy || !!pending} onChange={setAttachments} />
-      <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={!restored || busy || !!pending} onChange={e => setDraft(e.target.value)} value={draft} />
-      <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
+    <form className="flex min-w-0 flex-col gap-2" onSubmit={event => { event.preventDefault(); send() }}>
+      <Textarea aria-label={labels.groupMessage} className="max-h-48 resize-y" disabled={!restored || busy || !!pending}
+        onChange={e => setDraft(e.target.value)} placeholder={labels.messagePlaceholder} rows={3} value={draft} />
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={!restored || busy || !!pending} onChange={setAttachments} />
+        </div>
+        <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
+      </div>
     </form>
   </section>
 }

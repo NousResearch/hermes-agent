@@ -12,6 +12,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
   return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
+    ...await import('@/components/ui/textarea'),
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,

@@ -9,6 +9,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
 
   return { host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+    ...await import('@/components/ui/textarea'),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })
@@ -19,8 +20,8 @@ vi.mock('./canonical-group-labels', async () => {
     send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
 })
 
-import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { CanonicalGroupHistory } from './canonical-group-history'
+import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
 const manifest = { attachment_id: 'att_00000000000000000000000000000001', kind: 'file', name: 'notes.txt', mime: 'text/plain', size: 1 }
@@ -34,6 +35,7 @@ it('shows the canonical event speaker without consulting another roster or profi
     { seq: 3, kind: 'message.user', actor: { kind: 'user', id: 'local-owner', display_name: 'Owner' }, payload: { text: 'Third' } },
     { seq: 4, kind: 'message.member', actor: { member_id: 'legacy-member' }, payload: { text: 'Fourth' } }
   ]} />)
+
   expect([...view.container.querySelectorAll('strong')].map(element => element.textContent)).toEqual([
     'writer: ', 'Reviewer on remote: ', 'Owner: ', 'legacy-member: '
   ])

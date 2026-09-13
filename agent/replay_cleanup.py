@@ -6,8 +6,10 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -29,20 +31,32 @@ _DANGLING_NOTICES = (
 )
 
 
-# Every executor renders an interrupt as a bracketed marker: "[Command interrupted]" (terminal
-# backends, tools/environments/), "[Command interrupted - Modal ...]" (managed_modal.py) and
-# "[execution interrupted ...]" (code_execution_tool.py).
-_INTERRUPT_MARKERS = ("[command interrupted", "[execution interrupted")
+# Every executor ends the killed run's ``output`` with a bracketed marker line: "[Command
+# interrupted]" (tools/environments/, exit 130), "[Command interrupted - Modal ...]"
+# (managed_modal.py, exit 130), "[execution interrupted ...]" (code_execution_tool.py, exit -1).
+_INTERRUPT_MARKER_LINE = re.compile(r"^\[(?:command|execution) interrupted\b[^\n]*\]\s*$", re.IGNORECASE)
 
 
 def is_interrupted_tool_result(content: Any) -> bool:
-    """True only for an executor's interrupt marker. Nothing looser: this also runs on every
-    live request, where a substring heuristic rewrote an ordinary ``grep KeyboardInterrupt``
-    result mid-turn and broke the cached prefix."""
+    """True only when the result has the executor's interrupt SHAPE: the marker is the last
+    line of the output (JSON envelope with a non-zero exit code, or a bare text result). A
+    marker quoted inside successful output — a grep hit, a doc example — is ordinary data;
+    this runs on every live request, so a false positive rewrites real tool output."""
     if not isinstance(content, str):
         return False
-    lowered = content.lower()
-    return any(marker in lowered for marker in _INTERRUPT_MARKERS)
+    output = content
+    if content.lstrip().startswith("{"):
+        try:
+            envelope = json.loads(content)
+        except ValueError:
+            return False
+        if not isinstance(envelope, dict) or envelope.get("exit_code") in (0, None):
+            return False
+        output = envelope.get("output")
+        if not isinstance(output, str):
+            return False
+    last_line = output.rstrip().rsplit("\n", 1)[-1]
+    return _INTERRUPT_MARKER_LINE.match(last_line) is not None
 
 
 def _call_name(call: Dict[str, Any]) -> str:
@@ -208,11 +222,12 @@ def strip_stale_dangerous_confirmations(
         if ts is None or not is_dangerous_confirmation(msg.get("content", "")):
             cleaned.append(msg)
             continue
-        # A present-but-corrupt stamp is treated as expired: the age is unknowable, and
-        # keeping the text (plus its api_content sidecar) would replay a live confirmation.
+        # A present-but-untrustworthy stamp (corrupt, or issued in the future relative to
+        # the admission clock) is treated as expired: its age is unknowable, and keeping the
+        # text (plus its api_content sidecar) would replay a live confirmation.
         ts_f = coerce_epoch(ts, field="message timestamp")
         age = math.inf if ts_f is None else now - ts_f
-        if age <= expiry_seconds:
+        if 0 <= age <= expiry_seconds:
             cleaned.append(msg)
             continue
         logger.debug(

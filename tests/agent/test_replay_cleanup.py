@@ -145,12 +145,15 @@ def test_send_wire_matches_replay_wire_after_db_round_trip(tmp_path):
     db.append_message("s1", role="user", content="confirm reboot", timestamp=now - 120)
     db.append_message("s1", role="assistant", content="", tool_calls=[
         {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}], timestamp=now - 119)
-    db.append_message("s1", role="tool", content="[execution interrupted — user stop]", tool_call_id="c1", tool_name="read_file", timestamp=now - 118)
-    # An ordinary result that merely mentions interrupts is NOT replay debris.
-    grep_hit = '{"output": "loop.py:12: except KeyboardInterrupt:\\n@@ -1,4 +1,5 @@", "exit_code": 0}'
+    db.append_message("s1", role="tool", content='{"output": "[execution interrupted — user stop]", "exit_code": -1}', tool_call_id="c1", tool_name="read_file", timestamp=now - 118)
+    # A successful result that merely QUOTES an interrupt marker is NOT replay debris.
+    grep_hit = json.dumps({"output": "docs.txt:12: [execution interrupted — user stop]\nloop.py:4: [Command interrupted]", "exit_code": 0})
+    doc_text = "how interrupts render:\n[Command interrupted]\n(the marker above is documentation)"
     db.append_message("s1", role="assistant", content="", tool_calls=[
-        {"id": "c2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}}], timestamp=now - 110)
+        {"id": "c2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
+        {"id": "c3", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}], timestamp=now - 110)
     db.append_message("s1", role="tool", content=grep_hit, tool_call_id="c2", tool_name="search_files", timestamp=now - 109)
+    db.append_message("s1", role="tool", content=doc_text, tool_call_id="c3", tool_name="read_file", timestamp=now - 108)
     persisted = db.get_messages_as_conversation("s1")
     db.close()
     assert persisted[0].get("api_content") == "hello [with memory]" and persisted[2].get("timestamp")
@@ -165,14 +168,14 @@ def test_send_wire_matches_replay_wire_after_db_round_trip(tmp_path):
     assert live == frozen
     assert _wire(request) == _wire(replay + [{"role": "user", "content": "now"}])
     assert "[with memory]" in request[0]["content"] and "EXPIRED" in request[2]["content"]
-    assert [m["role"] for m in request] == ["user", "assistant", "user", "assistant", "tool", "user"]
-    assert request[4]["content"] == grep_hit
+    assert [m["role"] for m in request] == ["user", "assistant", "user", "assistant", "tool", "tool", "user"]
+    assert (request[4]["content"], request[5]["content"]) == (grep_hit, doc_text)
 
     # Rows this turn appended stay verbatim even when they look like replay debris.
     live += [
         {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "c3", "type": "function", "function": {"name": "search_files", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c3", "content": "[Command interrupted]"},
+            {"id": "c4", "type": "function", "function": {"name": "search_files", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c4", "content": "[Command interrupted]"},
     ]
     request2 = build_api_messages(
         _SendAgent(), live, current_turn_user_idx=len(persisted), ext_prefetch_cache="",
@@ -212,7 +215,8 @@ def test_confirmation_expiry_uses_frozen_admission_clock_and_fails_closed(monkey
                               plugin_user_context="", moa_config=None, active_system_prompt="")[0]
     assert late[0]["content"] == "confirm reboot"
 
-    corrupt = [{"role": "user", "content": "confirm reboot", "timestamp": "nan", "api_content": "confirm reboot"}]
-    out = canonicalize_replay_history(corrupt, now=10_000.0)
-    assert "EXPIRED" in out[0]["content"] and "api_content" not in out[0]
+    for untrusted in ("nan", 96_400.0, 4_000_000_000.0):  # corrupt, or issued in the future
+        row = [{"role": "user", "content": "confirm reboot", "timestamp": untrusted, "api_content": "confirm reboot"}]
+        out = canonicalize_replay_history(row, now=10_000.0)
+        assert "EXPIRED" in out[0]["content"] and "api_content" not in out[0], untrusted
     assert canonicalize_replay_history([{"role": "user", "content": "confirm reboot"}], now=1e9)[0]["content"] == "confirm reboot"

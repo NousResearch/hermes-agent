@@ -7,7 +7,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -410,11 +410,45 @@ class MCPServerTransportMixin:
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                   self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
-            transport, label = self._sse_transport(*common), "SSE"
-        else:
-            transport = self._streamable_http_transport(*common, configured_header_names)
-            label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
-        return await self._serve_transport(transport, label, float(connect_timeout))
+            return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+        if self._sse_fallback:
+            # A prior connect already proved this server SSE-only: skip the doomed Streamable
+            # HTTP attempt on reconnects instead of flapping into the retry budget.
+            logger.info("MCP server '%s': using latched SSE fallback transport", self.name)
+            return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+        transport = self._streamable_http_transport(*common, configured_header_names)
+        label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
+        try:
+            return await self._serve_transport(transport, label, float(connect_timeout))
+        except Exception as exc:
+            # SSE-only servers (or their load balancers) reject the Streamable HTTP chunked
+            # ``initialize`` POST — with a 400-family status or an opaque SDK INTERNAL_ERROR —
+            # previously a permanent failure with 0 active tools unless the user set
+            # ``transport: sse`` (#53676, #104343). Retry over SSE on the initial connect, as
+            # the MCP spec's transport-fallback behavior describes. Never on reconnect after a
+            # proven session (``_ever_connected``: a genuine rejection on an established
+            # transport must not silently switch transports), never on a timeout (not a
+            # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
+            # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
+            if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
+                raise
+            logger.warning(
+                "MCP server '%s': Streamable HTTP rejected the initial connect (%s) — retrying "
+                "over SSE. If this connects, set `transport: sse` for this server in config.yaml "
+                "to skip the failed attempt on future startups.",
+                self.name, _unwrap_exception_group(exc))
+            try:
+                self._sse_fallback = True
+                return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+            except Exception as sse_exc:
+                if self._ever_connected:  # SSE session was live and dropped: transient, keep the latch
+                    raise
+                self._sse_fallback = False
+                raise ConnectionError(
+                    f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
+                    f"(Streamable HTTP: {_unwrap_exception_group(exc)}; SSE: "
+                    f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
+                    "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 
     # -------------------------------------------------------------- discovery
 

@@ -813,6 +813,14 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # Delivery-chain fidelity (#2830): six additive columns for build-card
+    # validation and CP-0 precondition gating.
+    ("card_type", "card_type TEXT"),
+    ("delivery_method", "delivery_method TEXT"),
+    ("context_package", "context_package TEXT"),
+    ("checkpoint_tier", "checkpoint_tier TEXT"),
+    ("cp0_intake_completed", "cp0_intake_completed INTEGER NOT NULL DEFAULT 0"),
+    ("validation_error", "validation_error TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -908,6 +916,25 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         ("spawn_auto_blocked", "gave_up"),
     ):
         conn.execute("UPDATE task_events SET kind = ? WHERE kind = ?", (new, old))
+
+    # Delivery-chain fidelity (#2830): one-time backfill — existing cards that
+    # are already past intake (in ready/running/review/done/archived status)
+    # get ``cp0_intake_completed=1`` so the new gate doesn't retroactively
+    # stick them. Only applies to build cards (``card_type='build'``); legacy
+    # cards without the column are unaffected (default 0, but the gate only
+    # applies to ``card_type='build'``).
+    # Guarded by PRAGMA user_version so it fires exactly once per DB.
+    cols = _column_names(conn, "tasks")
+    if "cp0_intake_completed" in cols and "status" in cols and "card_type" in cols:
+        current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if current_version < 2:
+            conn.execute(
+                "UPDATE tasks SET cp0_intake_completed = 1 "
+                "WHERE cp0_intake_completed = 0 "
+                "AND card_type = 'build' "
+                "AND status IN ('ready', 'running', 'review', 'done', 'archived')"
+            )
+            conn.execute("PRAGMA user_version = 2")
 
     _rebuild_drifted_tables(conn)
 

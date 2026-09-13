@@ -715,6 +715,13 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Delivery-chain fidelity (#2830): build-card validation fields.
+    card_type: Optional[str] = None
+    delivery_method: Optional[str] = None
+    context_package: Optional[str] = None
+    checkpoint_tier: Optional[str] = None
+    cp0_intake_completed: int = 0
+    validation_error: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -732,6 +739,7 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            cp0_intake_completed=int(g("cp0_intake_completed") or 0),
         )
 
 
@@ -745,6 +753,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "card_type", "delivery_method", "context_package", "checkpoint_tier", "validation_error",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -941,7 +950,22 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Delivery-chain fidelity (#2830): six additive columns that gate build
+    -- cards through the checkpoint process. A build card without these fields
+    -- is invisible to the dispatcher (SQL filter) and unclaimable (Python gate).
+    -- ``card_type``: ``"build"`` for build epics, NULL for legacy/process cards.
+    -- ``delivery_method``: ``"opencode_dispatch"`` | ``"local"`` | NULL.
+    -- ``context_package``: path to the CP-0 context package artifact.
+    -- ``checkpoint_tier``: ``"light"`` | ``"standard"`` | ``"heavy"`` | NULL.
+    -- ``cp0_intake_completed``: 1 when CP-0 intake has run, 0 otherwise.
+    -- ``validation_error``: human-readable reason when validation fails.
+    card_type             TEXT,
+    delivery_method       TEXT,
+    context_package       TEXT,
+    checkpoint_tier       TEXT,
+    cp0_intake_completed  INTEGER NOT NULL DEFAULT 0,
+    validation_error      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1232,6 +1256,11 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    card_type: Optional[str] = None,
+    delivery_method: Optional[str] = None,
+    context_package: Optional[str] = None,
+    checkpoint_tier: Optional[str] = None,
+    cp0_intake_completed: Optional[int] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1331,8 +1360,10 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        card_type, delivery_method, context_package,
+                        checkpoint_tier, cp0_intake_completed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1373,8 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        card_type, delivery_method, context_package,
+                        checkpoint_tier, _opt_int(cp0_intake_completed) or 0,
                     ),
                 )
                 for pid in parents:
@@ -1993,6 +2026,75 @@ def _latest_event(
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
 
 
+# --- Delivery-chain fidelity (#2830): build-card validation + CP-0 gate ---
+
+VALID_DELIVERY_METHODS = {"opencode_dispatch", "local"}
+VALID_CHECKPOINT_TIERS = {"light", "standard", "heavy"}
+
+
+def validate_build_card(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return an error string if a build card is missing required fields, else None.
+
+    Non-build cards (``card_type`` is NULL or not ``"build"``) always pass.
+    Build cards must have ``delivery_method``, ``context_package``, and
+    ``checkpoint_tier`` set.  On failure, the ``validation_error`` column is
+    updated so the operator can see why the card is stuck.
+    """
+    row = conn.execute(
+        "SELECT card_type, delivery_method, context_package, checkpoint_tier "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return "task not found"
+    card_type = _row_get(row, "card_type")
+    if card_type != "build":
+        # Non-build card or legacy card — validation not applicable.
+        conn.execute(
+            "UPDATE tasks SET validation_error = NULL WHERE id = ?", (task_id,),
+        )
+        return None
+    missing: list[str] = []
+    if not _row_get(row, "delivery_method"):
+        missing.append("delivery_method")
+    elif _row_get(row, "delivery_method") not in VALID_DELIVERY_METHODS:
+        missing.append(f"delivery_method (invalid: {_row_get(row, 'delivery_method')!r})")
+    if not _row_get(row, "context_package"):
+        missing.append("context_package")
+    if not _row_get(row, "checkpoint_tier"):
+        missing.append("checkpoint_tier")
+    elif _row_get(row, "checkpoint_tier") not in VALID_CHECKPOINT_TIERS:
+        missing.append(f"checkpoint_tier (invalid: {_row_get(row, 'checkpoint_tier')!r})")
+    if missing:
+        error = "Missing required field(s): " + ", ".join(missing)
+        conn.execute(
+            "UPDATE tasks SET validation_error = ? WHERE id = ?", (error, task_id),
+        )
+        return error
+    conn.execute(
+        "UPDATE tasks SET validation_error = NULL WHERE id = ?", (task_id,),
+    )
+    return None
+
+
+def _cp0_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when a build card has completed CP-0 intake (``cp0_intake_completed=1``
+    AND ``context_package IS NOT NULL``).
+
+    Non-build cards always return True (CP-0 is not applicable).
+    """
+    row = conn.execute(
+        "SELECT card_type, cp0_intake_completed, context_package "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return True  # Non-existent — let the caller handle the miss.
+    if _row_get(row, "card_type") != "build":
+        return True
+    return bool(_row_get(row, "cp0_intake_completed")) and bool(_row_get(row, "context_package"))
+
+
 def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     """``review`` when the newest lifecycle event carries a review
     ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
@@ -2043,6 +2145,14 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
                 "WHERE l.child_id = ?", (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                # CP-0 precondition gate (#2830): build cards cannot be
+                # promoted to ready until CP-0 intake is completed.
+                if not _cp0_satisfied(conn, task_id):
+                    _append_event(
+                        conn, task_id, "cp0_required",
+                        {"reason": "CP-0 intake not completed for build card"},
+                    )
+                    continue
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2157,6 +2267,25 @@ def claim_task(
             )
             _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
+        # CP-0 precondition gate (#2830): reject claims on build cards
+        # where CP-0 intake has not been completed. The card stays in
+        # ``ready`` but is unclaimable until the token is set.
+        if not _cp0_satisfied(conn, task_id):
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "cp0_not_completed"},
+            )
+            return None
+        # Card validation gate (#2830): reject claims on build cards that
+        # fail validation (missing delivery_method, context_package, or
+        # checkpoint_tier). The card stays in ``ready`` but is unclaimable.
+        validation_error = validate_build_card(conn, task_id)
+        if validation_error:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "card_validation_failed", "error": validation_error},
+            )
+            return None
         # Close a leaked prior run so the CAS below doesn't strand it.
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
@@ -2190,6 +2319,23 @@ def claim_review_task(
                     conn, task_id, "dependency_wait",
                     {"reason": "parent_reopened", "source_status": "review"},
                 )
+            return None
+        # CP-0 precondition gate (#2830): reject review claims on build cards
+        # where CP-0 intake has not been completed — same gate as claim_task().
+        if not _cp0_satisfied(conn, task_id):
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "cp0_not_completed", "lane": "review"},
+            )
+            return None
+        # Card validation gate (#2830): reject review claims on build cards
+        # that fail validation — same gate as claim_task().
+        validation_error = validate_build_card(conn, task_id)
+        if validation_error:
+            _append_event(
+                conn, task_id, "claim_rejected",
+                {"reason": "card_validation_failed", "lane": "review", "error": validation_error},
+            )
             return None
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},

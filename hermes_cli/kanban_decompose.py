@@ -259,6 +259,13 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
             "assignee": chosen,
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
+            # Delivery-chain fidelity (#2830): pass through build-card fields
+            # when the decomposer LLM includes them in the child spec.
+            "card_type": entry.get("card_type"),
+            "delivery_method": entry.get("delivery_method"),
+            "context_package": entry.get("context_package"),
+            "checkpoint_tier": entry.get("checkpoint_tier"),
+            "cp0_intake_completed": entry.get("cp0_intake_completed"),
         })
     return children, ""
 

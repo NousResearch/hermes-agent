@@ -1488,20 +1488,42 @@ class GatewayStartupMixin:
         store = getattr(self.async_session_store, "_store", self.async_session_store)
         resolver = getattr(store, "resolve_task_owned_workspace", None)
         switch_kwargs = {}
-        if callable(resolver):
+        if callable(resolver) and row.get("cwd"):
             # Workspace lineage validation can wait on several Git subprocesses. Keep
             # that synchronous preflight off the gateway event loop; switch_session
             # repeats the validation asynchronously below.
             await asyncio.to_thread(resolver, cli_session_id, row.get("cwd"))
             switch_kwargs = {"conversation_kind": "task", "persisted_cwd": row.get("cwd")}
-        # Ensure a session_store entry exists for this key; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(
-            dest.source, conversation_kind="task"
-        )
-        # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(
-            session_key, cli_session_id, **switch_kwargs
-        )
+        elif callable(resolver):
+            # A legacy row without cwd is compatible only when isolation is
+            # disabled.  Under the enabled policy, completing the switch would
+            # run the synthetic turn from the gateway's fallback cwd.
+            policy_probe = getattr(store, "conversation_worktree_isolation_enabled", None)
+            if callable(policy_probe) and await asyncio.to_thread(policy_probe, session_key) is True:
+                raise RuntimeError(
+                    "cannot hand off a CLI session without a persisted verified workspace"
+                )
+            # Policy-disabled handoffs must still complete, and there is no
+            # workspace to validate.
+            switch_kwargs = {"conversation_kind": "task"}
+        # Route ownership and the task handoff must complete as one flight. Otherwise an
+        # interactive message can observe the pre-handoff route between these two calls.
+        # Inspect the wrapped synchronous store, not the facade class: the async facade exposes
+        # this method for every wrapped object, including narrow MagicMock test doubles that only
+        # implement the legacy pair of calls below.
+        handoff = getattr(type(store), "get_or_create_session_and_switch", None)
+        if callable(handoff):
+            switched = await self.async_session_store.get_or_create_session_and_switch(
+                dest.source, cli_session_id, **switch_kwargs
+            )
+        else:
+            # Compatibility for narrow test doubles and older injected stores.
+            await self.async_session_store.get_or_create_session(
+                dest.source, conversation_kind="task"
+            )
+            switched = await self.async_session_store.switch_session(
+                session_key, cli_session_id, **switch_kwargs
+            )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale

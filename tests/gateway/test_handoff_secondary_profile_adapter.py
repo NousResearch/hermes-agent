@@ -168,6 +168,20 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_isolated_handoff_without_persisted_cwd_fails_closed(monkeypatch):
+    """A legacy cwd-less handoff cannot enter an enabled isolated gateway."""
+    runner, _ = _make_multiplex_runner()
+    runner.session_store.conversation_worktree_isolation_enabled = lambda _key: True
+
+    with pytest.raises(RuntimeError, match="without a persisted verified workspace"):
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name=None,
+        )
+    runner.session_store.get_or_create_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_secondary_profile_config_load_failure_fails_closed(monkeypatch):
     """A secondary profile whose config cannot load must fail the handoff.
 

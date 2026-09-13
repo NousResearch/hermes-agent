@@ -3000,14 +3000,13 @@ class HermesCLI(CLIConversationWorktreeMixin, CLIProcessNotificationsMixin, CLIA
                 logger.debug("Failed to release active session slot", exc_info=True)
             finally:
                 self._active_session_lease = None
+        retry = getattr(self, "_retry_failed_conversation_root_leases", None)
+        if callable(retry):
+            retry()
         root_lease = getattr(self, "_conversation_root_lease", None)
-        if root_lease is not None:
-            try:
-                root_lease.release()
-            except Exception:
-                logger.debug("Failed to release conversation root lease", exc_info=True)
-            finally:
-                self._conversation_root_lease = None
+        if root_lease is not None and self._release_conversation_root_lease(
+                root_lease, context="process exit"):
+            self._conversation_root_lease = None
 
     _PET_FRAME_INTERVAL = 0.16
     _PET_CFG_INTERVAL = 2.5

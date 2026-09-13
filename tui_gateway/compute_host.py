@@ -132,7 +132,9 @@ class ComputeHost:
             if sid in skip:
                 continue
             with contextlib.suppress(Exception):
-                server._finalize_session(session, end_reason=f"compute_host_{reason}")
+                with server._session_prompt_submit_lock(session):
+                    if server._sessions.get(sid) is session:
+                        server._finalize_session(session, end_reason=f"compute_host_{reason}")
 
     def handle_frame(self, frame: dict[str, Any]) -> None:
         kind = str(frame.get("type") or "")
@@ -320,6 +322,7 @@ class ComputeHost:
                 platform_override=frame.get("source"),
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
+                conversation_worktree=frame.get("conversation_worktree"),
                 session_db=session_db)
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False

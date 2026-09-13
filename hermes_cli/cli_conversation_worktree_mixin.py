@@ -115,6 +115,43 @@ class CLIConversationWorktreeMixin:
             surface=surface,
         )
 
+    def _release_conversation_root_lease(self, lease, *, context: str) -> bool:
+        if lease is None:
+            return True
+        try:
+            lease.release()
+        except Exception:
+            pending = getattr(self, "_failed_conversation_root_leases", [])
+            if all(existing is not lease for existing in pending):
+                pending.append(lease)
+            self._failed_conversation_root_leases = pending
+            logger.warning("Failed to release CLI conversation root lease (%s)", context, exc_info=True)
+            return False
+        return True
+
+    def _retry_failed_conversation_root_leases(self) -> None:
+        pending = list(getattr(self, "_failed_conversation_root_leases", []))
+        self._failed_conversation_root_leases = []
+        for lease in pending:
+            self._release_conversation_root_lease(lease, context="retry")
+
+    def _detach_historical_conversation_worktree(self, recorded_cwd: str) -> None:
+        """Drop the prior managed identity before restoring an unmanaged historical cwd."""
+        prior_note = getattr(self, "_conversation_worktree_prompt_note", "")
+        if prior_note:
+            rendered = f"\n\n[System note: {prior_note}]"
+            self.system_prompt = (self.system_prompt or "").replace(rendered, "")
+        if self.agent is not None:
+            self.agent.ephemeral_system_prompt = self.system_prompt
+        prior_lease = getattr(self, "_conversation_root_lease", None)
+        self._conversation_root_lease = None
+        self._conversation_worktree_binding = None
+        self._conversation_worktree_prompt_note = ""
+        self._conversation_worktree_historical = True
+        self.working_directory = recorded_cwd
+        os.environ["TERMINAL_CWD"] = recorded_cwd
+        self._release_conversation_root_lease(prior_lease, context="historical resume")
+
     def _initialize_conversation_worktree(self, config, resume, manage_conversation_worktree):
         self._conversation_worktree_manager = (
             _build_cli_conversation_worktree_manager(config, self._session_db)
@@ -122,8 +159,10 @@ class CLIConversationWorktreeMixin:
             else None
         )
         self._conversation_worktree_binding = None
+        self._conversation_worktree_historical = False
         self._conversation_worktree_prompt_note = ""
         self._conversation_root_lease = None
+        self._failed_conversation_root_leases = []
         if self._conversation_worktree_manager is not None:
             if resume:
                 try:
@@ -139,12 +178,20 @@ class CLIConversationWorktreeMixin:
                     root_session_id
                 )
                 if binding is None:
-                    from agent.conversation_worktree import ConversationWorktreeError
+                    # Rows created before managed isolation was enabled have a
+                    # recorded cwd but no durable binding. Preserve that legacy
+                    # workspace; never claim a new root on the first resumed turn.
+                    row = self._session_db.get_session(root_session_id) or {}
+                    recorded_cwd = str(row.get("cwd") or "").strip()
+                    if recorded_cwd and os.path.isdir(os.path.expanduser(recorded_cwd)):
+                        self._conversation_worktree_historical = True
+                    else:
+                        from agent.conversation_worktree import ConversationWorktreeError
 
-                    raise ConversationWorktreeError(
-                        f"no ready conversation worktree for CLI root {root_session_id}",
-                        phase="recovery",
-                    )
+                        raise ConversationWorktreeError(
+                            f"no ready conversation worktree for CLI root {root_session_id}",
+                            phase="recovery",
+                        )
             else:
                 # A new CLI session is only a draft until its first prompt.  Do not
                 # create a retained manager-owned worktree for a process that exits
@@ -160,7 +207,9 @@ class CLIConversationWorktreeMixin:
     def _ensure_conversation_worktree_binding(self):
         """Bind a new CLI root when its first prompt makes the session durable."""
         manager = getattr(self, "_conversation_worktree_manager", None)
-        if manager is None or getattr(self, "_conversation_worktree_binding", None) is not None:
+        if (manager is None
+                or getattr(self, "_conversation_worktree_historical", False)
+                or getattr(self, "_conversation_worktree_binding", None) is not None):
             return getattr(self, "_conversation_worktree_binding", None)
 
         from agent.conversation_worktree import ConversationWorktreeError
@@ -181,7 +230,7 @@ class CLIConversationWorktreeMixin:
 
     def _restore_managed_conversation_cwd(self, *, session_id=None):
         managed_binding = getattr(self, "_conversation_worktree_binding", None)
-        if managed_binding is not None:
+        if getattr(self, "_conversation_worktree_manager", None) is not None:
             # Persisted cwd from an older session row is subordinate to the
             # durable manager binding. Resolve from the current session id so
             # an in-process /resume targets the selected conversation's root,
@@ -201,6 +250,13 @@ class CLIConversationWorktreeMixin:
                     phase="state",
                 ) from exc
             if managed_binding is None:
+                row = self._session_db.get_session(root_session_id) or {}
+                recorded_cwd = str(row.get("cwd") or "").strip()
+                if recorded_cwd and os.path.isdir(os.path.expanduser(recorded_cwd)):
+                    self._detach_historical_conversation_worktree(
+                        os.path.expanduser(recorded_cwd)
+                    )
+                    return False
                 from agent.conversation_worktree import ConversationWorktreeError
 
                 raise ConversationWorktreeError(
@@ -213,15 +269,12 @@ class CLIConversationWorktreeMixin:
             try:
                 self._apply_conversation_worktree_binding(managed_binding)
             except Exception:
-                next_root_lease.release()
+                self._release_conversation_root_lease(next_root_lease, context="resume apply")
                 raise
             prior_root_lease = getattr(self, "_conversation_root_lease", None)
             self._conversation_root_lease = next_root_lease
             if prior_root_lease is not None:
-                try:
-                    prior_root_lease.release()
-                except Exception:
-                    logger.debug("Failed to release prior root lease", exc_info=True)
+                self._release_conversation_root_lease(prior_root_lease, context="resume swap")
             return True
 
         return False
@@ -254,15 +307,12 @@ class CLIConversationWorktreeMixin:
                         new_worktree_binding, before_commit=before_commit
                     )
                 except Exception:
-                    new_root_lease.release()
+                    self._release_conversation_root_lease(new_root_lease, context="new apply")
                     raise
                 prior_root_lease = getattr(self, "_conversation_root_lease", None)
                 self._conversation_root_lease = new_root_lease
                 if prior_root_lease is not None:
-                    try:
-                        prior_root_lease.release()
-                    except Exception:
-                        logger.debug("Failed to release prior root lease", exc_info=True)
+                    self._release_conversation_root_lease(prior_root_lease, context="new swap")
             except Exception as exc:
                 _cprint(
                     f"  Cannot start new session {new_session_id}: "

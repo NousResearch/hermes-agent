@@ -191,3 +191,15 @@ class SessionWorktreesMixin:
             state="removed",
             allowed_current_states=("creating", "ready", "creation_failed", "retained"),
         )
+
+    def reset_conversation_worktree_for_retry(
+        self, root_session_id: str
+    ) -> ConversationWorktreeRecord:
+        """Return a physically cleaned failed draft to the createable state."""
+        return self._set_conversation_worktree_state(
+            root_session_id,
+            state="creating",
+            allowed_current_states=("ready", "removed"),
+            failure_phase=None,
+            failure_message=None,
+        )

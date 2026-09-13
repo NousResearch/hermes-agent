@@ -531,6 +531,75 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+def _session_prompt_submit_lock(session: dict):
+    """Return the per-session admission lock, including legacy runtime records."""
+    history_lock = session.setdefault("history_lock", threading.Lock())
+    with history_lock:
+        return session.setdefault("prompt_submit_lock", threading.Lock())
+
+
+def _validate_truncation_before_materializing(rid, sid, session, params):
+    """Run destructive-rewind validation against a detached history snapshot."""
+    history = _history_without_ephemeral_scaffolding(session.get("history", []))
+    # Row-id healing is allowed during the actual cut, but a rejected submit must
+    # not mutate a live draft while it is still unpersisted.
+    snapshot = [dict(message) if isinstance(message, dict) else message for message in history]
+    _ordinal, cut_index, err = _resolve_truncation_ordinal(
+        rid, sid, session, params, snapshot)
+    if err is not None:
+        return err
+    from agent.context_compressor import history_before_user_originated_turn
+    truncated, _ = history_before_user_originated_turn(snapshot, cut_index)
+    if not truncated and snapshot and not is_truthy_value(params.get("confirm_empty_truncate")):
+        return _err(
+            rid, 4028,
+            "truncation would erase the entire session transcript; "
+            "resubmit with confirm_empty_truncate=true if this is intended")
+    return None
+
+
+def _admit_prompt_submit(
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids,
+    hosted_task, internal_hosted_submit, transport, *, reattach=False, client_surface=""):
+    """Serialize admission, validation, materialization, and turn claim per session."""
+    with _session_prompt_submit_lock(session):
+        if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+            reason = getattr(limit_message, "reason", None)
+            return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None), None
+        if reattach:
+            with _session_resume_lock:
+                if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+                    return refusal, None
+                if transport is not None:
+                    _attach_session_transport(session, transport)
+                    _cancel_ws_orphan_reap(sid)
+        while True:
+            with session["history_lock"]:
+                if not session.get("running"):
+                    break
+                if internal_hosted_submit:
+                    return _err(rid, 4091, "hosted room member session is busy"), None
+                busy_transport = transport or session.get("transport")
+            busy_response = _handle_busy_submit(
+                rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
+            if busy_response is not None:
+                return busy_response, None
+        if has_truncation:
+            if (err := _validate_truncation_before_materializing(
+                    rid, sid, session, params)) is not None:
+                return err, None
+        err, survivor_fields = _lock_in_submit_turn(
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+        if err is not None:
+            return err, None
+        if (err := _persist_session_row_for_submit(rid, session)) is not None:
+            return err, None
+        # Record the surface only after this request owns the turn. A rejected busy
+        # request must not overwrite the surface used by the in-flight turn.
+        session["client_surface"] = client_surface
+        return None, survivor_fields
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -557,13 +626,6 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
@@ -572,39 +634,18 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
-            return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
-        if busy_response is not None:
-            return busy_response
+    # Re-bind to the current transport inside serialized admission: streaming must stay on the
+    # active websocket even if a disconnect/fallback moved the session to stdio.
+    t = current_transport()
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+    err, survivor_fields = _admit_prompt_submit(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids,
+        hosted_task, internal_hosted_submit, t, reattach=True,
+        client_surface="hud" if params.get("surface") == "hud" else "")
     if err is not None:
-        return err
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
         return err
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(

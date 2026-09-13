@@ -558,6 +558,7 @@ class GatewayAgentCacheMixin:
                 (p.value, _s(getattr(hc, "name", "")), _s(getattr(hc, "chat_id", "")))
                 for p, hc in context.home_channels.items()
             ),
+            tuple(sorted((str(k), _s(v)) for k, v in (getattr(context, "conversation_worktree", None) or {}).items())),
             bool(redact_pii), home_display,
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()

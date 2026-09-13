@@ -7,7 +7,10 @@ manager's durable root identity.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import threading
+import time
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +28,7 @@ from gateway.session import (
     SessionStore,
     build_session_context,
     build_session_key,
+    build_session_context_prompt,
 )
 from gateway.slash_commands import GatewaySlashCommandsMixin
 
@@ -376,6 +380,222 @@ def test_task_gateway_source_never_allocates_conversation_worktree(store, manage
     assert manager.bound_roots == []
 
 
+def test_task_and_interactive_calls_share_flight_and_upgrade_one_route(
+    store, manager, source, monkeypatch
+):
+    """A task-first race must not publish a competing interactive root."""
+    task_entered = threading.Event()
+    release_task = threading.Event()
+    original = store._get_or_create_session_impl
+
+    def delayed(source_arg, *, force_new=False, touch_activity=True, conversation_kind="interactive"):
+        if conversation_kind == "task":
+            task_entered.set()
+            assert release_task.wait(2)
+        return original(
+            source_arg, force_new=force_new, touch_activity=touch_activity,
+            conversation_kind=conversation_kind,
+        )
+
+    monkeypatch.setattr(store, "_get_or_create_session_impl", delayed)
+    results = {}
+    task_thread = threading.Thread(target=lambda: results.setdefault(
+        "task", store.get_or_create_session(source, conversation_kind="task")))
+    interactive_thread = threading.Thread(target=lambda: results.setdefault(
+        "interactive", store.get_or_create_session(source, conversation_kind="interactive")))
+    task_thread.start()
+    assert task_entered.wait(2)
+    interactive_thread.start()
+    release_task.set()
+    task_thread.join(timeout=2)
+    interactive_thread.join(timeout=2)
+
+    assert results["task"] is results["interactive"]
+    assert results["interactive"].conversation_worktree["root_session_id"] == results["task"].session_id
+    assert manager.bound_roots == [results["task"].session_id]
+    late_interactive = store.get_or_create_session(source, conversation_kind="interactive")
+    assert late_interactive is results["task"]
+    assert manager.bound_roots == [results["task"].session_id]
+
+
+def test_handoff_switch_completes_before_shared_flight_releases(store, manager, source, monkeypatch):
+    """A handoff waiter must publish the target before interactive waiters wake."""
+    task_entered = threading.Event()
+    release_task = threading.Event()
+    switched = threading.Event()
+    original = store._get_or_create_session_impl
+
+    def delayed(source_arg, *, force_new=False, touch_activity=True, conversation_kind="interactive"):
+        if conversation_kind == "task":
+            task_entered.set()
+            assert release_task.wait(2)
+        return original(
+            source_arg, force_new=force_new, touch_activity=touch_activity,
+            conversation_kind=conversation_kind,
+        )
+
+    def fake_switch(key, target, **_kwargs):
+        entry = store.lookup_by_session_key(key)
+        assert entry is not None
+        entry.session_id = target
+        switched.set()
+        return entry
+
+    monkeypatch.setattr(store, "_get_or_create_session_impl", delayed)
+    monkeypatch.setattr(store, "switch_session", fake_switch)
+    results = {}
+    handoff = threading.Thread(target=lambda: results.setdefault(
+        "handoff", store.get_or_create_session_and_switch(source, "cli-session")))
+    interactive = threading.Thread(target=lambda: results.setdefault(
+        "interactive", store.get_or_create_session(source, conversation_kind="interactive")))
+    handoff.start()
+    assert task_entered.wait(2)
+    interactive.start()
+    release_task.set()
+    handoff.join(timeout=2)
+    interactive.join(timeout=2)
+
+    assert switched.is_set()
+    assert results["handoff"] is results["interactive"]
+    assert results["interactive"].session_id == "cli-session"
+    assert manager.bound_roots == ["cli-session"]
+
+
+def test_concurrent_handoffs_return_their_own_switch_results(store, source, monkeypatch):
+    """Each queued handoff receives its own post-action result, not the last route."""
+    task_entered = threading.Event()
+    release_task = threading.Event()
+    first_switch_entered = threading.Event()
+    release_first_switch = threading.Event()
+    original = store._get_or_create_session_impl
+
+    def delayed(source_arg, *, force_new=False, touch_activity=True, conversation_kind="interactive"):
+        if conversation_kind == "task":
+            task_entered.set()
+            assert release_task.wait(2)
+        return original(
+            source_arg, force_new=force_new, touch_activity=touch_activity,
+            conversation_kind=conversation_kind,
+        )
+
+    def fake_switch(key, target, **_kwargs):
+        entry = store.lookup_by_session_key(key)
+        assert entry is not None
+        if target == "cli-a":
+            first_switch_entered.set()
+            assert release_first_switch.wait(2)
+        return dataclass_replace(entry, session_id=target)
+
+    monkeypatch.setattr(store, "_get_or_create_session_impl", delayed)
+    monkeypatch.setattr(store, "switch_session", fake_switch)
+    results = {}
+    first = threading.Thread(target=lambda: results.setdefault(
+        "first", store.get_or_create_session_and_switch(source, "cli-a")))
+    second = threading.Thread(target=lambda: results.setdefault(
+        "second", store.get_or_create_session_and_switch(source, "cli-b")))
+    first.start()
+    assert task_entered.wait(2)
+    second.start()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        with store._inflight_lock:
+            slot = next(iter(store._inflight_sessions.values()))
+            if len(slot.post_actions) == 1:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("second handoff did not join the in-flight route")
+    release_task.set()
+    assert first_switch_entered.wait(2)
+    release_first_switch.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert results["first"].session_id == "cli-a"
+    assert results["second"].session_id == "cli-b"
+
+
+def test_explicit_fork_creation_failed_root_uses_recoverable_binding(store, manager, source, monkeypatch):
+    """Explicit fork resume must retry a recoverable creation_failed root."""
+    session_key = build_session_key(source)
+    old = SessionEntry(
+        session_key=session_key, session_id="old", created_at=datetime.now(), updated_at=datetime.now(),
+        origin=source, platform=source.platform, chat_type=source.chat_type,
+    )
+    store._entries[session_key] = old
+    store._loaded = True
+    store._save = lambda: None
+
+    class _Db:
+        def is_explicit_fork_child(self, session_id):
+            return session_id == "fork-child"
+
+        def get_conversation_worktree(self, session_id):
+            return SimpleNamespace(state="creation_failed") if session_id == "fork-child" else None
+
+        def get_session(self, _session_id):
+            return {}
+
+    class _RecoveringManager:
+        def resolve_existing_session(self, _session_id):
+            raise ConversationWorktreeError("bootstrap interrupted", phase="bootstrap")
+
+        def bind_new_root_session(self, session_id, *, conversation_kind):
+            assert conversation_kind == "interactive"
+            return ConversationWorktreeBinding(
+                root_session_id=session_id, path=manager.root / session_id,
+                branch=f"hermes/session/{session_id}", base_commit="a" * 40,
+                repo_common_dir=manager.root,
+            )
+
+    recovering = _RecoveringManager()
+    store._db = _Db()
+    monkeypatch.setattr(store, "_conversation_worktree_manager", lambda _key=None: recovering)
+    monkeypatch.setattr(store, "_promote_session_reset", lambda *args, **kwargs: None)
+    monkeypatch.setattr(store, "_reopen_session_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(store, "_record_gateway_session_peer", lambda *args, **kwargs: None)
+
+    resumed = store.switch_session(session_key, "fork-child")
+
+    assert resumed is not None
+    assert resumed.conversation_worktree["root_session_id"] == "fork-child"
+
+
+def test_unpublished_candidate_is_physically_removed_before_ledger_retirement(store, source, monkeypatch):
+    """A losing candidate must remove its checkout before any ledger state change."""
+    remover = MagicMock(return_value=SimpleNamespace(removed=True))
+    db = MagicMock()
+    entry = SessionEntry(
+        session_key=build_session_key(source), session_id="candidate", created_at=datetime.now(),
+        updated_at=datetime.now(), origin=source, platform=source.platform, chat_type=source.chat_type,
+        conversation_worktree={"root_session_id": "candidate", "path": "/tmp/candidate"},
+    )
+    store._db = db
+    monkeypatch.setattr(store, "_conversation_worktree_manager", lambda _key=None: SimpleNamespace(
+        remove_after_explicit_request=remover
+    ))
+
+    store._retire_unpublished_conversation_worktree(entry)
+
+    remover.assert_called_once_with("candidate", active_session_bound=False)
+    db.mark_conversation_worktree_removed.assert_not_called()
+
+
+def test_certified_worktree_prompt_keeps_long_path_lossless(source):
+    long_path = "/repo/" + ("nested/" * 45) + "worktree"
+    entry = SessionEntry(
+        session_key="key", session_id="sid", created_at=datetime.now(), updated_at=datetime.now(),
+        origin=source, platform=source.platform, chat_type=source.chat_type,
+        conversation_worktree={"path": long_path},
+    )
+
+    prompt = build_session_context_prompt(build_session_context(source, GatewayConfig(), entry))
+
+    assert json.dumps(long_path) in prompt
+    assert "..." not in prompt.split("**Conversation workspace:**", 1)[1]
+
+
 def _enable_production_policy(monkeypatch, tmp_path) -> None:
     source_root = tmp_path / "stable"
     worktree_root = tmp_path / "worktrees"
@@ -703,6 +923,35 @@ def test_gateway_teardown_releases_other_roots_and_retains_failed_lease_for_retr
     assert not store._conversation_root_leases
 
 
+def test_failed_gateway_root_lease_release_schedules_retry(store, manager, source, monkeypatch):
+    first = store.get_or_create_session(source)
+    lease = store._conversation_root_leases[first.session_id]
+    lease.release = MagicMock(side_effect=[RuntimeError("registry busy"), None])
+    scheduled = []
+    with store._lock:
+        store._entries.clear()
+
+    class _Timer:
+        def __init__(self, _delay, target):
+            self.target = target
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            scheduled.append(self.target)
+
+    monkeypatch.setattr("gateway.session.threading.Timer", _Timer)
+
+    assert store.release_conversation_root_lease(first.session_id) is False
+    assert len(scheduled) == 1
+
+    scheduled[0]()
+
+    assert lease.release.call_count == 2
+    assert first.session_id not in store._conversation_root_leases
+
+
 @pytest.mark.parametrize("bootstrap_fails", [False, True])
 def test_legacy_interactive_route_requires_certified_migration_before_use(store, manager, source, bootstrap_fails):
     key = build_session_key(source)
@@ -712,18 +961,11 @@ def test_legacy_interactive_route_requires_certified_migration_before_use(store,
     store._ensure_loaded()
     store._entries[key] = legacy
     manager.fail_new = bootstrap_fails
-    if bootstrap_fails:
-        with pytest.raises(ConversationWorktreeError, match="bootstrap did not complete"):
-            store.get_or_create_session(source, touch_activity=False)
-        assert store.lookup_by_session_key(key) is legacy
-        assert legacy.cwd == str(manager.root.parent)
-        assert not legacy.conversation_worktree
-        assert not store._conversation_root_leases
-    else:
-        resolved = store.get_or_create_session(source, touch_activity=False)
-        assert resolved is legacy
-        assert resolved.cwd == str(manager.root / "legacy-root")
-        assert manager.bound_roots == ["legacy-root"]
-        import json
-        saved = json.loads((store.sessions_dir / "sessions.json").read_text())
-        assert saved[key]["cwd"] == resolved.cwd
+    resolved = store.get_or_create_session(source, touch_activity=False)
+    assert resolved is legacy
+    # Rows created before isolation was enabled remain on their historical cwd;
+    # resume must not create a new worktree or fail because one is unavailable.
+    assert resolved.cwd == str(manager.root.parent)
+    assert not resolved.conversation_worktree
+    assert manager.bound_roots == []
+    assert not store._conversation_root_leases

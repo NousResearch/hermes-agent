@@ -214,6 +214,38 @@ def test_cli_resume_fails_closed_when_durable_binding_is_missing(monkeypatch, ma
         _build_cli(monkeypatch, manager, _SessionDB(), resume="missing")
 
 
+def test_cli_historical_resume_preserves_recorded_cwd_without_new_root(monkeypatch, manager, tmp_path):
+    legacy_cwd = tmp_path / "legacy"
+    legacy_cwd.mkdir()
+    manager.resolve_existing_session = MagicMock(return_value=None)
+    db = _SessionDB(session_cwds={"legacy": str(legacy_cwd)})
+
+    cli, _db = _build_cli(monkeypatch, manager, db, resume="legacy", bind_initial=False)
+
+    assert cli._conversation_worktree_historical is True
+    assert cli._conversation_worktree_binding is None
+    cli._ensure_conversation_worktree_binding()
+    assert manager.bound_roots == []
+    cli._restore_session_cwd(db.get_session("legacy"))
+    assert cli_module.os.path.realpath(cli_module.os.getcwd()) == cli_module.os.path.realpath(str(legacy_cwd))
+
+
+def test_cli_historical_mid_resume_detaches_previous_binding(monkeypatch, manager, tmp_path):
+    legacy_cwd = tmp_path / "legacy-mid-resume"
+    legacy_cwd.mkdir()
+    manager.resolve_existing_session = MagicMock(return_value=None)
+    db = _SessionDB(session_cwds={"legacy": str(legacy_cwd)})
+    cli, _db = _build_cli(monkeypatch, manager, db, bind_initial=True)
+
+    cli._restore_managed_conversation_cwd(session_id="legacy")
+
+    assert cli._conversation_worktree_historical is True
+    assert cli._conversation_worktree_binding is None
+    assert cli._conversation_root_lease is None
+    assert "certified Git worktree" not in cli.system_prompt
+    assert cli.working_directory == str(legacy_cwd)
+
+
 def test_managed_resume_cannot_restore_the_stable_source_cwd(monkeypatch, manager):
     cli, _db = _build_cli(monkeypatch, manager)
     managed = cli.working_directory

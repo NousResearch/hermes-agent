@@ -47,6 +47,8 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
+    if session.get("_closing"):
+        return "session is closing; retry resume"
     if session.get("active_session_lease") is not None:
         return None
     lease, limit_message = _claim_active_session_slot(
@@ -265,9 +267,18 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
             worker.close()
-    with contextlib.suppress(Exception):
-        if root_lease := session.pop("conversation_root_lease", None):
+    _retry_failed_conversation_root_leases()
+    root_lease = session.get("conversation_root_lease")
+    if root_lease is not None:
+        try:
             root_lease.release()
+        except Exception:
+            # Keep the handle for the next teardown; popping it here would make a
+            # transient registry failure permanently unrepairable in this process.
+            _remember_failed_conversation_root_lease(root_lease)
+            logger.warning("Failed to release TUI conversation root lease", exc_info=True)
+        else:
+            session.pop("conversation_root_lease", None)
 
 
 # End reasons where the BACKEND reclaimed a session the client never asked to close (else its next prompt fails
@@ -334,6 +345,28 @@ def _pop_session_by_id(sid: str) -> dict | None:
     return session
 
 
+def _claim_session_for_teardown(
+    sid: str, *, predicate: Callable[[dict], bool] | None = None,
+) -> dict | None:
+    """Claim one session for teardown after prompt admission has drained.
+
+    Prompt submission takes ``prompt_submit_lock -> resume_lock`` before it
+    materializes a turn. Teardown must use that same order before popping the
+    registry entry; otherwise a submit can pass its first liveness check and
+    bind a root after teardown has already claimed the session.
+    """
+    with _sessions_lock:
+        candidate = _sessions.get(sid)
+    if candidate is None:
+        return None
+    with _session_prompt_submit_lock(candidate), _session_resume_lock, _sessions_lock:
+        if _sessions.get(sid) is not candidate:
+            return None
+        if predicate is not None and not predicate(candidate):
+            return None
+        return _pop_session_by_id(sid)
+
+
 def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_close") -> bool:
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
@@ -358,11 +391,7 @@ def _close_session_by_id(
     ``_session_resume_lock`` and call ``_teardown_popped_session`` after releasing it). Automatic reapers pass
     ``predicate`` to revalidate under ``_sessions_lock`` right before the claim, so a stale scan can't close a
     session that reattached."""
-    with _sessions_lock:  # RLock: predicate + claim in one critical section
-        current = _sessions.get(sid)
-        if predicate is not None and (current is None or not predicate(current)):
-            return False
-        session = _pop_session_by_id(sid)
+    session = _claim_session_for_teardown(sid, predicate=predicate)
     return _teardown_popped_session(session, end_reason=end_reason)
 
 
@@ -524,17 +553,23 @@ def _schedule_ws_orphan_reap(
         return
 
     def _reap() -> None:
-        # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
-        # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
+        # Serialize the re-check against prompt.submit and session.resume. Claim teardown by popping under the
+        # same prompt admission -> resume -> registry order as prompt.submit, then release both before finalization.
         reschedule_delay = interrupt_session = session = None
-        with _session_resume_lock, _sessions_lock:
+        with _sessions_lock:
+            candidate = _sessions.get(sid)
+        if candidate is None:
+            with _session_resume_lock, _sessions_lock:
+                if _pending_ws_reaps.get(sid) is timer:
+                    _pending_ws_reaps.pop(sid, None)
+            return
+        with _session_prompt_submit_lock(candidate), _session_resume_lock, _sessions_lock:
             # Keep ownership through interrupt I/O and continuation registration. A cancelled
             # callback may already be dispatched, but cannot act on a later detachment.
             if _pending_ws_reaps.get(sid) is not timer:
                 return
             current = _sessions.get(sid)
-            if current is None:
-                _pending_ws_reaps.pop(sid, None)
+            if current is not candidate:
                 return
             if not _ws_session_is_detached(current):
                 # This Timer is abandoning the interrupt claim because another
@@ -616,9 +651,9 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
     for sid, session in clientless:
         claimed_for_teardown = None
         should_schedule_reap = False
-        # session.resume fast-path attaches under _session_resume_lock: take it so a reconnect can't attach
-        # between the detach above and the claim.
-        with _session_resume_lock, _sessions_lock:
+        # Prompt admission must win or drain before a disconnect can claim the session. Then serialize the
+        # reconnect check and pop with the same prompt -> resume -> registry order as prompt.submit.
+        with _session_prompt_submit_lock(session), _session_resume_lock, _sessions_lock:
             current = _sessions.get(sid)
             if current is not session:
                 continue

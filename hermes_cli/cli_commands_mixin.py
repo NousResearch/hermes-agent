@@ -1318,7 +1318,8 @@ class CLICommandsMixin:
         # -c`/`--resume`. The startup resume paths already call this; without it, the terminal/code-exec
         # tools and relative-path resolution keep operating in the wrong repo. Idempotent and a no-op when
         # the session recorded no cwd. See #38562.
-        if not managed_resume:
+        if (not managed_resume
+                or getattr(self, "_conversation_worktree_historical", False)):
             self._restore_session_cwd(session_meta)
         self._restore_session_yolo(session_meta)
         self._restore_session_model(session_meta)
@@ -1486,6 +1487,9 @@ class CLICommandsMixin:
     def _worktree_new(self, repo_root: str, rest: str) -> None:
         import cli as _cli
         from hermes_cli.config import load_config
+        if getattr(self, "_conversation_worktree_manager", None) is not None:
+            _cp("  /worktree new is unavailable while conversation isolation is active; use /new or /branch.")
+            return
         try:
             sync_base = bool(load_config().get("worktree_sync", True))
         except Exception:

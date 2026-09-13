@@ -2047,7 +2047,7 @@ def test_prompt_submit_typed_stop_phrase_ends_voice_chat(monkeypatch):
     monkeypatch.setenv("HERMES_VOICE", "1")
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
 
-    resp = server.dispatch(
+    resp = _dispatch_sync(
         {
             "id": "typed-stop",
             "method": "prompt.submit",
@@ -2076,7 +2076,7 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     )
     monkeypatch.setenv("HERMES_VOICE", "0")
 
-    resp = server.dispatch(
+    resp = _dispatch_sync(
         {
             "id": "typed-stop-off",
             "method": "prompt.submit",
@@ -2100,7 +2100,7 @@ def test_prompt_submit_longer_text_not_consumed_in_voice_mode(monkeypatch):
     )
     monkeypatch.setenv("HERMES_VOICE", "1")
 
-    resp = server.dispatch(
+    resp = _dispatch_sync(
         {
             "id": "typed-long",
             "method": "prompt.submit",
@@ -4748,6 +4748,123 @@ def _session(agent=None, **extra):
     }
 
 
+def test_prompt_submit_admission_is_serialized_per_session(monkeypatch):
+    """Concurrent RPC workers must let only one submit claim a session turn."""
+    session = _session()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    claimed: list[str] = []
+    slot_claims: list[str] = []
+    busy: list[str] = []
+    slot_entered = threading.Event()
+    release_slot = threading.Event()
+
+    def fake_slot(_sid, _current):
+        slot_claims.append("slot")
+        if len(slot_claims) == 1:
+            slot_entered.set()
+            assert release_slot.wait(2)
+        return None
+
+    def fake_lock(rid, sid, current, text, *args):
+        claimed.append(text)
+        if len(claimed) == 1:
+            first_entered.set()
+            assert release_first.wait(2)
+        with current["history_lock"]:
+            current["running"] = True
+        return None, {}
+
+    monkeypatch.setattr(server, "_lock_in_submit_turn", fake_lock)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", fake_slot)
+    monkeypatch.setattr(server, "_persist_session_row_for_submit", lambda *args: None)
+    monkeypatch.setattr(
+        server, "_handle_busy_submit",
+        lambda rid, sid, current, text, transport, *, queued: busy.append(current["session_key"])
+        or {"error": {"code": 4099, "message": "busy"}},
+    )
+
+    replies = []
+    first = threading.Thread(target=lambda: replies.append(server._admit_prompt_submit(
+        "1", "sid", session, "first", {}, False, None, None, False, None)))
+    second = threading.Thread(target=lambda: replies.append(server._admit_prompt_submit(
+        "2", "sid", session, "second", {}, False, None, None, False, None)))
+    first.start()
+    assert slot_entered.wait(2)
+    second.start()
+    time.sleep(0.05)
+    assert second.is_alive(), "second submit bypassed the per-session admission lock"
+    release_slot.set()
+    assert first_entered.wait(2)
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert slot_claims == ["slot", "slot"]
+    assert claimed == ["first"]
+    assert busy == ["session-key"]
+    assert replies[0][0] is None
+    assert replies[1][0]["error"]["code"] == 4099
+
+
+def test_failed_root_lease_release_retries_without_another_teardown(monkeypatch):
+    """A transient root-lease release failure schedules an independent retry."""
+    lease = Mock()
+    lease.release.side_effect = [RuntimeError("registry busy"), None]
+    scheduled = []
+
+    class _Timer:
+        def __init__(self, _delay, target):
+            self.target = target
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            scheduled.append(self.target)
+
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    with server._failed_conversation_root_leases_lock:
+        server._failed_conversation_root_leases.clear()
+        server._failed_conversation_root_lease_retry_timer = None
+
+    server._remember_failed_conversation_root_lease(lease)
+    assert len(scheduled) == 1
+
+    scheduled[0]()
+    assert len(scheduled) == 2
+    scheduled[1]()
+    assert lease.release.call_count == 2
+    with server._failed_conversation_root_leases_lock:
+        assert server._failed_conversation_root_leases == []
+
+
+def test_prompt_submit_validates_truncation_before_materializing_draft(monkeypatch):
+    """Rejected rewind targets must not create a durable draft row/worktree."""
+    session = _session(history=[{"role": "user", "content": "only turn"}], source="desktop")
+    server._sessions["truncate-draft"] = session
+    materialized = []
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda current: materialized.append(current))
+    monkeypatch.setattr(server, "_bind_conversation_worktree_on_submit", lambda *_a: pytest.fail(
+        "invalid truncation must not bind a draft worktree"))
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_a: None)
+
+    try:
+        response = server.handle_request({
+            "id": "truncate",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "truncate-draft", "text": "retry",
+                "truncate_before_user_ordinal": 99, "confirm_truncate": True,
+            },
+        })
+        assert response["error"]["code"] == 4018
+        assert materialized == []
+        assert session["running"] is False
+    finally:
+        server._sessions.pop("truncate-draft", None)
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
@@ -5216,6 +5333,30 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
         server._sessions.pop("slow-orphan", None)
 
     assert not thread.is_alive()
+
+
+def test_automatic_teardown_waits_for_prompt_admission(monkeypatch):
+    """A reaper cannot pop a session while its prompt is materializing."""
+    session = _session(running=False)
+    sid = "prompt-teardown-race"
+    server._sessions[sid] = session
+    claimed = threading.Event()
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda popped, *, end_reason: claimed.set() or True,
+    )
+
+    with server._session_prompt_submit_lock(session):
+        worker = threading.Thread(target=lambda: server._close_session_by_id(sid))
+        worker.start()
+        assert not claimed.wait(timeout=0.05)
+        assert server._sessions[sid] is session
+
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
+    assert claimed.is_set()
+    assert sid not in server._sessions
 
 
 def test_ws_orphan_reap_reschedules_while_mid_turn_then_reaps(monkeypatch):
@@ -15935,6 +16076,35 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
     server._sessions.pop(runtime_sid, None)
 
 
+def test_session_create_seeded_branch_binding_failure_rolls_back_runtime(monkeypatch):
+    """A failed root bind must remove the registered child and release its lease."""
+    lease = Mock()
+
+    # The production path persists the seeded child before attempting the
+    # worktree bind. Keep this test focused on bind rollback rather than the
+    # best-effort seed-row fallback.
+    monkeypatch.setattr(server, "_seed_branch_row", lambda *_args: True)
+
+    def fail_bind(session):
+        session["conversation_root_lease"] = lease
+        raise RuntimeError("worktree lease metadata failed")
+
+    monkeypatch.setattr(server, "_bind_conversation_worktree_on_submit", fail_bind)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *_a: None)
+
+    with pytest.raises(RuntimeError, match="worktree lease metadata failed"):
+        server.handle_request({
+            "id": "1", "method": "session.create",
+            "params": {
+                "source": "desktop", "parent_session_id": "parent-1",
+                "messages": [{"role": "user", "content": "seed"}],
+            },
+        })
+
+    assert not server._sessions
+    lease.release.assert_called_once_with()
+
+
 def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
     """Disk-full is NOT compensated: the row stays (deleting data on a full
     disk can make things worse), create still succeeds, and the failure is
@@ -19018,17 +19188,21 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
     claimed = {"session_key": "k"}
+    server._sessions["s9"] = claimed
     monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
     monkeypatch.setattr(
         server,
         "_teardown_popped_session",
         lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
-    resp = server.handle_request(
-        {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
-    )
-    assert resp["result"] == {"closed": True}
-    assert seen == ["s9", (claimed, "tui_close")]
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
+        )
+        assert resp["result"] == {"closed": True}
+        assert seen == ["s9", (claimed, "tui_close")]
+    finally:
+        server._sessions.pop("s9", None)
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):

@@ -617,8 +617,15 @@ class ConversationWorktreeManager:
         root_session_id: str,
         *,
         active_session_bound: bool = False,
+        retain_for_retry: bool = False,
     ) -> CleanupResult:
-        """Remove only a re-inspected safe binding after an explicit request."""
+        """Remove only a re-inspected safe binding after an explicit request.
+
+        ``retain_for_retry`` is used when cleanup follows a failed draft
+        materialization. The checkout is still removed, but its durable claim
+        returns to ``creating`` so the same draft identity can be retried.
+        Explicit user cleanup keeps the normal terminal ``removed`` state.
+        """
         record = self._db.get_conversation_worktree(root_session_id)
         if record is None:
             verdict = CleanupVerdict(False, ("unknown",))
@@ -699,12 +706,16 @@ class ConversationWorktreeManager:
                                 failure_message=message,
                             )
 
-                        self._db.mark_conversation_worktree_removed(root_session_id)
+                        if retain_for_retry:
+                            self._db.reset_conversation_worktree_for_retry(root_session_id)
+                            self._event(
+                                "conversation_worktree.cleanup_retryable",
+                                root_session_id=root_session_id,
+                            )
+                        else:
+                            self._db.mark_conversation_worktree_removed(root_session_id)
                         self._remove_common_owner_claim(current)
-                        self._event(
-                            "conversation_worktree.removed",
-                            root_session_id=root_session_id,
-                        )
+                        self._event("conversation_worktree.removed", root_session_id=root_session_id)
                         return CleanupResult(True, verdict)
         except ConversationWorktreeError:
             return CleanupResult(False, CleanupVerdict(False, ("unknown",)))
@@ -1245,17 +1256,23 @@ class ConversationWorktreeManager:
         # creates the worktree.  A crash or failed per-worktree marker write
         # after `git worktree add` must still be visible to every generic GC.
         self._ensure_common_owner_claim(record)
+        existing_branch = self._run_git(
+            source,
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}"],
+            self._policy.create_timeout,
+            "create",
+        ).returncode == 0
+        add_args = (
+            ["worktree", "add", str(path), record.branch]
+            if existing_branch
+            else [
+                "worktree", "add", "--no-track", "-b", record.branch,
+                str(path), record.base_commit,
+            ]
+        )
         self._git_stdout(
             source,
-            [
-                "worktree",
-                "add",
-                "--no-track",
-                "-b",
-                record.branch,
-                str(path),
-                record.base_commit,
-            ],
+            add_args,
             "create",
         )
         # Provision the source repository's own runtime before this new
@@ -1511,7 +1528,7 @@ class ConversationWorktreeManager:
         result = self._run_git(cwd, args, self._timeout_for_phase(phase), phase)
         if result.returncode != 0:
             raise ConversationWorktreeError(
-                f"git {args[0]} failed", phase=phase
+                f"git {args[0]} failed: {self._sanitize_remove_failure(result.stderr)}", phase=phase
             )
         return result.stdout.strip()
 

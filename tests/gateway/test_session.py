@@ -35,6 +35,7 @@ class TestSessionSourceRoundtrip:
             user_id="99",
             user_name="alice",
             thread_id="t1",
+            _session_key_lane="discord-voice:dedicated-room",
         )
         d = source.to_dict()
         restored = SessionSource.from_dict(d)
@@ -46,6 +47,7 @@ class TestSessionSourceRoundtrip:
         assert restored.user_id == "99"
         assert restored.user_name == "alice"
         assert restored.thread_id == "t1"
+        assert restored._session_key_lane == "discord-voice:dedicated-room"
 
 
     def test_minimal_roundtrip(self):
@@ -87,6 +89,20 @@ class TestLocalCliFactory:
 
 
 class TestBuildSessionContextPrompt:
+    def test_prompt_identifies_certified_conversation_worktree(self):
+        config = GatewayConfig()
+        source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
+        entry = SessionEntry(
+            session_key="local", session_id="session", created_at=datetime.now(),
+            updated_at=datetime.now(), origin=source, platform=Platform.LOCAL,
+            conversation_worktree={"worktree_path": "/repo/.worktrees/session"},
+        )
+
+        prompt = build_session_context_prompt(build_session_context(source, config, entry))
+
+        assert "certified worktree" in prompt
+        assert "/repo/.worktrees/session" in prompt
+
     def test_telegram_prompt_contains_platform_and_chat(self):
         config = GatewayConfig(
             platforms={
@@ -1689,4 +1705,3 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-

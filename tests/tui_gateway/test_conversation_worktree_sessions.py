@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,6 +162,83 @@ def test_session_create_does_not_bind_worktree_for_a_draft(monkeypatch):
     assert server._sessions
 
 
+def test_historical_resume_marks_unmanaged_and_never_binds_on_first_submit(monkeypatch):
+    from tui_gateway.methods_session import _Resume
+
+    ctx = _Resume("resume", {"source": "desktop"}, "legacy-session")
+    ctx.conversation_worktree_historical = True
+    record = ctx.record("desktop", "/legacy-workspace", [])
+
+    calls = []
+    monkeypatch.setattr(server, "_bind_conversation_worktree_for_new_root", lambda *a, **k: calls.append(a))
+    session = {
+        "source": "desktop", "session_key": "legacy-session",
+        "conversation_worktree": {},
+        "conversation_worktree_historical": record["conversation_worktree_historical"],
+    }
+
+    server._bind_conversation_worktree_on_submit(session)
+
+    assert record["conversation_worktree_historical"] is True
+    assert calls == []
+    assert session["conversation_worktree"] == {}
+
+
+def test_failed_seeded_binding_removes_ready_worktree_before_error(monkeypatch, tmp_path):
+    binding = _binding("seeded-failure")
+    lease = MagicMock()
+    removed: list[tuple[str, bool]] = []
+
+    class _DB:
+        def update_session_cwd(self, *_args, **_kwargs):
+            raise RuntimeError("metadata write failed")
+
+    class _Manager:
+        def remove_after_explicit_request(self, root, *, active_session_bound, retain_for_retry):
+            removed.append((root, active_session_bound, retain_for_retry))
+            return MagicMock(removed=True)
+
+    session = {
+        "source": "desktop", "session_key": "seeded-failure", "profile_home": None,
+        "conversation_worktree": {}, "conversation_root_lease": None,
+        "cwd": str(tmp_path), "explicit_cwd": False,
+    }
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(_DB()))
+    monkeypatch.setattr(server, "_bind_conversation_worktree_for_new_root", lambda *a, **k: binding)
+    monkeypatch.setattr(server, "_acquire_conversation_root_lease", lambda *a, **k: lease)
+    monkeypatch.setattr(server, "_conversation_worktree_manager", lambda **_k: (_Manager(), None, False))
+
+    with pytest.raises(RuntimeError, match="metadata write failed"):
+        server._bind_conversation_worktree_on_submit(session)
+
+    assert removed == [("seeded-failure", False, True)]
+    lease.release.assert_called_once_with()
+
+
+def test_enabled_isolation_does_not_treat_profile_cwd_as_historical(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "historical-fallback.db")
+    try:
+        db.create_session("legacy-no-cwd", source="desktop")
+        manager = MagicMock()
+        manager.resolve_existing_session.return_value = None
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(
+            server, "_conversation_worktree_manager", lambda **_kw: (manager, db, False)
+        )
+        monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
+
+        response = server._methods["session.resume"]("resume", {
+            "session_id": "legacy-no-cwd", "source": "desktop",
+        })
+
+        assert response["error"]["code"] == 5000
+        assert "refusing profile checkout fallback" in response["error"]["message"]
+    finally:
+        db.close()
+
+
 def test_resume_resolves_existing_binding_without_creation(monkeypatch):
     root = "root-existing"
     continuation = "compressed-tip"
@@ -258,7 +336,7 @@ def test_resume_failure_releases_candidate_without_registering(monkeypatch, tmp_
     try:
         db.create_session("parent", source="desktop")
         db.create_session("branch", source="desktop", parent_session_id="parent",
-                          model_config={"_branched_from": "parent"})
+                          model_config={"_branched_from": "parent"}, cwd=str(tmp_path))
         manager = MagicMock()
         manager.resolve_existing_session.side_effect = lambda root: (
             None if failure == "missing" and root == "branch" else _binding(root))
@@ -278,13 +356,19 @@ def test_resume_failure_releases_candidate_without_registering(monkeypatch, tmp_
             monkeypatch.setattr(server, "_init_session", fail_init)
         response = server._methods["session.resume"]("resume-fail", {
             "session_id": "branch", "source": "desktop", "eager_build": failure == "init"})
+        if failure == "missing":
+            # Historical rows predate isolation; resume preserves their recorded
+            # session instead of manufacturing a new binding or failing closed.
+            assert "error" not in response, response
+            record = server._sessions[response["result"]["session_id"]]
+            assert record["conversation_worktree"] == {}
+            acquire.assert_not_called()
+            assert [call.args[0] for call in manager.resolve_existing_session.call_args_list] == ["branch"]
+            return
         assert "error" in response
         assert server._sessions == {}
         if failure in {"history", "init"}:
             lease.release.assert_called_once_with()
-        elif failure == "missing":
-            acquire.assert_not_called()
-            assert [call.args[0] for call in manager.resolve_existing_session.call_args_list] == ["branch"]
     finally:
         db.close()
 

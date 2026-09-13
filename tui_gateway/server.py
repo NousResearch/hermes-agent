@@ -40,6 +40,37 @@ from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, b
 
 logger = logging.getLogger(__name__)
 
+_failed_conversation_root_leases: list[object] = []
+_failed_conversation_root_leases_lock = threading.Lock()
+_failed_conversation_root_lease_retry_timer = None
+
+
+def _remember_failed_conversation_root_lease(lease) -> None:
+    global _failed_conversation_root_lease_retry_timer
+    with _failed_conversation_root_leases_lock:
+        if all(existing is not lease for existing in _failed_conversation_root_leases):
+            _failed_conversation_root_leases.append(lease)
+        timer = _failed_conversation_root_lease_retry_timer
+        if timer is None or not timer.is_alive():
+            timer = threading.Timer(1.0, _retry_failed_conversation_root_leases)
+            timer.daemon = True
+            _failed_conversation_root_lease_retry_timer = timer
+            timer.start()
+
+
+def _retry_failed_conversation_root_leases() -> None:
+    global _failed_conversation_root_lease_retry_timer
+    with _failed_conversation_root_leases_lock:
+        pending = list(_failed_conversation_root_leases)
+        _failed_conversation_root_leases.clear()
+        _failed_conversation_root_lease_retry_timer = None
+    for lease in pending:
+        try:
+            lease.release()
+        except Exception:
+            _remember_failed_conversation_root_lease(lease)
+            logger.warning("Failed to retry TUI conversation root lease release", exc_info=True)
+
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
@@ -173,6 +204,7 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "prompt.submit",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
 })
 
@@ -434,6 +466,49 @@ def _acquire_conversation_root_lease(binding, *, surface: str):
                                            repo_common_dir=Path(binding.repo_common_dir), surface=surface)
 
 
+def _remove_failed_conversation_worktree(session: dict, binding, db) -> None:
+    """Release a seeded root and remove its checkout before surfacing metadata failure."""
+    lease = session.get("conversation_root_lease")
+    if lease is not None:
+        try:
+            lease.release()
+        except Exception:
+            _remember_failed_conversation_root_lease(lease)
+            logger.warning("Failed to release failed conversation root lease", exc_info=True)
+        else:
+            session.pop("conversation_root_lease", None)
+    try:
+        manager, _, owns_db = _conversation_worktree_manager(
+            profile_home=session.get("profile_home"), db=db
+        )
+        remover = getattr(manager, "remove_after_explicit_request", None)
+        if callable(remover):
+            result = remover(
+                str(binding.root_session_id),
+                active_session_bound=False,
+                retain_for_retry=True,
+            )
+            if not getattr(result, "removed", False):
+                logger.warning(
+                    "Failed to remove failed seeded conversation worktree %s",
+                    binding.root_session_id,
+                )
+        else:
+            logger.warning(
+                "Conversation worktree manager cannot remove failed seeded root %s",
+                binding.root_session_id,
+            )
+        if owns_db:
+            with contextlib.suppress(Exception):
+                db.close()
+    except Exception:
+        logger.warning(
+            "Failed to remove failed seeded conversation worktree %s",
+            binding.root_session_id,
+            exc_info=True,
+        )
+
+
 def _conversation_worktree_manager(*, profile_home=None, db=None):
     """Construct the policy-governed manager against the owning profile DB."""
     owns_db = False
@@ -497,11 +572,15 @@ def _bind_conversation_worktree_for_new_root(root_session_id: str, *, profile_ho
 
 def _bind_conversation_worktree_on_submit(session: dict) -> None:
     """Materialize a desktop/TUI draft's worktree when its first prompt makes it durable."""
-    if session.get("conversation_worktree") or session.get("source") not in {"desktop", "tui"}:
+    if (session.get("conversation_worktree")
+            or session.get("conversation_worktree_historical")
+            or session.get("source") not in {"desktop", "tui"}):
         return
     key = str(session.get("session_key") or "")
     if not key:
         return
+    prior_cwd = session.get("cwd")
+    prior_explicit_cwd = bool(session.get("explicit_cwd"))
     with _session_db(session) as db:
         binding = _bind_conversation_worktree_for_new_root(
             key, profile_home=session.get("profile_home"), db=db)
@@ -516,9 +595,21 @@ def _bind_conversation_worktree_on_submit(session: dict) -> None:
         session["explicit_cwd"] = True
         _register_session_cwd(session)
         if db is not None:
-            db.update_session_cwd(
-                key, metadata["path"], metadata.get("branch", ""),
-                str(binding.repo_common_dir), replace_git_meta=True)
+            common_root = git_probe.common_repo_root(metadata["path"]) or str(binding.repo_common_dir)
+            try:
+                db.update_session_cwd(
+                    key, metadata["path"], metadata.get("branch", ""),
+                    common_root, replace_git_meta=True)
+            except Exception:
+                _remove_failed_conversation_worktree(session, binding, db)
+                # The checkout is gone; leave the live draft retryable instead of making its
+                # deleted binding truthy and routing the next submit into a dead directory.
+                session["conversation_worktree"] = {}
+                session["cwd"] = prior_cwd
+                session["explicit_cwd"] = prior_explicit_cwd
+                session.pop("conversation_root_lease", None)
+                _register_session_cwd(session)
+                raise
 
 
 def _resolve_conversation_worktree_for_resume(session_id: str, *, profile_home=None, db=None):
@@ -2502,11 +2593,13 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 def _init_session(
     sid: str, key: str, agent, history: list, cols: int = 80, cwd: str | None = None,
     session_db=None, source: str | None = None, profile_home: str | None = None,
-    explicit_cwd: bool = False, conversation_worktree=None, conversation_root_lease=None):
+    explicit_cwd: bool = False, conversation_worktree=None, conversation_root_lease=None,
+    conversation_worktree_historical: bool = False):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
             "conversation_worktree": conversation_worktree or {},
+            "conversation_worktree_historical": bool(conversation_worktree_historical),
             "conversation_root_lease": conversation_root_lease,
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
@@ -2575,7 +2668,8 @@ def _deferred_session_record(
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
-        "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+        "history_lock": threading.Lock(), "prompt_submit_lock": threading.Lock(),
+        "history_version": 0, "image_counter": 0,
         "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
@@ -2618,14 +2712,17 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         # A PRIOR runtime for this stored id may still be sentinel-parked with a reap Timer armed; cancel +
         # finalize it quietly so the reap doesn't broadcast session.reclaimed (storm).
         _cancel_ws_orphan_reap(sid)
-        stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
+    # The parked-runtime claim is itself teardown. It must acquire prompt admission before the resume lock,
+    # so do it after releasing the resume lock rather than inverting prompt.submit's lock order.
+    stale = _claim_parked_runtimes(session_key, keep_sid=sid, profile_home=profile_home)
     _finalize_superseded_runtimes(stale)  # slow finalization stays OUTSIDE _session_resume_lock
     return None
 
 
 def _claim_parked_runtimes(session_key: str, *, keep_sid: str, profile_home=_ANY_PROFILE) -> list[tuple[str, dict]]:
     """Claim sentinel-parked stale runtimes of ``session_key`` for supersession: cancel their orphan-reap
-    Timer and pop them here (under the caller's _session_resume_lock); the caller finalizes after release."""
+    Timer and pop them here; prompt admission and resume both remain serialized while each stale runtime is claimed.
+    The caller finalizes after release."""
     stale: list[tuple[str, dict]] = []
     with _sessions_lock:
         candidates = [
@@ -2633,10 +2730,17 @@ def _claim_parked_runtimes(session_key: str, *, keep_sid: str, profile_home=_ANY
             if old_sid != keep_sid and not old.get("_finalized")
             and _session_lookup_key(old, fallback=old_sid) == session_key
             and _live_profile_matches(old, profile_home) and old.get("transport") is _detached_ws_transport]
-    for old_sid, _old in candidates:
-        _cancel_ws_orphan_reap(old_sid)
-        if (popped := _pop_session_by_id(old_sid)) is not None:
-            stale.append((old_sid, popped))
+    for old_sid, old in candidates:
+        with _session_prompt_submit_lock(old), _session_resume_lock, _sessions_lock:
+            current = _sessions.get(old_sid)
+            if (current is not old or current.get("_finalized")
+                    or _session_lookup_key(current, fallback=old_sid) != session_key
+                    or not _live_profile_matches(current, profile_home)
+                    or current.get("transport") is not _detached_ws_transport):
+                continue
+            _cancel_ws_orphan_reap(old_sid)
+            if (popped := _pop_session_by_id(old_sid)) is not None:
+                stale.append((old_sid, popped))
     return stale
 
 
@@ -2662,8 +2766,10 @@ def _conversation_worktree_prewarm_pending(session: dict) -> bool:
         from agent.conversation_worktree_policy import resolve_conversation_worktree_policy
         return bool(resolve_conversation_worktree_policy(_load_cfg()).enabled)
     except Exception:
-        # The submit path owns policy errors and will report them with the binding failure.
-        return False
+        # Do not prewarm an agent when policy resolution itself failed: construction
+        # would otherwise run outside the submit error surface and strand the draft.
+        logger.warning("conversation worktree prewarm policy check failed", exc_info=True)
+        return True
     finally:
         if home_token is not None:
             reset_hermes_home_override(home_token)
@@ -2744,13 +2850,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             session["agent_ready"].set()
             _emit("session.resume_progress", sid, {"message": message, "phase": "history", "status": "failed"})
             _emit("error", sid, {"message": message})
-            with _sessions_lock:
-                discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
-            if (lease := (discarded or {}).get("active_session_lease")) is not None:
-                lease.release()
-            root_lease = (discarded or {}).get("conversation_root_lease")
-            if root_lease is not None:
-                root_lease.release()
+            _close_session_by_id(sid, end_reason="resume_failed")
         finally:
             if close_db and hasattr(db, "close"):
                 try:

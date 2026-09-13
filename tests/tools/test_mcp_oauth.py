@@ -91,6 +91,50 @@ class TestHermesTokenStorage:
         data = json.loads(token_path.read_text())
         assert data["access_token"] == "abc123"
 
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"access_token": "access", "expires_in": 3600}, False),
+            ({"access_token": "access", "expires_at": 9999999999}, False),
+            (
+                {
+                    "access_token": "access",
+                    "expires_in": 3600,
+                    "refresh_token": "refresh",
+                },
+                True,
+            ),
+            ({"access_token": "provider-defined-bearer"}, True),
+            ({"expires_in": 3600, "refresh_token": "refresh"}, False),
+        ],
+        ids=[
+            "finite-relative-without-refresh",
+            "finite-absolute-without-refresh",
+            "finite-with-refresh",
+            "provider-defined-long-lived",
+            "missing-access-token",
+        ],
+    )
+    def test_durable_token_classification(self, tmp_path, payload, expected):
+        storage = HermesTokenStorage("durability", hermes_home=tmp_path)
+        token_path = tmp_path / "mcp-tokens" / "durability.json"
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text(json.dumps(payload))
+
+        assert storage.has_durable_tokens() is expected
+
+    def test_durable_token_classification_rejects_missing_or_corrupt_state(
+        self, tmp_path
+    ):
+        storage = HermesTokenStorage("durability", hermes_home=tmp_path)
+        token_path = tmp_path / "mcp-tokens" / "durability.json"
+
+        assert storage.has_durable_tokens() is False
+
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text("{not-json")
+        assert storage.has_durable_tokens() is False
+
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
     def test_token_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Tokens must land on disk at 0o600 with no umask-default exposure window.

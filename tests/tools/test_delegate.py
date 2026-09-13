@@ -15,7 +15,7 @@ import threading
 import time
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import DEFAULT, MagicMock, patch
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
@@ -1271,6 +1271,54 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("Cannot resolve", result["error"])
         self.assertIn("nonexistent", result["error"])
+
+class TestParentSessionRowEnsure(unittest.TestCase):
+    """The parent's session row must be ensured before a child agent references it (#103789).
+
+    A child row carries ``parent_session_id`` under ``PRAGMA foreign_keys=ON``; if the parent's lazy
+    row create failed transiently at turn start, the child's create fails the FK and the gateway peer
+    self-heal later lands a marker-less row that leaks subagent runs into session pickers.
+    """
+
+    def _build(self, parent, order=None):
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            if order is not None:
+                def _record_child(*_a, **_k):
+                    order.append("child")
+                    return DEFAULT
+                MockAgent.side_effect = _record_child
+            _build_child_agent(
+                task_index=0,
+                goal="Inspect",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+            )
+        return MockAgent
+
+    def test_parent_row_ensured_before_child_creation(self):
+        parent = _make_mock_parent()
+        order = []
+        parent._ensure_db_session.side_effect = lambda: order.append("ensure")
+
+        MockAgent = self._build(parent, order=order)
+        MockAgent.assert_called_once()
+        # The idempotent parent-row create runs before the child agent (whose session row
+        # references the parent) is constructed.
+        self.assertEqual(order[:2], ["ensure", "child"])
+
+    def test_ensure_failure_does_not_block_spawn(self):
+        parent = _make_mock_parent()
+        parent._ensure_db_session.side_effect = RuntimeError("db locked")
+
+        MockAgent = self._build(parent)
+        MockAgent.assert_called_once()
+        parent._ensure_db_session.assert_called_once()
 
 class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):

@@ -229,6 +229,18 @@ def _build_child_agent(
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
+    # The child's session row references the parent (FK on parent_session_id). If the parent's lazy
+    # row create failed transiently at turn start, its row is still missing here and the child's
+    # create fails the FK — the gateway peer self-heal then lands a marker-less row that leaks into
+    # session pickers (#103789). Retry the (idempotent, exception-swallowing) parent create first.
+    _ensure_parent_session_row = getattr(parent_agent, "_ensure_db_session", None)
+    if callable(_ensure_parent_session_row):
+        with _quiet("subagent: failed to ensure parent session row before spawn"):
+            _ensure_parent_session_row()
+    else:
+        logger.debug(
+            "delegate_task: parent agent exposes no _ensure_db_session; skipping pre-spawn row ensure"
+        )
     with delegated_child_context():
         try:
             child = AIAgent(

@@ -1308,6 +1308,21 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     return _genuine
 
 
+def _pool_rotation_may_recover(agent: Any, classified: Any, *, is_zai_coding_overload: bool) -> bool:
+    """Whether waiting on credential-pool rotation could still clear this error.
+
+    False for the two service-side conditions a different key cannot fix: an upstream-aggregator
+    429 (the aggregator's own upstream is throttled, #11314) and a Z.AI Coding Plan overload
+    (HTTP 429 code 1305 from the endpoint itself). Rotating a multi-key pool through the same
+    overloaded endpoint only delays the configured fallback chain; the short retry window in
+    ``adaptive_rate_limit_backoff`` already covers the transient case.
+    """
+    if classified.reason == FailoverReason.upstream_rate_limit or is_zai_coding_overload:
+        return False
+    from agent.conversation_loop import _ra
+    return bool(_ra()._pool_may_recover_from_rate_limit(agent._credential_pool))
+
+
 def route_classified_error(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *, error_msg: str,
     error_context: Any, recovered_with_pool: bool, base_url: Any, model: Any,
@@ -1441,12 +1456,12 @@ def route_classified_error(
         or (_is_transport_failure and retry_count >= 2)
     )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
-        # No eager fallback while credential pool rotation may recover. Exception: an
-        # upstream-aggregator 429 — the pool can't help, always fall back.
+        # No eager fallback while credential pool rotation may recover. Exceptions: an
+        # upstream-aggregator 429 or a Z.AI Coding Plan overload — the pool can't help there.
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-        pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
+        pool_may_recover = _pool_rotation_may_recover(
+            agent, classified, is_zai_coding_overload=_is_zai_coding_overload,
         )
         if not pool_may_recover:
             agent._buffer_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))

@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
@@ -119,6 +121,25 @@ def _zai_overload_error():
 
 
 
+
+
+@pytest.mark.parametrize("model", ["glm-5.2", "glm-5.3", "GLM-5.4-Air", "zai/glm-5.3"])
+def test_zai_overload_detection_covers_every_glm5_model(model):
+    """The overload shape (429 + code 1305) is a property of the Coding Plan endpoint, not of
+    one model: GLM-5.3 (and later 5.x) must not bypass the long-backoff policy."""
+    assert is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4", model=model, error=_zai_overload_error(),
+    )
+
+
+def test_zai_overload_detection_ignores_other_models_and_endpoints():
+    err = _zai_overload_error()
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4", model="glm-4.7", error=err,
+    )
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4", model="glm-5.3", error=err,
+    )
 
 
 def test_zai_overload_retry_ceiling_exceeds_short_attempts():

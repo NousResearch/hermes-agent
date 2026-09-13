@@ -37,7 +37,9 @@ const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-const renderPlain = (node: React.ReactNode) => {
+// The escape stream exactly as it reaches the terminal, OSC sequences and
+// all — the only view that can prove an OSC 8 hyperlink was emitted.
+const renderAnsi = (node: React.ReactNode) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -61,10 +63,13 @@ const renderPlain = (node: React.ReactNode) => {
   instance.cleanup()
 
   return output
+}
+
+const renderPlain = (node: React.ReactNode) =>
+  renderAnsi(node)
     .replace(OSC_RE, '')
     .split('\n')
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
-}
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -271,55 +276,97 @@ describe('Md wrapping', () => {
 })
 
 describe('Md link labels', () => {
-  it('renders bare URLs with readable slug labels', () => {
-    const lines = renderPlain(
-      React.createElement(
-        Box,
-        { width: 120 },
-        React.createElement(Md, {
-          t: DEFAULT_THEME,
-          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
-        })
-      )
-    )
+  const md = (text: string, width = 200) =>
+    React.createElement(Box, { width }, React.createElement(Md, { cols: width, t: DEFAULT_THEME, text }))
 
-    const rendered = lines.join('\n')
+  // The link target has to survive as literal text, not just as OSC 8
+  // metadata: a bare URL that renders as a site name leaves nothing to read,
+  // copy or retype on any terminal that strips the escape.
+  it('renders a bare URL verbatim instead of a derived label', () => {
+    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
+    const rendered = renderPlain(md(`see ${url} for details`)).join('\n')
 
-    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
-    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
+    expect(rendered).toContain(url)
+    // `urlSlugTitleLabel` used to turn the last path segment into this.
+    expect(rendered).not.toContain('Lk 9f2c1d7e')
   })
 
-  it('keeps the authored markdown label even when a page title resolves', async () => {
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+  // Regression for the connect-link handoff: the stored assistant text is
+  // `Connect link: <url>` and the TUI showed `Connect link: Composio`, so the
+  // OAuth step could not be completed from the TUI at all.
+  it('keeps the URL visible in a "Connect link:" message', () => {
+    const url = 'https://connect.example.com/link/lk_a1b2c3d4e5'
+    const rendered = renderPlain(md(`Connect link: ${url}`)).join('\n')
 
-    // Warm the shared cache so `useLinkTitle` would have a title to render
-    // synchronously — the label must still win.
-    await stubFetchedTitle(url, 'El Yunque Rainforest Adventure | Expedia')
-
-    const lines = renderPlain(
-      React.createElement(
-        Box,
-        { width: 80 },
-        React.createElement(Md, { t: DEFAULT_THEME, text: `[Trip details](${url})` })
-      )
-    )
-
-    const rendered = lines.join('\n')
-
-    expect(rendered).toContain('Trip details')
-    expect(rendered).not.toContain('El Yunque Rainforest Adventure | Expedia')
+    expect(rendered).toContain(`Connect link: ${url}`)
   })
 
-  it('still resolves titles for links whose label is just the URL', async () => {
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+  it('wraps a bare URL in an OSC 8 hyperlink pointing at the same target', () => {
+    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
+    const ansi = renderAnsi(md(`Connect link: ${url}`))
 
-    await stubFetchedTitle(url, 'Rainforest Adventure Tour')
+    expect(ansi).toContain(`;${url}${BEL}`)
+    expect(ansi).toContain(`${ESC}]8;`)
+  })
 
-    const lines = renderPlain(
-      React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text: `[${url}](${url})` }))
-    )
+  it('leaves trailing prose punctuation outside the visible URL', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const rendered = renderPlain(md(`open ${url}, then retry`)).join('\n')
 
-    expect(lines.join('\n')).toContain('Rainforest Adventure Tour')
+    expect(rendered).toContain(`open ${url}, then retry`)
+  })
+
+  it('renders an autolink verbatim', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const rendered = renderPlain(md(`see <${url}>`)).join('\n')
+
+    expect(rendered).toContain(url)
+  })
+
+  it('keeps an authored markdown label and carries the target in OSC 8', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const ansi = renderAnsi(md(`[Trip details](${url})`))
+
+    expect(stripAnsi(ansi.replace(OSC_RE, ''))).toContain('Trip details')
+    expect(ansi).toContain(`;${url}${BEL}`)
+  })
+
+  it('never lets a fetched page title replace the URL', async () => {
+    const url = 'https://connect.example.com/link/lk_9f2c1d7e'
+
+    // Warm the shared title cache, then prove the renderer ignores it. This
+    // is the exact shape of the live defect: the fetched title was the only
+    // thing on screen.
+    await stubFetchedTitle(url, 'Connect your account')
+
+    const rendered = renderPlain(md(`Connect link: ${url}`)).join('\n')
+
+    expect(rendered).toContain(url)
+    expect(rendered).not.toContain('Connect your account')
+  })
+
+  it('renders a URL-labelled markdown link as the URL', async () => {
+    const url = 'https://docs.example.com/guide/auth'
+
+    await stubFetchedTitle(url, 'Auth Guide')
+
+    const rendered = renderPlain(md(`[${url}](${url})`)).join('\n')
+
+    expect(rendered).toContain(url)
+    expect(rendered).not.toContain('Auth Guide')
+  })
+
+  it('falls back to the URL when the markdown label is blank', () => {
+    const url = 'https://docs.example.com/guide/auth'
+    const rendered = renderPlain(md(`[ ](${url})`)).join('\n')
+
+    expect(rendered).toContain(url)
+  })
+
+  it('renders a mailto autolink as the address', () => {
+    const rendered = renderPlain(md('write <ops@example.com> today')).join('\n')
+
+    expect(rendered).toContain('write ops@example.com today')
   })
 })
 

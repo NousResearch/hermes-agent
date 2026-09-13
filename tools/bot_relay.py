@@ -41,8 +41,16 @@ LOCKS_DIR = "locks"
 # Config fallbacks (real knobs: ``bot_mode.turn_wait_seconds`` / ``bot_mode.envelope_ttl_seconds``).
 TURN_WAIT_SECONDS_FALLBACK = 120
 DEFAULT_ENVELOPE_TTL_SECONDS = 900  # older envelopes are refused at drain with 'queued_expired'
-# Waiter give-up budget: cross-connection turns can be slow — generous, but bounded.
-REPLY_WAIT_SECONDS = 900
+# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver (tui_gateway/methods_bot_relay.py).
+TURN_ATTEMPT_TIMEOUT_SECONDS = 600
+TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
+# Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay.ts; both test suites pin it.
+DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
+DESKTOP_DELIVER_TIMEOUT_SECONDS = (
+    TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+)
+# The Desktop posts its own timeout reply at that deadline, so the waiter must still be watching then.
+REPLY_WAIT_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
 # Only a recent roster is authoritative for the fail-fast offline check: the
@@ -374,6 +382,49 @@ def _hermes_cli() -> str:
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
     return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
+
+
+class DeliveryAuthor:
+    """A relayed turn's author as an in-process object. ``bot_relay.deliver`` builds it from the sender fields
+    an admitted gateway client relays for another connection; nothing verifies the sender itself. A JSON
+    client cannot build one, so ``prompt.submit`` accepts the object and refuses a dict."""
+
+    __slots__ = ("author",)
+
+    def __init__(self, author: dict) -> None:
+        self.author = dict(author)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DeliveryAuthor) and other.author == self.author
+
+    def __repr__(self) -> str:
+        return f"DeliveryAuthor({self.author!r})"
+
+
+def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: Any = None) -> Optional[dict]:
+    """The author of a relayed DM's recipient turn, built from the sender fields as the relaying client reports
+    them. A relayed DM always comes from another gateway, so the id carries the Desktop's id for the sender's
+    connection (``local`` included) and only the recipient's own profiles are bare ``bot:<profile>``. None when
+    the envelope names no sender."""
+    from agent.turn_author import bot_author_id
+
+    profile = str(from_profile or "").strip()
+    if not profile:
+        return None
+    return {"id": bot_author_id(profile, str(from_connection or "")), "name": str(from_handle or "").strip() or profile,
+            "is_bot": True}
+
+
+def delivery_env(author: Optional[dict]) -> dict[str, str]:
+    """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
+    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
+    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+
+    env = dict(os.environ)
+    env.pop(TURN_AUTHOR_ENV, None)
+    if author:
+        env.update(turn_author_env(author))
+    return env
 
 
 # Two deliveries into the SAME profile must never run Bot Chat turns concurrently.

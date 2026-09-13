@@ -6,6 +6,7 @@ import {
   notifyPetChanged,
   notifyPlatformsChanged,
   notifySessionsChanged,
+  notifySetupReady,
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
@@ -17,7 +18,7 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
 
-/** gateway.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
+/** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
@@ -28,6 +29,20 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // Backends with the change watcher broadcast pet/cron/sessions change
     // events; consumers demote their legacy polls to slow backstops.
     setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
+
+    return true
+  }
+
+  if (event.type === 'setup.ready') {
+    // The boot bootstrap (hermes_cli/free_tier_bootstrap.py) resolved the
+    // free-tier identity and the inference route, and broadcast once. The
+    // payload is only a hint — the status snapshot re-reads `setup.status` /
+    // `setup.runtime_check` / `free_tier.status` through its own scoped
+    // requester so the chip, strip and onboarding react now rather than on
+    // the next ambient tick. Only the active source's boot matters here.
+    if (fromActiveSource()) {
+      notifySetupReady()
+    }
 
     return true
   }

@@ -13,8 +13,10 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import sys
+import subprocess
 import time
 from collections import deque
 from contextlib import nullcontext, suppress
@@ -390,11 +392,20 @@ class WebhookAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
-            allowlist = getattr(cfg, "multiplex_profile_allowlist", None)
-            served = {name for name, _ in profiles_to_serve(multiplex=True, profile_allowlist=allowlist)}
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
             return _PROFILE_REJECTED
         return profile if profile in served else _PROFILE_REJECTED
+
+    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+        """Forward a shared-listener profile path to the matching adapter app."""
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        return await dispatch_profile_ingress(
+            self.gateway_runner,
+            request.match_info.get("profile"),
+            request.match_info.get("tail", ""),
+            request,
+        )
 
     @staticmethod
     def _route_allows_profile(route_config: dict, request_profile: Optional[str]) -> bool:
@@ -570,7 +581,9 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "profile": profile,
+        }
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -738,10 +751,20 @@ class WebhookAdapter(BasePlatformAdapter):
             # the worker thread is bounded by the subprocess timeout below.
             # Verified through the governed Hermes bot identity, not the ambient `gh` viewer —
             # this delivery path posts as automation, not the operator (see hermes_cli.github_identity).
-            result = await asyncio.to_thread(
-                run_as_github_automation,
-                ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
-                timeout=30)
+            profile = delivery.get("profile")
+            with self._profile_scope(profile):
+                automation_env = None
+                if profile and profile != "default":
+                    from agent.secret_scope import current_secret_scope
+                    secrets = current_secret_scope() or {}
+                    automation_env = dict(os.environ)
+                    for name in ("HERMES_GITHUB_BOT_LOGIN", "HERMES_GITHUB_BOT_TOKEN"):
+                        if name in secrets:
+                            automation_env[name] = secrets[name]
+                result = await asyncio.to_thread(
+                    run_as_github_automation,
+                    ["gh", "pr", "comment", str(pr_int), "--repo", repo, "--body", content],
+                    timeout=30, environ=automation_env)
             if result.returncode == 0:
                 logger.info("[webhook] Posted comment on %s#%s", repo, pr_number)
                 return SendResult(success=True)
@@ -757,14 +780,12 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] github_comment delivery error: %s", e)
             return SendResult(success=False, error=str(e))
 
-    def _find_adapter(self, target_platform: Platform):
-        """Default adapters first; multiplex may park a platform only on a secondary profile (_profile_adapters)."""
-        if adapter := self.gateway_runner.adapters.get(target_platform):
-            return adapter
-        for amap in (getattr(self.gateway_runner, "_profile_adapters", None) or {}).values():
-            if isinstance(amap, dict) and amap.get(target_platform) is not None:
-                return amap[target_platform]
-        return None
+    def _find_adapter(self, target_platform: Platform, profile: Optional[str] = None):
+        """Find an adapter in the route's profile only; never cross-deliver through another profile."""
+        if profile and profile != "default":
+            adapters = (getattr(self.gateway_runner, "_profile_adapters", None) or {}).get(profile, {})
+            return adapters.get(target_platform) if isinstance(adapters, dict) else None
+        return self.gateway_runner.adapters.get(target_platform)
 
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
@@ -774,14 +795,18 @@ class WebhookAdapter(BasePlatformAdapter):
             target_platform = Platform(platform_name)
         except ValueError:
             return SendResult(success=False, error=f"Unknown platform: {platform_name}")
-        if not (adapter := self._find_adapter(target_platform)):
-            return SendResult(success=False, error=f"Platform {platform_name} not connected")
-        extra = delivery.get("deliver_extra", {})
-        chat_id = extra.get("chat_id", "")
-        if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
-            if not home:
-                return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
-            chat_id = home.chat_id
-        thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-        return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+        profile = delivery.get("profile")
+        with self._profile_scope(profile):
+            if not (adapter := self._find_adapter(target_platform, profile)):
+                return SendResult(success=False, error=f"Platform {platform_name} not connected")
+            extra = delivery.get("deliver_extra", {})
+            chat_id = extra.get("chat_id", "")
+            if not chat_id:
+                from gateway.config import load_gateway_config
+                config = load_gateway_config() if profile and profile != "default" else self.gateway_runner.config
+                home = config.get_home_channel(target_platform)
+                if not home:
+                    return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
+                chat_id = home.chat_id
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+            return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_author import TURN_AUTHOR_ENV
 from hermes_cli.subcommands import peer as peer_cmd
 
 
@@ -92,6 +93,7 @@ def test_dm_unknown_peer_and_missing_key(monkeypatch):
 class _FakePeer(BaseHTTPRequestHandler):
     sessions: list = []
     chats: list = []
+    chat_bodies: list = []
     runs: list = []
     run_idempotency_keys: list = []
     auth_seen: list = []
@@ -144,6 +146,7 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/sessions/") and self.path.endswith("/chat"):
             type(self).chats.append(body.get("message"))
+            type(self).chat_bodies.append(body)
             return self._json({
                 "object": "hermes.session.chat.completion",
                 "session_id": "bc_1",
@@ -176,6 +179,7 @@ class _FakePeer(BaseHTTPRequestHandler):
 def fake_peer_server():
     _FakePeer.sessions = []
     _FakePeer.chats = []
+    _FakePeer.chat_bodies = []
     _FakePeer.runs = []
     _FakePeer.run_idempotency_keys = []
     _FakePeer.auth_seen = []
@@ -224,6 +228,45 @@ def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     assert payload["reply"] == "reply from the other machine"
     # No new session was created — the existing canonical chat was reused.
     assert _FakePeer.sessions == ["bc_existing"]
+
+
+# ── per-turn author (HERMES_TURN_AUTHOR set by the message_agent runner) ─────
+
+
+AUTHOR = {"id": "bot:dixie", "name": "dixie", "is_bot": True}
+
+
+def _peer_spark(monkeypatch, url, author_env):
+    _FakePeer.sessions = ["bc_existing"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    if author_env is None:
+        monkeypatch.delenv(TURN_AUTHOR_ENV, raising=False)
+    else:
+        monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps(author_env))
+
+
+@pytest.mark.parametrize("author_env, expected_body", [
+    ({**AUTHOR, "x": 1}, {"message": "ping", "author": AUTHOR}),
+    (None, {"message": "ping"}),
+], ids=["author from env", "no env"])
+def test_dm_body_carries_author_only_from_env(monkeypatch, fake_peer_server, author_env, expected_body):
+    _peer_spark(monkeypatch, fake_peer_server, author_env)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    assert _FakePeer.chat_bodies == [expected_body]
+
+
+def test_run_body_carries_author_from_env(monkeypatch, capsys, fake_peer_server):
+    _peer_spark(monkeypatch, fake_peer_server, AUTHOR)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="run", target="spark", message="long task", idempotency_key="ticket-1", json=True))
+
+    assert rc == 0
+    assert _FakePeer.runs == [{"input": "long task", "session_id": "bc_existing", "author": AUTHOR}]
 
 
 # ── hidden canonical Bot Chat (issue #91583) ─────────────────────────────────

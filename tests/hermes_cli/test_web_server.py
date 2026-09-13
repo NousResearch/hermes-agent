@@ -566,6 +566,32 @@ class TestWebServerEndpoints:
             db.close()
         assert [r["id"] for r in rows] == ["eager-stale"]
 
+    def test_startup_eager_reconcile_is_read_only_on_a_healthy_store(self, monkeypatch):
+        """A current-schema store gets NO writable open from the dashboard (#107688).
+
+        The gateway owns the writer; a second writable SessionDB from the
+        dashboard (close-time checkpoint, possible FTS rebuild) is the
+        two-writer corruption vector. Only the stale-schema heal may write.
+        """
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        SessionDB(db_path=get_hermes_home() / "state.db").close()
+
+        writable_opens = []
+        real_init = SessionDB.__init__
+
+        def spy(self, *args, **kwargs):
+            if not kwargs.get("read_only"):
+                writable_opens.append(kwargs)
+            return real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(hermes_state.SessionDB, "__init__", spy)
+        _web_server_lifecycle._eager_reconcile_own_session_db()
+
+        assert writable_opens == []
+
     def test_startup_eager_reconcile_never_raises(self, monkeypatch):
         """A store the eager reconcile cannot open must not break startup."""
         import sqlite3 as sqlite3_module
@@ -750,10 +776,12 @@ class TestWebServerEndpoints:
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
+            seen.setdefault("pid_paths", []).append(pid_path)
             return None
 
         def _runtime(path=None):
             seen["status_path"] = path
+            seen.setdefault("status_paths", []).append(path)
             return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
@@ -769,8 +797,8 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/messaging/platforms?profile=worker")
 
         assert resp.status_code == 200
-        assert seen["pid_path"] == worker_home / "gateway.pid"
-        assert seen["status_path"] == worker_home / "gateway_state.json"
+        assert worker_home / "gateway.pid" in seen["pid_paths"]
+        assert worker_home / "gateway_state.json" in seen["status_paths"]
         assert seen["expected_home"] == worker_home
 
 
@@ -3242,6 +3270,7 @@ class TestDenormalizeProviderSwitch:
         """ollama-local + a vendor/model slug → switch to openrouter and drop
         the stale local base_url (the issue's exact repro)."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
+        from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
 
         save_config({
@@ -3253,7 +3282,8 @@ class TestDenormalizeProviderSwitch:
             }
         })
 
-        result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
+        with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+            result = _denormalize_config_from_web({"model": "google/gemini-2.5-flash"})
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["default"] == "google/gemini-2.5-flash"
@@ -3265,14 +3295,16 @@ class TestDenormalizeProviderSwitch:
         """An explicit context-length override must persist alongside a
         provider switch."""
         from hermes_cli.web_server_config import _denormalize_config_from_web
+        from unittest.mock import patch as _patch
         from hermes_cli.config import save_config
 
         save_config({"model": {"default": "llama3.2", "provider": "ollama-local"}})
 
-        result = _denormalize_config_from_web({
-            "model": "google/gemini-2.5-flash",
-            "model_context_length": 128000,
-        })
+        with _patch("hermes_cli.models_detect.provider_has_credentials", lambda p: p == "openrouter"):
+            result = _denormalize_config_from_web({
+                "model": "google/gemini-2.5-flash",
+                "model_context_length": 128000,
+            })
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["context_length"] == 128000

@@ -6,8 +6,11 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 from __future__ import annotations
 
 import contextlib
+import logging
 
 from .method_ctx import bind_module
+
+logger = logging.getLogger(__name__)
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
@@ -423,6 +426,17 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    if should_interrupt:
+        # A user stop ends the agent loop for plugin lifecycle purposes even
+        # when the UI backend owns the actual interrupt operation.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                reason="user_stop", invalidation_reason="session_interrupt",
+            )
+        except Exception:
+            logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt

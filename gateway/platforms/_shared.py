@@ -7,7 +7,7 @@ import it at module top level without cycles.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Callable
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -46,6 +46,25 @@ def profile_scoped() -> bool:
         return bool(is_multiplex_active() and current_secret_scope() is not None)
     except Exception:
         return False
+
+
+def yaml_env_setter() -> Callable[[str, Any], None]:
+    """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]`` only
+    when the var is unset (explicit env wins over YAML) and NEVER while a multiplexed secondary
+    profile's scope is active — the gateway loads every secondary's config inside
+    ``_profile_runtime_scope``, so a write there would pin that profile's policy process-wide and the
+    default profile's adapters would read it as their own (first-writer-wins poisoning, #80099).
+    Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
+    Lists are comma-joined; ``None`` is skipped.
+    """
+    skip = profile_scoped()
+
+    def set_env(name: str, value: Any) -> None:
+        if value is None or skip or os.getenv(name):
+            return
+        os.environ[name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+
+    return set_env
 
 
 def coerce_port(value: Any, default: int) -> int:

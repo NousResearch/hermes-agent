@@ -95,15 +95,22 @@ _probe_failure_logged = False
 
 
 def turn_in_flight() -> Optional[bool]:
-    """True/False from the gateway's running-session table; None when it cannot be read. The table
-    lives on ``tui_gateway.server`` (the voice mixin's helper is bound into that namespace). None
-    keeps the backend alive forever, so the cause is logged once — a silent never-exits would be
-    the original bug with a new face."""
+    """True/False from the gateway's running-session table OR the in-process cron scheduler; None
+    when neither can be read. The session table lives on ``tui_gateway.server`` (the voice mixin's
+    helper is bound into that namespace). Cron runs live outside that table
+    (``cron.scheduler.get_running_job_ids``, the same ledger the gateway shutdown drain reads):
+    without it a daily job mid-run reported "no turn" and the exit killed it (#107485). None keeps
+    the backend alive forever, so the cause is logged once — a silent never-exits would be the
+    original bug with a new face."""
     global _probe_failure_logged
     try:
         import tui_gateway.server as gateway
         with gateway._sessions_lock:
-            return any(s.get("running") for s in gateway._sessions.values())
+            running = any(s.get("running") for s in gateway._sessions.values())
+        if running:
+            return True
+        from cron.scheduler import get_running_job_ids
+        return bool(get_running_job_ids())
     except Exception:
         if not _probe_failure_logged:
             _probe_failure_logged = True

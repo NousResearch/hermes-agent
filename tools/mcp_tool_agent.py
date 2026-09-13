@@ -186,13 +186,21 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
     ``current_defs`` (the cached request prefix): a name in both keeps its slot but takes the
     fresh schema; a name only in the live list is kept if still registered (``check_fn``
-    flapped), else dropped; a name only in the fresh list is appended at the tail."""
+    flapped), else dropped; a name only in the fresh list is appended at the tail.
+
+    The bridge tools keep their BUILT entry, not the fresh one: ``tool_search``'s description
+    is derived from the session (deferred count, listing, whether ``manage_connections`` was
+    present), so a late MCP server or a ``check_fn`` flap would rewrite it every turn. Search
+    reads the live catalog at dispatch, so the stale count costs nothing."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     fresh = {_def_name(entry): entry for entry in new_defs if _def_name(entry)}
     merged = []
     for entry in current_defs:
         name = _def_name(entry)
         replacement = fresh.pop(name, None)
-        if replacement is not None:
+        if name in BRIDGE_TOOL_NAMES:
+            merged.append(entry)
+        elif replacement is not None:
             merged.append(replacement)
         elif name and name in registered_names:
             merged.append(entry)

@@ -300,6 +300,7 @@ describe('I18nProvider', () => {
         vi.advanceTimersByTime(3_000)
       })
     }
+
     expect(getConfig).toHaveBeenCalledTimes(11)
 
     // No timer is left after the budget is spent — nothing fires later.

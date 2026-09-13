@@ -1098,11 +1098,8 @@ def _systemctl_show(properties: tuple[str, ...], *, system: bool) -> dict[str, s
     return _parse_kv_pairs(result.stdout.splitlines()) if result.returncode == 0 else {}
 
 
-def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
-    """``HERMES_HOME`` from the on-disk unit file — what refresh/compare already read, and reliable under ``sudo``."""
-    unit_path = get_systemd_unit_path(system=system)
-    if not unit_path.exists():
-        return None
+def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
+    """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
     try:
         text = unit_path.read_text(encoding="utf-8")
     except OSError:
@@ -1114,6 +1111,11 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
             if body.startswith("HERMES_HOME="):
                 return body.split("=", 1)[1].strip().strip('"') or None
     return None
+
+
+def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
+    """``HERMES_HOME`` from the on-disk unit file — what refresh/compare already read, and reliable under ``sudo``."""
+    return _hermes_home_pinned_by_unit(get_systemd_unit_path(system=system))
 
 
 def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
@@ -1938,6 +1940,8 @@ def _windows_gateway_breakaway_state() -> bool | None:
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+_SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
+
 
 def _profile_name_from_home(home: Path, default: Path) -> str | None:
     """Profile name when ``home`` is ``<default>/profiles/<name>`` with a service-safe name, else None."""
@@ -1951,6 +1955,30 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
     return None
 
 
+def _native_service_homes() -> set[Path]:
+    """This process's native default home plus the invoking user's home under sudo."""
+    from hermes_constants import _get_platform_default_hermes_home, sudo_invoker_default_home
+
+    homes = {_get_platform_default_hermes_home().resolve()}
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is not None:
+        homes.add(sudo_home.resolve())
+    return homes
+
+
+def _bare_unit_pinned_home() -> Path | None:
+    """Resolved home pinned by an installed system-scope bare gateway unit."""
+    if not is_linux() or os.geteuid() != 0:  # windows-footgun: ok — behind is_linux()
+        return None
+    pinned = _hermes_home_pinned_by_unit(_SYSTEM_UNIT_DIR / f"{_SERVICE_BASE}.service")
+    if not pinned:
+        return None
+    try:
+        return Path(pinned).expanduser().resolve()
+    except (RuntimeError, ValueError):
+        return None
+
+
 def _profile_suffix() -> str:
     """Service-name suffix for HERMES_HOME: "" for the default root, the profile name for
     ``<root>/profiles/<name>``, else a short hash of the path."""
@@ -1958,7 +1986,7 @@ def _profile_suffix() -> str:
     from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
     default = get_default_hermes_root().resolve()
-    if home == default:
+    if home in _native_service_homes() or home == _bare_unit_pinned_home():
         return ""
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return _profile_name_from_home(home, default) or hashlib.sha256(str(home).encode()).hexdigest()[:8]
@@ -1970,11 +1998,8 @@ def _current_profile_name() -> str:
     This facade seam is used by pooled dashboard requests when resolving an unscoped
     request to the backend's profile.
     """
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "default"
-    except Exception:
-        return _profile_suffix() or "default"
+    from hermes_constants import profile_name_for_home
+    return profile_name_for_home(get_hermes_home()) or _profile_suffix()
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:
@@ -1999,7 +2024,7 @@ def get_service_name() -> str:
 def get_systemd_unit_path(system: bool = False) -> Path:
     name = get_service_name()
     if system:
-        return Path("/etc/systemd/system") / f"{name}.service"
+        return _SYSTEM_UNIT_DIR / f"{name}.service"
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
@@ -2239,7 +2264,7 @@ _LEGACY_UNIT_EXECSTART_MARKERS: tuple[str, ...] = (
 
 def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
     """``[(is_system, base_dir), ...]`` to scan for legacy units; factored out so tests can monkeypatch."""
-    return [(False, Path.home() / ".config" / "systemd" / "user"), (True, Path("/etc/systemd/system"))]
+    return [(False, Path.home() / ".config" / "systemd" / "user"), (True, _SYSTEM_UNIT_DIR)]
 
 
 def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:
@@ -3171,6 +3196,8 @@ def systemd_install(
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
             _ensure_system_service_linger(configured_user)
+        elif not system:
+            _ensure_linger_enabled()
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3221,8 +3248,23 @@ def _systemd_scope_preamble(
     return system
 
 
+def _systemd_unit_belongs_to_current_home(system: bool = False) -> bool:
+    """False (with a warning) when the installed unit pins a different HERMES_HOME."""
+    _sync_hermes_home_from_systemd_unit(system=system)
+    unit_home = _hermes_home_from_systemd_unit_file(system=system)
+    if unit_home is None or Path(unit_home).expanduser().resolve() == get_hermes_home().resolve():
+        return True
+    print_warning(
+        f"Refusing to remove {get_systemd_unit_path(system=system)}: it runs HERMES_HOME={unit_home}, "
+        f"but this process has HERMES_HOME={get_hermes_home()}"
+    )
+    return False
+
+
 def systemd_uninstall(system: bool = False):
     system = _systemd_scope_preamble("uninstall", system, require_installed=False)
+    if not _systemd_unit_belongs_to_current_home(system):
+        return
     _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
     _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
 
@@ -3937,7 +3979,8 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
         )
     _deadline = time.monotonic() + _reload_budget
-    if not _retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline):
+    registered = _retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline)
+    if not registered:
         _append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
             f"retrying for {int(_reload_budget)}s (in-process fallback path)"
@@ -3946,6 +3989,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             "launchd reload of %s failed — service not registered after %ds of retries; see %s",
             target, int(_reload_budget), _launchd_reload_log_path(),
         )
+        return False
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -3956,8 +4000,14 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+            if refresh_launchd_plist_if_needed():
+                print("✓ Service definition updated")
+            else:
+                from hermes_constants import display_hermes_home as _dhh
+                print(
+                    "⚠ Service definition was written, but launchd could not be reloaded; "
+                    f"see {_dhh()}/logs/launchd-reload.log"
+                )
             return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")
@@ -3988,7 +4038,9 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"], check=False, timeout=90)
+    subprocess.run(
+        ["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"],
+        check=False, timeout=90, **_CAPTURE_TEXT)
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
@@ -4025,7 +4077,9 @@ def launchd_start():
 
 
 def _launchctl_kickstart_current(label: str) -> None:
-    subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+    subprocess.run(
+        ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+        check=True, timeout=30, **_CAPTURE_TEXT)
 
 
 def _launchd_bootstrap_and_kickstart(plist_path: Path, label: str) -> bool:
@@ -4050,7 +4104,7 @@ def launchd_stop():
     _mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
     try:
-        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90, **_CAPTURE_TEXT)
     except subprocess.CalledProcessError as e:
         # Job already unloaded (3/113/125) or domain unmanageable (5/125): fall through to the PID-based kill.
         # Job already unloaded (3/113/125), or the domain can't be managed at all (5/125, macOS 26+
@@ -4145,7 +4199,7 @@ def launchd_restart():
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)
         _launchd_ok("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
@@ -4155,10 +4209,11 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         try:
             # After a drain the job is usually still registered (bootstrap would hit EIO): boot it out first.
-            subprocess.run(["launchctl", "bootout", target], check=False, timeout=90)
+            subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_CAPTURE_TEXT)
             plist_path = str(get_launchd_plist_path())
-            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), plist_path], check=True, timeout=30)
-            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), plist_path], check=True, timeout=30,
+                           **_CAPTURE_TEXT)
+            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30, **_CAPTURE_TEXT)
         except subprocess.CalledProcessError as e2:
             _launchd_degrade_or_raise(e2, "launchctl")
             return
@@ -6156,7 +6211,7 @@ def _cmd_restart(args):
         except (subprocess.CalledProcessError, *swallow):
             pass
 
-    if supports_systemd_services():
+    if kind == "systemd" and supports_systemd_services():
         linger_ok, _detail = get_systemd_linger_status()
         if linger_ok is not True:
             import getpass

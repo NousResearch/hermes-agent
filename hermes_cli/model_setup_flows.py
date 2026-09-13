@@ -32,7 +32,7 @@ def _env_base_url(base_url_env: str) -> str:
     return get_env_value(base_url_env) or os.getenv(base_url_env, "")
 
 
-def _prompt_base_url_override(effective_base: str, base_url_env: str) -> str:
+def _prompt_base_url_override(effective_base: str, base_url_env: str, *, persist_env: bool = True) -> str:
     """Optional ``Base URL [...]`` prompt; a valid override is saved to *base_url_env*."""
     from hermes_cli.config import save_env_value
     override = _ask(f"Base URL [{effective_base}]: ", cancel_msg="", on_cancel="")
@@ -40,7 +40,8 @@ def _prompt_base_url_override(effective_base: str, base_url_env: str) -> str:
         if not override.startswith(_HTTP):
             print("  Invalid URL — must start with http:// or https://. Keeping current value.")
         else:
-            save_env_value(base_url_env, override)
+            if persist_env:
+                save_env_value(base_url_env, override)
             return override
     return effective_base
 
@@ -288,6 +289,21 @@ def _model_flow_nous(config, current_model="", args=None):
     # instead of the hundreds returned by the live /models endpoint.
     from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_cli.model_switch_providers import _free_tier_nous_row
+    tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
+    if tier_row is None:
+        print("The Nous free tier is off for this install; sign in with `hermes auth upgrade` to use Nous models.")
+        return
+    if tier_row["models"]:
+        # Free-tier identity: the welcome host serves the single pinned model; no Portal catalog,
+        # pricing, or account lookups apply.
+        creds = _nous_verified_credentials()
+        if creds is None:
+            return
+        selected = tier_row["models"][0]
+        _nous_persist_selection(selected, creds)
+        print(f"Default model set to: {selected} (via {tier_row['name']})")
+        return
     model_ids = get_curated_nous_model_ids()
     if not model_ids:
         print("No curated models available for Nous Portal.")
@@ -931,6 +947,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 current_base = str(_m.get("base_url") or "").strip()
     effective_base = current_base or pconfig.inference_base_url
 
+    if provider_id == "actual":
+        from hermes_cli.providers import normalize_provider
+        model_cfg = config.get("model") or {}
+        if isinstance(model_cfg, dict) and normalize_provider(str(model_cfg.get("provider") or "")) == provider_id:
+            effective_base = str(model_cfg.get("base_url") or "").strip() or effective_base
+
     if provider_id == "zai":
         # Four official endpoints with separate billing paths — a picker lets users match
         # the endpoint to their key type.
@@ -939,7 +961,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             save_env_value(base_url_env, chosen_base)
         effective_base = chosen_base
     else:
-        effective_base = _prompt_base_url_override(effective_base, base_url_env)
+        effective_base = _prompt_base_url_override(effective_base, base_url_env, persist_env=provider_id != "actual")
 
     model_list = _api_key_provider_model_list(provider_id, pconfig, existing_key, key_env, effective_base)
     if is_opencode:

@@ -5,6 +5,13 @@ from __future__ import annotations
 
 import re
 
+from agent.markdown_tables import is_table_divider, realign_markdown_tables
+
+# Signal has no fixed-width client area; this budgets for a phone screen in the app's
+# monospace face. Tables wider than this fall back to realign_markdown_tables()'s
+# vertical Key: value rendering rather than soft-wrapping mid-cell.
+_TABLE_WIDTH = 40
+
 _CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _INLINE_PATTERNS = [
@@ -29,11 +36,38 @@ def _normalize_bullet_markers(source: str) -> str:
                    for idx, part in enumerate(parts))
 
 
+def _fence_tables(source: str) -> str:
+    """Re-align every GFM table outside a code fence and wrap it in a fence, so the code-block pass
+    in markdown_to_signal() records one MONOSPACE range over the aligned block and shifts every
+    later range for it. Fenced regions are left alone: a pipe table inside a code block is code."""
+    parts = re.split(r"(```.*?```)", source, flags=re.DOTALL)
+    return "".join(part if idx % 2 else _fence_unfenced_tables(part) for idx, part in enumerate(parts))
+
+
+def _fence_unfenced_tables(text: str) -> str:
+    if "|" not in text:
+        return text
+    lines, out = text.split("\n"), []
+    i, n = 0, len(lines)
+    while i < n:
+        # Same block rule as realign_markdown_tables(): header row, divider, contiguous pipe rows.
+        if "|" in lines[i] and i + 1 < n and is_table_divider(lines[i + 1]):
+            j = i + 2
+            while j < n and "|" in lines[j] and lines[j].strip():
+                j += 1
+            out += ["```", realign_markdown_tables("\n".join(lines[i:j]), _TABLE_WIDTH), "```"]
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
 def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     """Convert markdown to plain text + Signal textStyles list. Signal uses ``bodyRanges`` (signal-cli
     ``textStyle`` / ``textStyles`` params) as ``start:length:STYLE`` with positions in UTF-16 code units.
     Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE."""
-    text = _normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip())
+    text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
     styles: list[tuple[int, int, str]] = []
     while match := _CODE_BLOCK_RE.search(text):
         inner = match.group(1).rstrip("\n")

@@ -708,6 +708,22 @@ def _attach_source_provenance_sidecar(
 def _dispatch_provider_request(agent, request, callback):
     """Apply the exact provider-bound egress policy at a physical call site."""
 
+    # Native SDK callers can enter the provider path with a live Relay turn
+    # before the normal conversation loop has stamped its per-request fields.
+    # Reuse that already-authoritative turn identity; never invent identity for
+    # an unmanaged call, which must remain fail-closed at the firewall.
+    if _destination_requires_egress_firewall(agent) and not getattr(agent, "_current_turn_id", ""):
+        from agent import relay_runtime
+        active_turn = relay_runtime.active_turn()
+        if active_turn is not None:
+            turn_id = str(getattr(active_turn, "turn_id", "") or "")
+            if turn_id:
+                agent._current_turn_id = turn_id
+                agent._current_api_request_id = (
+                    f"{turn_id}:api:1"
+                    if not getattr(agent, "_current_api_request_id", "") else agent._current_api_request_id
+                )
+
     if not _destination_requires_egress_firewall(agent):
         return callback(request)
     from agent.llm_egress_runtime import dispatch_authorized_agent_request
@@ -726,9 +742,11 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     if agent.api_mode == "codex_responses":
         codex_client = make_client("codex_stream_request")
         return _dispatch_provider_request(
-            agent, api_kwargs,
+            agent,
+            api_kwargs,
             lambda authorized: agent._run_codex_stream(
-                authorized, client=codex_client,
+                authorized,
+                client=codex_client,
                 on_first_delta=getattr(agent, "_codex_on_first_delta", None),
             ),
         )
@@ -1242,6 +1260,30 @@ def _reasoning_config_for_wire(agent):
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
+    if isinstance(cfg, dict) and (
+        cfg.get("enabled") is False or cfg.get("effort") == "none"
+    ):
+        # Apply the catalog's mandatory-thinking contract before the route has
+        # had a chance to reject a disable. Keep this cache-only: the request
+        # builder must never block on a capability fetch.
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if provider in {"nous", "nous-portal", "nousresearch", "openrouter"}:
+            try:
+                from hermes_cli.models_reasoning_caps import (
+                    nous_model_reasoning_capabilities,
+                    openrouter_model_reasoning_capabilities,
+                )
+
+                caps_fn = (
+                    openrouter_model_reasoning_capabilities
+                    if provider == "openrouter"
+                    else nous_model_reasoning_capabilities
+                )
+                caps = caps_fn(agent.model, allow_fetch=False)
+                if caps and caps.get("mandatory"):
+                    return None
+            except Exception:
+                pass
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has
         # been sending — the user's own config — so the retry lands on the
@@ -1440,7 +1482,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # and some chat transports normalize the list in place.
     from agent.source_provenance_tools import build_source_provenance_sidecar
 
-    _source_sidecar = build_source_provenance_sidecar(api_messages)
+    source_sidecar = build_source_provenance_sidecar(api_messages)
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
     reasoning_config = _reasoning_config_for_wire(agent)
@@ -1465,13 +1507,14 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
 
     provider_profile = get_provider_profile(agent.provider)
     if provider_profile is not None:
-        _supports_reasoning_fn = getattr(agent, "_supports_reasoning_extra_body", None)
+        supports_reasoning_fn = getattr(agent, "_supports_reasoning_extra_body", None)
         api_kwargs = provider_profile.sanitize_request_kwargs(
-            api_kwargs, agent=agent,
-            supports_reasoning=_supports_reasoning_fn() if callable(_supports_reasoning_fn) else False,
+            api_kwargs,
+            agent=agent,
+            supports_reasoning=supports_reasoning_fn() if callable(supports_reasoning_fn) else False,
             base_url=getattr(agent, "base_url", None),
         )
-    return _attach_source_provenance_sidecar(agent, api_kwargs, sidecar=_source_sidecar)
+    return _attach_source_provenance_sidecar(agent, api_kwargs, sidecar=source_sidecar)
 
 
 def _model_dump_safe(obj):
@@ -1718,42 +1761,6 @@ _FALLBACK_REASON_LABELS = {
 }
 
 
-def _fallback_destination_class(fb: dict):
-    """Resolve a fallback's configured destination for egress-aware routing.
-
-    Egress policy failures must never walk another remote provider with the
-    same unsafe request.  A fallback entry may omit ``base_url`` and rely on
-    the provider definition in config.yaml, so resolve that URL here rather
-    than trusting the provider label (provider names are not a security
-    boundary).
-    """
-    from agent.llm_egress_firewall import classify_destination
-
-    base_url = (fb.get("base_url") or "").strip()
-    if not base_url:
-        try:
-            from hermes_cli.config import load_config
-
-            provider_cfg = (load_config() or {}).get("providers", {}).get(
-                (fb.get("provider") or "").strip(), {}
-            )
-            if isinstance(provider_cfg, dict):
-                base_url = str(
-                    provider_cfg.get("api")
-                    or provider_cfg.get("base_url")
-                    or ""
-                ).strip()
-        except Exception:
-            # Unknown destination must remain unknown and therefore cannot
-            # inherit local trust after an egress policy rejection.
-            base_url = ""
-    return classify_destination(
-        str(fb.get("provider") or ""),
-        base_url,
-        fb.get("api_mode") or "chat_completions",
-    )
-
-
 def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     """Return a concise operator-facing explanation for a fallback switch."""
     label = _FALLBACK_REASON_LABELS.get(reason)
@@ -1803,6 +1810,17 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     return "chat_completions"
 
 
+def _fallback_destination_class(fb: dict):
+    """Classify a fallback endpoint using the same egress policy as the active request."""
+    from agent.llm_egress_firewall import classify_destination
+
+    return classify_destination(
+        provider=str(fb.get("provider") or ""),
+        base_url=fb.get("base_url"),
+        api_mode=fb.get("api_mode"),
+    )
+
+
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
@@ -1840,10 +1858,8 @@ def _should_skip_fallback_candidate(
     agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set,
     reason: "FailoverReason | None" = None,
 ) -> bool:
-    """True when the entry is already unavailable, malformed, locally unusable, resolves
-    to the backend that just failed (falling back to it would loop the failure), or — for
-    an egress-policy rejection — is itself a remote destination (retrying the same unsafe
-    payload against another remote provider cannot succeed and only adds noise)."""
+    """True when the entry is already unavailable, malformed, locally unusable, or resolves
+    to the backend that just failed (falling back to it would loop the failure)."""
     if fb_key in unavailable:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
@@ -1857,6 +1873,10 @@ def _should_skip_fallback_candidate(
                 "Fallback skip: %s/%s is a remote destination (%s); egress policy blocked the "
                 "current request, so only local fallbacks are eligible", fb_provider, fb_model, destination)
             return True
+    from agent.fallback_cooldown import _is_entitlement_rejected
+    if _is_entitlement_rejected(agent, fb_provider, fb_model):
+        logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
+        return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
@@ -1952,8 +1972,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     if reason == FailoverReason.unsupported_thinking:
-        # The model itself lacks thinking support — every remote candidate in the chain is
-        # configured the same way a human picked, so walking it won't fix a capability gap.
         return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
@@ -1968,7 +1986,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
-        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable, reason=reason):
+        if _should_skip_fallback_candidate(
+            agent, fb, fb_key, fb_provider, fb_model, unavailable, reason=reason,
+        ):
             continue
 
         try:
@@ -1998,7 +2018,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
             fb_base_url = str(fb_client.base_url)
-            if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+            from hermes_cli.providers import is_actual_route
+            if is_actual_route(fb_provider, fb_base_url):
+                fb_api_mode = "chat_completions"
+            elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                 fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
@@ -2145,30 +2168,25 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
     is_lmstudio = provider_name == "lmstudio" and agent._supports_reasoning_extra_body()
     lm_reasoning_effort = agent._resolve_lmstudio_summary_reasoning_effort() if is_lmstudio else None
 
-    # Resolved once and reused below for both the reasoning-extras hook (capability-gated
-    # omission, e.g. a Nous model that 400s on a disabled reasoning config) and build_extra_body.
+    extra_body = {}
     provider_profile = None
     with contextlib.suppress(Exception):
         from providers import get_provider_profile
         provider_profile = get_provider_profile(agent.provider)
-
-    extra_body = {}
-    top_level_from_profile = {}
-    handles_reasoning = False
-    if provider_profile is not None:
-        _supports_reasoning = agent._supports_reasoning_extra_body()
-        reasoning_extra, top_level_from_profile = provider_profile.build_api_kwargs_extras(
-            reasoning_config=agent.reasoning_config, supports_reasoning=_supports_reasoning,
-            model=agent.model, base_url=agent.base_url,
+    wire_reasoning_config = _reasoning_config_for_wire(agent)
+    profile_owns_reasoning = bool(
+        provider_profile
+        and provider_profile.owns_reasoning_policy(
+            supports_reasoning=agent._supports_reasoning_extra_body(),
         )
-        extra_body.update(reasoning_extra or {})
-        # owns_reasoning_policy(), not "the hook was overridden": an unrelated profile
-        # override (e.g. one that only sets a top-level field) must not implicitly
-        # suppress the generic reasoning fallback below (providers.base.ProviderProfile
-        # docstring).
-        handles_reasoning = bool(provider_profile.owns_reasoning_policy(supports_reasoning=_supports_reasoning))
-    if not handles_reasoning and not is_lmstudio and agent._supports_reasoning_extra_body():
-        extra_body["reasoning"] = agent.reasoning_config if agent.reasoning_config is not None else {"enabled": True, "effort": "medium"}
+    )
+    if (
+        not is_lmstudio
+        and not profile_owns_reasoning
+        and agent._supports_reasoning_extra_body()
+        and wire_reasoning_config is not None
+    ):
+        extra_body["reasoning"] = wire_reasoning_config
     if "nousresearch" in agent._base_url_lower:
         from agent.portal_tags import nous_portal_tags
         extra_body["tags"] = nous_portal_tags()
@@ -2180,17 +2198,27 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
         summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
     if lm_reasoning_effort is not None:
         summary_kwargs["reasoning_effort"] = lm_reasoning_effort
-    if top_level_from_profile:
-        summary_kwargs.update(top_level_from_profile)
 
     # Merge the profile's canonical body even when routing is unset (e.g. required Portal tags).
     provider_preferences = _provider_preferences_for_agent(agent)
     profile_extra_body = {}
-    if provider_profile is not None:
-        with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception):
+        if provider_profile is not None:
+            profile_reasoning_config = wire_reasoning_config
+            if profile_reasoning_config is None:
+                profile_reasoning_config = agent.reasoning_config
             profile_extra_body = provider_profile.build_extra_body(
                 session_id=getattr(agent, "session_id", None), provider_preferences=provider_preferences or None,
                 model=agent.model, base_url=agent.base_url, reasoning_config=agent.reasoning_config)
+            profile_extra_kwargs = provider_profile.build_api_kwargs_extras(
+                reasoning_config=profile_reasoning_config,
+                supports_reasoning=agent._supports_reasoning_extra_body(),
+                model=agent.model, base_url=agent.base_url,
+                session_id=getattr(agent, "session_id", None),
+            )
+            if profile_extra_kwargs:
+                profile_extra_body = {**profile_extra_body, **(profile_extra_kwargs[0] or {})}
+                summary_kwargs.update(profile_extra_kwargs[1] or {})
     if profile_extra_body:
         extra_body.update(profile_extra_body)
 
@@ -2218,7 +2246,11 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
+        # The transport emits these three as one block (transports/codex.py build_kwargs);
+        # strict Responses backends 400 on tool_choice/parallel_tool_calls without tools.
         codex_kwargs.pop("tools", None)
+        codex_kwargs.pop("tool_choice", None)
+        codex_kwargs.pop("parallel_tool_calls", None)
         response = _dispatch_provider_request(agent, codex_kwargs, agent._run_codex_stream)
         return _summary_text(agent, response)
     return _attempt
@@ -2234,7 +2266,8 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
         response = _managed_summary_call(
             agent, api_request_id, ant_kw,
             lambda request: _dispatch_provider_request(agent, request, agent._anthropic_messages_create),
-            retry_count=retry_count)
+            retry_count=retry_count,
+        )
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
@@ -2247,8 +2280,10 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs,
             lambda request: _dispatch_provider_request(
-                agent, request, lambda authorized: summary_client.chat.completions.create(**authorized)),
-            retry_count=retry_count)
+                agent, request, lambda authorized: summary_client.chat.completions.create(**authorized)
+            ),
+            retry_count=retry_count,
+        )
         return _summary_text(agent, response)
     return _attempt
 
@@ -2269,6 +2304,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         agent._safe_print(warning)
 
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
+    previous_api_request_id = getattr(agent, "_current_api_request_id", "")
+    # The iteration-limit path bypasses the normal turn-loop stamp, but its
+    # summary is still a physical provider request guarded by the egress policy.
+    agent._current_api_request_id = summary_api_request_id
     summary_call_outcome = "failed"
 
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
@@ -2276,13 +2315,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
     append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
-    # The physical summary call now goes through the same egress-firewall dispatch as every
-    # other provider request (previously bypassed it entirely), which requires
-    # agent._current_api_request_id to be a truthy request identity; stamp this call's id and
-    # restore whatever the surrounding turn had, since this runs outside the normal per-iteration
-    # dispatch that would otherwise set it.
-    prior_api_request_id = getattr(agent, "_current_api_request_id", "")
-    agent._current_api_request_id = summary_api_request_id
     try:
         api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
@@ -2306,9 +2338,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         logger.warning("Failed to get summary response: %s", e)
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
     finally:
-        agent._current_api_request_id = prior_api_request_id
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
+        agent._current_api_request_id = previous_api_request_id
 
     return final_response
 
@@ -2340,11 +2372,17 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None):
+    dropped_tool_names=None, overflow_terminal=False):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
-    truncated output as a complete turn (#32086)."""
+    truncated output as a complete turn (#32086).
+
+    ``overflow_terminal`` (``full_content=None``): the stream died on a
+    context-overflow error. Seeding the recovered text as a continuation stub
+    would grow every later request into the same overflow (#106260); the loop
+    treats the marker as terminal and ends the turn via the recovery contract.
+    """
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
         model=model_name,
@@ -2356,6 +2394,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         )],
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
+        _overflow_terminal=overflow_terminal,
     )
 
 
@@ -2366,6 +2405,18 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
 _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed", "connection terminated",
     "network error", "network connection", "terminated", "peer closed", "broken pipe",
     "upstream connect error")
+
+
+def _rejects_stream_options(exc: BaseException) -> bool:
+    """A 400/422 whose body names ``stream_options`` as an unknown/extra field: strict
+    OpenAI-compatible endpoints (Azure AI Foundry MaaS, Pydantic ``extra_forbidden``) reject
+    the usage extension outright (#9705). Distinct from "stream not supported", which flips
+    the whole session to non-streaming."""
+    if getattr(exc, "status_code", None) not in (400, 422):
+        return False
+    body = f"{getattr(exc, 'body', '') or ''} {exc}".lower()
+    return "stream_options" in body and any(
+        k in body for k in ("extra", "not supported", "unrecognized", "unexpected", "unknown"))
 
 
 def _is_sse_connection_error(exc: BaseException) -> bool:
@@ -2846,19 +2897,25 @@ class _StreamingCall(StreamingWaitMonitor):
         return usage, finish_reason
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
-        # Native Gemini rejects OpenAI's usage-streaming extension.
-        if not is_native_gemini_base_url(self.agent.base_url):
+        # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
+        # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
+        if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
-        return request_client.chat.completions.create(**stream_kwargs)
+        return _dispatch_provider_request(
+            self.agent,
+            stream_kwargs,
+            lambda authorized: request_client.chat.completions.create(**authorized),
+        )
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
+        self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
@@ -3143,7 +3200,11 @@ class _StreamingCall(StreamingWaitMonitor):
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
             final_kwargs = dict(next_api_kwargs)
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
-            manager = request_client.messages.stream(**final_kwargs)
+            manager = _dispatch_provider_request(
+                self.agent,
+                final_kwargs,
+                lambda authorized: request_client.messages.stream(**authorized),
+            )
             _stream_context["manager"] = manager
             return manager.__enter__()
 
@@ -3254,6 +3315,16 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
 
+        if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
+            # Nothing streamed yet: drop the usage extension for this session and re-open.
+            self.agent._stream_options_unsupported = True
+            self._compat_retries = 1
+            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
+                        getattr(e, "status_code", None))
+            self._cancel_current_stream_attempt("stream_options_rejected_retry")
+            self.clients.close_once("stream_options_rejected_retry")
+            return True
+
         if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
@@ -3305,8 +3376,14 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _call(self):
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        # The one stream_options compatibility retry (#9705) is not a network retry and must not
+        # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the
+        # handler returned True and the loop ended with neither a response nor an error set.
+        self._compat_retries = 0
+        _stream_attempt = -1
         try:
-            for _stream_attempt in range(_max_stream_retries + 1):
+            while _stream_attempt < _max_stream_retries + self._compat_retries:
+                _stream_attempt += 1
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.
@@ -3426,22 +3503,37 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)
-        else:
-            logger.warning(
-                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
-                "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""), error)
-        # Classify content filtering (MiniMax 1027, Azure content_filter, Anthropic refusal)
-        # before the error is swallowed into the stub: the loop reads the tag and falls back.
-        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
-            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+        # Classify the error before it is swallowed into the stub: the loop reads the
+        # content-filter tag and falls back; a context overflow must not be continued at all.
+        _cls = None
         with contextlib.suppress(Exception):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
-            if _cls.reason == FailoverReason.content_policy_blocked:
-                _stub._content_filter_terminated = True
         _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
+        # #106260: continuing after a context-overflow error re-sends a larger request into the
+        # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.
+        # Scope is context_overflow ONLY: payload_too_large (413) has its own byte-scored recovery
+        # owner (turn_overflow._recover_payload_too_large, #88960/#47339) that must not be bypassed.
+        if _cls is not None and _cls.reason == FailoverReason.context_overflow:
+            logger.warning(
+                "Partial stream ended on a context-overflow error after %s chars; "
+                "NOT seeding a continuation stub (transcript is already over budget): %s",
+                len(_partial_text or ""), error,
+            )
+            return _build_partial_stream_stub(
+                "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
+                dropped_tool_names=_partial_names, overflow_terminal=True,
+            )
+        if not _partial_names:
+            logger.warning(
+                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
+                "recovered content so the loop can continue from where the stream died: %s",
+                len(_partial_text or ""), error)
+        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
+            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+        if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
+            _stub._content_filter_terminated = True
         return _stub
 
     def run(self):

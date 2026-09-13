@@ -251,6 +251,25 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Speech-to-text backends — kept in sync with the stt block in
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // How the desktop voice conversation is wired — tools/voice_live.py owns the
+  // gpt-live branch (one full-duplex voice model delegating to Hermes).
+  'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  'voice.gpt_live.voice': [
+    'marin',
+    'cedar',
+    'quartz',
+    'ripple',
+    'vesper',
+    'willow',
+    'stone',
+    'gleam',
+    'meridian',
+    'bossa',
+    'tempo',
+    'beacon',
+    'delta',
+    'cinder'
+  ],
   // OpenAI TTS voices — the union across models (per the OpenAI TTS API
   // docs). Model-specific narrowing happens in enumOptionsFor():
   // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
@@ -355,6 +374,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 // suggestions rather than a gate for these keys.
 export const FREE_INPUT_KEYS = new Set([
   'tts.edge.voice',
+  'voice.gpt_live.voice',
   'tts.openai.model',
   'tts.openai.voice',
   'tts.elevenlabs.voice_id',
@@ -437,7 +457,12 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   voice: {
     recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud'
+    autoTts: 'Read Responses Aloud',
+    voiceChatMode: 'Voice Chat Mode',
+    gptLive: {
+      voice: 'GPT-Live Voice',
+      instructions: 'GPT-Live Persona'
+    }
   },
   stt: {
     enabled: 'Speech To Text',
@@ -598,7 +623,14 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     enabled: 'Summarize older context when conversations get large.'
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.',
+    voiceChatMode:
+      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
+    gptLive: {
+      voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
+      instructions:
+        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
+    }
   },
   tts: {
     xai: {
@@ -704,6 +736,9 @@ export const SECTIONS: DesktopConfigSection[] = [
     label: 'Voice',
     icon: Mic,
     keys: [
+      'voice.voice_chat_mode',
+      'voice.gpt_live.voice',
+      'voice.gpt_live.instructions',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',

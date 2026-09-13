@@ -329,6 +329,7 @@ def _(rid, params: dict) -> dict:
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
+            "seeded": bool(history and not parent_session_id),
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
@@ -361,6 +362,15 @@ def _(rid, params: dict) -> dict:
             # Never leave an unreachable live draft (or its lease) in the registry.
             _close_session_by_id(sid, end_reason="branch_create_failed")
             raise
+    elif history:
+        # Opening turns are explicit user intent, not an abandoned empty draft.
+        _ensure_session_db_row(_sessions[sid])
+        _persist_branch_seed(_sessions[sid])
+        if _sessions[sid].get("_branch_seed_persisted") and _sessions[sid].get("pending_title"):
+            with _session_db(_sessions[sid]) as db:
+                if db is not None:
+                    db.set_session_title(key, _sessions[sid]["pending_title"])
+                    _sessions[sid]["pending_title"] = None
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     # Worktree creation remains lazy, but preserve the existing agent pre-warm so
     # ordinary session.create latency and the ready-event contract are unchanged.
@@ -369,7 +379,7 @@ def _(rid, params: dict) -> dict:
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
     return _ok(rid, {
-        "session_id": sid, "stored_session_id": key, "message_count": len(history),
+        "session_id": sid, "stored_session_id": key, "message_count": len(_history_to_messages(history)),
         "messages": _history_to_messages(history),
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _resolve_model(),
@@ -1722,8 +1732,17 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
             return _ok(rid, dict(fallback))
 
 
-_billing_view("billing.state", "agent.billing_view", "build_billing_state", "_serialize_billing_state",
-              {"ok": True, "logged_in": False, "error": "could not load billing state"})
+@method("billing.state")
+def _(rid, params: dict) -> dict:
+    """Answer free-tier billing locally; paid accounts use the portal view."""
+    try:
+        from agent.billing_view import BillingState, build_billing_state
+        from hermes_cli.anon_auth import guest_carries_inference
+        if guest_carries_inference():
+            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier=True))
+        return _ok(rid, _serialize_billing_state(build_billing_state()))
+    except Exception:
+        return _ok(rid, {"ok": True, "logged_in": False, "free_tier": False, "error": "could not load billing state"})
 _billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
               {"ok": True, "available": False})
 _billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",

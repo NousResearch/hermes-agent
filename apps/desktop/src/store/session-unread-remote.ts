@@ -7,8 +7,11 @@
  * transient) and the backend's derived `unread` key (last_read_at watermark
  * vs last_active — survives restarts and is visible to every surface). This
  * module owns the WRITE side of the persisted flag: the row-level
- * "Mark as unread"/"Mark as read" toggle and the automatic clear when a
- * session is opened. The read side lives in session-dot-state.ts.
+ * "Mark as unread"/"Mark as read" toggle, the automatic clear when a
+ * session is opened, and persistUnreadOnBackgroundFinish so an unfocused
+ * busy→idle edge writes last_read_at (Focus reads only that, not the
+ * local $unreadFinishedSessionIds marker). The read side lives in
+ * session-dot-state.ts.
  *
  * Optimistic, then honest (AGENTS.md): paint the row immediately, PATCH the
  * backend, roll back visibly on failure. A list page already in flight when
@@ -59,6 +62,25 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
     $unreadWriteGuard.set(guard2)
     setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread: !unread } : r)))
     throw err
+  }
+}
+
+/** Unfocused busy→idle (and any locally-green row that is not yet
+ *  server-unread) must PATCH unread=true. Focus paints only `row.unread`
+ *  from last_read_at; the local finish marker is invisible on the phone.
+ *  No-op when already persisted or when there is no stored row. Best-effort:
+ *  a failed PATCH leaves the local marker painting until the next retry. */
+export async function persistUnreadOnBackgroundFinish(storedId: string): Promise<void> {
+  const row = rowFor(storedId)
+
+  if (!row || row.unread === true) {
+    return
+  }
+
+  try {
+    await markSessionUnread(storedId, true)
+  } catch {
+    // Ignore: Desktop still greens from $unreadFinishedSessionIds.
   }
 }
 

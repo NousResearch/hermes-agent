@@ -321,7 +321,9 @@ class TestRunJobScript:
         assert captured["kwargs"]["text"] is True
         assert "creationflags" not in captured["kwargs"]
         assert "encoding" not in captured["kwargs"]
-        assert "errors" not in captured["kwargs"]
+        # Undecodable bytes degrade instead of aborting the read: the locale still decodes
+        # (no forced utf-8), but a stray byte must not turn a successful run into a failure.
+        assert captured["kwargs"]["errors"] == "replace"
 
     def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
         """When the Windows uv-venv overlay is NOT active, the invocation must
@@ -383,8 +385,9 @@ class TestRunJobScript:
     def test_invalid_utf8_stdout_does_not_raise(self, cron_env):
         """Truncated/invalid UTF-8 in script stdout must never escape as an
         exception (#47393) — a raised UnicodeDecodeError higher up would
-        silently drop the whole delivery (#42384). The run may fail, but it
-        must fail as a (False, message) result the scheduler can deliver.
+        silently drop the whole delivery (#42384). It must also not rewrite a
+        successful run as a failure: the script exited 0, so the run *is* a
+        success and the undecodable byte is replaced in the delivered text.
         """
         from cron.scheduler_script import _run_job_script
 
@@ -399,9 +402,8 @@ class TestRunJobScript:
 
         success, output = _run_job_script("bad_bytes.py")  # must not raise
 
-        assert isinstance(success, bool)
-        assert isinstance(output, str)
-        assert output  # a message is always produced, never a silent drop
+        assert success is True, "an exit-0 script with one bad byte is still a success"
+        assert output == "partial \ufffd"
 
 
 class TestBuildJobPromptWithScript:

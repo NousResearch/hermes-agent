@@ -338,7 +338,14 @@ def _run_job_script(
 
     try:
         from tools.environments.local import build_subprocess_env
-        popen_kwargs: dict[str, Any] = {"start_new_session": True}
+        # errors="replace" on POSIX too: the ambient locale still decodes the script's output
+        # (no forced utf-8), but a SINGLE undecodable byte must not abort the read. Strict
+        # decoding turns a script that exited 0 into "Script execution failed: 'utf-8' codec
+        # can't decode byte ...", which reports a successful run as a failure and drops the
+        # delivery — a stray byte from a child process sharing the pipe is enough to trigger it.
+        # Only affects bytes that are already undecodable; valid output in any locale is
+        # unchanged. Windows already pins this (see the branch below, #39029).
+        popen_kwargs: dict[str, Any] = {"start_new_session": True, "errors": "replace"}
         if sys.platform == "win32":
             popen_kwargs = {
                 "creationflags": windows_hide_flags()

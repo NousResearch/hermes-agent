@@ -271,14 +271,32 @@ class GatewayNotificationsMixin:
 
         Only ``MEDIA:`` directives — the explicit attachment contract — trigger post-stream uploads. See
         #20834.
+
+        Threads ``event.source``'s own session key and profile explicitly
+        into Docker container-path translation so an isolated task's
+        (#64889) or a named profile's (#94441) own sandbox resolves,
+        instead of falling back to the shared ``default`` one.
         """
         from urllib.parse import quote as _quote
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+
+            # This rescan runs after streaming has already finished the turn,
+            # so any profile-scope context the turn entered may have already
+            # exited (#93950) — read the delivering source's own identity
+            # directly rather than the ambient active profile (#64889, #94441).
+            _media_source = event.source
+            _media_session_key = (
+                self._session_key_for_source(_media_source) if _media_source else ""
+            )
+            _media_profile = getattr(_media_source, "profile", None)
+
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                media_files, session_key=_media_session_key, profile=_media_profile
+            )
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the

@@ -920,15 +920,18 @@ async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, 
         scratch.write_bytes(b"%PDF-fake")
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
+        # The summary names the scratch original, which still exists at
+        # handoff time: it must not ride along as a second upload.
         assert kb.request_review(
-            conn, tid, summary="ready for review", metadata={"artifacts": [str(scratch)]},
-            expected_run_id=run_id)
+            conn, tid, summary=f"ready for review: {scratch}",
+            metadata={"artifacts": [str(scratch)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, tid) if e.kind == "review_requested"][-1]
         attachments = kb.list_attachments(conn, tid)
     finally:
         conn.close()
     staged_path = handoff.payload["artifacts"][0]
     assert staged_path != str(scratch), "handoff must name the staged copy, not the scratch original"
+    assert scratch.exists(), "scratch original survives until the reviewer completes"
     assert staged_path == attachments[0].stored_path
 
     runner = object.__new__(GatewayRunner)

@@ -140,15 +140,21 @@ class GatewayKanbanWatchersMixin:
         reference only), and upload errors are logged, never raised.
         """
         raw_paths: list[str] = []
+        prose_paths: list[str] = []
         if isinstance(event_payload, dict):
             raw = event_payload.get("artifacts")
             if isinstance(raw, (list, tuple)):
                 raw_paths += [item for item in raw if isinstance(item, str)]
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
-                raw_paths += adapter.extract_local_files(summary)[0]
+                prose_paths += adapter.extract_local_files(summary)[0]
         if task is not None and getattr(task, "result", None):
-            raw_paths += adapter.extract_local_files(str(task.result))[0]
+            prose_paths += adapter.extract_local_files(str(task.result))[0]
+        # A staged copy and the scratch original it was copied from are the
+        # same deliverable; on a review handoff the original still exists, so
+        # prose mentions of it must not upload the file a second time.
+        staged_names = {os.path.basename(p) for p in raw_paths}
+        raw_paths += [p for p in prose_paths if os.path.basename(p) not in staged_names]
         candidates: list[str] = []
         for path in raw_paths:
             expanded = os.path.expanduser(path) if path else ""

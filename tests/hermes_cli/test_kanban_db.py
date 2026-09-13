@@ -646,6 +646,34 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     ]
 
 
+def test_request_review_rollback_discards_staged_copies(kanban_home):
+    """A failure after staging rolls the txn back; the copied file must go
+    too, or the retry stages ``evidence_1.json`` next to an orphan."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="review rollback")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+        artifact = ws / "evidence.json"
+        artifact.write_bytes(b"{}")
+        kb.claim_task(conn, t)
+        run_id = kb.get_task(conn, t).current_run_id
+        kwargs = dict(summary="ready", metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("run bookkeeping failed")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_end_or_synthesize_run", _boom)
+            with pytest.raises(RuntimeError):
+                kb.request_review(conn, t, **kwargs)
+        attachment_dir = kb.task_attachments_dir(t)
+        assert kb.get_task(conn, t).status == "running"
+        assert not attachment_dir.exists() or not any(attachment_dir.iterdir())
+        assert kb.request_review(conn, t, **kwargs)
+        assert [a.filename for a in kb.list_attachments(conn, t)] == ["evidence.json"]
+        assert sorted(p.name for p in attachment_dir.iterdir()) == ["evidence.json"]
+
+
 # ---------------------------------------------------------------------------
 # Deferred scratch cleanup for parent/child handoff (#33774)
 # ---------------------------------------------------------------------------

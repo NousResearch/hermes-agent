@@ -2,6 +2,8 @@
 
 import os
 
+_client = None  # lazily-built async client; read by the PLUGIN-COMPAT get_async_client() below
+
 
 def check_api_key() -> bool:
     """Return True if OPENROUTER_API_KEY is present.

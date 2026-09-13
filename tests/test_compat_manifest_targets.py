@@ -90,3 +90,64 @@ def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
     assert "tasks" in tables, tables
     assert not (tmp_path / "projects.db").exists()
     assert isinstance(sqlite3.connect(db), sqlite3.Connection)
+
+
+@pytest.fixture
+def openrouter_compat_shim():
+    """Yield the facade, then put its cached-client slot back EXACTLY as found.
+
+    Restoring "as found" rather than to ``None`` matters: a test that resets the slot
+    to ``None`` on a tree where the module never defined it would hand the next test a
+    working shim and hide the very defect under test.
+    """
+    import tools.openrouter_client as orc
+
+    had = "_client" in vars(orc)
+    previous = vars(orc).get("_client")
+    try:
+        yield orc
+    finally:
+        if had:
+            orc._client = previous
+        else:
+            vars(orc).pop("_client", None)
+
+
+class TestRestoredDefsRun:
+    """A ``restored-def`` pointer must WORK, not merely resolve.
+
+    The moved-lazy test above never calls anything. A restored definition is copied back
+    byte-for-byte from the pre-decomposition tree, so it can arrive without the private
+    module state it closes over ("private names (``_x``) get no pointer" — the compat
+    commit's own rule). An external plugin then gets a ``NameError`` on the first call,
+    which is indistinguishable from the pointer not existing at all.
+    """
+
+    def test_openrouter_get_async_client_constructs_once_and_reuses(
+        self, openrouter_compat_shim, monkeypatch
+    ):
+        import agent.auxiliary_client as aux
+
+        orc = openrouter_compat_shim
+        calls = []
+
+        def _fake_resolve(provider, model=None, async_mode=False, **kwargs):
+            calls.append((provider, async_mode))
+            return object(), "some-model"
+
+        monkeypatch.setattr(aux, "resolve_provider_client", _fake_resolve)
+        first = orc.get_async_client()
+        assert first is not None
+        # "created lazily on first call and reused thereafter" (its docstring).
+        assert orc.get_async_client() is first
+        assert calls == [("openrouter", True)]
+
+    def test_openrouter_get_async_client_without_a_key_raises_valueerror(
+        self, openrouter_compat_shim, monkeypatch
+    ):
+        import agent.auxiliary_client as aux
+
+        orc = openrouter_compat_shim
+        monkeypatch.setattr(aux, "resolve_provider_client", lambda *a, **k: (None, None))
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            orc.get_async_client()

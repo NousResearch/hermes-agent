@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
 
 import pytest
 
@@ -93,18 +92,30 @@ def test_show_preserves_canonical_last_50_events(worker_env):
         for index in range(55):
             kb.add_comment(conn, worker_env, author="worker", body=f"progress {index}")
             kb.add_comment(conn, other_id, author="other", body="interleaved")
-        kb._append_event(conn, worker_env, "heartbeat", run_id=kb.latest_run(conn, worker_env).id)
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        kb._append_event(conn, worker_env, "heartbeat", run_id=run.id)
         conn.execute("UPDATE task_events SET created_at = ?", (1_700_000_000,))
         conn.commit()
-        events = kb.list_events(conn, worker_env)
+        rows = conn.execute(
+            "SELECT id, task_id, kind, payload, created_at, run_id FROM task_events "
+            "WHERE task_id = ? ORDER BY created_at, id", (worker_env,),
+        ).fetchall()
 
-    assert len(events) > 50
-    expected = [asdict(event) for event in events[-50:]]
+    assert len(rows) > 50
+    expected = [
+        {"id": row["id"], "task_id": row["task_id"], "kind": row["kind"],
+         "payload": json.loads(row["payload"]) if row["payload"] is not None else None,
+         "created_at": row["created_at"], "run_id": row["run_id"]}
+        for row in rows[-50:]
+    ]
     output = json.loads(kt._handle_show({}))
 
     assert output["events"] == expected
-    assert [event["id"] for event in output["events"]] == [event.id for event in events[-50:]]
-    assert json.loads(registry.dispatch("kanban_show", {}))["events"] == expected
+    assert all(type(event["id"]) is int for event in output["events"])
+    dispatched = registry.dispatch("kanban_show", {})
+    assert isinstance(dispatched, str)
+    assert json.loads(dispatched)["events"] == expected
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

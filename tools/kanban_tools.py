@@ -13,7 +13,6 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from dataclasses import asdict
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
@@ -523,7 +522,7 @@ def _handle_show(args: dict, **kw) -> str:
             "children": kb.child_ids(conn, tid),
             "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
             # Capped; full log via CLI.
-            "events": [asdict(e) for e in kb.list_events(conn, tid)[-50:]],
+            "events": [kb.event_to_dict(e) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
             # Same string build_worker_context hands the dispatcher at spawn time.
             "worker_context": kb.build_worker_context(conn, tid)})

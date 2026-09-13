@@ -846,6 +846,18 @@ class Event:
         )
 
 
+def event_to_dict(event: Event) -> dict[str, Any]:
+    """Keep the public event schema independent of internal dataclass fields."""
+    return {
+        "id": event.id,
+        "task_id": event.task_id,
+        "kind": event.kind,
+        "payload": event.payload,
+        "created_at": event.created_at,
+        "run_id": event.run_id,
+    }
+
+
 # --- Schema ---
 
 SCHEMA_SQL = """

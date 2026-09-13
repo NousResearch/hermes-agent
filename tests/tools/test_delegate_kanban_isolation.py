@@ -302,3 +302,88 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+def _make_delegation_context_unimportable(monkeypatch) -> None:
+    """Simulate a process whose ``agent.delegation_context`` cannot be evaluated.
+
+    ``None`` in ``sys.modules`` is what an importer sees for a module that fails to
+    load, but ``from agent import delegation_context`` resolves through the parent
+    package's attribute first — so drop that as well, exactly as a broken install
+    looks to both import forms.
+    """
+    import agent
+
+    monkeypatch.setitem(sys.modules, "agent.delegation_context", None)
+    monkeypatch.delattr(agent, "delegation_context", raising=False)
+
+
+def test_unavailable_delegation_context_cannot_mutate_the_board(monkeypatch, tmp_path):
+    """An un-evaluable delegation context can never move board state.
+
+    Invariant for both call shapes — the dispatcher-owned worker (which may still
+    mutate its own task) and a process with no task at all. Already true on main:
+    ``kanban_db_connect.connect()`` imports the same module unwrapped and raises
+    before any write, so the write fence is not the only guard today. Pinned here so
+    that stays true if that access ever goes lazy or guarded.
+    """
+    import sqlite3
+
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from tools import kanban_tools
+
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    _make_delegation_context_unimportable(monkeypatch)
+
+    owned = kanban_tools._handle_comment({"task_id": tid, "body": "must not land"})
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    unowned = kanban_tools._handle_complete({"task_id": tid, "summary": "must not land"})
+
+    # A refused write never reports success, and never reports nothing.
+    for raw in (owned, unowned):
+        assert json.loads(raw)["error"], raw
+
+    # Read the board straight from its file: the guarded connect() will not open it.
+    conn = sqlite3.connect(kb.kanban_db_path(board=None))
+    conn.row_factory = sqlite3.Row
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.latest_run(conn, tid).status == "running"
+        assert kb.list_comments(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_unavailable_delegation_context_fence_refuses_when_the_process_owns_no_task(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    """The write fence itself must fail closed, not merely fail somewhere later.
+
+    ``_delegation_ctx`` returned its ``default`` (``False`` == "not a delegate
+    child") straight out of ``except Exception``, so the fence's verdict for an
+    un-evaluable context was "allow" and only the board connection stopped the
+    write. A process that owns no ``HERMES_KANBAN_TASK`` must be refused here, with
+    an audit line naming the real reason.
+    """
+    import logging
+
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from tools import kanban_tools
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    _make_delegation_context_unimportable(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
+        raw = kanban_tools._handle_comment({"task_id": tid, "body": "must not land"})
+
+    payload = json.loads(raw)
+    assert payload["error"]
+    assert "refused" in payload["error"]
+    assert "delegation context" in payload["error"]
+    assert any("un-evaluable" in r.getMessage() for r in caplog.records), caplog.text
+

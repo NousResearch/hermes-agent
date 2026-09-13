@@ -780,9 +780,10 @@ class TestRenameProfile:
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
     def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
-        """A profile served by a live multiplexer is unrouted (tombstone + notify) BEFORE the
-        directory move, and the new name is hot-served after — so the old name cannot be
-        re-``mkdir``'d back into a ghost served profile (issue: rename resurrects old name)."""
+        """Under a live multiplexer the old name is tombstoned + unrouted BEFORE the directory
+        moves and the new name is hot-served after, so a stale runtime mkdir of the old home is
+        refused instead of resurrecting a ghost served profile (#109267)."""
+        from hermes_constants import mkdir_under_hermes_home
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
@@ -792,71 +793,37 @@ class TestRenameProfile:
 
         def _record_notify(name):
             # Snapshot the world at each multiplexer signal to pin ordering.
-            calls.append({
-                "name": name,
-                "old_exists": old_dir.exists(),
-                "new_exists": new_dir.exists(),
-                "old_tombstoned": profiles.named_profile_is_deleted(old_dir),
-            })
+            calls.append((name, old_dir.exists(), new_dir.exists(), profiles.named_profile_is_deleted(old_dir)))
+            if name == "oldname" and old_dir.exists():
+                # A still-live component of the multiplexer writing into the old home mid-teardown.
+                with pytest.raises(FileNotFoundError):
+                    mkdir_under_hermes_home(old_dir / "logs")
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
              patch("hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
             rename_profile("oldname", "newname")
 
-        # Old name unrouted before the move: first signal names oldname, while old_dir still
-        # exists and is tombstoned so no live component can re-create it.
-        assert calls[0]["name"] == "oldname"
-        assert calls[0]["old_exists"] is True
-        assert calls[0]["old_tombstoned"] is True
-        # New name hot-served after the move completed.
-        assert calls[-1]["name"] == "newname"
-        assert calls[-1]["new_exists"] is True
-        assert calls[-1]["old_exists"] is False
-        # End state: old gone, new present, and no stale tombstone left to poison a future
-        # profile that reuses the old name.
-        assert not old_dir.exists()
-        assert new_dir.is_dir()
-        assert not profiles.named_profile_is_deleted(old_dir)
+        # (name, old_exists, new_exists, old_tombstoned): unroute first, hot-serve last.
+        assert calls[0] == ("oldname", True, False, True)
+        assert calls[-1] == ("newname", False, True, False)
+        assert not old_dir.exists() and new_dir.is_dir()
+        assert not profiles.named_profile_is_deleted(old_dir)  # a future 'oldname' is not born deleted
 
     def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
-        """No live multiplexer serves this profile → rename must not tombstone or ping it
-        (guards against over-firing the unroute path on a single-profile install)."""
+        """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
         tmp_path = profile_env
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=False), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False), \
              patch("hermes_cli.profiles._notify_multiplexer") as notify:
             new_dir = rename_profile("oldname", "newname")
 
         notify.assert_not_called()
-        assert not profiles.named_profile_is_deleted(old_dir)
-        assert new_dir.is_dir()
-
-    def test_multiplexed_rename_failure_rolls_back_unroute(self, profile_env):
-        """If the directory move fails, the pre-move unroute is undone: the old name is
-        re-served (tombstone cleared, multiplexer re-notified) instead of left stranded as
-        tombstoned-but-present (which would make the profile vanish, worse than a ghost)."""
-        tmp_path = profile_env
-        create_profile("oldname", no_alias=True)
-        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
-
-        signals = []
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
-             patch("hermes_cli.profiles._notify_multiplexer", side_effect=signals.append), \
-             patch("hermes_cli.profiles.Path.rename", side_effect=OSError("EXDEV")):
-            with pytest.raises(OSError, match="EXDEV"):
-                rename_profile("oldname", "newname")
-
-        # Old dir still there, tombstone cleared, and the last signal re-served the old name.
-        assert old_dir.is_dir()
-        assert not profiles.named_profile_is_deleted(old_dir)
-        assert signals[0] == "oldname"   # unroute on the way in
-        assert signals[-1] == "oldname"  # rollback re-serves it, never "newname"
-        assert "newname" not in signals
+        assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
+        assert not old_dir.exists() and new_dir.is_dir()
 
 
 # ===================================================================

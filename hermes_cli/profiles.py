@@ -952,6 +952,16 @@ def _notify_multiplexer(canon: str) -> None:
     notify_multiplexer_profiles_changed(canon)
 
 
+def _live_default_multiplexer() -> bool:
+    """True when a live default gateway has recorded a served-profile set: every dir under
+    profiles/ is then served by it, so a profile-identity change must be unrouted first."""
+    try:
+        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        return recorded_served_profiles() is not None
+    except Exception:
+        return False
+
+
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
     module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
@@ -1727,33 +1737,30 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 1b. Unroute the old name from a live multiplexer BEFORE the rename. A multiplexed
-    # secondary has no gateway.pid of its own, so the check above reports it stopped while
-    # the default gateway still holds its adapters, cron ticker, logging and SQLite handles.
-    # Tombstone + notify so the multiplexer stops those adapters and releases its handles
-    # into old_dir; without it the live components immediately re-``mkdir`` the old home
-    # (no tombstone → ``mkdir_under_hermes_home`` does not refuse it) and the periodic
-    # reconcile re-adopts the resurrected dir as a ghost served profile.
-    served_by_mux = _served_by_running_multiplexer(old_canon)
-    if served_by_mux:
+    # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
+    # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
+    # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
+    # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
+    # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
+    # resurrected dir as a ghost served profile (#109267).
+    live_mux = _live_default_multiplexer()
+    if live_mux:
         mark_named_profile_deleted(old_dir)
         _notify_multiplexer(old_canon)
 
-    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing
-    # writer), undo the unroute above so we never strand the profile as tombstoned-but-present:
-    # restore its directory to the served set and clear the marker before re-raising.
+    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
+    # undo the unroute so the profile is never stranded tombstoned-but-present.
     try:
         old_dir.rename(new_dir)
     except Exception:
-        if served_by_mux:
+        if live_mux:
             clear_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    # The tombstone lived at profiles/.deleted/<old_name>; old_dir is gone now so it can no
-    # longer resurrect, and new_dir carries no tombstone. Clear the stale marker so a future
-    # profile reusing the old name is not treated as deleted.
-    if served_by_mux:
+    # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
+    # resurrect it, and a future profile reusing the old name must not read as deleted.
+    if live_mux:
         clear_named_profile_deleted(old_dir)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
@@ -1771,9 +1778,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
 
-    # 6. Ask a live multiplexer to hot-serve the renamed profile now (mirrors create); it
-    # also rescans periodically, so a missed signal only delays serving.
-    if served_by_mux:
+    # 6. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
+    if live_mux:
         _notify_multiplexer(new_canon)
     return new_dir
 

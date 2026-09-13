@@ -87,10 +87,23 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
     """Host-declared logical conversation scope (``gwk_<sha256[:24]>``), or None.
 
     Hashes ``(source, gateway_session_key, generation)``. None (fall back to the physical id)
-    when no key is declared, for a background-review fork (``_persist_disabled``), for an
-    explicit fork child, and on any DB error (fail closed rather than merge a fork onto its
-    parent's key).
+    when no key is declared, for an explicit fork child, and on any DB error (fail closed
+    rather than merge a fork onto its parent's key).
+
+    A same-model background-review fork (``_persist_disabled=True``, ``_session_db=None``)
+    resolves the parent's *already-resolved* scope via ``_inherited_cache_scope`` BEFORE the
+    ``_persist_disabled`` fail-closed branch (#109964): the fork's entire purpose is prefix
+    parity with the parent, but the exclusion below plus the missing DB made both resolvers
+    diverge — the header path (affinity/sticky session) and the body path
+    (``prompt_cache_key``) keyed the fork into a different bucket, costing one cold
+    ~full-context request per review. The inherited value is stamped once at fork time by
+    ``build_cache_parity_fork`` (no DB access from the fork), so persistence stays fully
+    detached. Nothing sets the attribute for routed (different-model) forks, ``/branch``
+    children, delegate/tool children, or fresh sessions — the fail-closed default stands.
     """
+    inherited = getattr(agent, "_inherited_cache_scope", None)
+    if inherited:
+        return str(inherited)
     key = str(getattr(agent, "_gateway_session_key", "") or "").strip()
     if not key or getattr(agent, "_persist_disabled", False):
         return None
@@ -131,7 +144,11 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
 
 def resolve_prompt_cache_scope(agent: Any) -> str:
     """Rotation-stable cache-scope id: declared scope, else the compression-lineage root of
-    ``agent.session_id`` (the physical id without ancestry/DB). Memoized on the agent."""
+    ``agent.session_id`` (the physical id without ancestry/DB). Memoized on the agent.
+
+    A same-model review fork's inherited scope (``_inherited_cache_scope``) resolves through
+    :func:`declared_conversation_scope` above, which honors it first — fixing header and body
+    paths together (#109964)."""
     sid = str(getattr(agent, "session_id", None) or "")
     if not sid:
         return ""

@@ -1737,4 +1737,3 @@ def test_reap_status_recorded_on_both_clean_exit_branches():
     finally:
         kbd._recent_worker_exits.pop(route_pid, None)
         kbd._recent_worker_exits.pop(pv_pid, None)
-

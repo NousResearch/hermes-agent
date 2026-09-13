@@ -5,17 +5,31 @@ interface ExecutionAuthority {
   retiredEpochs: Set<string>
 }
 
+/**
+ * The owner's wire stamp: `SessionEvents.publish` spreads the claimed
+ * execution onto the event params, beside `type`/`payload`, never inside the
+ * payload. `authority_epoch` is the integer runtime epoch; the fence keys on
+ * its string form because epochs are opaque identities, never ordered.
+ */
+export interface ExecutionStampedEvent {
+  authority_epoch?: unknown
+  execution_generation?: unknown
+  payload?: unknown
+}
+
 /** Each transport consumer owns its map; epochs are opaque, never ordered. */
 export function acceptExecutionEvent(
   authorities: Map<string, ExecutionAuthority>,
   key: string,
   type: string,
-  payload?: Record<string, unknown>
+  event?: ExecutionStampedEvent
 ): boolean {
   const lifecycle = ['session.info', 'message.start', 'message.complete', 'message.error'].includes(type)
   const previous = authorities.get(key)
-  const epoch = payload?.execution_epoch
-  const generation = payload?.execution_generation
+  const payload = event?.payload as Record<string, unknown> | undefined
+  const rawEpoch = event?.authority_epoch
+  const epoch = typeof rawEpoch === 'number' && Number.isSafeInteger(rawEpoch) ? String(rawEpoch) : rawEpoch
+  const generation = event?.execution_generation
   const versioned = typeof epoch === 'string' && epoch.length > 0 && typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0
 
   // Output may follow the current owner, but cannot establish another one.

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, field
+from functools import partial
 import uuid
 
 from gateway.session_contract import (
@@ -125,6 +126,7 @@ class SessionAuthority:
             transport = self.events.get(actor.transport_id)
             if transport is not None:
                 live.event_stream.fanout.attach(transport)
+                live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
             handle = self._handle(ref)
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
@@ -133,6 +135,14 @@ class SessionAuthority:
                                         sequence, tuple(local_history(self, ref)),
                                         tuple(self._pending_receipt(r) for r in list_session_admissions(
                                             self.db, session_id=ref.session_id)), prompts)
+
+    def _retire_overflowed(self, session_id, transport):
+        """The fanout dropped this peer's backlog: its subscription is over even though the
+        socket still answers RPCs. A later resume re-attaches it with a fresh snapshot."""
+        live = self.sessions[session_id]
+        for subscription, member in list(live.subscribers.items()):
+            if self.events.get(member.transport_id) is transport:
+                del live.subscribers[subscription]
 
     async def detach(self, actor, subscription_id):
         for live in self.sessions.values():
@@ -465,6 +475,10 @@ class SessionAuthority:
                 live.event_stream.publish(ref.session_id, {
                     'text': response, 'content': response, 'admission_id': admission_id,
                     'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+                # The stamp names a claimed, unsettled execution. Left in place, idle
+                # mutations (session.updated) would carry a terminal generation and
+                # a versioned viewer fence would discard them as late frames.
+                live.event_stream.execution = {}
             self.pending_stops.pop(ref.session_id, None)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():

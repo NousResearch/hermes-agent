@@ -547,6 +547,10 @@ export interface PaginatedSessions {
 
 export interface RpcEvent<T = unknown> {
   payload?: T
+  /** Owner execution stamp on canonical gateways: the integer runtime epoch and
+   * the claimed generation, spread onto the params beside `type`/`payload`. */
+  authority_epoch?: number
+  execution_generation?: number
   profile?: string
   /** Registry connection whose socket delivered the event (renderer-side tag;
    * absent for the local/legacy primary path). */

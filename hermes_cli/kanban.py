@@ -1051,6 +1051,8 @@ def _cmd_archive(args: argparse.Namespace) -> int:
     if reason is not None and not reason.strip():
         return _err("--reason must not be empty or whitespace-only")
     superseded_by = getattr(args, "superseded_by", None)
+    if superseded_by is not None and not superseded_by.strip():
+        return _err("--supersedes must not be empty or whitespace-only")
     with kbc.connect_closing() as conn:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",

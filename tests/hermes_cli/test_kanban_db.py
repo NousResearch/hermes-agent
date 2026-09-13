@@ -1769,3 +1769,26 @@ def test_archive_with_no_arguments_writes_null_provenance(kanban_home):
 
         sup_row = conn.execute("SELECT 1 FROM task_events WHERE kind = 'superseded'").fetchone()
         assert sup_row is None
+
+
+def test_archive_refuses_empty_superseded_by(kanban_home):
+    """An empty or whitespace-only ``superseded_by`` is refused, symmetric with the
+    ``reason`` guard: it must never write an ``archived`` payload with a blank
+    successor id or an orphan ``superseded`` event against an empty task id."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+
+        with pytest.raises(ValueError, match="superseded_by"):
+            kb.archive_task(conn, t, superseded_by="")
+        with pytest.raises(ValueError, match="superseded_by"):
+            kb.archive_task(conn, t, superseded_by="   ")
+
+        assert kb.get_task(conn, t).status != "archived"
+        row = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'archived'", (t,),
+        ).fetchone()
+        assert row is None
+        orphan = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = '' AND kind = 'superseded'",
+        ).fetchone()
+        assert orphan is None

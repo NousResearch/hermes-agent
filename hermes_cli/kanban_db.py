@@ -3536,6 +3536,8 @@ def archive_task(
     """
     if reason is not None and not reason.strip():
         raise ValueError("archive reason must not be empty or whitespace-only")
+    if superseded_by is not None and not superseded_by.strip():
+        raise ValueError("superseded_by must not be empty or whitespace-only")
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",

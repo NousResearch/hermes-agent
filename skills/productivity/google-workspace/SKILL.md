@@ -189,8 +189,10 @@ $GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
 $GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
 $GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
 
-# Reply (automatically threads and sets In-Reply-To)
+# Reply (threads and includes visible quoted history by default)
 $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
+$GAPI gmail reply MESSAGE_ID --body "<p>Thanks, that works for me.</p>" --html
+$GAPI gmail reply MESSAGE_ID --body "Thanks" --no-quote-original
 $GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
 
 # Labels

@@ -430,6 +430,8 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    gateway_system_event: Any = None
+    terminal_result: Any = None
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
@@ -460,7 +462,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
-    if not st.one_turn_restore:
+    if not st.one_turn_restore and st.gateway_system_event is None:
         # Skip the config-model sync while a /model --once override is active: the once-model is
         # intentionally not pinned as a session model_override (it must not persist), so without this guard
         # the sync would see "agent model != config model" and clobber the once-override back to the config
@@ -469,7 +471,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _apply_pending_model_switch(sid, session)
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
-    _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
+    if st.gateway_system_event is None:
+        _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     st.agent = agent = session["agent"]
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
@@ -480,7 +483,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     cols = session.get("cols", 80)
     streamer = make_stream_renderer(cols)
     prompt = text
-    if isinstance(prompt, str) and "@" in prompt:
+    if st.gateway_system_event is None and isinstance(prompt, str) and "@" in prompt:
         from agent.context_references import preprocess_context_references
         from agent.model_metadata import get_model_context_length
         ctx_len = get_model_context_length(
@@ -504,6 +507,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
+    if st.gateway_system_event is not None:
+        return prompt, prompt, cols, streamer
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
     return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
 
@@ -538,6 +543,8 @@ def _invoke_agent(
         "stream_callback": _stream,
         "persist_user_message": (
             _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+    if st.gateway_system_event is not None:
+        run_kwargs["gateway_system_event"] = st.gateway_system_event
     try:
         run_params = inspect.signature(agent.run_conversation).parameters
     except (TypeError, ValueError):
@@ -568,7 +575,7 @@ def _absorb_turn_result(
 ) -> str | None:
     """Stamp, restore /moa, commit history, re-sync the session key; returns the history warning."""
     result, agent = st.result, st.agent
-    if display_kind and isinstance(text, str):
+    if st.gateway_system_event is None and display_kind and isinstance(text, str):
         # Post-turn fallback stamp of a synthesized turn's display kind (DB row + result).
         db = getattr(agent, "_session_db", None)
         current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
@@ -630,6 +637,14 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
+    # Typed preflight can fail before a provider call without a generic `error`.
+    # Require the same positive completion evidence as the messaging gateway.
+    if (st.gateway_system_event is not None and not result.get("interrupted")
+            and (result.get("gateway_system_event_error") or result.get("failed")
+                 or result.get("completed") is not True)):
+        st.result = result = {
+            **result, "error": result.get("error") or result.get("gateway_system_event_error")
+            or "Typed event agent did not complete", "failed": True}
     raw, status, last_reasoning = _turn_outcome(result)
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
     if last_reasoning:
@@ -673,11 +688,16 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             payload["error_surface"] = _error_surface
     if st.terminal_callback is not None:
         st.receipt_attempted = True
-        st.terminal_callback({
+        terminal_result = {
             "status": {"interrupted": "cancelled", "error": "failed"}.get(status, "settled"),
             "text": raw if isinstance(raw, str) else str(raw),
-            **({"error": str(error_value or raw)} if status == "error" else {})})
-        st.receipt_committed = True
+            **({"error": str(error_value or raw)} if status == "error" else {})}
+        if st.gateway_system_event is not None:
+            st.terminal_result = terminal_result
+            st.receipt_attempted = False
+        else:
+            st.terminal_callback(terminal_result)
+            st.receipt_committed = True
     if st.receipt_committed:
         _retire_turn_marker(session, st.marker_key)
     return payload, raw, status
@@ -793,11 +813,22 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, gateway_system_event: Any = None,
+    terminal_frame_writer: Callable[[dict[str, Any]], bool] | None = None) -> bool:
+    if gateway_system_event is not None:
+        from gateway.internal_events import gateway_system_event_is_eligible
+        if not callable(terminal_frame_writer) or not gateway_system_event_is_eligible(gateway_system_event):
+            with session["history_lock"]:
+                session["running"] = False
+            return False
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
     images, agent = admitted
+    if gateway_system_event is not None:
+        with session["history_lock"]:
+            session["inflight_turn"]["user"] = ""
+            session["inflight_turn"]["display_kind"] = "internal_notification"
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -821,7 +852,7 @@ def _run_prompt_submit(
         runtime_session_token = _current_runtime_session_record.set(session)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
-            receipt_committed=terminal_callback is None)
+            receipt_committed=terminal_callback is None, gateway_system_event=gateway_system_event)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
@@ -834,15 +865,26 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
-            _invoke_agent(
-                sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author)
+            from tui_gateway.plugin_events import desktop_plugin_turn
+            with desktop_plugin_turn(session, internal=gateway_system_event is not None):
+                _invoke_agent(
+                    sid, session, st, prompt, run_message, streamer, images, display_kind,
+                    display_metadata, turn_author)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
-            _emit("message.complete", sid, payload)
-            goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
-            if status == "complete":
+            frame_written = (terminal_frame_writer(payload) if gateway_system_event is not None
+                             else _emit("message.complete", sid, payload))
+            if st.terminal_result is not None:
+                if frame_written is not True:
+                    st.terminal_result = {"status": "failed", "text": "", "error": "native transport rejected terminal frame"}
+                st.receipt_attempted = True
+                st.terminal_callback(st.terminal_result)
+                st.receipt_committed = True
+                _retire_turn_marker(session, st.marker_key)
+            if gateway_system_event is None:
+                goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
+            if status == "complete" and gateway_system_event is None:
                 _after_complete_turn(sid, session, st, raw)
             # Goal judge + loop tick evaluation mutate persisted state AFTER message.complete: publish the
             # structured control snapshot now so the Desktop card never paints the pre-judge turn count.

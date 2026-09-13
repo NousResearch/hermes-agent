@@ -473,7 +473,7 @@ def _chat_messages_to_responses_input(
         if role == "tool":
             emit(_tool_output_items(msg), msg)
             continue
-        if role not in {"user", "assistant"}:
+        if role not in {"user", "assistant", "developer"}:
             continue
         content = msg.get("content", "")
         content_parts = _chat_content_to_responses_parts(content, role=role)  # [] unless a list
@@ -482,7 +482,7 @@ def _chat_messages_to_responses_input(
             "".join(p["text"] for p in content_parts if p["type"] == text_type)
             if isinstance(content, list) else _str_or_empty(content)
         )
-        if role == "user":
+        if role in {"user", "developer"}:
             emit([{"role": role, "content": content_parts or content_text}], msg)
             continue
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
@@ -685,7 +685,7 @@ def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Di
 def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
     """Untyped ``user``/``assistant`` role message — the only legal shape besides typed items."""
     role = item.get("role")
-    if role not in {"user", "assistant"}:
+    if role not in {"user", "assistant", "developer"}:
         raise ValueError(
             f"Codex Responses input[{idx}] has unsupported item shape (type={item.get('type')!r}, role={role!r})."
         )

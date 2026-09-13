@@ -16,7 +16,11 @@ def _normal_path(value: str) -> str:
         value = "\\\\" + value[8:]
     elif value.startswith("\\\\?\\"):
         value = value[4:]
-    return ntpath.normcase(ntpath.normpath(value))
+    value = ntpath.normcase(ntpath.normpath(value))
+    drive, tail = ntpath.splitdrive(value)
+    # UNC share roots denote the same directory with or without the final slash.
+    # Keep drive-root slashes: C: and C:\\ have different meanings.
+    return drive if drive.startswith("\\\\") and tail == "\\" else value
 
 
 def _checked_stat(path: Path):
@@ -68,8 +72,18 @@ class _Source:
         ):
             raise OSError(f"Distribution source handle changed while reading: {self._path}")
         actual = win32file.GetFinalPathNameByHandle(self._handle, 0)
-        if _normal_path(actual) != _normal_path(str(self._path)):
-            raise OSError(f"Distribution source handle escaped its path: {self._path}")
+        expected_path = _normal_path(str(self._path))
+        if _normal_path(actual) != expected_path:
+            import win32api
+
+            # TEMP can contain 8.3 aliases, while the handle reports long names.
+            # Expand only after validating the pinned handle's identity and type.
+            expected_path = _normal_path(win32api.GetLongPathNameW(str(self._path)))
+        if _normal_path(actual) != expected_path:
+            raise OSError(
+                f"Distribution source handle escaped its path: {self._path} "
+                f"(expected {expected_path!r}, handle {actual!r})"
+            )
         current = _checked_stat(self._path)
         if _identity(current) != _identity(self._expected):
             raise OSError(f"Distribution source path changed: {self._path}")

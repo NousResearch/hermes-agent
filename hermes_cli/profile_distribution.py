@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.profile_distribution_staging import SourceSnapshot
 from hermes_cli.profiles_lifecycle import directory_identity, profile_lifecycle_lock
 from hermes_constants import named_profile_is_deleted
 
@@ -317,18 +318,6 @@ def _plan_target(manifest: DistributionManifest, override_name: Optional[str], s
     return canon, target_dir, target_dir.is_dir()
 
 
-def _reject_distribution_symlinks(staged: Path) -> None:
-    """Reject symlinks before reading or copying distribution files."""
-    for entry in staged.rglob("*"):
-        if not entry.is_symlink():
-            continue
-        try:
-            rel = entry.relative_to(staged)
-        except ValueError:
-            rel = entry
-        raise DistributionError(f"Profile distributions cannot contain symlinks: {rel}")
-
-
 # Install
 
 @dataclass
@@ -342,13 +331,20 @@ class InstallPlan:
     source_identity: tuple
     target_identity: tuple | None
     target_deleted: bool
+    source_snapshot: SourceSnapshot
     preserves_config: bool = True
     has_cron: bool = False
 
 
-def _has_cron_jobs(staged: Path) -> bool:
-    cron_dir = staged / "cron"
-    return cron_dir.is_dir() and (any(cron_dir.rglob("*.json")) or any(cron_dir.rglob("*.yaml")))
+def _has_cron_jobs(snapshot: SourceSnapshot) -> bool:
+    def contains_jobs(entry):
+        return entry.children is not None and any(
+            name.endswith((".json", ".yaml")) or contains_jobs(child)
+            for name, child in entry.children.items()
+        )
+
+    cron = snapshot.children.get("cron")
+    return cron is not None and contains_jobs(cron)
 
 
 def plan_install(
@@ -356,13 +352,17 @@ def plan_install(
 ) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
     from hermes_cli import __version__ as hermes_version
+    from hermes_cli.profile_distribution_source import open_source
+    from hermes_cli.profile_distribution_staging import read_source_bytes, seal_source_tree
+
     with _stage_source(source, workdir, override_name) as (staged, provenance), profile_lifecycle_lock():
-        _reject_distribution_symlinks(staged)
-        manifest = read_manifest(staged)
-        if manifest is None:
-            raise DistributionError(
-                f"No {MANIFEST_FILENAME} found at the distribution root — this source is not a Hermes distribution."
-            )
+        with open_source(staged) as captured:
+            snapshot = seal_source_tree(captured)
+            with captured.child(MANIFEST_FILENAME) as entry:
+                manifest = _parse_manifest(
+                    read_source_bytes(entry, expected=snapshot.children[MANIFEST_FILENAME]),
+                    staged / MANIFEST_FILENAME,
+                )
         check_hermes_requires(manifest.hermes_requires, hermes_version)  # fail fast
         canon, target_dir, existing = _plan_target(manifest, override_name, staged)
         manifest.name = canon
@@ -373,7 +373,7 @@ def plan_install(
             manifest=manifest, staged_dir=staged, provenance=provenance, target_dir=target_dir, existing=existing,
             source_identity=directory_identity(staged, guards), target_identity=directory_identity(target_dir, guards),
             target_deleted=named_profile_is_deleted(target_dir),
-            preserves_config=existing, has_cron=_has_cron_jobs(staged),
+            source_snapshot=snapshot, preserves_config=existing, has_cron=_has_cron_jobs(snapshot),
         )
 
 
@@ -387,16 +387,16 @@ def _revalidate_plan(plan: InstallPlan) -> None:
         raise DistributionError("Profile distribution source or destination changed after planning; retry the command.")
 
 
-def _owned_entries(staged: Path, manifest: DistributionManifest):
-    """Yield ``(src, rel_parts)`` for every staged path the distribution owns."""
+def _owned_entries(snapshot: SourceSnapshot, manifest: DistributionManifest):
+    """Yield approved relative paths owned by this distribution."""
     explicit_owned = [p for p in (p.strip().strip("/") for p in manifest.distribution_owned) if p]
     if not explicit_owned:
         # Legacy: no allowlist means the whole payload (minus USER_OWNED_EXCLUDE) is owned.
         # Do NOT narrow to DEFAULT_DIST_OWNED — existing distributions ship arbitrary extra
         # top-level paths without declaring them.
-        for entry in staged.iterdir():
-            if entry.name not in USER_OWNED_EXCLUDE:
-                yield entry, (entry.name,)
+        for name in snapshot.children:
+            if name not in USER_OWNED_EXCLUDE:
+                yield (name,)
         return
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
@@ -405,47 +405,78 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             continue
         if ".." in rel_parts or PurePosixPath(rel).is_absolute():
             continue
-        src = staged.joinpath(*rel_parts)
-        if src.exists():
-            yield src, rel_parts
+        entry = snapshot
+        for part in rel_parts:
+            if entry.children is None or part not in entry.children:
+                break
+            entry = entry.children[part]
+        else:
+            yield rel_parts
 
 
-def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
+def _check_directory_snapshot(source, snapshot: SourceSnapshot) -> None:
+    if (
+        not source.is_dir or snapshot.children is None or source.mode != snapshot.mode
+        or set(source.names()) != set(snapshot.children)
+    ):
+        raise DistributionError("Profile distribution contents changed after planning; retry the command.")
+
+
+def _copy_owned_directory(source, destination: Path, snapshot: SourceSnapshot) -> None:
+    from hermes_cli.profile_distribution_staging import copy_source_tree
+    from hermes_cli.profiles import _rmtree_make_writable
+
+    # Verify the entire replacement before removing a previously installed subtree.
+    with tempfile.TemporaryDirectory(prefix=".hermes-dist-", dir=destination.parent) as tmp:
+        replacement = Path(tmp) / "payload"
+        replacement.mkdir(mode=0o700)
+        copy_source_tree(source, replacement, expected=snapshot)
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination, onerror=_rmtree_make_writable)
+        else:
+            destination.unlink(missing_ok=True)
+        replacement.replace(destination)
+
+
+def _copy_dist_payload(
+    staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool, *, snapshot: SourceSnapshot,
+) -> None:
     """Copy distribution-owned files (see ``_owned_entries``) from *staged* into *target*.
 
     User-owned paths are never touched. ``config.yaml`` is replaced only when
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
     as ``.env.EXAMPLE`` so it never shadows a real ``.env``."""
-    target.mkdir(parents=True, exist_ok=True)
-    staged_resolved = staged.resolve()
+    from hermes_cli.profile_distribution_source import open_source
+    from hermes_cli.profile_distribution_staging import copy_source_file
 
-    def _ignore_user_owned(d, names):
-        # Only the staged root's direct children are filtered.
-        return [n for n in names if n in USER_OWNED_EXCLUDE] if Path(d).resolve() == staged_resolved else []
+    try:
+        with open_source(staged) as captured:
+            _check_directory_snapshot(captured, snapshot)
+            target.mkdir(parents=True, exist_ok=True)
+            for rel_parts in _owned_entries(snapshot, manifest):
+                if rel_parts == ("config.yaml",) and preserve_config and (target / "config.yaml").exists():
+                    continue
+                dest_parts = (ENV_EXAMPLE_FILENAME,) if rel_parts == (ENV_TEMPLATE_FILENAME,) else rel_parts
+                dest = target.joinpath(*dest_parts)
+                with ExitStack() as handles:
+                    entry, expected = captured, snapshot
+                    for part in rel_parts:
+                        _check_directory_snapshot(entry, expected)
+                        entry = handles.enter_context(entry.child(part))
+                        expected = expected.children[part]
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if entry.is_dir:
+                        _check_directory_snapshot(entry, expected)
+                        _copy_owned_directory(entry, dest, expected)
+                    else:
+                        copy_source_file(entry, dest, expected=expected)
 
-    for src, rel_parts in _owned_entries(staged, manifest):
-        if len(rel_parts) == 1:
-            name = rel_parts[0]
-            if name == ENV_TEMPLATE_FILENAME:
-                shutil.copy2(src, target / ENV_EXAMPLE_FILENAME)
-                continue
-            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
-                continue
-        dest = target.joinpath(*rel_parts)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest, ignore=_ignore_user_owned)
-        else:
-            shutil.copy2(src, dest)
-
-    # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
-    if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
-        (target / ENV_EXAMPLE_FILENAME).write_text(_env_template_from_manifest(manifest), encoding="utf-8")
-
-    # Make sure the manifest on disk reflects resolved name + source
-    write_manifest(target, manifest)
+            # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one.
+            if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
+                (target / ENV_EXAMPLE_FILENAME).write_text(_env_template_from_manifest(manifest), encoding="utf-8")
+            write_manifest(target, manifest)
+    except OSError as exc:
+        raise DistributionError(f"Could not publish profile distribution: {exc}") from exc
 
 
 def _bootstrap_user_dirs(target: Path) -> None:
@@ -458,11 +489,17 @@ def _bootstrap_user_dirs(target: Path) -> None:
 def install_distribution(
     source: str, name: Optional[str] = None, force: bool = False, create_alias: bool = False
 ) -> InstallPlan:
-    """Install a distribution from *source* into a new profile; returns the resolved plan.
-    Use :func:`plan_install` first to preview + prompt."""
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+    """Stage and install a distribution; returns the resolved plan."""
     with ExitStack() as guards, tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
         plan = plan_install(source, Path(tmp), override_name=name, guards=guards)
+        return install_plan(plan, force=force, create_alias=create_alias)
+
+
+def install_plan(plan: InstallPlan, force: bool = False, create_alias: bool = False) -> InstallPlan:
+    """Publish the approved artifact while its caller retains the stage and identity guards."""
+    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+
+    try:
         with profile_lifecycle_lock():
             _revalidate_plan(plan)
             if plan.existing and not force:
@@ -473,10 +510,14 @@ def install_distribution(
 
             # Fresh install: config.yaml comes from the distribution.
             _bootstrap_user_dirs(plan.target_dir)
-            _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
+            _copy_dist_payload(
+                plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False, snapshot=plan.source_snapshot,
+            )
             if create_alias and check_alias_collision(plan.manifest.name) is None:
                 create_wrapper_script(plan.manifest.name)
         return plan
+    except OSError as exc:
+        raise DistributionError(f"Could not install profile distribution: {exc}") from exc
 
 
 def _existing_profile(profile_name: str) -> Tuple[str, Path]:
@@ -514,7 +555,10 @@ def update_distribution(profile_name: str, force_config: bool = False) -> Instal
                 _revalidate_plan(plan)
                 if plan.target_identity != original_identity or read_manifest(target) != existing_manifest:
                     raise DistributionError("Profile distribution destination changed while staging its update; retry the command.")
-                _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=plan.preserves_config)
+                _copy_dist_payload(
+                    plan.staged_dir, plan.target_dir, plan.manifest,
+                    preserve_config=plan.preserves_config, snapshot=plan.source_snapshot,
+                )
             return plan
 
 

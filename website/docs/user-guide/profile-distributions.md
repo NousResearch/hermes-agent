@@ -618,6 +618,10 @@ Links or changes detected during that copy stop installation before it updates t
 target profile. Finish editing the source and retry. Staging must be outside both
 the source directory and the destination profile.
 
+Interactive installation applies the staged copy shown at confirmation. Later edits
+to the source or a moving Git branch do not change that approved installation.
+On POSIX systems, file and directory permission bits are preserved when copying.
+
 ---
 
 ## Export and import a profile file

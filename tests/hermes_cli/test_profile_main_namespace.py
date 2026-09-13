@@ -3,10 +3,16 @@
 import tarfile
 import shutil
 import os
+import builtins
+import io
+import stat
+import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,16 +189,250 @@ def test_new_profile_targets_cannot_claim_default_namespace(profile_home, tmp_pa
     assert not profiles.find_alias_for_profile("main")
 
 
-@pytest.mark.parametrize("finish,change", [("rename", None), ("delete", None), ("retry_delete", None)] + [
+
+def _assert_confirmation_snapshot(source, legacy, tmp_path, monkeypatch, change):
+    from hermes_cli import profile_cmd
+
+    if change == "confirm_git":
+        repository = tmp_path / "source.git"
+        shutil.copytree(source, repository)
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-c", "user.name=Distribution fixture", "-c", "user.email=fixture@example.invalid",
+                 "-C", str(repository), *args],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        git("init", "--initial-branch=main")
+        git("add", ".")
+        git("commit", "-m", "Approved distribution")
+        approved_commit = git("rev-parse", "HEAD")
+    else:
+        repository = source
+    approved = []
+    render = profile_cmd._render_distribution_plan
+
+    def record_preview(plan):
+        approved.append(plan)
+        assert (plan.staged_dir / "SOUL.md").read_text() == "Updated distribution content"
+        assert not plan.has_cron
+        render(plan)
+
+    def confirm_and_change_source(prompt):
+        assert len(approved) == 1
+        (repository / "SOUL.md").write_text("Unapproved content")
+        (repository / "cron").mkdir()
+        (repository / "cron" / "jobs.json").write_text('{"jobs": [{"prompt": "Unapproved job"}]}')
+        write_manifest(repository, DistributionManifest(name="main", version="9.9.9"))
+        if change == "confirm_git":
+            git("add", ".")
+            git("commit", "-m", "Move source after approval")
+            assert git("rev-parse", "HEAD") != approved_commit
+        return True
+
+    monkeypatch.setattr(profile_cmd, "_render_distribution_plan", record_preview)
+    monkeypatch.setattr(profile_cmd, "_confirm", confirm_and_change_source)
+    profile_cmd._profile_install(SimpleNamespace(source=str(repository), install_name="main", force=True))
+    assert (legacy / "SOUL.md").read_text() == "Updated distribution content"
+    assert not (legacy / "cron" / "jobs.json").exists()
+    installed_manifest = distributions.read_manifest(legacy)
+    assert installed_manifest.version == approved[0].manifest.version
+    assert installed_manifest.source == str(repository)
+    assert not approved[0].staged_dir.exists()
+
+
+def _assert_directory_modes(source, legacy, monkeypatch, finish):
+    (source / "skills" / "empty").mkdir()
+    (source / "skills" / "readonly").mkdir()
+    (source / "skills" / "readonly" / "guide.md").write_text("Readable in an immutable directory")
+    expected_modes = {"skills": 0o755, "skills/empty": 0o750, "skills/readonly": 0o555}
+    for relative, mode in expected_modes.items():
+        (source / relative).chmod(mode)
+    stages = []
+    real_plan = distributions.plan_install
+
+    def record_staged_modes(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        stages.append({relative: stat.S_IMODE((plan.staged_dir / relative).stat().st_mode)
+                       for relative in expected_modes})
+        return plan
+
+    monkeypatch.setattr(distributions, "plan_install", record_staged_modes)
+    if finish == "install":
+        installed = install_distribution(str(source), name="main", force=True)
+    else:
+        installed = update_distribution("main")
+    assert stages == [expected_modes]
+    assert {relative: stat.S_IMODE((legacy / relative).stat().st_mode)
+            for relative in expected_modes} == expected_modes
+    assert not list((legacy / "skills" / "empty").iterdir())
+    assert not installed.staged_dir.exists()
+
+
+def _assert_windows_source_contract(tmp_path, monkeypatch, change):
+    from hermes_cli.profile_distribution_source import open_source
+    import win32file
+
+    parent = tmp_path / "source-parent"
+    source = parent / "distribution"
+    source.mkdir(parents=True)
+    write_manifest(source, DistributionManifest(name="native-source"))
+    payload = b"payload\n" * 262144
+    (source / "SOUL.md").write_bytes(payload)
+    (source / "empty.md").touch()
+
+    if change in {"windows_junction", "windows_sharing"}:
+        if change == "windows_junction":
+            external = tmp_path / "private"
+            external.mkdir()
+            (external / "guide.md").write_bytes(b"SECRET outside distribution")
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(source / "skills"), str(external)],
+                check=True, capture_output=True,
+            )
+            observed = []
+            read_file = win32file.ReadFile
+
+            def observe_read(*args, **kwargs):
+                result = read_file(*args, **kwargs)
+                observed.append(bytes(result[1]))
+                return result
+
+            monkeypatch.setattr(win32file, "ReadFile", observe_read)
+            try:
+                with pytest.raises(DistributionError, match="symlink|reparse"):
+                    distributions.plan_install(str(source), tmp_path / "work")
+                assert not any(b"SECRET outside distribution" in data for data in observed)
+            finally:
+                os.rmdir(source / "skills")
+        else:
+            writer = win32file.CreateFile(
+                str(source / "SOUL.md"), win32file.GENERIC_WRITE,
+                win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE | win32file.FILE_SHARE_DELETE,
+                None, win32file.OPEN_EXISTING, 0, None,
+            )
+            try:
+                with pytest.raises(DistributionError):
+                    distributions.plan_install(str(source), tmp_path / "work")
+            finally:
+                win32file.CloseHandle(writer)
+        assert not (tmp_path / "work" / "local").exists()
+        moved = tmp_path / "released-parent"
+        parent.rename(moved)
+        installed = install_distribution(str(moved / "distribution"))
+        assert (installed.target_dir / "SOUL.md").read_bytes() == payload
+        return
+
+    if change == "windows_ancestry":
+        with open_source(source) as captured:
+            with pytest.raises(PermissionError):
+                parent.rename(tmp_path / "moved-parent")
+            with captured.child("SOUL.md") as entry:
+                assert entry.read(7) == payload[:7]
+        parent.rename(tmp_path / "moved-parent")
+        assert (tmp_path / "moved-parent" / "distribution" / "SOUL.md").read_bytes() == payload
+        return
+
+    if change in {"windows_unc", "windows_extended_unc"} and not tmp_path.drive.startswith("\\\\"):
+        pytest.skip("Run with --basetemp on a real writable SMB share for native UNC coverage")
+    with tempfile.TemporaryDirectory(dir=tmp_path) as workspace:
+        exported = Path(workspace) / "distribution"
+        shutil.copytree(source, exported)
+        raw = str(exported)
+        if change in {"windows_unc", "windows_extended_unc"}:
+            assert raw.startswith("\\\\")
+        if change == "windows_extended_unc":
+            raw = "\\\\?\\UNC\\" + raw[2:]
+        elif change == "windows_extended_path":
+            raw = "\\\\?\\" + raw
+        elif change == "windows_short_path":
+            import win32api
+
+            short_path = win32api.GetShortPathName(raw)
+            if os.path.normcase(short_path) == os.path.normcase(raw):
+                pytest.skip("The source volume must provide 8.3 aliases for native short-path coverage")
+            assert Path(short_path).samefile(exported)
+            raw = short_path
+        with open_source(Path(raw)) as captured:
+            for name, expected in (("SOUL.md", payload), ("empty.md", b"")):
+                with captured.child(name) as entry:
+                    chunks = []
+                    while chunk := entry.read(1024 * 1024):
+                        chunks.append(chunk)
+                    assert b"".join(chunks) == expected
+                    assert entry.read(1024 * 1024) == b""
+
+
+def _observe_private_reads(private_file, monkeypatch):
+    expected = private_file.stat()
+    observed = []
+
+    def record(descriptor):
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) == (expected.st_dev, expected.st_ino):
+            observed.append("external file opened for reading")
+
+    def observe_open(original):
+        def tracked(*args, **kwargs):
+            opened = original(*args, **kwargs)
+            mode = kwargs.get("mode", args[1] if len(args) > 1 else "r")
+            if "r" in mode or "+" in mode:
+                record(opened.fileno())
+            return opened
+        return tracked
+
+    original_open = os.open
+
+    def tracked_descriptor(path, flags, *args, **kwargs):
+        descriptor = original_open(path, flags, *args, **kwargs)
+        if flags & (os.O_WRONLY | os.O_RDWR) != os.O_WRONLY:
+            record(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(builtins, "open", observe_open(builtins.open))
+    monkeypatch.setattr(io, "open", observe_open(io.open))
+    monkeypatch.setattr(os, "open", tracked_descriptor)
+    if os.name == "nt":
+        import win32file
+        original_read = win32file.ReadFile
+
+        def tracked_native_read(*args, **kwargs):
+            result = original_read(*args, **kwargs)
+            if b"SECRET outside distribution" in result[1]:
+                observed.append("external bytes read through native handle")
+            return result
+
+        monkeypatch.setattr(win32file, "ReadFile", tracked_native_read)
+    return observed
+
+
+@pytest.mark.parametrize("finish,change", [("rename", None), ("delete", None), ("retry_delete", None),
+    ("install", "confirm_local"), ("install", "confirm_git"),
+] + [
     (operation, change)
     for operation in ("install", "update")
     for change in (
         "delete", "rename", "tombstone", "recreate", "replacement", "source_replacement",
         "source_file", "source_file_link", "source_dir_link",
         "publication_rename", "publication_delete",
+        "staged_file_link", "staged_dir_link", "staged_file_replace", "staged_file_write",
+    )
+] + [
+    pytest.param(operation, "directory_modes", marks=marker, id=f"{operation}-directory_modes-{host}")
+    for operation in ("install", "update")
+    for host, marker in (("linux", pytest.mark.linux_only), ("macos", pytest.mark.macos_only))
+] + [
+    pytest.param("install", change, marks=pytest.mark.windows_only)
+    for change in (
+        "windows_eof", "windows_extended_path", "windows_short_path", "windows_unc", "windows_extended_unc",
+        "windows_junction", "windows_sharing", "windows_ancestry",
     )
 ])
 def test_legacy_main_profile_remains_manageable(profile_home, tmp_path, monkeypatch, finish, change):
+    if change is not None and change.startswith("windows_"):
+        _assert_windows_source_contract(tmp_path, monkeypatch, change)
+        return
     legacy = profile_home / "profiles" / "main"
     legacy.mkdir(parents=True)
     config = "model:\n  provider: custom\n  default: local-model\n"
@@ -219,6 +459,13 @@ def test_legacy_main_profile_remains_manageable(profile_home, tmp_path, monkeypa
     assert (legacy / "SOUL.md").read_text() == (source / "SOUL.md").read_text()
     assert (legacy / "config.yaml").read_text() == config
 
+    if change in {"confirm_local", "confirm_git"}:
+        _assert_confirmation_snapshot(source, legacy, tmp_path, monkeypatch, change)
+        return
+    if change == "directory_modes":
+        _assert_directory_modes(source, legacy, monkeypatch, finish)
+        return
+
     if change is not None:
         target_name = "copy" if change == "replacement" else "main"
         target = profiles.get_profile_dir(target_name)
@@ -229,6 +476,55 @@ def test_legacy_main_profile_remains_manageable(profile_home, tmp_path, monkeypa
             "install": lambda: install_distribution(str(source), name=target_name.upper(), force=True),
             "update": lambda: update_distribution(target_name),
         }
+
+        if change.startswith("staged_"):
+            plans = []
+            private_reads = []
+            revalidate = distributions._revalidate_plan
+
+            def pause_after_revalidation(plan):
+                revalidate(plan)
+                plans.append(plan)
+                planned.set()
+                assert release.wait(10), "test did not release publication"
+
+            monkeypatch.setattr(distributions, "_revalidate_plan", pause_after_revalidation)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(publish[finish])
+                try:
+                    assert planned.wait(10), "publication did not reach revalidation"
+                    staged = plans[0].staged_dir
+                    root_inode = staged.stat().st_ino
+                    external = tmp_path / "private"
+                    if change == "staged_dir_link":
+                        external.mkdir()
+                        (external / "guide.md").write_text("SECRET outside distribution")
+                        shutil.rmtree(staged / "skills")
+                        (staged / "skills").symlink_to(external, target_is_directory=True)
+                    elif change == "staged_file_link":
+                        external.write_text("SECRET outside distribution")
+                        (staged / "SOUL.md").unlink()
+                        (staged / "SOUL.md").symlink_to(external)
+                    elif change == "staged_file_replace":
+                        external.write_text("Unapproved replacement")
+                        external.replace(staged / "SOUL.md")
+                    else:
+                        (staged / "SOUL.md").write_text("Unapproved overwrite")
+                    assert staged.stat().st_ino == root_inode
+                    if change in {"staged_file_link", "staged_dir_link"}:
+                        private_file = external / "guide.md" if change == "staged_dir_link" else external
+                        private_reads = _observe_private_reads(private_file, monkeypatch)
+                finally:
+                    release.set()
+                try:
+                    pending.result(timeout=10)
+                except DistributionError:
+                    pass
+            assert not private_reads
+            assert (target / "SOUL.md").read_text() == "Updated distribution content"
+            assert (target / "skills" / "guide.md").read_text() == "Planned skill content"
+            assert not plans[0].staged_dir.exists()
+            return
 
         if change.startswith("publication_"):
             from hermes_cli import profiles_lifecycle

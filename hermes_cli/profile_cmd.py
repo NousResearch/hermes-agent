@@ -493,20 +493,19 @@ def _profile_import(args):
 
 def _profile_install(args):
     import tempfile
-    from hermes_cli.profile_distribution import DistributionError, install_distribution, plan_install
+    from contextlib import ExitStack
+    from hermes_cli.profile_distribution import DistributionError, install_plan, plan_install
     try:
-        # Preview: stage into a scratch dir, show the manifest, then do the real install.
-        # The double-stage avoids any side-effects if the user declines.
-        with tempfile.TemporaryDirectory(prefix="hermes_dist_preview_") as tmp:
-            plan = plan_install(args.source, Path(tmp), override_name=getattr(args, "install_name", None))
+        # Keep the approved artifact and directory identities alive through publication.
+        with tempfile.TemporaryDirectory(prefix="hermes_dist_preview_") as tmp, ExitStack() as guards:
+            plan = plan_install(
+                args.source, Path(tmp), override_name=getattr(args, "install_name", None), guards=guards,
+            )
             _render_distribution_plan(plan)
             if not getattr(args, "yes", False) and not _confirm("\nProceed with install? [y/N] "):
                 print("Install cancelled.")
                 return
-        plan = install_distribution(
-            args.source, name=getattr(args, "install_name", None), force=getattr(args, "force", False),
-            create_alias=getattr(args, "alias", False),
-        )
+            install_plan(plan, force=getattr(args, "force", False), create_alias=getattr(args, "alias", False))
         print(f"\n✓ Installed '{plan.manifest.name}' v{plan.manifest.version}")
         print(f"  Profile path: {plan.target_dir}")
         if plan.manifest.env_requires:

@@ -184,49 +184,15 @@ class TestMinimaxM3OpenAIReasoningWireShape:
 
 
 class TestMinimaxOauthAliases:
-    """``minimax-oauth`` provider advertises every alias the docs promise.
+    """Every ``--provider`` alias the user guide (website/docs/guides/minimax-oauth.md)
+    promises for ``minimax-oauth`` must resolve through the plugin registry, not only the
+    CLI alias tables — ``get_provider_profile(agent.provider)`` is what selects the
+    anthropic_messages wire, extra_body and headers (#107928)."""
 
-    The user-facing guide at ``website/docs/guides/minimax-oauth.md`` lists
-    four ``--provider`` aliases for ``minimax-oauth``:
-
-        - ``minimax-oauth`` (canonical)
-        - ``minimax-portal``
-        - ``minimax-global``
-        - ``minimax_oauth`` (underscore form)
-
-    The provider profile must register each one so ``hermes --provider
-    minimax-portal`` (and the global variant) actually resolve instead of
-    failing with "unknown provider". Pinning the alias set in this test keeps
-    docs and code from drifting back out of sync.
-    """
-
-    DOCUMENTED_OAUTH_ALIASES = ("minimax-oauth", "minimax_oauth", "minimax-portal", "minimax-global")
-
-    def test_minimax_oauth_registers_every_documented_alias(self):
+    def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
         import model_tools  # noqa: F401
         import providers
 
-        profile = providers.get_provider_profile("minimax-oauth")
-        assert profile is not None
-
-        registered = (profile.name, *profile.aliases)
-        for alias in self.DOCUMENTED_OAUTH_ALIASES:
-            assert alias in registered, (
-                f"docs promise '{alias}' as a resolvable provider id for "
-                "minimax-oauth, but the profile only registers "
-                f"{registered!r} — run `hermes --provider {alias}` and it "
-                "fails with 'unknown provider'"
-            )
-
-    def test_each_documented_oauth_alias_resolves_back_to_minimax_oauth(self):
-        import model_tools  # noqa: F401
-        import providers
-
-        for alias in self.DOCUMENTED_OAUTH_ALIASES:
+        for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
             resolved = providers.get_provider_profile(alias)
-            assert resolved is not None, f"alias {alias!r} did not resolve"
-            assert resolved.name == "minimax-oauth", (
-                f"alias {alias!r} resolved to {resolved.name!r}, expected "
-                f"'minimax-oauth' (canonical). The alias registry is routing "
-                "to the wrong provider."
-            )
+            assert resolved is not None and resolved.name == "minimax-oauth", alias

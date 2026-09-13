@@ -751,3 +751,26 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestConfigRefusalGuidance:
+    """The protected-config refusal must point at a supported path (#109561)."""
+
+    def test_refusal_recommends_hermes_config_set_not_direct_edit(self, tmp_path):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        tok = set_hermes_home_override(str(tmp_path))
+        try:
+            err = _check_sensitive_path(str(tmp_path / "config.yaml"), "default")
+        finally:
+            reset_hermes_home_override(tok)
+        assert err is not None
+        assert "Refusing to write to Hermes config file" in err
+        # write_file/patch refuse the direct edit the same way, so recommending it sends
+        # the agent into an impossible retry loop; the supported path is the CLI.
+        assert "hermes config set" in err
+        assert "Edit ~/.hermes/config.yaml directly" not in err

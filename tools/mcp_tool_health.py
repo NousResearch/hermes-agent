@@ -132,6 +132,9 @@ class MCPServerHealthMixin:
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire
         notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
+        if self.session is None:  # not connected yet (or parked) — the reconnect path owns recovery now
+            logger.debug("MCP server '%s': skipping dynamic tool refresh — no session", self.name)
+            return
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:

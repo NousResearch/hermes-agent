@@ -38,6 +38,23 @@ class CommandCodeProfile(ProviderProfile):
             return None
 
 
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict, dict]:
+        """DeepSeek ids (``deepseek/deepseek-v4-flash``) get the native DeepSeek wire
+        controls: DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so
+        without them ``/reasoning`` never reaches the request (#95232). Other model
+        families stay a no-op — CommandCode declares no reasoning vocabulary for them."""
+        m = (model or "").strip()
+        if not m.lower().startswith("deepseek/") or len(m) <= len("deepseek/"):
+            return {}, {}
+        from plugins.model_providers.deepseek import deepseek as _deepseek_profile
+
+        return _deepseek_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config, model=m.split("/", 1)[1], **context,
+        )
+
+
 class CommandCodeAnthropicProfile(CommandCodeProfile):
     """CommandCode — Anthropic Messages API-compatible endpoint."""
 

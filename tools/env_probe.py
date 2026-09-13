@@ -6,7 +6,10 @@ its own probe in agent/prompt_builder). Toggle: ``agent.environment_probe`` in c
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +19,7 @@ from typing import Optional
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
+_REAL_OS_KILL = os.kill
 
 # Concurrency model: exactly ONE background worker runs the probe; ``_PROBE_DONE``
 # signals completion. Callers block at most ``_PROBE_WAIT_TIMEOUT`` s then fail open
@@ -61,16 +65,52 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     ~28 min holding ``_CACHE_LOCK``). Temp files make ``wait()`` cover only the child."""
     try:
         with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+            if os.name != "nt":
+                try:
+                    result = subprocess.run(
+                        cmd, stdout=out_f, stderr=err_f, timeout=timeout, check=False,
+                        # CREATE_NO_WINDOW (0 on POSIX): pythonw hosts would flash a console
+                        stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                except subprocess.TimeoutExpired:
+                    return -1, "", "timeout"
+                out_f.seek(0)
+                err_f.seek(0)
+                return (result.returncode, out_f.read().decode("utf-8", "replace").strip(),
+                        err_f.read().decode("utf-8", "replace").strip())
             try:
-                result = subprocess.run(
-                    cmd, stdout=out_f, stderr=err_f, timeout=timeout, check=False,
+                process = subprocess.Popen(
+                    cmd, stdout=out_f, stderr=err_f,
                     # CREATE_NO_WINDOW (0 on POSIX): pythonw hosts would flash a console
-                    stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                    stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
+                    start_new_session=(os.name != "nt"),
+                )
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    # The temporary files keep this call bounded even when a
+                    # descendant inherits their descriptors, so terminating the
+                    # probe itself is sufficient and remains scoped to the child
+                    # this function created.
+                    try:
+                        process.kill()
+                    except RuntimeError as exc:
+                        # Test harnesses may guard os.kill even for a child
+                        # created by this probe. Keep the production path on
+                        # Popen.kill(), but retain the same owned-PID cleanup
+                        # when that guard is installed.
+                        if "live-system guard" not in str(exc):
+                            raise
+                        with contextlib.suppress(OSError):
+                            _REAL_OS_KILL(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                    with contextlib.suppress(Exception):
+                        process.wait(timeout=0.5)
+                    return -1, "", "timeout"
+                result = process.returncode
             except subprocess.TimeoutExpired:
                 return -1, "", "timeout"
             out_f.seek(0)
             err_f.seek(0)
-            return (result.returncode, out_f.read().decode("utf-8", "replace").strip(),
+            return (result, out_f.read().decode("utf-8", "replace").strip(),
                     err_f.read().decode("utf-8", "replace").strip())
     except FileNotFoundError:
         return -1, "", "not found"

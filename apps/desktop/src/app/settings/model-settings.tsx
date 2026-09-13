@@ -18,6 +18,7 @@ import {
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
   ModelOptionProvider,
@@ -144,6 +145,30 @@ export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
       preset.reference_models.every(moaSlotComplete) &&
       moaSlotComplete(preset.aggregator)
   )
+
+// Persistent mismatch: any aux slot pinned to a provider different from the
+// current main, regardless of whether the user just switched. Catches the
+// "I pinned aux months ago and forgot, now it bills a dead provider" case.
+// A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box)
+// never bills a provider, so the backend's `local_endpoint` verdict exempts it.
+export function staleAuxAssignments(
+  tasks: readonly AuxiliaryTaskAssignment[],
+  mainProvider: string
+): StaleAuxAssignment[] {
+  const main = mainProvider.toLowerCase()
+
+  if (!main) {
+    return []
+  }
+
+  return tasks
+    .filter(entry => {
+      const p = (entry.provider ?? '').toLowerCase()
+
+      return p && p !== 'auto' && p !== main && !entry.local_endpoint
+    })
+    .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
+}
 
 interface StaleAuxWarningProps {
   applying: boolean
@@ -500,24 +525,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
   const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
 
-  // Persistent mismatch: any aux slot pinned to a provider different from the
-  // current main, regardless of whether the user just switched. Catches the
-  // "I pinned aux months ago and forgot, now it bills a dead provider" case.
-  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(() => {
-    const mainProvider = (mainModel?.provider ?? '').toLowerCase()
-
-    if (!mainProvider || !auxiliary) {
-      return []
-    }
-
-    return auxiliary.tasks
-      .filter(entry => {
-        const p = (entry.provider ?? '').toLowerCase()
-
-        return p && p !== 'auto' && p !== mainProvider
-      })
-      .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
-  }, [auxiliary, mainModel])
+  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
+    () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
+    [auxiliary, mainModel]
+  )
 
   // Capabilities of the APPLIED main model — gates the profile-default
   // reasoning/speed controls the same way the composer picker gates per-model
@@ -1069,6 +1080,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   description={
                     <span className="font-mono text-[0.68rem]">
                       {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                      {!isAuto && current.base_url && (
+                        <span className="text-muted-foreground"> · {current.base_url}</span>
+                      )}
                     </span>
                   }
                   title={

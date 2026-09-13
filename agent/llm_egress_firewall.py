@@ -2251,18 +2251,18 @@ class LLMEgressFirewall:
                     return ""
                 try:
                     raw_text = grant_and_content[1].decode("utf-8")
-                    expected_content = "\n".join(
-                        f"{line_number}|{line}"
-                        for line_number, line in enumerate(
-                            raw_text.split("\n"),
-                            start=grant_and_content[0].line_start,
+                    expected_contents = {
+                        "\n".join(
+                            f"{line_number}|{line}"
+                            for line_number, line in enumerate(lines, start=grant_and_content[0].line_start)
                         )
-                    )
+                        for lines in (raw_text.splitlines(), raw_text.split("\n"))
+                    }
                     parsed = json.loads(segment.text)
                 except (UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError):
                     reasons.append("invalid_source_presentation")
                     return ""
-                if not isinstance(parsed, dict) or parsed.get("content") != expected_content:
+                if not isinstance(parsed, dict) or parsed.get("content") not in expected_contents:
                     reasons.append("invalid_source_presentation")
                     return ""
                 referenced_grants.add(segment.source_grant_digest)

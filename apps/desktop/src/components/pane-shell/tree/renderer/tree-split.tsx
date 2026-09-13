@@ -24,6 +24,7 @@ import {
   $hiddenTreePanes,
   $narrowViewport,
   isCollapsePane,
+  paneRootSide,
   persistTree,
   presetSplitWeights,
   setTreeGroupMinimized,
@@ -42,7 +43,6 @@ import {
   paneChrome,
   type PaneSizing,
   resolveCssPx,
-  rootChildSide,
   shownPaneIds,
   subtreeGone,
   type TrackContext
@@ -87,7 +87,21 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
-export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
+export function TreeSplit({
+  node,
+  root,
+  rootRow,
+  topEdge = false,
+  leftEdge = false,
+  rightEdge = false
+}: {
+  node: SplitNode
+  root?: boolean
+  rootRow?: boolean
+  topEdge?: boolean
+  leftEdge?: boolean
+  rightEdge?: boolean
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -596,10 +610,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // leftover; capped sidebars (review/files) keep their max and stay put.
   const isMinimized = (child: LayoutNode) => child.type === 'group' && Boolean(child.minimized)
 
-  // SEMANTIC side collapse (titlebar toggles / ⌘B / ⌘J): at the ROOT row,
-  // ⌘B owns the sessions column and ⌘J the other side columns — by pane
-  // placement, NOT position, so a ⌘\ flip moves the columns without
-  // rewiring the toggles (main parity). In edit mode sides stay visible.
+  // Side toggles own physical sides of the root row, including after a flip.
+  // In edit mode sides stay visible.
   // `rootRow` covers both a row root (Default, Focus) and a row nested inside
   // a column root (Terminal deck, Quad) — wherever the side columns live.
   const semanticSides = rootRow && horizontal && collapsedSides.size > 0 && !editMode
@@ -609,7 +621,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       return false
     }
 
-    const side = rootChildSide(node.children[i], paneFor)
+    const side = paneRootSide(allPaneIds(node.children[i])[0])
 
     return side !== null && collapsedSides.has(side)
   }
@@ -690,7 +702,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
+                  ? { flex: `0 0 ${horizontal ? MINIMIZED_TRACK : 'auto'}` }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields
@@ -720,10 +732,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
             )}
             {!narrowCollapsed && (
               <TreeNode
+                leftEdge={leftEdge && (!horizontal || i === visibleOrder[0])}
                 node={child}
                 parentAxis={axis}
                 railSide={horizontal ? railSideFor(i) : undefined}
+                rightEdge={rightEdge && (!horizontal || i === visibleOrder[visibleOrder.length - 1])}
                 rootRow={rootRow || childRootRow(child)}
+                topEdge={topEdge && (horizontal || i === visibleOrder[0])}
               />
             )}
           </div>

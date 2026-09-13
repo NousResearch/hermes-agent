@@ -124,14 +124,15 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
 
 
-def test_secondary_port_binder_is_blocked_before_migration(fleet):
-    """Every enabled secondary port binder is blocked until runtime consumes its prefixed config."""
+def test_secondary_port_binder_uses_shared_listener_when_supported(fleet):
+    """A supported secondary port binder gets a prefixed shared-listener notice."""
     (fleet.root / "profiles/ops/.env").write_text(
         "DISCORD_BOT_TOKEN=ops-discord-333333\nAPI_SERVER_KEY=ops-api-key-abcdef\n", encoding="utf-8")
     (fleet.root / "profiles/ops/config.yaml").write_text(
         "platforms:\n  api_server:\n    enabled: true\n    extra:\n      port: 9999\n", encoding="utf-8")
     plan = gm.build_migration_plan()
-    assert plan.blocked and "api_server" in plan.blockers[0] and "/p/ops/" in plan.blockers[0]
+    assert not plan.blocked
+    assert any("api_server" in notice and "/p/ops/" in notice for notice in plan.notices)
 
 
 def test_serves_profile_prefix_is_read_from_adapter_classes():

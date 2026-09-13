@@ -1457,7 +1457,7 @@ def _segment_read_file_presentation(
         expected = "\n".join(
             f"{line_number}|{line}"
             for line_number, line in enumerate(
-                raw_text.split("\n"), start=grant.line_start
+                raw_text.splitlines(), start=grant.line_start
             )
         )
         if parsed["content"] == expected:
@@ -1482,7 +1482,7 @@ def _segment_read_file_presentation(
                 expected = "\n".join(
                     f"{line_number}|{line}"
                     for line_number, line in enumerate(
-                        raw_text.split("\n"), start=rebound.line_start
+                        raw_text.splitlines(), start=rebound.line_start
                     )
                 )
                 if parsed["content"] == expected:

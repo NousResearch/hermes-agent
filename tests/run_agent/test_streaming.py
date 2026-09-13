@@ -260,6 +260,46 @@ class TestStreamingAccumulator:
         assert call_kwargs["stream"] is True
         assert "stream_options" not in call_kwargs
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_endpoint_rejecting_stream_options_is_retried_without_it(self, mock_close, mock_create, monkeypatch):
+        """Strict OpenAI-compatible endpoints (Azure AI Foundry MaaS) 422 on
+        ``stream_options.include_usage``; the call is retried once without the field and
+        the session remembers the rejection (#9705). The compatibility retry must not spend
+        the transient-retry budget: with HERMES_STREAM_RETRIES=0 it still happens."""
+        from openai import APIStatusError
+        from run_agent import AIAgent
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        body = {"detail": [{"type": "extra_forbidden", "loc": ["body", "stream_options", "include_usage"],
+                            "msg": "Extra inputs are not permitted"}]}
+        rejection = APIStatusError("Unprocessable Entity", response=MagicMock(status_code=422), body=body)
+        rejection.status_code = 422
+        calls = []
+
+        def _create(**kwargs):
+            calls.append(kwargs)
+            if "stream_options" in kwargs:
+                raise rejection
+            return iter([_make_stream_chunk(content="ok", finish_reason="stop", model="mistral-small")])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _create
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(api_key="k", base_url="https://hub.services.ai.azure.com/openai/v1",
+                        model="mistral-small-2503", provider="custom", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True)
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        assert [("stream_options" in c) for c in calls] == [True, False]
+        assert agent._stream_options_unsupported is True
+        assert agent._disable_streaming is False  # streaming itself still works there
+
 
 
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -1140,6 +1180,7 @@ class TestAnthropicStreamCallbacks:
         That must be normalized to EmptyStreamError and retried as
         transient — not surface as a raw AssertionError."""
         from agent.errors import EmptyStreamError
+        from agent.source_provenance import DEFAULT_POLICY_DIGEST
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1153,6 +1194,12 @@ class TestAnthropicStreamCallbacks:
         )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
+        # This is a protected remote route, so exercise the real egress path
+        # with the same identity and bounded user payload a live turn carries.
+        agent.session_id = "stream-session"
+        agent._current_turn_id = "stream-turn"
+        agent._current_api_request_id = "stream-turn:api:1"
+        agent._llm_egress_policy_digest = DEFAULT_POLICY_DIGEST
 
         empty_stream = MagicMock()
         empty_stream.__enter__ = MagicMock(return_value=empty_stream)
@@ -1165,7 +1212,9 @@ class TestAnthropicStreamCallbacks:
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
 
         with pytest.raises(EmptyStreamError):
-            agent._interruptible_streaming_api_call({})
+            agent._interruptible_streaming_api_call(
+                {"messages": [{"role": "user", "content": "hello"}]}
+            )
 
         assert agent._anthropic_client.messages.stream.call_count == 3
         assert mock_replace.call_count == 0

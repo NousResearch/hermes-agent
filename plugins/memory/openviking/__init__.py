@@ -36,6 +36,7 @@ from urllib.request import url2pathname
 
 from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_cli import __version__ as _HERMES_VERSION
 from tools.registry import tool_error
@@ -197,23 +198,23 @@ def _preview(value: Any, limit: int = 160) -> str:
 
 # atexit safety net: commit pending sessions even if shutdown_memory_provider
 # never runs (gateway crash, exception in the session expiry watcher, ...).
-_last_active_provider: Optional["OpenVikingMemoryProvider"] = None
+# One entry per Hermes home: a multiplexed gateway initializes a provider per profile and every
+# one of them holds pending sessions worth committing, not just the last to initialize.
+_active_providers_by_home: Dict[str, "OpenVikingMemoryProvider"] = {}
 
 
 def _atexit_commit_sessions():
-    global _last_active_provider
-    provider = _last_active_provider
-    if provider is None:
-        return
-    _last_active_provider = None
-    try:
-        with suppress(Exception):  # best-effort at shutdown time
-            provider.on_session_end([])
-    finally:
-        # ``finally`` (as on main): the run lock is released even when on_session_end
-        # dies of a BaseException (KeyboardInterrupt during atexit).
-        with suppress(Exception):
-            provider._release_run_lock()
+    providers = list(_active_providers_by_home.values())
+    _active_providers_by_home.clear()
+    for provider in providers:
+        try:
+            with suppress(Exception):  # best-effort at shutdown time
+                provider.on_session_end([])
+        finally:
+            # ``finally`` (as on main): the run lock is released even when on_session_end
+            # dies of a BaseException (KeyboardInterrupt during atexit).
+            with suppress(Exception):
+                provider._release_run_lock()
 
 
 atexit.register(_atexit_commit_sessions)
@@ -237,9 +238,11 @@ class _VikingClient:
         self._api_key = api_key
         # Account/user are local/trusted-mode tenant identity. API-key requests
         # omit these headers unless OpenViking explicitly asks for them (retry).
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
-        self._user = user or os.environ.get("OPENVIKING_USER", "default")
-        self._agent = agent if agent is not None else os.environ.get("OPENVIKING_AGENT", _DEFAULT_AGENT)
+        # Tenant identity is a profile .env value: scope-read so a multiplexed
+        # secondary never writes into the default profile's tenant.
+        self._account = account or get_secret("OPENVIKING_ACCOUNT", "") or "default"
+        self._user = user or get_secret("OPENVIKING_USER", "") or "default"
+        self._agent = agent if agent is not None else (get_secret("OPENVIKING_AGENT", "") or _DEFAULT_AGENT)
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -759,19 +762,21 @@ def _ovcli_values_for(provider_config: dict) -> dict:
 def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict:
     """Layering: env -> linked ovcli profile -> config.yaml -> built-in default.
     An env account/user (even empty) is authoritative; the secret api_key never
-    comes from config.yaml."""
+    comes from config.yaml. Every env read goes through the profile secret scope:
+    under multiplexing ``os.environ`` is the DEFAULT profile's .env, and a raw read
+    would spend its key and tenant on behalf of a secondary profile."""
     provider_config = dict(provider_config or {})
     ovcli_values = _ovcli_values_for(provider_config)
 
     def layered(key: str, default: str = "", *, env_authoritative: bool = False) -> str:
-        env = os.environ.get(f"OPENVIKING_{key.upper()}")
+        env = get_secret(f"OPENVIKING_{key.upper()}")
         if env is not None:
             env = env.strip()
             if env_authoritative:
                 return env
         return env or ovcli_values.get(key) or _clean_config_value(provider_config.get(key)) or default
 
-    api_key_env = os.environ.get("OPENVIKING_API_KEY")
+    api_key_env = get_secret("OPENVIKING_API_KEY")
     return {
         "endpoint": _normalize_openviking_url(layered("endpoint", _DEFAULT_ENDPOINT)),
         "api_key": api_key_env.strip() if api_key_env is not None else ovcli_values.get("api_key", ""),
@@ -1254,7 +1259,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Configured? (env endpoint, config.yaml endpoint, or a linked ovcli profile). No network."""
-        if os.environ.get("OPENVIKING_ENDPOINT"):
+        if get_secret("OPENVIKING_ENDPOINT", ""):
             return True
         provider_config = _load_hermes_openviking_config()
         if _clean_config_value(provider_config.get("endpoint")):
@@ -1431,8 +1436,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = self._settings_tuple()
             self._recover_pending_sessions()
 
-        global _last_active_provider  # atexit safety net
-        _last_active_provider = self
+        _active_providers_by_home[self._hermes_home] = self  # atexit safety net
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Active client, rebuilt if the resolved config changed.
@@ -2483,9 +2487,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in workers:
             if t.is_alive():
                 t.join(timeout=5.0)
-        global _last_active_provider  # clear so atexit doesn't double-commit
-        if _last_active_provider is self:
-            _last_active_provider = None
+        # Clear so atexit doesn't double-commit.
+        if _active_providers_by_home.get(self._hermes_home) is self:
+            del _active_providers_by_home[self._hermes_home]
         self._release_run_lock()
 
     @staticmethod

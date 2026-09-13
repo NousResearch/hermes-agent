@@ -139,7 +139,17 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return None
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if reasoning_config.get("enabled") is False or effort == "none":
-        return {"includeThoughts": False}
+        # ``includeThoughts: False`` only omits thought parts from the returned
+        # response; the model may still reason internally and bill thought
+        # tokens against maxOutputTokens, starving small budgets (title
+        # generation's 64 tokens). Set thinkingBudget to 0 to actually disable
+        # thinking on families that document it: Gemini 2.5 and 3+ (plus the
+        # ``gemini-flash-latest`` alias); future majors are added only when the
+        # API documents thinkingBudget for them. (#91927)
+        config: dict[str, Any] = {"includeThoughts": False}
+        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
+            config["thinkingBudget"] = 0
+        return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
     # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
     if normalized_model.startswith("gemini-2.5-"):

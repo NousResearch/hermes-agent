@@ -363,12 +363,18 @@ def _check_secondary_port_binders(plan: MigrationPlan, configs: dict[str, object
         for platform, platform_config in cfg.platforms.items():
             if not platform_config.enabled or not platform_binds_port(platform.value, platform_config.extra):
                 continue
-            plan.blockers.append(
-                f"Profile '{profile.name}' enables {platform.value}, which still binds its own port; "
-                f"the multiplexer would skip the whole profile even though its adapter may declare a "
-                f"/p/{profile.name}/ ingress. Disable it there (platforms.{platform.value}.enabled: false) "
-                f"or keep '{profile.name}' on a standalone gateway (hermes -p {profile.name} gateway start --force)."
-            )
+            if platform_serves_profile_prefix(platform.value):
+                plan.notices.append(
+                    f"Profile '{profile.name}' enables {platform.value}; use the shared listener at "
+                    f"{_listener_url(default_cfg, platform.value, profile.name)}."
+                )
+            else:
+                plan.blockers.append(
+                    f"Profile '{profile.name}' enables {platform.value}, which still binds its own port; "
+                    f"the multiplexer has no /p/{profile.name}/ ingress for this adapter. Disable it there "
+                    f"(platforms.{platform.value}.enabled: false) or keep '{profile.name}' on a standalone "
+                    f"gateway (hermes -p {profile.name} gateway start --force)."
+                )
 
 
 _PREFLIGHT_CHECKS: tuple[Callable[[MigrationPlan, dict[str, object]], None], ...] = (

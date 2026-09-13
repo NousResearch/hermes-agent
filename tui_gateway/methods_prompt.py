@@ -465,7 +465,7 @@ def _persist_session_row_for_submit(rid, session):
     return None
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -495,7 +495,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
 _TRUNCATION_PARAMS = (
@@ -562,6 +562,13 @@ def _admit_prompt_submit(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids,
     hosted_task, internal_hosted_submit, transport, *, reattach=False, client_surface=""):
     """Serialize admission, validation, materialization, and turn claim per session."""
+    raw_turn_author = params.get("_turn_author")
+    turn_author = None
+    if raw_turn_author is not None:
+        from tools.bot_relay import DeliveryAuthor
+        if not isinstance(raw_turn_author, DeliveryAuthor):
+            return _err(rid, 4124, "turn author may only be supplied by the in-process relay"), None
+        turn_author = dict(raw_turn_author.author)
     with _session_prompt_submit_lock(session):
         if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
             reason = getattr(limit_message, "reason", None)
@@ -581,7 +588,11 @@ def _admit_prompt_submit(
                     return _err(rid, 4091, "hosted room member session is busy"), None
                 busy_transport = transport or session.get("transport")
             busy_response = _handle_busy_submit(
-                rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
+                rid, sid, session, text, busy_transport, queued=bool(params.get("queued")),
+                turn_author=turn_author,
+                client_surface="voice-live" if params.get("surface") == "voice-live" else "",
+                voice_live_context=(str(params.get("voice_context") or "")
+                                    if params.get("surface") == "voice-live" else ""))
             if busy_response is not None:
                 return busy_response, None
         if has_truncation:
@@ -597,6 +608,12 @@ def _admit_prompt_submit(
         # Record the surface only after this request owns the turn. A rejected busy
         # request must not overwrite the surface used by the in-flight turn.
         session["client_surface"] = client_surface
+        session["voice_live_context"] = (
+            str(params.get("voice_context") or "") if client_surface == "voice-live" else ""
+        )
+        session["_surface_from_busy_queue"] = False
+        if turn_author is not None:
+            session["_accepted_turn_author"] = turn_author
         return None, survivor_fields
 
 
@@ -644,9 +661,14 @@ def _(rid, params: dict) -> dict:
     err, survivor_fields = _admit_prompt_submit(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids,
         hosted_task, internal_hosted_submit, t, reattach=True,
-        client_surface="hud" if params.get("surface") == "hud" else "")
+        client_surface=(
+            params.get("surface")
+            if params.get("surface") in {"hud", "voice-live"}
+            else ""
+        ))
     if err is not None:
         return err
+    turn_author = session.pop("_accepted_turn_author", None)
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
@@ -670,7 +692,7 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
+            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

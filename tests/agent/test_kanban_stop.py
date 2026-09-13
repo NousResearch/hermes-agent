@@ -197,7 +197,7 @@ def test_exhausted_nudges_handoff_useful_output_to_review(
     )
     calls = []
 
-    def fake_request_review(args):
+    def fake_request_review(args, **_kwargs):
         calls.append(args)
         return '{"ok": true, "status": "review"}'
 

@@ -29,7 +29,10 @@ def _load_fal_client() -> Any:
 
 
 from tools.debug_helpers import DebugSession
-from tools.fal_common import _ManagedFalSyncClient, _extract_http_status, _normalize_fal_queue_url_format
+from tools.fal_common import (
+    _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
+    _normalize_fal_queue_url_format,
+)
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
     UPSCALER_FACTOR, UPSCALER_GUIDANCE_SCALE, UPSCALER_MODEL, UPSCALER_NEGATIVE_PROMPT,
@@ -131,6 +134,10 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
         # (allowlist miss, billing gate): give remediation instead of a raw httpx error.
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            billing = _managed_fal_billing_error(exc, "model")
+            if billing is not None:
+                raise ValueError(
+                    f"Nous Subscription gateway rejected model '{model}' (HTTP {status}): {billing}") from exc
             gateway_message = ""
             if status in {401, 402, 403}:
                 gateway_message = "\n\n" + nous_tool_gateway_unavailable_message(
@@ -312,7 +319,8 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
             return f"{str(remote_home).rstrip('/')}/.hermes"
         if env.__class__.__name__ in _CONTAINER_HOME_ENVS:
             return "/root/.hermes"
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    from tools.terminal_scope import terminal_env
+    backend = (terminal_env("TERMINAL_ENV") or "local").strip().lower()
     return _CACHE_BASE_BY_BACKEND.get(backend)
 
 
@@ -706,7 +714,8 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
     through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    if (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
+    from tools.terminal_scope import terminal_env
+    if (terminal_env("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
         return image_url, reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url

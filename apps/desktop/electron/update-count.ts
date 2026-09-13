@@ -90,3 +90,4 @@ function parseCompareBehindCount(payload) {
 }
 
 export { compareApiUrl, parseCompareBehindCount, resolveBehindCount, resolveCommitLogSelection, shouldCountCommits }
+

@@ -28,12 +28,13 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home, named_profile_home
+from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace, atomic_write_text
+from utils import atomic_replace, atomic_write_text, is_truthy_value
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
@@ -164,7 +165,7 @@ _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 def _oneshot_run_claim_ttl_seconds() -> float:
     """One-shot running-claim TTL from ``HERMES_CRON_TIMEOUT``: unset/invalid → 600s → 1800s;
     ``0`` (unlimited) → the fixed floor; positive N → ``max(N * headroom, floor)``."""
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
     try:
         timeout = float(raw) if raw else _DEFAULT_CRON_INACTIVITY_TIMEOUT
     except (ValueError, TypeError):
@@ -523,16 +524,15 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op where chmod is unsupported (Windows)."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        os.chmod(path, 0o700)
+    """Owner-only (0700) via the shared helper, including managed/container policy."""
+    from hermes_cli.config import _secure_dir as _shared_secure_dir
+    _shared_secure_dir(path)
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op where chmod is unsupported (Windows)."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        if path.exists():
-            os.chmod(path, 0o600)
+    """Owner-only (0600) via the shared helper, including managed/container policy."""
+    from hermes_cli.config import _secure_file as _shared_secure_file
+    _shared_secure_file(path)
 
 
 def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
@@ -1905,6 +1905,32 @@ def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None
             updates["repeat"] = {"times": normalize_repeat_value(_rp), "completed": completed}
 
 
+def _rederive_repeat_for_schedule_change(
+    job: Dict[str, Any], updates: Dict[str, Any]
+) -> None:
+    """Keep the default repeat limit aligned when an update changes schedule kind."""
+    if "schedule" not in updates or "repeat" in updates:
+        return
+    new_schedule = updates["schedule"]
+    if isinstance(new_schedule, str):
+        new_schedule = parse_schedule(new_schedule)
+        updates["schedule"] = new_schedule
+    old_kind = (job.get("schedule") or {}).get("kind")
+    new_kind = new_schedule.get("kind")
+    if old_kind == new_kind:
+        return
+    repeat = dict(job.get("repeat") or {})
+    times = repeat.get("times")
+    if new_kind == "once" and times is None:
+        repeat["times"] = 1
+    elif new_kind != "once" and old_kind == "once" and times == 1:
+        repeat["times"] = None
+    else:
+        return
+    repeat.setdefault("completed", 0)
+    updates["repeat"] = repeat
+
+
 def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
@@ -1944,8 +1970,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)
+        previous_schedule_kind = (job.get("schedule") or {}).get("kind")
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
@@ -1963,6 +1991,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
+            # A schedule-kind transition changes the repeat contract just as it
+            # does at creation time. Preserve the completed counter, but derive
+            # the default limit unless the caller explicitly supplied repeat.
+            new_schedule_kind = (updated.get("schedule") or {}).get("kind")
+            if "repeat" not in updates and new_schedule_kind != previous_schedule_kind:
+                repeat = dict(updated.get("repeat") or {})
+                repeat["times"] = 1 if new_schedule_kind == "once" else None
+                repeat.setdefault("completed", 0)
+                updated["repeat"] = repeat
+        if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
+            updated.pop("pending_slot", None)
         if inference_fields_changed:
             snapshots = _compute_provider_model_snapshots(
                 provider=updated.get("provider"),
@@ -1977,6 +2016,47 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         return _normalize_job_record(updated)
 
     return _with_job(job_id, apply)
+
+
+def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Refresh provider/model snapshots for one job's unpinned inference axes."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
+    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+        provider=job.get("provider"), model=job.get("model"),
+        base_url=job.get("base_url"), no_agent=job.get("no_agent"),
+    )
+    jobs = load_jobs()
+    for i, stored in enumerate(jobs):
+        if stored["id"] != job["id"]:
+            continue
+        jobs[i]["provider_snapshot"] = provider_snapshot
+        jobs[i]["model_snapshot"] = model_snapshot
+        save_jobs(jobs)
+        return _normalize_job_record(jobs[i])
+    return None
+
+
+def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
+    """Refresh snapshots for every job with at least one unpinned inference axis."""
+    updated: List[Dict[str, Any]] = []
+    jobs = load_jobs()
+    changed = False
+    for job in jobs:
+        if bool(job.get("no_agent")) or (job.get("provider") and job.get("model")):
+            continue
+        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+            provider=job.get("provider"), model=job.get("model"),
+            base_url=job.get("base_url"), no_agent=job.get("no_agent"),
+        )
+        job["provider_snapshot"] = provider_snapshot
+        job["model_snapshot"] = model_snapshot
+        changed = True
+        updated.append(_normalize_job_record(job))
+    if changed:
+        save_jobs(jobs)
+    return updated
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -2044,6 +2124,28 @@ def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
         return False
     claimed_at = _parse_aware(claim["at"])
     return claimed_at is not None and 0 <= (now - claimed_at).total_seconds() < ttl_seconds
+
+
+def _fire_claim_owner_is_dead(claim: Any) -> bool:
+    """Return true only for a same-host claim whose recorded PID is gone."""
+    if not isinstance(claim, dict):
+        return False
+    owner = str(claim.get("by") or "")
+    host, separator, rest = owner.partition(":")
+    if not separator or not rest:
+        return False
+    import socket
+    if host != socket.gethostname():
+        return False
+    pid_text = rest.split(":", 1)[0]
+    if not pid_text.isdigit() or int(pid_text) <= 0:
+        return False
+    try:
+        from gateway.status import _pid_exists
+
+        return not _pid_exists(int(pid_text))
+    except (ImportError, ValueError, TypeError):
+        return False
 
 
 _REARM_RECURRING_ERROR = (
@@ -2229,6 +2331,9 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"
+        if job.pop("_model_unreachable", False):
+            from cron.unreachable_retry import plan_retry
+            plan_retry(job)
     elif kind in {"cron", "interval"}:
         # Recurring: transient failure (e.g. croniter missing) — disabling it would turn a missing
         # dep into "job completed" and silently drop the schedule.
@@ -2253,6 +2358,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    model_unreachable: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2272,7 +2378,13 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        if model_unreachable and not success:
+            job["_model_unreachable"] = True
+        elif not model_unreachable:
+            from cron.unreachable_retry import clear_state
+            clear_state(job)
         _advance_after_run(job, now)
+        job.pop("_model_unreachable", None)
         save_jobs(jobs)
         return True
 
@@ -2470,6 +2582,8 @@ def advance_next_runs(job_ids) -> int:
                 continue
             new_next = compute_next_run(job["schedule"], now)
             if new_next and new_next != job.get("next_run_at"):
+                from cron.occurrences import pending_slot_stamp
+                job["pending_slot"] = pending_slot_stamp(job["next_run_at"], _hermes_now())
                 job["next_run_at"] = new_next
                 advanced += 1
         if advanced:
@@ -2520,7 +2634,8 @@ def claim_job_for_fire(
         if not force and not is_job_runnable(job):
             return False
         now = _hermes_now()
-        if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
+        if (_claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds)
+                and not _fire_claim_owner_is_dead(job.get("fire_claim"))):
             return False  # someone holds a fresh claim
         from cron.occurrences import completed_occurrence, scheduled_instant
 
@@ -2538,6 +2653,7 @@ def claim_job_for_fire(
             return False
         if force:
             _activate_job_record(job)
+        job.pop("pending_slot", None)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
@@ -2557,7 +2673,9 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    # Heartbeats refresh the claim already held by this execution. They must not
+    # take the per-job fire fence while the scheduler thread is still inside it.
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by
@@ -2579,6 +2697,11 @@ def _cron_config_number(key: str, default: Any, cast: Callable[[Any], Any]) -> A
 def _completed_oneshot_retention_days() -> float:
     """``cron.completed_retention_days``; non-positive disables the sweep (records kept forever)."""
     return _cron_config_number("completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS, float)
+
+
+def _catch_up_missed() -> bool:
+    """Whether overdue recurring jobs should be dispatched after fast-forwarding."""
+    return bool(_cron_config_number("catch_up_missed", True, lambda value: is_truthy_value(value, default=True)))
 
 
 def _sweep_completed_oneshots(
@@ -2843,7 +2966,7 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     return False
 
 
-def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
+def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     """Recurring job past its grace window: skip the accumulated misses, fire once now.
 
     The fast-forward is persisted immediately — NOT redundant with advance_next_run/mark_job_run:
@@ -2852,16 +2975,17 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
     calls advance_next_run. mark_job_run re-anchors on completion, so the value is provisional.
     """
     if (d.scan.now - d.next_run_dt).total_seconds() <= grace:
-        return
+        return False
     new_next = d.recompute_next()
     if not new_next:
-        return
+        return False
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
     d.scan.persist(d.job["id"], next_run_at=new_next)
     record_catch_up_occurrence()
+    return True
 
 
 def _retire_expired_oneshot(d: _DueJob) -> bool:
@@ -2967,7 +3091,10 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         return False
     grace = _compute_grace_seconds(d.schedule)
     if not manual_run and recurring:
-        _fast_forward_missed_recurring(d, grace)
+        was_missed = (now - d.next_run_dt).total_seconds() > grace
+        fast_forwarded = _fast_forward_missed_recurring(d, grace)
+        if was_missed and not _catch_up_missed() and fast_forwarded:
+            return False
     if kind == "once":
         if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
             return False
@@ -3020,6 +3147,13 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 continue
             if not job.get("enabled", True):
                 continue
+            from cron.occurrences import unclaimed_pending_slot
+            if pending := unclaimed_pending_slot(job, scan.now):
+                # The prior tick advanced the schedule but died before the
+                # fire claim. Restore that exact occurrence for one dispatch;
+                # claim_job_for_fire clears the durable marker once owned.
+                job["next_run_at"] = pending
+                scan.persist(job["id"], next_run_at=pending)
             if _has_pause_marker(job):
                 _self_disable_half_paused(job, scan)
                 continue

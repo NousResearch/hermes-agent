@@ -6,14 +6,20 @@
  * already polls that route, so main records the field from the status response
  * it forwards rather than fetching the route a second time for routing.
  *
- * Process-local and never persisted: a restart of the primary backend clears
- * the record until the next status poll, which errs toward giving the profile
- * its own backend instead of assuming a shared home.
+ * The record describes one backend instance, so anything that makes that
+ * instance unreadable drops it: a restart or replacement of the primary, and a
+ * failed status poll. Routing then treats the profiles as unserved until a fresh
+ * report arrives, which gives the profile its own backend instead of assuming a
+ * shared home.
  */
 let sharedProfiles: null | string[] = null
 
 export function recordGatewaySharedProfiles(value: unknown): void {
   sharedProfiles = Array.isArray(value) ? value.filter(entry => typeof entry === 'string') : null
+}
+
+export function invalidateGatewaySharedProfiles(): void {
+  sharedProfiles = null
 }
 
 export function gatewaySharedProfiles(): null | string[] {

@@ -478,6 +478,34 @@ const ROUTES = [
     profile: 'default',
     opts: { primaryProfile: 'work', gatewaySharedProfiles: null },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a served profile REST path the primary cannot scope stays pooled',
+    profile: 'default',
+    opts: {
+      primaryProfile: 'work',
+      gatewaySharedProfiles: ['default'],
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a served profile REST path the primary can scope keeps the scoped reuse',
+    profile: 'default',
+    opts: {
+      primaryProfile: 'work',
+      gatewaySharedProfiles: ['default'],
+      requestMethod: 'GET',
+      requestPath: '/api/sessions'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'default', scopePath: true }
+  },
+  {
+    name: 'a reported name is normalized the same way as the routed profile',
+    profile: 'default',
+    opts: { primaryProfile: 'work', gatewaySharedProfiles: [' default '] },
+    expected: { backend: 'primary', descriptorProfile: 'default', scopePath: true }
   }
 ]
 

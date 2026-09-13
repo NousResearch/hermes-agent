@@ -207,7 +207,7 @@ import {
   resolveGatewayFileBackend,
   writeBufferToFile
 } from './gateway-file-download'
-import { gatewaySharedProfiles, recordGatewaySharedProfiles } from './gateway-shared-profiles'
+import { gatewaySharedProfiles, invalidateGatewaySharedProfiles, recordGatewaySharedProfiles } from './gateway-shared-profiles'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
@@ -11266,6 +11266,8 @@ function resetHermesConnection({ soft = false } = {}) {
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
   const hermesProcess = backendConnectionState.invalidate()
+  // The shared-profile record describes the backend instance being replaced.
+  invalidateGatewaySharedProfiles()
   stopBackendChild(hermesProcess)
 
   if (!soft) {
@@ -11867,6 +11869,7 @@ async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
 
   managedPrimaryRestoreOwners.set(source.id, { correlationId, profile: profileKey, source })
   backendConnectionState.invalidate()
+  invalidateGatewaySharedProfiles()
 
   try {
     return await startHermes()
@@ -12146,6 +12149,7 @@ async function drainManagedSshScope(scope) {
 
       if (scope.primary) {
         backendConnectionState.invalidate()
+        invalidateGatewaySharedProfiles()
       } else if (backendPool.get(scope.key) === scope.entry) {
         backendPool.delete(scope.key)
       }
@@ -16695,6 +16699,11 @@ async function handleHermesApiRequest(request) {
   // primary until the PATCH settles, so the request routes there.
   const apiRoute = resolveProfileApiRequest(profile, request.path, profileRouteOptions(profile, request))
 
+  // The renderer's own status poll is the cheapest source for which profiles the
+  // primary gateway serves; route decisions read what it last reported.
+  const primaryStatusPoll = apiRoute.backendProfile === null
+    && String(apiRoute.requestPath || '').split('?')[0] === '/api/status'
+
   const routeProfile = profileRename
     ? profileRename.routeProfile
     : resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)
@@ -16712,13 +16721,16 @@ async function handleHermesApiRequest(request) {
       timeoutMs
     })
 
-    // The renderer's own status poll is the cheapest source for which profiles
-    // the primary gateway serves; record it here so route decisions can use it
-    // without a second fetch on their path.
-    if (apiRoute.backendProfile === null && String(apiRoute.requestPath || '').split('?')[0] === '/api/status') {
+    if (primaryStatusPoll) {
       recordGatewaySharedProfiles(response?.gateway_shared_with)
     }
   } catch (error) {
+    // An unreadable status leaves the last report unverified. The record describes
+    // one backend instance, so a failed poll of it drops the record.
+    if (primaryStatusPoll) {
+      invalidateGatewaySharedProfiles()
+    }
+
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.
     if (profileRename) {

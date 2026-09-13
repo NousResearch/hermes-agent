@@ -696,9 +696,10 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  *     A stored local profile remains isolated in its own backend.
  *  5. A local profile REST request that the primary backend can safely scope
  *     reuses that backend, with `?profile=` when the handler accepts it.
- *  6. A profile the primary gateway reports serving (`gateway_shared_with`)
- *     reuses that gateway with `?profile=`: its own pooled backend would open
- *     the same `state.db` from a second process.
+ *  6. An attach for a profile the primary gateway reports serving
+ *     (`gateway_shared_with`) reuses that gateway: its own pooled backend would
+ *     open the same `state.db` from a second process. REST paths keep the
+ *     decision from the cases above.
  *  7. Any other local profile gets its own pooled backend, spawned with
  *     `--profile`, so its `HERMES_HOME` scopes it.
  *
@@ -756,11 +757,11 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
     }
   }
 
-  // A profile the gateway already serves from the shared home needs no backend
-  // of its own: a pooled process would open that same state.db alongside the
-  // gateway. Gated on the gateway's own report, so a standalone gateway still
-  // gives the profile its own backend.
-  if ((opts.gatewaySharedProfiles || []).includes(scopedProfile)) {
+  // A profile the gateway already serves needs no backend of its own. Only the
+  // attach qualifies: membership in the gateway's report does not mean a REST
+  // handler scopes its side effects to ?profile= (POST /api/memory/reset does not).
+  const servedProfiles = new Set((opts.gatewaySharedProfiles || []).map(connectionScopeKey).filter(Boolean))
+  if (!opts.requestPath && servedProfiles.has(scopedProfile)) {
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
   }
 

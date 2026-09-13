@@ -12,14 +12,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 import tools.terminal_tool_sudo as terminal_tool
 
 
+@pytest.mark.linux_only
 def test_wraps_sudo_in_systemd_run_pipe_when_no_new_privs(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
 
     wrapped = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true", cwd="/tmp")
 
@@ -33,8 +36,10 @@ def test_wraps_sudo_in_systemd_run_pipe_when_no_new_privs(monkeypatch):
     assert shutil.which("systemd-run") is not None or wrapped.startswith("/usr/bin/systemd-run")
 
 
+@pytest.mark.linux_only
 def test_wrap_units_are_unique(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
     a = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true")
     b = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true")
     assert terminal_tool._nnp_sudo_unit_from_command(a) != terminal_tool._nnp_sudo_unit_from_command(b)
@@ -116,8 +121,10 @@ def test_trusted_helper_stat_accepts_root_owned_0755():
     assert terminal_tool._is_trusted_helper_stat(_St()) is True
 
 
+@pytest.mark.linux_only
 def test_wrap_passes_environment_file(monkeypatch, tmp_path):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: "/usr/bin/systemd-run")
     env_file = tmp_path / "nnp.env"
     env_file.write_text("HERMES_NNP_PROBE=from-profile\n")
     wrapped = terminal_tool._wrap_local_command_for_no_new_privs(
@@ -129,9 +136,70 @@ def test_wrap_passes_environment_file(monkeypatch, tmp_path):
 def test_write_nnp_env_file_is_owner_only(tmp_path):
     path = terminal_tool._write_nnp_env_file({"HERMES_NNP_PROBE": "xyz", "EMPTY": ""}, str(tmp_path))
     text = open(path, encoding="utf-8").read()
-    assert "HERMES_NNP_PROBE=xyz" in text
-    assert "EMPTY=" not in text
-    assert (os.stat(path).st_mode & 0o077) == 0
+    assert 'HERMES_NNP_PROBE="xyz"' in text
+    if sys.platform != "win32":
+        assert (os.stat(path).st_mode & 0o077) == 0
+
+
+def test_write_nnp_env_file_keeps_empty_values(tmp_path):
+    """Empty keys must be written so a user-manager value cannot fill the omission."""
+    path = terminal_tool._write_nnp_env_file({"MANAGER_ONLY": ""}, str(tmp_path))
+    text = open(path, encoding="utf-8").read()
+    assert 'MANAGER_ONLY=""' in text
+
+
+def test_write_nnp_env_file_quotes_whitespace_and_escapes(tmp_path):
+    path = terminal_tool._write_nnp_env_file(
+        {
+            "SPACED": " leading and trailing ",
+            "QUOTED": 'say "hi"',
+            "SLASHED": r"C:\temp\nnp",
+        },
+        str(tmp_path),
+    )
+    text = open(path, encoding="utf-8").read()
+    assert 'SPACED=" leading and trailing "' in text
+    assert r'QUOTED="say \"hi\""' in text
+    assert r'SLASHED="C:\\temp\\nnp"' in text
+
+
+def test_release_nnp_sudo_env_file_is_exactly_once(tmp_path):
+    path = tmp_path / "hermes-nnp-env-once.env"
+    path.write_text("A=1\n", encoding="utf-8")
+
+    class _Proc:
+        pass
+
+    proc = _Proc()
+    proc._nnp_sudo_env_file = str(path)
+    terminal_tool._release_nnp_sudo_env_file(proc)
+    assert not path.exists()
+    assert getattr(proc, "_nnp_sudo_env_file", None) is None
+    terminal_tool._release_nnp_sudo_env_file(proc)  # idempotent
+
+
+def test_wait_unlinks_nnp_env_file_after_natural_exit(monkeypatch, tmp_path):
+    from tools.environments.local import LocalEnvironment
+
+    path = tmp_path / "hermes-nnp-env-wait.env"
+    path.write_text("A=1\n", encoding="utf-8")
+
+    class _Proc:
+        def poll(self):
+            return 0
+
+    proc = _Proc()
+    proc._nnp_sudo_env_file = str(path)
+    monkeypatch.setattr(LocalEnvironment, "init_session", lambda self: None)
+    monkeypatch.setattr(
+        "tools.environments.base.BaseEnvironment._wait_for_process",
+        lambda self, p, *a, **k: {"returncode": 0},
+    )
+    env = LocalEnvironment(cwd=str(tmp_path))
+    result = env._wait_for_process(proc, timeout=1)
+    assert result["returncode"] == 0
+    assert not path.exists()
+    assert getattr(proc, "_nnp_sudo_env_file", None) is None
 
 
 def test_unit_for_kill_comes_from_proc_not_environment():

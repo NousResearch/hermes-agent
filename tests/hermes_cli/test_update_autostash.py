@@ -473,6 +473,10 @@ def test_cmd_update_local_commits_backed_up_before_reset(monkeypatch, tmp_path, 
     # Backs up current HEAD (not the pre-pull SHA), so the ref always points at
     # a resolvable commit.
     assert update_ref_calls[0][update_ref_calls[0].index("update-ref") + 2] == "HEAD"
+    # A SHA suffix disambiguates two updates inside the same second — without it
+    # the second ``update-ref`` silently overwrites the first, dropping the only
+    # recovery pointer to those commits while reporting success.
+    assert ref_name.endswith("-111111111111"), ref_name
 
     # The backup is written even though the subsequent reset --hard fails.
     reset_calls = [c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c]

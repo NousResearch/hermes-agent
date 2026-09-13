@@ -760,9 +760,16 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
     elif local_only != 0:
         # local_only > 0: there ARE local commits not on origin/<branch>; local_only < 0: the
         # count itself failed. Treat both as "back HEAD up" — the reset is unrecoverable.
+        # SHA suffix so two updates inside the same second get DISTINCT refs: ``update-ref``
+        # overwrites silently, and replacing the only recovery pointer to earlier local commits
+        # while reporting success is exactly the failure this backup exists to prevent.
+        # ``pre_pull_sha`` is the pre-reset HEAD; if it wasn't captured, re-read HEAD, and fall
+        # back to no suffix only when HEAD cannot be resolved at all.
+        backup_sha = pre_pull_sha or _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         backup_ref = (
             f"refs/hermes-update-backups/{branch}-"
-            f"{_time.strftime('%Y%m%d-%H%M%S')}")
+            f"{_time.strftime('%Y%m%d-%H%M%S')}"
+            + (f"-{backup_sha[:12]}" if backup_sha else ""))
         if _git_run(git_cmd, ["update-ref", backup_ref, "HEAD"]).returncode != 0:
             # Never claim a backup we do not have, and never run the destructive reset without one.
             print(f"✗ Could not create backup ref {backup_ref} for local commits; refusing to reset --hard.")

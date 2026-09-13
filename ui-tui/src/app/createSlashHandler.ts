@@ -1,6 +1,7 @@
-import { parseSlashCommand } from '../domain/slash.js'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
+
 import type { SlashExecResponse } from '../gatewayTypes.js'
-import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
@@ -97,7 +98,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     }
 
     const handleDispatch = (raw: unknown): void => {
-      const d = asCommandDispatch(raw)
+      const d = parseCommandDispatch(raw)
 
       if (!d) {
         return sys('error: invalid response: command.dispatch')
@@ -157,7 +158,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           return
         }
 
-        if (asCommandDispatch(r)) {
+        if (parseCommandDispatch(r)) {
           return handleDispatch(r)
         }
 

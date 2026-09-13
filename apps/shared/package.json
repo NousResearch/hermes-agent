@@ -5,10 +5,18 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./ansi": "./src/ansi.ts",
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
-    "./skin": "./src/skin.ts"
+    "./color": "./src/color.ts",
+    "./format": "./src/format.ts",
+    "./fuzzy": "./src/fuzzy.ts",
+    "./i18n": "./src/i18n.ts",
+    "./model-search-text": "./src/model-search-text.ts",
+    "./reasoning-effort": "./src/reasoning-effort.ts",
+    "./skin": "./src/skin.ts",
+    "./slash": "./src/slash.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

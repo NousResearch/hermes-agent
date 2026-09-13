@@ -1,3 +1,5 @@
+import { stripAnsi } from '@hermes/shared/ansi'
+
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
@@ -766,10 +768,6 @@ function toolImageUrl(args: Record<string, unknown>, result: Record<string, unkn
   const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
 
   return isDataImage || isRemoteImage ? candidate : ''
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
 }
 
 export function stripInlineDiffChrome(value: string): string {

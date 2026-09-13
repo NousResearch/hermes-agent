@@ -1,12 +1,12 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import { fuzzyRank } from '@hermes/shared/fuzzy'
+import { modelSearchText } from '@hermes/shared/model-search-text'
 import { useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
-import { fuzzyRank } from '../lib/fuzzy.js'
-import { modelSearchText } from '../lib/model-search-text.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 

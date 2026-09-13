@@ -1,4 +1,6 @@
-import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
+
+import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 /** Which model/provider pair a picker should mark "current". SessionView state
  *  also drives the composer label, so a complete pair there wins over an older

@@ -1,10 +1,10 @@
+import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -61,8 +61,8 @@ export function ModelPickerDialog({
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
-  // it and do a plain substring filter that preserves array order — matching
-  // the `hermes model` CLI picker, which shows the curated list verbatim.
+  // it: an empty query shows the curated list verbatim (like the `hermes
+  // model` CLI picker) and a query ranks with the shared fuzzyRank.
   const [search, setSearch] = useState('')
 
   const modelOptions = useQuery({
@@ -264,8 +264,16 @@ function ModelResults({
 
   const q = normalize(search)
 
-  const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || foldIncludes(modelSearchText(model), q) || foldIncludes(provider.name, q) || foldIncludes(provider.slug, q)
+  // Model rows rank with the same fuzzyRank + modelSearchText the web and TUI
+  // pickers use, so one query orders identically on every surface. A query
+  // that names the provider itself keeps its whole curated list, in order.
+  const rankModels = (provider: ModelOptionProvider, models: readonly string[]) => {
+    if (!q || foldIncludes(provider.name, q) || foldIncludes(provider.slug, q)) {
+      return [...models]
+    }
+
+    return fuzzyRank(models, q, modelSearchText).map(r => r.item)
+  }
 
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
@@ -288,8 +296,8 @@ function ModelResults({
   return (
     <>
       {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        // Empty query: the backend's curated order, verbatim.
+        const models = rankModels(provider, provider.models ?? [])
         const groupDownloads = provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
 
         if (models.length === 0 && groupDownloads.length === 0) {

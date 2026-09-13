@@ -1,6 +1,5 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
-
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 
 import type { ComposerAttachment } from './composer'
 

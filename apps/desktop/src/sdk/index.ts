@@ -1669,9 +1669,6 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
-/** THE compact-number formatter — every user-facing count/token figure goes
- *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
-export { compactNumber } from '@/lib/format'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
@@ -1703,17 +1700,11 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+/** Compact labels for the reasoning levels exported from @hermes/shared, so a
+ *  plugin surfacing a thinking depth uses the same spelling as the app. */
+export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 export const PANES_AREA = 'panes'
-/** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
- *  thinking depth uses the same scale and spelling as the rest of the app. */
-export {
-  DEFAULT_REASONING_EFFORT,
-  REASONING_EFFORT_VALUES,
-  REASONING_EFFORTS,
-  type ReasoningEffort,
-  reasoningEffortLabel
-} from '@/lib/reasoning-effort'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
@@ -1755,10 +1746,10 @@ export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } fr
  *  a setting, so a plugin that sets it must clear it on dispose. */
 export { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 /** OKLCH colour maths, for anything deriving a palette rather than hardcoding
- *  one: perceptual conversion, the sRGB gamut boundary, WCAG contrast, and
- *  hue-stable blending. */
+ *  one: perceptual conversion, the sRGB gamut boundary, and hue-stable
+ *  blending. `readableOn` is the SDK's public name for the desktop's ink pick
+ *  (`#161616` or `#ffffff`, whichever measures better on the background). */
 export {
-  contrastRatio,
   hexToOklch,
   hueDelta,
   maxChroma,
@@ -1767,7 +1758,7 @@ export {
   type Oklch,
   oklchToHex,
   oklchToSrgb255,
-  readableOn
+  readableInk as readableOn
 } from '@/themes/color'
 /** The painted theme, its name, and the appearance it resolved to — plus
  *  `setTheme` / `setMode` to change it from a component. */
@@ -1781,6 +1772,20 @@ export { retintTheme, themeHue } from '@/themes/retint'
 export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'
 export type { RpcEvent, StatusResponse } from '@/types/hermes'
+/** THE compact-number formatter — every user-facing count/token figure goes
+ *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
+export { compactNumber } from '@hermes/shared'
+/** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
+ *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
+export {
+  DEFAULT_REASONING_EFFORT,
+  REASONING_EFFORT_VALUES,
+  REASONING_EFFORTS,
+  type ReasoningEffort
+} from '@hermes/shared'
+/** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
+ *  an unparseable colour, never a fake 0). */
+export { contrastRatio } from '@hermes/shared/color'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at

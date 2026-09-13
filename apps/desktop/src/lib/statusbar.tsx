@@ -1,8 +1,8 @@
+import { compactNumber } from '@hermes/shared'
 import { useState } from 'react'
 
 import { StableText } from '@/components/chat/stable-text'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
-import { compactNumber } from '@/lib/format'
 import type { UsageStats } from '@/types/hermes'
 
 export function formatDuration(elapsedMs: number): string {

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.bot_desktop import runtime, thumbnail
+from tools.bot_desktop import browser, runtime, thumbnail
 
 
 @pytest.mark.parametrize("pm", sorted(runtime.PACKAGES))
@@ -144,3 +144,49 @@ def test_concurrent_starts_of_one_profile_spawn_one_launcher(tmp_path, start_in_
     out = _collect([start_in_fresh_process(tmp_path / "a"), start_in_fresh_process(tmp_path / "a")])
     assert len({o["pid"] for o in out}) == 1, out
     assert len(list((tmp_path / "xlocks").glob("spawned.*"))) == 1
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize(("launcher_body", "error"), [
+    ("""sleep 30 &
+child=$!
+printf '%s %s\\n' "$$" "$child" > "${HERMES_BD_ENV_FILE}.pids"
+exit 0
+""", "launcher exited"),
+    ("""sh -c 'trap "" TERM; exec sleep 30' &
+child=$!
+printf '%s %s\\n' "$$" "$child" > "${HERMES_BD_ENV_FILE}.pids"
+: > "$HERMES_BD_SOCKET"
+wait
+""", "did not publish its display"),
+], ids=["launcher-exited-first", "child-ignores-term"])
+def test_failed_start_kills_residual_process_group_and_clears_state(
+        tmp_path, monkeypatch, launcher_body, error):
+    """Failure cleanup kills children even after their launcher exits or when they ignore TERM."""
+    import psutil
+    import time
+
+    launcher = tmp_path / "failed-launcher.sh"
+    launcher.write_text("#!/usr/bin/env bash\n" + launcher_body, encoding="utf-8")
+    monkeypatch.setattr(runtime, "_LAUNCHER", launcher)
+    monkeypatch.setattr(runtime, "geometry", lambda: "800x600")
+    monkeypatch.setattr(browser, "dock_launch", lambda: None)
+
+    with pytest.raises(RuntimeError, match=error):
+        runtime._spawn_and_wait(tmp_path, 42, 0.5)
+
+    launcher_pid, child_pid = map(int, (tmp_path / "env.pids").read_text(encoding="utf-8").split())
+
+    def alive(pid):
+        try:
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and any(alive(pid) for pid in (launcher_pid, child_pid)):
+        time.sleep(0.02)
+    assert not any(alive(pid) for pid in (launcher_pid, child_pid))
+    assert not (tmp_path / "launcher.pid").exists()
+    assert not (tmp_path / "env").exists()
+    assert not (tmp_path / "rfb.sock").exists()

@@ -287,6 +287,39 @@ def _profile_name() -> str:
         return "default"
 
 
+def _cleanup_failed_start(proc: subprocess.Popen, sd: Path, env_file: Path, pid_record: str) -> None:
+    """Stop and reap this launch attempt without deleting state published by another attempt."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)  # windows-footgun: ok — Linux-only start cleanup
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not terminate Bot Desktop launcher process group %s: %s", proc.pid, exc)
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Kill residual group members even when the launcher exited or handled TERM. An existence probe before
+    # killpg would only add a check/use race; ESRCH is the atomic "there is no group left" result.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only start cleanup
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not kill residual Bot Desktop process group %s: %s", proc.pid, exc)
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        logger.warning("Bot Desktop launcher process group %s survived cleanup", proc.pid)
+
+    pid_file = sd / "launcher.pid"
+    if proc.poll() is not None and _read(pid_file) == pid_record:
+        pid_file.unlink(missing_ok=True)
+        env_file.unlink(missing_ok=True)
+        (sd / "rfb.sock").unlink(missing_ok=True)
+
+
 def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
@@ -332,23 +365,30 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
         child_env["HERMES_BD_BROWSER_EXEC"] = dock_command(*browser)
     # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
     log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
-    proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
-        ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-        start_new_session=True, close_fds=True)
-    log.close()
+    try:
+        proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
+            ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            start_new_session=True, close_fds=True)
+    finally:
+        log.close()
     born = _create_time(proc.pid)
-    (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
-
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            tail = (sd / "launcher.log").read_bytes()[-2000:].decode("utf-8", "replace")
-            raise RuntimeError(f"Bot Desktop launcher exited with {proc.returncode}:\n{tail}")
-        if env_file.exists() and (sd / "rfb.sock").exists():
-            logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
-            return status()
-        time.sleep(0.1)
-    raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
+    pid_record = f"{proc.pid} {born if born is not None else 0}"
+    try:
+        (sd / "launcher.pid").write_text(pid_record, encoding="utf-8")
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                tail = (sd / "launcher.log").read_bytes()[-2000:].decode("utf-8", "replace")
+                raise RuntimeError(f"Bot Desktop launcher exited with {proc.returncode}:\n{tail}")
+            if env_file.exists() and (sd / "rfb.sock").exists():
+                logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
+                return status()
+            time.sleep(0.1)
+        raise RuntimeError(
+            f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
+    except BaseException:
+        _cleanup_failed_start(proc, sd, env_file, pid_record)
+        raise
 
 
 def stop() -> bool:

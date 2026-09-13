@@ -1,6 +1,7 @@
 """Tests for agent.retry_utils jittered backoff."""
 
 import threading
+import pytest
 
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
@@ -111,6 +112,36 @@ def _zai_overload_error():
             }
         },
     )
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["glm-5.2", "glm-5.3", "z-ai/glm-5.3", "my-coding-plan", None],
+)
+def test_zai_overload_detector_is_model_agnostic(model):
+    assert is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model=model,
+        error=_zai_overload_error(),
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "base_url, error",
+    [
+        ("https://api.z.ai/api/coding/paas/v4", SimpleNamespace(
+            status_code=429, body={"error": {"message": "quota exceeded"}}
+        )),
+        ("https://api.z.ai/api/v4", _zai_overload_error()),
+        ("https://api.z.ai/api/coding/paas/v4", SimpleNamespace(
+            status_code=500, body={"error": {"code": "1305"}}
+        )),
+    ],
+)
+def test_zai_overload_detector_rejects_non_overload_shapes(base_url, error):
+    assert is_zai_coding_overload_error(
+        base_url=base_url, model="glm-5.3", error=error
+    ) is False
 
 
 

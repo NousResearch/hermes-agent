@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { $sessions } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
+
 import {
   $composerAttachments,
   $voiceConversationStartRequest,
@@ -9,6 +13,7 @@ import {
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
   migrateSessionDraft,
+  reloadPersistedDrafts,
   removeComposerAttachment,
   requestVoiceConversationStart,
   SESSION_DRAFTS_STORAGE_KEY,
@@ -233,7 +238,7 @@ describe('session drafts', () => {
     expect(takeSessionDraft('session-a').text).toBe('session draft')
   })
 
-  it('persists draft text (not attachments) to localStorage', () => {
+  it('persists draft text (not attachments) to localStorage under a profile-scoped key', () => {
     stashSessionDraft('session-a', 'survives reload', [attachment({ id: 'file:a' })])
 
     const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<
@@ -241,7 +246,10 @@ describe('session drafts', () => {
       string
     >
 
-    expect(persisted['session-a']).toBe('survives reload')
+    expect(persisted['default:session-a']).toBe('survives reload')
+    // The bare, profile-less v3 shape must not come back: it is what let one
+    // profile's draft restore into another's composer.
+    expect(persisted['session-a']).toBeUndefined()
   })
 
   it('evicts empty drafts instead of leaving stale entries behind', () => {
@@ -290,5 +298,110 @@ describe('session drafts', () => {
 
     clearSessionDraft('from')
     clearSessionDraft('to')
+  })
+})
+
+describe('session drafts are scoped per profile', () => {
+  const session = (id: string, profile: string): SessionInfo => ({ id, profile }) as unknown as SessionInfo
+
+  afterEach(() => {
+    // The in-memory stash outlives localStorage.clear(), so drop each profile's
+    // buckets through the real API before resetting the profile atoms.
+    for (const profile of ['default', 'uwr', 'saint']) {
+      $activeGatewayProfile.set(profile)
+      $newChatProfile.set(null)
+      clearSessionDraft(null)
+
+      for (const scope of ['uwr-session', 'saint-session', 'session-a']) {
+        clearSessionDraft(scope)
+      }
+
+      $newChatProfile.set(profile)
+      clearSessionDraft(null)
+    }
+
+    $sessions.set([])
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set(null)
+    window.localStorage.clear()
+  })
+
+  // Regression: a draft (text AND its staged image attachments) stashed while
+  // one profile was live could be restored into a composer belonging to
+  // another profile, and submitted there. The draft map keyed on session id
+  // alone, so one flat namespace served every profile in the renderer.
+  it("does not share a namespace between two profiles' drafts", () => {
+    $sessions.set([session('uwr-session', 'uwr'), session('saint-session', 'saint')])
+
+    $activeGatewayProfile.set('uwr')
+    stashSessionDraft('uwr-session', 'reference images prompt', [attachment({ id: 'image:ref', kind: 'image' })])
+
+    $activeGatewayProfile.set('saint')
+    stashSessionDraft('saint-session', 'saint prompt', [])
+
+    const persisted = Object.keys(
+      JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<string, string>
+    )
+
+    expect(persisted).toContain('uwr:uwr-session')
+    expect(persisted).toContain('saint:saint-session')
+    // Neither profile may reach the other's draft through the flat v3 key.
+    expect(takeSessionDraft('saint-session').attachments).toEqual([])
+  })
+
+  // The unsent `__new__` bucket was a single global slot, so every new-session
+  // composer in every profile read and wrote the same draft.
+  it("keeps each profile's unsent new-session draft in its own bucket", () => {
+    $activeGatewayProfile.set('uwr')
+    stashSessionDraft(null, 'uwr new chat', [attachment({ id: 'image:ref', kind: 'image' })])
+
+    $activeGatewayProfile.set('saint')
+
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
+
+    stashSessionDraft(null, 'saint new chat', [])
+    $activeGatewayProfile.set('uwr')
+
+    expect(takeSessionDraft(null).text).toBe('uwr new chat')
+    expect(takeSessionDraft(null).attachments.map(a => a.id)).toEqual(['image:ref'])
+  })
+
+  // A background profile keeps streaming during a live swap, so a draft must
+  // stay keyed to the profile that OWNS its session, not whichever profile
+  // happens to be live when the composer reads it back.
+  it("keys a draft to its session's owning profile, not the live one", () => {
+    $sessions.set([session('uwr-session', 'uwr')])
+
+    $activeGatewayProfile.set('uwr')
+    stashSessionDraft('uwr-session', 'half typed', [])
+
+    $activeGatewayProfile.set('saint')
+
+    expect(takeSessionDraft('uwr-session').text).toBe('half typed')
+  })
+
+  // The new-chat picker points the composer at a profile before any session
+  // exists, so an unsent draft belongs to the picked target.
+  it('scopes a new-session draft to the new-chat picker target when set', () => {
+    $activeGatewayProfile.set('saint')
+    $newChatProfile.set('uwr')
+    stashSessionDraft(null, 'drafted for uwr', [])
+
+    $newChatProfile.set(null)
+
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
+
+    $newChatProfile.set('uwr')
+    expect(takeSessionDraft(null).text).toBe('drafted for uwr')
+  })
+
+  it('discards the legacy profile-less v3 map instead of misattributing it', () => {
+    window.localStorage.setItem('hermes:composer-drafts:v3', JSON.stringify({ __new__: 'ambiguous', 'session-a': 'x' }))
+
+    reloadPersistedDrafts()
+
+    expect(window.localStorage.getItem('hermes:composer-drafts:v3')).toBeNull()
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: '' })
+    expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
   })
 })

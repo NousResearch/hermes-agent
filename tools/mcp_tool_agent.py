@@ -5,6 +5,7 @@ and re-injecting post-build tools."""
 import logging
 import json
 import threading
+from copy import copy
 from typing import Optional
 from tools.mcp_tool_common import _core
 
@@ -38,7 +39,6 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
         disabled = disabled_override if disabled_override is not None else disabled
-        agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 
 
@@ -54,7 +54,8 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
-    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
+    staged_engine_names: set, staged_memory_names: set, enabled, disabled,
+    content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
     the added names, or None when nothing was published (unchanged, or a newer snapshot won)."""
@@ -72,15 +73,18 @@ def _publish_tool_snapshot(
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
         # (compaction boundary) also diff serialized bytes.
-        if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
+        from agent.memory_manager import memory_provider_owns_tool
+        previous_memory_names = {name for name in current if memory_provider_owns_tool(agent, name)}
+        owners_changed = staged_memory_names != previous_memory_names
+        agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
+        # A successful rebuild replaces legacy inference with explicit ownership even
+        # when the schema bytes are unchanged.
+        agent._context_engine_tool_names = set(staged_engine_names)
+        agent._memory_provider_tool_names = set(staged_memory_names)
+        if new_names == current and not owners_changed and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
             return None
         agent.tools = new_defs
         agent.valid_tool_names = new_names
-        # Publish context-engine routing names atomically with the snapshot.
-        engine_names = getattr(agent, "_context_engine_tool_names", None)
-        if isinstance(engine_names, set):
-            engine_names.clear()
-            engine_names.update(staged_engine_names)
         return new_names - current
 
 
@@ -110,7 +114,14 @@ def refresh_agent_mcp_tools(
     new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
-    staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
+    staged_agent = copy(agent)
+    staged_agent.enabled_toolsets, staged_agent.disabled_toolsets = enabled, disabled
+    previous_routes = getattr(agent, "_tool_registry_routes", None)
+    if isinstance(previous_routes, dict):
+        staged_agent._tool_registry_routes = {
+            entry.name: entry for entry in registry.get_all_entries() if entry.name in previous_routes
+        }
+    staged_engine_names, staged_memory_names = _reinject_post_build_tools(staged_agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
@@ -118,11 +129,20 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
+            # A previously injected schema cannot be retained merely because a
+            # registry tool now shares its name. Only a fresh selected registry
+            # definition can transfer ownership with a matching contract.
+            from agent.memory_manager import memory_provider_owns_tool
+            prefix_registered.difference_update(
+                name for name in (_def_name(tool) for tool in _agent_tool_defs(agent))
+                if memory_provider_owns_tool(agent, name)
+            )
         except Exception:  # noqa: BLE001
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        staged_engine_names=staged_engine_names, staged_memory_names=staged_memory_names,
+        enabled=enabled, disabled=disabled, content_aware=content_aware, prefix_registered=prefix_registered)
     if added is None:
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
@@ -221,45 +241,27 @@ def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -
         name_set.add(MESSAGE_AGENT_TOOL_NAME)
 
 
-def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
-    """Append memory-provider and context-engine tools onto the caller's staged ``tools_list``
-    / ``name_set`` (never the live agent attributes), mirroring ``agent_init``'s post-build
-    injection. Idempotent and fail-soft. Returns the context-engine routing names THIS rebuild
-    appended: a name already owned by a registry/plugin tool is not claimed, matching agent_init."""
-    def _add(schema) -> bool:
-        name = schema.get("name", "") if isinstance(schema, dict) else ""
-        if not name or name in name_set:
-            return False
-        tools_list.append({"type": "function", "function": schema})
-        name_set.add(name)
-        return True
+def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> tuple[set, set]:
+    """Reapply startup policy on a private staging object; a schema failure publishes nothing."""
+    from agent.memory_manager import inject_memory_provider_tools
 
-    def _schema_getter(attr: str, method: str):
-        getter = getattr(getattr(agent, attr, None) or None, method, None)
-        return getter if callable(getter) else None
-
-    enabled = getattr(agent, "enabled_toolsets", None)
+    staged = copy(agent)
+    staged.tools, staged.valid_tool_names = tools_list, name_set
+    inject_memory_provider_tools(staged, strict=True)
+    # Preserve the existing context-engine gate; its broader policy is an
+    # independent change. These names still publish with the shared snapshot.
+    staged._context_engine_tool_names = set()
+    compressor = getattr(staged, "context_compressor", None)
+    get_schemas = getattr(compressor, "get_tool_schemas", None)
+    enabled = getattr(staged, "enabled_toolsets", None)
     try:
-        get_mem_schemas = _schema_getter("_memory_manager", "get_all_tool_schemas")
-        if get_mem_schemas is not None:
-            from agent.memory_manager import memory_provider_tools_enabled  # same gate inject_memory_provider_tools uses
-            if memory_provider_tools_enabled(
-                    enabled, getattr(agent, "disabled_toolsets", None), memory_tool_present="memory" in name_set):
-                for schema in get_mem_schemas():
-                    _add(schema)
-    except Exception:
-        logger.debug("Memory-provider tool re-injection skipped", exc_info=True)
-
-    # The `context_engine` toolset is intentionally empty, so lcm_* tools exist only via this
-    # append. Honor the enabled_toolsets gate agent_init uses, or a restricted-toolset platform
-    # would re-leak tools the build excluded.
-    # See #5544.
-    staged_engine_names: set = set()
-    try:
-        get_schemas = _schema_getter("context_compressor", "get_tool_schemas")
-        if (enabled is None or "context_engine" in enabled) and get_schemas is not None:
-            # Claim the routing name only when WE appended the schema.
-            staged_engine_names.update(s["name"] for s in get_schemas() if _add(s))
+        if callable(get_schemas) and (enabled is None or "context_engine" in enabled):
+            for schema in get_schemas():
+                name = schema.get("name", "") if isinstance(schema, dict) else ""
+                if name and name not in name_set:
+                    tools_list.append({"type": "function", "function": schema})
+                    name_set.add(name)
+                    staged._context_engine_tool_names.add(name)
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
-    return staged_engine_names
+    return staged._context_engine_tool_names, staged._memory_provider_tool_names

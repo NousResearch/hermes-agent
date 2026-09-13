@@ -477,7 +477,11 @@ def _memory_parts(agent: Any) -> List[str]:
             _mem_exposed = None
         if _mem_exposed is None or _mem_exposed(agent):
             try:
-                _ext_mem_block = agent._memory_manager.build_system_prompt()
+                available = agent.valid_tool_names
+                owned = getattr(agent, "_memory_provider_tool_names", None)
+                if isinstance(owned, set):
+                    available = set(available or ()) & owned
+                _ext_mem_block = agent._memory_manager.build_system_prompt(available_tool_names=available)
             except Exception:
                 _ext_mem_block = None
             if _ext_mem_block:

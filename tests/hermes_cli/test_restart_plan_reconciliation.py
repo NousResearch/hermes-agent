@@ -190,6 +190,32 @@ def test_gateway_incarnation_credit_requires_a_live_successor():
         )
         assert outcomes[0]["outcome"] == "unaccounted"
 
+    outcomes = match_runtime_outcomes(
+        plan, restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        fleet_snapshot=[{"profile": "coder", "pid": 76796, "state": "current"}],
+    )
+    assert outcomes[0]["outcome"] == "unaccounted"
+
+
+def test_named_profile_root_launchd_preserves_failure_and_stop_precedence():
+    plan = _plan(_rt("coder", 76508, supervisor="launchd"))
+    fleet = [{"profile": "coder", "pid": 76796, "state": "current"}]
+
+    failed = match_runtime_outcomes(
+        plan, restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+        failed_units=["gui/501/ai.hermes.gateway"], fleet_snapshot=fleet,
+    )
+    assert failed[0]["outcome"] == "failed"
+
+    stopped = match_runtime_outcomes(
+        plan, restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids={76508}, failed_units=[],
+        fleet_snapshot=fleet,
+    )
+    assert stopped[0]["outcome"] == "stopped"
+
 
 def test_untouched_runtime_is_unaccounted_and_escalates(capsys):
     """The tripwire: plan saw it, NO bookkeeping mentions it."""

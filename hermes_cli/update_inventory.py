@@ -309,6 +309,11 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
     return any(_gateway_service_matches_profile(r.profile, name) for name in names)
 
 
+def _root_launchd_gateway_in(names: set) -> bool:
+    """Return whether bookkeeping names the root launchd gateway label exactly."""
+    return any(str(name).rsplit("/", 1)[-1] == "ai.hermes.gateway" for name in names)
+
+
 def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
@@ -324,10 +329,9 @@ def match_runtime_outcomes(
     ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as ``restarted``, one
     still alive is ``unaccounted``; without the probe an untouched serve stays ``unaccounted``.
 
-    Gateway service names describe an install root, not necessarily the profile served by
-    that process. When the post-restart fleet snapshot has a live successor for the same
-    profile, a changed PID is therefore authoritative restart evidence. ``down`` rows are
-    excluded, and an unchanged PID never receives incarnation credit.
+    A root launchd service can serve a sticky named profile. Its successful root-label
+    bookkeeping plus a changed, live same-profile PID proves that runtime restarted.
+    ``down`` rows are excluded, and an unchanged PID never receives incarnation credit.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
@@ -370,8 +374,20 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
+            named_root_launchd = (
+                r.profile != "default"
+                and (r.supervisor == "launchd" or r.restart_via == "launchd")
+            )
+            if named_root_launchd and _root_launchd_gateway_in(failed_set):
+                return "failed"
             successors = live_gateway_pids.get(r.profile, set())
-            if r.pid is not None and successors and r.pid not in successors:
+            if (
+                named_root_launchd
+                and _root_launchd_gateway_in(restarted_set)
+                and r.pid is not None
+                and successors
+                and r.pid not in successors
+            ):
                 return "restarted"
             return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
 

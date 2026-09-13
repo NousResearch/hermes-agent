@@ -7244,6 +7244,11 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
+    from agent.llm_egress_firewall import EgressBlocked
+    if isinstance(first_err, EgressBlocked):
+        from agent.auxiliary_egress_recovery import local_fallback_steps
+        response = yield from local_fallback_steps(route, _LadderStep)
+        return response if response is not None else _RERAISE_ORIGINAL
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp

@@ -370,7 +370,7 @@ def test_compression_aggregate_capacity_does_not_bypass_scans(tmp_path, unsafe, 
     assert reason in exc_info.value.decision.reason_codes
 
 
-def test_blocked_remote_aux_call_is_terminal_without_fallback(monkeypatch, tmp_path):
+def test_blocked_remote_aux_call_uses_local_fallback_without_retry(monkeypatch, tmp_path):
     primary = MagicMock()
     primary.base_url = "https://chatgpt.com/backend-api/codex"
     primary.chat.completions.create.side_effect = _blocked_egress_error()
@@ -399,21 +399,21 @@ def test_blocked_remote_aux_call_is_terminal_without_fallback(monkeypatch, tmp_p
         lambda: (_ for _ in ()).throw(AssertionError("blocked request must not retry")),
     )
 
-    with pytest.raises(EgressBlocked):
-        call_llm(
-            task="compression",
-            provider="openai-codex",
-            model="gpt-5.4",
-            main_runtime={"session_id": "session-fallback"},
-            messages=[{"role": "user", "content": "ordinary request"}],
-        )
+    response = call_llm(
+        task="compression",
+        provider="openai-codex",
+        model="gpt-5.4",
+        main_runtime={"session_id": "session-fallback"},
+        messages=[{"role": "user", "content": "token=super-secret-value"}],
+    )
 
-    primary.chat.completions.create.assert_called_once()
-    fallback.chat.completions.create.assert_not_called()
+    assert response.choices[0].message.content == "fallback"
+    primary.chat.completions.create.assert_not_called()
+    fallback.chat.completions.create.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_blocked_remote_async_aux_call_is_terminal_without_fallback(
+async def test_blocked_remote_async_aux_call_uses_local_fallback_without_retry(
     monkeypatch, tmp_path
 ):
     primary = MagicMock()
@@ -448,19 +448,19 @@ async def test_blocked_remote_async_aux_call_is_terminal_without_fallback(
         lambda: (_ for _ in ()).throw(AssertionError("blocked request must not retry")),
     )
 
-    with pytest.raises(EgressBlocked):
-        await async_call_llm(
-            task="compression",
-            provider="openai-codex",
-            model="gpt-5.4",
-            main_runtime={"session_id": "session-async-fallback"},
-            messages=[{"role": "user", "content": "ordinary request"}],
-        )
+    response = await async_call_llm(
+        task="compression",
+        provider="openai-codex",
+        model="gpt-5.4",
+        main_runtime={"session_id": "session-async-fallback"},
+        messages=[{"role": "user", "content": "token=super-secret-value"}],
+    )
 
-    primary.chat.completions.create.assert_awaited_once()
-    fallback.chat.completions.create.assert_not_awaited()
-    configured.assert_not_called()
-    main_fallback.assert_not_called()
+    assert response.choices[0].message.content == "fallback"
+    primary.chat.completions.create.assert_not_awaited()
+    fallback.chat.completions.create.assert_awaited_once()
+    configured.assert_called_once()
+    main_fallback.assert_called_once()
 
 
 def _jwt_with_claims(claims: dict) -> str:

@@ -1,3 +1,8 @@
+---
+title: "Middleware"
+description: "Behavior-changing plugin middleware for LLM and tool calls: contract, execution order, examples"
+---
+
 # Hermes Middleware
 
 Hermes middleware is the behavior-changing companion to observer hooks.
@@ -235,7 +240,7 @@ payload to later middleware and the base tool dispatcher.
 Plugin-specific examples should live with the plugin that owns the behavior.
 NeMo Relay execution middleware is installed through an explicitly selected
 Relay `plugins.toml`; see
-[Relay shared metrics](../observability/relay-shared-metrics.md).
+[Relay shared metrics](relay-shared-metrics.md).
 
 ## Safety Notes
 

@@ -1,3 +1,8 @@
+---
+title: "Kanban Multi-Gateway Deployment"
+description: "Running one kanban board across several per-profile gateways: single dispatcher, profile-owned delivery"
+---
+
 # Multi-gateway deployment
 
 Hermes supports multiple gateway processes running concurrently — one per profile

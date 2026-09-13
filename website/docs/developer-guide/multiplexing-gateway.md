@@ -1,3 +1,8 @@
+---
+title: "Multiplexing Gateway Internals"
+description: "Design of the one-gateway-for-all-profiles mode: scope composition, secret scope, inbound routing, persistence"
+---
+
 # Multiplexing Gateway
 
 One gateway process can serve every profile in the install. The mode is opt-in
@@ -124,7 +129,7 @@ profile; matching is conjunctive, most-specific-first, with parent-chain chat
 matching for threads. Routing only runs when multiplexing is active, and a
 matched route whose target is outside the served set is rejected (the event is
 dropped, not misdelivered). Full schema and matching rules:
-`docs/profile-routing.md`.
+[Routing shared-bot chats to profiles](../user-guide/multi-profile-gateways.md#routing-shared-bot-chats-to-profiles-profile_routes).
 
 ## Serving selected profiles
 
@@ -200,9 +205,8 @@ out of scope for this document.
 
 ## Related
 
-- `docs/profile-routing.md` — inbound routing schema and matching rules.
-- `website/docs/user-guide/multi-profile-gateways.md` — user-facing guide,
-  including the standalone one-gateway-per-profile alternative.
+- [Multi-profile gateways](../user-guide/multi-profile-gateways.md) — user-facing guide, including `profile_routes`
+  and the standalone one-gateway-per-profile alternative.
 - `agent/secret_scope.py`, `hermes_constants.py`, `gateway/profile_routing.py`,
   `gateway/run.py` (`_profile_runtime_scope`), `hermes_cli/profiles.py`
   (`profiles_to_serve`), `gateway/session.py`, `tui_gateway/methods_profiles.py`.

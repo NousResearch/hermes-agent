@@ -7,7 +7,7 @@ context-local secret scope: ``set_secret_scope(mapping)`` installs the active
 profile's secrets for the current task (a contextvar, so it propagates into the
 agent's worker thread via ``copy_context()``); ``get_secret(name)`` reads from
 it and, when multiplexing is active with no scope set, RAISES rather than
-falling back to ``os.environ``. Design: ``docs/design/multiplexing-gateway.md``.
+falling back to ``os.environ``. Design: ``website/docs/developer-guide/multiplexing-gateway.md``.
 """
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             f"while multiplexing is on. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
-            f"profile's value. See docs/design/multiplexing-gateway.md "
+            f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "
             f"(Workstream A)."
         )
     return _environ_or(name, default)

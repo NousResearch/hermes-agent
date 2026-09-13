@@ -1,3 +1,8 @@
+---
+title: "Gateway Session Lifecycle"
+description: "SessionSource, SessionEntry, SessionStore, session-key rules and multi-user isolation in the gateway"
+---
+
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
@@ -282,7 +287,7 @@ def is_shared_multi_user_session(source, *, group_sessions_per_user, thread_sess
 ### Impact on System Prompt
 
 When `shared_multi_user_session=True`, the system prompt omits a fixed user name and instead
-states: *"Multi-user {thread|session} — messages are prefixed with [sender name]. Multiple
+states: *"Multi-user \{thread|session\} — messages are prefixed with [sender name]. Multiple
 users may participate."* Individual sender names are prefixed on each user message by the
 gateway at runtime, preserving prompt caching (the system prompt doesn't change per-turn).
 
@@ -605,7 +610,7 @@ conversation boundaries and shutdown.
 The canonical transcript lives in the `sessions` and `messages` tables. FTS5
 tables and their sync triggers are derived indexes that can be detached and
 rebuilt without deleting canonical messages. See
-[`docs/state-db-recovery.md`](state-db-recovery.md) for the bounded live failure
+[State DB recovery](state-db-recovery.md) for the bounded live failure
 mode and the explicit repair procedure.
 
 ### Conversation lifetime

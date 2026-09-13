@@ -1,3 +1,8 @@
+---
+title: "Streaming TTS Internals"
+description: "Sentence chunker, streaming provider ABC, capability matrix and how to add a streaming TTS provider"
+---
+
 # Streaming TTS
 
 Hermes can stream TTS audio as it arrives from the provider, instead of waiting

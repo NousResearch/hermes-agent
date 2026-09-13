@@ -1,3 +1,8 @@
+---
+title: "Chronos Managed-Cron Contract"
+description: "Agent ↔ NAS wire contract for the Chronos cron provider"
+---
+
 # Chronos managed-cron — agent ↔ NAS wire contract
 
 **Status:** authoritative wire spec for the Chronos cron provider.

@@ -1,3 +1,8 @@
+---
+title: "Relay ↔ Connector Contract"
+description: "Wire contract between the Hermes gateway relay adapter and external connectors (experimental)"
+---
+
 # Relay ↔ Connector Contract (v1, EXPERIMENTAL)
 
 > **Status:** EXPERIMENTAL. This contract MAY CHANGE without a deprecation
@@ -118,8 +123,7 @@ Both absent ⇒ byte-identical to today. A connector that never sends them, or a
 `dm`, or a no-context platform, yields no `channel_context`.
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
-(Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
-path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
+(Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method, path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
 connector stamps it when NAS resolves the target profile for a Team-Gateway
 interaction; omitting it (single-profile gateways) preserves legacy routing to
 the default `agent:main` session namespace, mirroring the `profile` field the
@@ -763,7 +767,7 @@ Typing/status frames always carry the triggering-ts anchor when one is known
 (liveliness is unconditional, both modes): Slack's status line is
 thread-scoped, and in flat mode the send-side anchor strip guarantees the
 status anchor can never leak into reply placement. Semantics of the native
-key: see `website/docs/user-guide/messaging/slack.md`.
+key: see [Slack](/user-guide/messaging/slack).
 
 Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
 (`send_media`) alike — through one choke point

@@ -1,3 +1,8 @@
+---
+title: "Gateway Monitoring"
+description: "Health export, structured diagnostics, fleet queries and how to extend the monitoring plane"
+---
+
 # Gateway Monitoring
 
 Service health monitoring plus structured operational diagnostics for the

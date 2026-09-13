@@ -1,3 +1,8 @@
+---
+title: "Network Egress Isolation (Docker)"
+description: "Segment Docker networks so the agent sandbox can only reach allowlisted hosts"
+---
+
 # Network Egress Isolation for Docker Deployments
 
 When running Hermes inside Docker, the default `network_mode: host` gives the
@@ -11,7 +16,7 @@ commands.
 
 ## Threat Model
 
-The Hermes [SECURITY.md](../../SECURITY.md) §2 defines the trust model. The
+The Hermes [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §2 defines the trust model. The
 terminal backend is the primary execution boundary. However, when running with
 `network_mode: host`, any command the agent executes can reach any endpoint on
 the network, including external ones.
@@ -190,6 +195,7 @@ docker compose exec gateway \
 
 ## Related
 
-- [SECURITY.md](../../SECURITY.md) — Hermes trust model and vulnerability reporting
-- [Terminal backends](../../README.md) — sandboxed execution targets
-- [docker-compose.yml](../../docker-compose.yml) — default compose configuration
+- [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) — Hermes trust model and vulnerability reporting
+- [Docker](/user-guide/docker) — running Hermes in a container
+- [Egress proxy](iron-proxy.md) — credential-injection firewall for the sandbox
+- [docker-compose.yml](https://github.com/NousResearch/hermes-agent/blob/main/docker-compose.yml) — default compose configuration

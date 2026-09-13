@@ -1,3 +1,8 @@
+---
+title: "Observer Hooks"
+description: "Read-only telemetry contract for plugins: event families, correlation IDs, payload safety"
+---
+
 # Hermes Observer Hooks
 
 Hermes observer hooks are the read-only telemetry contract for plugins that

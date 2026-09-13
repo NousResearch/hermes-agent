@@ -1,3 +1,8 @@
+---
+title: "Micro-compaction"
+description: "How micro-compaction amortizes context compression cost: triggers, tail sizing, the cached-prefix trade-off"
+---
+
 # Micro-compaction
 
 **A way to amortize the cost of compression.**

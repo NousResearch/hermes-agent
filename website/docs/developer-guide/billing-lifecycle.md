@@ -1,3 +1,8 @@
+---
+title: "Billing Lifecycle (TUI)"
+description: "Map from every billing/subscription state and typed refusal to the exact TUI copy and recovery action"
+---
+
 # Billing lifecycle: client-side state, errors, and recovery
 
 This is the map from every `billing.*`/`subscription.*` state shape the gateway

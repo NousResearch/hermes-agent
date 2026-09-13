@@ -1,3 +1,8 @@
+---
+title: "State DB Recovery"
+description: "How Hermes recovers state.db when the FTS index or the file itself is corrupt"
+---
+
 # State database and FTS recovery
 
 `state.db` stores two different data classes:

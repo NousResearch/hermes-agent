@@ -1,3 +1,8 @@
+---
+title: "Relay Shared Metrics"
+description: "NeMo Relay shared metrics: what is exported, consent and retention, staging validation"
+---
+
 # NeMo Relay Shared Metrics
 
 Hermes includes NeMo Relay as a normal runtime dependency on platforms for

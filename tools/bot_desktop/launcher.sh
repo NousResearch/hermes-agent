@@ -245,7 +245,9 @@ xset -display "$DISPLAY" s off -dpms s noblank 2>/dev/null || true
 # dbus-run-session scopes the bus to this subshell: no leaked dbus-daemons on restart. The env file
 # is written from INSIDE the bus so DBUS_SESSION_BUS_ADDRESS is the real one; runtime.py and every
 # cua-driver / browser spawn for this profile source it.
-exec dbus-run-session -- bash -c '
+# Not exec'd: this script stays the supervisor so the EXIT trap above still reaps Xvnc when the Xfce
+# session dies on its own (exec would replace the trap's owner and orphan the X server).
+dbus-run-session -- bash -c '
   set -e
   umask 077
   printf "DISPLAY=%s\nXAUTHORITY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\nXDG_CONFIG_HOME=%s\nXDG_CACHE_HOME=%s\nXDG_DATA_HOME=%s\n" \
@@ -256,4 +258,6 @@ exec dbus-run-session -- bash -c '
   for _ in $(seq 1 50); do xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break; sleep 0.1; done
   xfdesktop --sm-client-disable --disable-wm-check &
   exec xfce4-panel --sm-client-disable --disable-wm-check
-'
+' && rc=0 || rc=$?
+kill "$XVNC_PID" 2>/dev/null || true
+exit "$rc"

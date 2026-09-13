@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
+import { openFolderAsProject } from '@/store/projects'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
@@ -20,6 +21,10 @@ const { hudWindowMock } = vi.hoisted(() => ({ hudWindowMock: vi.fn(() => false) 
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
+}))
+
+vi.mock('@/store/projects', () => ({
+  openFolderAsProject: vi.fn()
 }))
 
 vi.mock('@/store/windows', async importOriginal => {
@@ -50,6 +55,7 @@ describe('useDesktopIntegrations', () => {
     window.localStorage.clear()
     _resetLegacyDiscardForTests()
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
+    vi.mocked(openFolderAsProject).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -133,6 +139,72 @@ describe('useDesktopIntegrations', () => {
       }
     )
   }
+
+  function nativeDrop(items: Array<{ directory: boolean; kind?: string; path: string }>): DragEvent {
+    const files = items.map(({ path }) => new File([''], path.split('/').pop() || 'item'))
+    const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent
+
+    Object.defineProperty(event, 'dataTransfer', {
+      value: {
+        items: items.map(({ directory, kind }, index) => ({
+          getAsFile: () => files[index],
+          kind: kind ?? 'file',
+          webkitGetAsEntry: () => ({ isDirectory: directory, isFile: !directory })
+        }))
+      }
+    })
+
+    desktopWindow.hermesDesktop = {
+      ...desktopWindow.hermesDesktop,
+      getPathForFile: (file: File) => items[files.indexOf(file)]?.path ?? ''
+    } as unknown as Window['hermesDesktop']
+
+    return event
+  }
+
+  describe('native folder drops', () => {
+    it('claims one directory in capture, opens its exact path, and removes the listener on cleanup', () => {
+      const bubble = vi.fn()
+      window.addEventListener('drop', bubble)
+      const { unmount } = render({ profileReady: true })
+      const accepted = nativeDrop([{ directory: true, path: '/Users/jeff/projects/hermes' }])
+
+      window.document.body.dispatchEvent(accepted)
+
+      expect(accepted.defaultPrevented).toBe(true)
+      expect(bubble).not.toHaveBeenCalled()
+      expect(openFolderAsProject).toHaveBeenCalledWith('/Users/jeff/projects/hermes')
+
+      unmount()
+      const afterCleanup = nativeDrop([{ directory: true, path: '/Users/jeff/projects/other' }])
+      window.document.body.dispatchEvent(afterCleanup)
+
+      expect(afterCleanup.defaultPrevented).toBe(false)
+      expect(bubble).toHaveBeenCalledOnce()
+      expect(openFolderAsProject).toHaveBeenCalledOnce()
+      window.removeEventListener('drop', bubble)
+    })
+
+    it.each([
+      ['a file', [{ directory: false, path: '/Users/jeff/notes.txt' }]],
+      ['multiple items', [{ directory: true, path: '/Users/jeff/a' }, { directory: true, path: '/Users/jeff/b' }]],
+      ['a pathless directory', [{ directory: true, path: '' }]],
+      ['an invalid item', [{ directory: true, kind: 'string', path: '/Users/jeff/projects/hermes' }]]
+    ])('preserves existing drop handling for %s', (_label, items) => {
+      const bubble = vi.fn()
+      window.addEventListener('drop', bubble)
+      const { unmount } = render({ profileReady: true })
+      const rejected = nativeDrop(items)
+
+      window.document.body.dispatchEvent(rejected)
+
+      expect(rejected.defaultPrevented).toBe(false)
+      expect(bubble).toHaveBeenCalledOnce()
+      expect(openFolderAsProject).not.toHaveBeenCalled()
+      unmount()
+      window.removeEventListener('drop', bubble)
+    })
+  })
 
   describe('profile-ready gate', () => {
     it('does NOT restore before profileReady is true', () => {

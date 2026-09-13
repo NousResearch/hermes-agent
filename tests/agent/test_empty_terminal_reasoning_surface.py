@@ -1,14 +1,15 @@
-"""Tests for the empty-terminal reasoning surface.
+"""Tests for reasoning-only final responses.
 
-When a clean-stop response has no ordinary content but does have structured
-reasoning, that reasoning is the final answer without entering the recovery
-ladder. Idea credit: PR #48795 (@ligl0325).
+A clean-stop response (``finish_reason == "stop"``) with no ordinary content but
+structured reasoning IS the answer: the reasoning is promoted to the visible reply and
+persisted as assistant content without entering the empty-response recovery ladder
+(every rung re-bills the full prompt). Idea credit: PR #48795 (@ligl0325).
 
 Invariants pinned here:
-- The persisted assistant message keeps the "(empty)" sentinel and the
-  ``_empty_terminal_sentinel`` marker (replay semantics unchanged).
-- Inline think-only content still goes through the recovery ladder.
-- A truly empty response (no reasoning either) still uses the recovery ladder.
+- Clean-stop reasoning-only → returned and persisted after ONE API call.
+- ``finish_reason == "length"`` reasoning is unfinished: never promoted, the
+  continuation path still owns it.
+- A truly empty response (no reasoning either) still reaches the ladder terminal.
 """
 
 from __future__ import annotations
@@ -44,17 +45,17 @@ def _build_agent(tmp_path, monkeypatch):
     return agent
 
 
-def _reasoning_only_response():
+def _reasoning_only_response(finish_reason="stop"):
     return SimpleNamespace(
         choices=[SimpleNamespace(
             message=SimpleNamespace(
-                content="",
+                content=None,
                 reasoning="The answer is 42 because of the calculation above.",
                 reasoning_content=None,
                 reasoning_details=None,
                 tool_calls=None,
             ),
-            finish_reason="stop",
+            finish_reason=finish_reason,
         )],
         usage=None,
         model="test-model",
@@ -90,6 +91,9 @@ def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
 
     assert result["final_response"] == "The answer is 42 because of the calculation above."
     assert result["api_calls"] == 1
+    # The promoted text is durable content, so the next turn replays a real answer.
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "The answer is 42 because of the calculation above."
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
@@ -111,24 +115,12 @@ def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
     assert "only internal reasoning" not in final
 
 
-def test_inline_thinking_still_uses_recovery_ladder(tmp_path, monkeypatch):
-    """Inline think blocks are not ordinary empty content and remain recoverable."""
+def test_length_cut_reasoning_is_not_promoted(tmp_path, monkeypatch):
+    """``finish_reason == "length"`` means the model was cut off mid-thought: the reasoning
+    is not an answer, so the continuation path runs and the model's real text wins."""
     agent = _build_agent(tmp_path, monkeypatch)
     responses = [
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content="<think>working it out</think>",
-                    reasoning=None,
-                    reasoning_content=None,
-                    reasoning_details=None,
-                    tool_calls=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-            model="test-model",
-        ),
+        _reasoning_only_response(finish_reason="length"),
         SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(

@@ -152,9 +152,7 @@ export function ModelCatalogMenu({
   })
 
   useNousPricingRefresh({
-    providers: modelOptions.data?.providers,
-    refetch: modelOptions.refetch,
-    scope: JSON.stringify([profile, sessionId, ownerConnectionId])
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -550,6 +548,7 @@ export function ModelCatalogMenu({
                               activate()
                             }
                           }}
+                          textValue={name}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
                           <div className="min-w-0 flex-1">

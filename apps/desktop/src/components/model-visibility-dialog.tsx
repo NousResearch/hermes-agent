@@ -61,10 +61,8 @@ export function ModelVisibilityDialog({
   })
 
   useNousPricingRefresh({
-    providers: modelOptions.data?.providers,
-    refetch: modelOptions.refetch,
-    enabled: open,
-    scope: JSON.stringify([profile, sessionId, ownerConnectionId])
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    enabled: open
   })
 
   const providers = useMemo(

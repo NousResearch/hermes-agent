@@ -50,6 +50,9 @@ def test_explicit_refresh_reads_changed_nous_prices_from_endpoint(monkeypatch):
 
     try:
         first = inv.build_models_payload(ctx, pricing=True)
+        # The prewarm lock is scoped to the bare endpoint, never the auth suffix.
+        monkeypatch.setattr(models_pricing, "get_cached_nous_inference_base_url", lambda: "")
+        assert models_pricing.pricing_cache_scope("nous") == base_url
         current_price.update(prompt="0.0000005", original={"prompt": "0.000001", "completion": "0.000004"})
         cached = inv.build_models_payload(ctx, pricing=True, pricing_cache_only=True)
         refreshed = inv.build_models_payload(ctx, pricing=True, refresh=True)

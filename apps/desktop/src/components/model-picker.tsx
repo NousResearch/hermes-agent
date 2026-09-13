@@ -74,10 +74,8 @@ export function ModelPickerDialog({
   })
 
   useNousPricingRefresh({
-    providers: modelOptions.data?.providers,
-    refetch: modelOptions.refetch,
-    enabled: open,
-    scope: JSON.stringify([profile, sessionId, ownerConnectionId])
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    enabled: open
   })
 
   // Live load state for the managed local server: which model is loading

@@ -23,6 +23,7 @@ export function ModelSelectItem({
       {...props}
       description={price ? <NousModelPrice price={price} showUnit /> : undefined}
       textValue={model}
+      title={model}
       value={value}
     >
       {model}

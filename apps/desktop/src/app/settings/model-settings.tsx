@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ModelSelectItem } from '@/components/model-select-item'
@@ -28,6 +29,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { cn } from '@/lib/utils'
@@ -206,6 +208,8 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
   )
 }
 
+const NO_MODEL_PROVIDERS: ModelOptionProvider[] = []
+
 interface ModelSettingsProps {
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
@@ -224,7 +228,20 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   const [skewRestart, setSkewRestart] = useState(false)
   const [restartingBackend, setRestartingBackend] = useState(false)
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
-  const [providers, setProviders] = useState<ModelOptionProvider[]>([])
+  const queryClient = useQueryClient()
+  const catalogKey = scopeProfile ? modelOptionsQueryKey(scopeProfile) : ['model-options', 'global']
+
+  const modelOptions = useQuery({
+    queryKey: catalogKey,
+    queryFn: () => getGlobalModelOptions(undefined, scopeProfile),
+    // The full settings refresh owns the initial read and its loading/error UI.
+    enabled: false
+  })
+
+  const providers = modelOptions.data?.providers ?? NO_MODEL_PROVIDERS
+  const refetchCatalog = modelOptions.refetch
+
+  useNousPricingRefresh({ queryKey: catalogKey })
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
   const [auxiliary, setAuxiliary] = useState<AuxiliaryModelsResponse | null>(null)
@@ -276,9 +293,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       setSkewRestart(false)
 
       try {
-        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+        const [modelInfo, , auxiliaryModels, moaModels] = await Promise.all([
           getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
+          refetchCatalog({ cancelRefetch: false, throwOnError: true }),
           getAuxiliaryModels(scopeProfile),
           getMoaModels(scopeProfile).catch(() => null)
         ])
@@ -288,7 +305,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         }
 
         setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-        setProviders(modelOptions.providers || [])
 
         if (replaceSelection) {
           setSelectedProvider(modelInfo.provider)
@@ -318,19 +334,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         }
       }
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [m.loadFailed, scopeProfile, setCaughtError, refetchCatalog]
   )
-
-  const refreshCatalog = useCallback(async () => {
-    const epoch = profileEpoch.current
-    const options = await getGlobalModelOptions(undefined, scopeProfile)
-
-    if (profileEpoch.current === epoch) {
-      setProviders(options.providers ?? [])
-    }
-  }, [scopeProfile])
-
-  useNousPricingRefresh({ providers, refetch: refreshCatalog, scope: scopeProfile })
 
   useEffect(() => {
     void refresh()
@@ -340,6 +345,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
+    void queryClient.cancelQueries({ queryKey: catalogKey, exact: true })
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
     // truth. Ordinary same-profile refreshes still preserve in-progress edits.
@@ -618,14 +624,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         nextModel = ''
       }
 
-      const options = await getGlobalModelOptions(undefined, scopeProfile)
+      const { data: options } = await refetchCatalog({ cancelRefetch: false, throwOnError: true })
 
       if (profileEpoch.current !== epoch) {
         return
       }
 
-      setProviders(options.providers || [])
-      const refreshedRow = options.providers?.find(p => p.slug === slug)
+      const refreshedRow = options?.providers?.find(p => p.slug === slug)
       const fallbackModel = refreshedRow?.models?.[0] ?? ''
       setSelectedModel(nextModel || fallbackModel)
     } catch (err) {
@@ -633,7 +638,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     } finally {
       setActivating(false)
     }
-  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
+  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError, refetchCatalog])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
   // to the shared onboarding flow scoped to this provider's real sign-in. The
@@ -963,9 +968,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
             )}
           </div>
         )}
-        {error && (
+        {(error || modelOptions.error) && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-destructive">
-            <span>{error}</span>
+            <span>{error || readableError(modelOptions.error, m.loadFailed).message}</span>
             {skewRestart && (
               <Button
                 disabled={restartingBackend}

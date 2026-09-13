@@ -99,10 +99,8 @@ function useModelOptions(bot: null | RosterRow = null) {
   })
 
   useNousPricingRefresh({
-    providers: options.data?.providers,
-    refetch: options.refetch,
-    enabled: !orphaned,
-    scope: route ? botRouteKey(route) : 'active'
+    queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
+    enabled: !orphaned
   })
 
   return options

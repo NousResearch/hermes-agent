@@ -1,57 +1,94 @@
+import { type Query, type QueryClient, type QueryKey, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 
 import type { ModelOptionProvider } from '@/types/hermes'
 
-/** Catalog reads never run a model. The gateway warms cold prices off-thread
- * and expires the Nous catalog after five minutes. Keep open editors in sync. */
-export function useNousPricingRefresh({
-  providers,
-  refetch,
-  enabled = true,
-  scope = ''
-}: {
-  providers?: Pick<ModelOptionProvider, 'slug' | 'free_tier_row' | 'pricing_pending' | 'free_tier_pending'>[]
-  refetch: () => Promise<unknown>
-  enabled?: boolean
-  scope?: string
-}) {
-  const nous = providers?.find(provider => provider.slug === 'nous' && !provider.free_tier_row)
-  const active = enabled && !!nous
-  const pending = active && !!(nous?.pricing_pending || nous?.free_tier_pending)
+const refreshOwners = new WeakMap<Query, { subscribers: number; stop: () => void }>()
+const REFRESH_MS = 300_000
+const PENDING_MS = 1_500
+const MAX_PENDING_READS = 10
 
-  useEffect(() => {
-    if (!active) {
+/** One completion-driven timer per cached catalog, shared by every editor of
+ * that query. Query state owns data/errors and suppresses overlap with manual
+ * refreshes, retries and offline requests. */
+function watchPricing(query: Query, client: QueryClient) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let pendingReads = 0
+
+  const schedule = () => {
+    clearTimeout(timer)
+
+    if (query.state.fetchStatus !== 'idle') {
       return
     }
 
-    const timer = setInterval(() => void refetch().catch(() => undefined), 300_000)
+    const data = query.state.data as { providers?: ModelOptionProvider[] } | undefined
+    const nous = data?.providers?.find(provider => provider.slug === 'nous' && !provider.free_tier_row)
 
-    return () => clearInterval(timer)
-  }, [active, refetch, scope])
+    if (!nous) {
+      return
+    }
 
-  useEffect(() => {
+    const pending = !!(nous.pricing_pending || nous.free_tier_pending)
+
     if (!pending) {
+      pendingReads = 0
+    }
+
+    const followUp = pending && pendingReads < MAX_PENDING_READS
+
+    timer = setTimeout(
+      () => {
+        pendingReads = followUp ? pendingReads + 1 : 0
+        // Keep a slow request running, including one started by another observer.
+        // Background errors remain available on the catalog query for its UI.
+        void query.fetch(undefined, { cancelRefetch: false }).catch(() => undefined)
+      },
+      followUp ? PENDING_MS : REFRESH_MS
+    )
+  }
+
+  const unsubscribe = client.getQueryCache().subscribe(event => {
+    if (event.query === query && event.type === 'updated') {
+      schedule()
+    }
+  })
+
+  schedule()
+
+  return () => {
+    clearTimeout(timer)
+    unsubscribe()
+  }
+}
+
+/** Subscribe only while the editor is active. The last subscriber releases
+ * the timer; an owner/profile change subscribes to a different query object. */
+export function useNousPricingRefresh({ queryKey, enabled = true }: { queryKey: QueryKey; enabled?: boolean }) {
+  const client = useQueryClient()
+  const query = client.getQueryCache().find({ queryKey, exact: true })
+
+  useEffect(() => {
+    if (!enabled || !query) {
       return
     }
 
-    let cancelled = false
-    let attempts = 0
-    let timer: ReturnType<typeof setTimeout>
+    let owner = refreshOwners.get(query)
 
-    const poll = async () => {
-      await refetch().catch(() => undefined)
-      attempts += 1
-
-      if (!cancelled && attempts < 10) {
-        timer = setTimeout(() => void poll(), 1_500)
-      }
+    if (!owner) {
+      owner = { subscribers: 0, stop: watchPricing(query, client) }
+      refreshOwners.set(query, owner)
     }
 
-    timer = setTimeout(() => void poll(), 1_500)
+    owner.subscribers += 1
 
     return () => {
-      cancelled = true
-      clearTimeout(timer)
+      owner.subscribers -= 1
+
+      if (owner.subscribers === 0) {
+        owner.stop()
+        refreshOwners.delete(query)
+      }
     }
-  }, [pending, refetch, scope])
+  }, [client, enabled, query])
 }

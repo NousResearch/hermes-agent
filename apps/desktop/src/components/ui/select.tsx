@@ -113,8 +113,10 @@ function SelectItem({
         </SelectPrimitive.ItemIndicator>
       </span>
       {description ? (
-        <div className="min-w-0 flex-1">
-          <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+        <div className="min-w-0 max-w-[min(24rem,calc(100vw-4rem))] flex-1">
+          <span className="block truncate">
+            <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          </span>
           <div id={descriptionId}>{description}</div>
         </div>
       ) : (

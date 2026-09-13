@@ -81,7 +81,7 @@ export function FallbackModelsField({
     queryFn: () => getGlobalModelOptions()
   })
 
-  useNousPricingRefresh({ providers: modelOptions.data?.providers, refetch: modelOptions.refetch })
+  useNousPricingRefresh({ queryKey: ['model-options', 'global'] })
 
   const providers = (modelOptions.data?.providers ?? []).filter(provider => provider.slug)
 

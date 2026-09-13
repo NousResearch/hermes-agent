@@ -809,6 +809,8 @@ _LATER_TASK_COLUMNS = (
     ("goal_mode", "goal_mode INTEGER NOT NULL DEFAULT 0"),
     ("goal_max_turns", "goal_max_turns INTEGER"),
     ("completion_contract", "completion_contract TEXT"),
+    # JSON array of normalized typed completion-evidence records.
+    ("completion_proof", "completion_proof TEXT"),
     ("session_id", "session_id TEXT"),
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),

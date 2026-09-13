@@ -715,12 +715,14 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    completion_proof: Optional[list] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        parsed_proof = _json_or(g("completion_proof"))
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -730,6 +732,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            completion_proof=parsed_proof if isinstance(parsed_proof, list) else None,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -2537,7 +2540,8 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, proof: Optional[Iterable[str]] = None,
+    accept_unproven: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2545,11 +2549,21 @@ def complete_task(
     approval; with no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
-    ``created_cards`` are verified first — a phantom id raises
+    ``proof`` accepts typed ``TYPE:VALUE`` records. Cards created with the
+    ``evidence`` completion contract require at least one valid record unless
+    ``accept_unproven`` is explicit; both paths are persisted on the task/event
+    log. ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
     """
     now = int(time.time())
+    task = get_task(conn, task_id)
+    if task is None:
+        return False
+    from hermes_cli.kanban_completion_evidence import validate_completion_evidence
+    normalized_proof, unproven_override = validate_completion_evidence(
+        conn, task, proof, accept_unproven=accept_unproven,
+    )
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -2574,6 +2588,7 @@ def complete_task(
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
+                       completion_proof = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
@@ -2583,7 +2598,12 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
+        params: tuple = (
+            result,
+            json.dumps(normalized_proof, ensure_ascii=False) if normalized_proof else None,
+            now,
+            task_id,
+        )
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
@@ -2596,13 +2616,27 @@ def complete_task(
             metadata=metadata,
         )
         # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
+        if run_id is None and (
+            summary or metadata or result or normalized_proof or unproven_override
+            or prior_status == "review"
+        ):
             synth_summary, synth_metadata = handoff_summary, metadata
             if prior_status == "review" and not synth_summary and not synth_metadata:
                 synth_summary = _REVIEW_APPROVED_NOTE
                 synth_metadata = {"source_status": "review", "approval": "manual"}
             run_id = _synthesize_ended_run(
                 conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+            )
+        if normalized_proof:
+            _append_event(
+                conn, task_id, "completion_evidence_recorded",
+                {"proof": normalized_proof}, run_id=run_id,
+            )
+        elif unproven_override:
+            _append_event(
+                conn, task_id, "card_closed_without_proof",
+                {"completion_contract": task.completion_contract, "explicit_override": True},
+                run_id=run_id,
             )
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:

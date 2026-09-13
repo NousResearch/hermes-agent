@@ -498,6 +498,8 @@ class UpdateTaskBody(BaseModel):
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    proof: Optional[list[str]] = None
+    accept_unproven: bool = False
     # In a PATCH ``None`` means "field not sent", so ``clear_*=True`` is the explicit clear signal.
     # ``reasoning_effort="none"`` is a VALUE (thinking off); it is cleared separately so
     # dropping a model override doesn't silently reset the depth.
@@ -549,7 +551,9 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
+    "done": lambda conn, tid, p: kanban_db.complete_task(
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata,
+        proof=getattr(p, "proof", None), accept_unproven=getattr(p, "accept_unproven", False)),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(

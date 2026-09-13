@@ -82,6 +82,32 @@ guard, not OS isolation against arbitrary direct database writes. GitHub Enterpr
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
+## Evidence completion contracts
+
+For non-PR work that needs an explicit proof gate, create the card with
+`--completion-contract evidence` (or `completion_contract="evidence"` through
+`kanban_create`). Complete it with one or more typed receipts:
+
+```bash
+hermes kanban complete t_abcd --summary "report generated" \
+    --proof path:reports/final.pdf \
+    --proof url:https://example.com/runs/123
+```
+
+Supported types are `path`, `url`, `task`, and `attachment`. Relative paths resolve
+against the card's persisted `workspace_path`; absolute paths continue to work.
+Task references must exist, and attachment IDs must belong to the card being closed.
+Validated receipts are normalized into the task's `completion_proof` field and a
+`completion_evidence_recorded` event, so `show`, tools, and the dashboard do not need
+to re-derive evidence from prose or closing-run metadata.
+
+An evidence-contract card without a valid receipt remains in flight. When a human
+intentionally accepts that risk, `--accept-unproven` completes it and records the
+auditable `card_closed_without_proof` event. The override cannot be combined with a
+receipt. Existing cards and `local-only` contracts remain permissive for backwards
+compatibility; proof is an opt-in task policy rather than a heuristic applied by a
+monitoring agent after completion.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.
@@ -836,7 +862,7 @@ hermes kanban claim <id> [--ttl SECONDS]
 hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
-hermes kanban complete <id>... [--result "..."]
+hermes kanban complete <id>... [--result "..."] [--proof TYPE:VALUE] [--accept-unproven]
 hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...

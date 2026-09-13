@@ -123,6 +123,19 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "possible; this exists for compatibility with "
                 "callers that still set --result on the CLI."
         )),
+        "proof": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Typed completion evidence as TYPE:VALUE entries. Supported types are path, url, task, "
+                "and attachment. Relative path values resolve against this task's recorded workspace. "
+                "Required when the task uses completion_contract='evidence'."
+            ),
+        },
+        "accept_unproven": _prop("boolean", (
+            "Explicit override for an evidence-contract task when no proof is available. "
+            "The completion is recorded as card_closed_without_proof."
+        )),
         "created_cards": {
             "type": "array",
             "items": {"type": "string"},
@@ -477,7 +490,8 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "work. Defaults to false (classic single-shot worker)."
         )),
         "completion_contract": _prop("string", (
-            "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
+            "Declare at creation: local-only (default), evidence for typed completion proof, "
+            "OWNER/REPO for PR publication, or an exact GitHub PR URL. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
         "goal_max_turns": _prop("integer", (

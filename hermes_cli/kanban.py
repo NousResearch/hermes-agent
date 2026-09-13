@@ -512,6 +512,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("branch", task.branch_name)
     if task.skills:
         field("skills", ", ".join(task.skills))
+    if task.completion_contract:
+        field("contract", task.completion_contract)
+    if task.completion_proof:
+        _print_section("Completion proof:", (
+            f"  {item['type']}:{item['value']} -> {item['resolved']}"
+            for item in task.completion_proof
+        ))
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
@@ -856,14 +863,19 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
 
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
+    from hermes_cli.kanban_completion_evidence import CompletionEvidenceError
+
     ids, rc = _require_ids(args)
     if rc:
         return rc
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    proof = getattr(args, "proof", None)
+    accept_unproven = bool(getattr(args, "accept_unproven", False))
     # Handoff fields are per-run; refuse to copy them across N runs.
-    if len(ids) > 1 and (summary or raw_meta):
-        return _err("kanban: --summary / --metadata are per-task and can't be used "
+    if len(ids) > 1 and (summary or raw_meta or proof or accept_unproven):
+        return _err("kanban: --summary / --metadata / --proof / --accept-unproven are per-task "
+                    "and can't be used "
                     "with multiple ids (would apply the same handoff to every task). "
                     "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
     metadata, rc = _parse_metadata_flag(raw_meta)
@@ -880,8 +892,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            try:
+                return kb.complete_task(
+                    conn, tid, result=args.result, summary=summary, metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid), proof=proof,
+                    accept_unproven=accept_unproven)
+            except CompletionEvidenceError as exc:
+                fail_msg[tid] = f"completion evidence rejected: {exc}"
+                return False
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

@@ -188,7 +188,7 @@ _SPECS = [
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
-             help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+             help="local-only (default), evidence, OWNER/REPO for publication, or exact GitHub PR URL."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -284,6 +284,10 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        _arg("--proof", action="append", metavar="TYPE:VALUE",
+             help="Typed completion evidence (path, url, task, or attachment); repeatable."),
+        _arg("--accept-unproven", action="store_true",
+             help="Explicitly complete an evidence-contract task without proof; records an audit event."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

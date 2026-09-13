@@ -1597,6 +1597,14 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
 }
 
 
+def _normalize_linked_task_id(value: Any) -> Optional[str]:
+    """Return a stamped task id, or None so legacy records omit the field."""
+    if value is None:
+        return None
+    text = value.strip() if isinstance(value, str) else str(value).strip()
+    return text or None
+
+
 def _compute_provider_model_snapshots(
     *, provider: Any, model: Any, base_url: Any, no_agent: Any,
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -1707,6 +1715,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    linked_task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1715,7 +1724,8 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    linked_task_id: optional Kanban task stamp; omitted when missing/blank (legacy jobs)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1806,6 +1816,9 @@ def create_job(
     ):
         if value is not None:
             job[key] = value
+    linked = _normalize_linked_task_id(linked_task_id)
+    if linked:
+        job["linked_task_id"] = linked
 
     with _jobs_lock():
         save_jobs(load_jobs() + [job])
@@ -1862,6 +1875,17 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     for job in jobs:
         job["latest_execution"] = latest.get(job.get("id", ""))
     return jobs
+
+
+def list_jobs_for_task(task_id: str, include_disabled: bool = True) -> List[Dict[str, Any]]:
+    """Jobs whose ``linked_task_id`` equals ``task_id``. Blank ids match nothing."""
+    tid = _normalize_linked_task_id(task_id)
+    if not tid:
+        return []
+    return [
+        job for job in list_jobs(include_disabled=include_disabled)
+        if _normalize_linked_task_id(job.get("linked_task_id")) == tid
+    ]
 
 
 def _reject_terminal_activation(job: Dict[str, Any], updated: Dict[str, Any], job_id: str) -> None:
@@ -2020,6 +2044,55 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
         "paused_at": _hermes_now().isoformat(),
         "paused_reason": reason,
     })
+
+
+def _empty_pause_linked_receipt() -> Dict[str, Any]:
+    return {"paused": [], "skipped_unlinked": 0, "errors": []}
+
+
+def pause_jobs_for_task(task_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
+    """Pause enabled jobs stamped ``linked_task_id == task_id`` via ``pause_job`` only.
+
+    Receipt lists paused job ids. Unstamped jobs are counted as skipped_unlinked and
+    are never paused. A single pause failure is recorded in ``errors``; others continue.
+    Store/lock failures return a receipt with errors rather than raising.
+    """
+    receipt = _empty_pause_linked_receipt()
+    tid = _normalize_linked_task_id(task_id)
+    if not tid:
+        return receipt
+    try:
+        jobs = list_jobs(include_disabled=True)
+    except Exception as exc:
+        receipt["errors"].append({"error": f"cron store unavailable: {exc}"})
+        return receipt
+
+    pause_reason = (reason or "").strip() or "linked task stopped"
+    for job in jobs:
+        linked = _normalize_linked_task_id(job.get("linked_task_id"))
+        if not linked:
+            receipt["skipped_unlinked"] += 1
+            continue
+        if linked != tid:
+            continue
+        if not job.get("enabled", True) and not is_job_runnable(job):
+            continue
+        job_id = job.get("id")
+        try:
+            updated = pause_job(job_id, reason=pause_reason)
+            if updated is None:
+                receipt["errors"].append({"job_id": job_id, "error": "pause_job returned None"})
+            else:
+                receipt["paused"].append(job_id)
+        except Exception as exc:
+            receipt["errors"].append({"job_id": job_id, "error": str(exc)})
+    if receipt["paused"]:
+        try:
+            from cron.scheduler import _notify_provider_jobs_changed
+            _notify_provider_jobs_changed()
+        except Exception:
+            pass
+    return receipt
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:

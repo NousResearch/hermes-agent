@@ -39,6 +39,7 @@ from cron.jobs import (
     mark_job_run,
     parse_schedule,
     pause_job,
+    pause_jobs_for_task,
     remove_job,
     resolve_job_ref,
     resume_job,
@@ -578,7 +579,8 @@ def _action_create(a: Dict[str, Any]) -> str:
             reasoning_effort=a["reasoning_effort"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
-               if a["paused"] is not False or a["paused_reason"] is not None else {}))
+               if a["paused"] is not False or a["paused_reason"] is not None else {}),
+            **({"linked_task_id": a["linked_task_id"]} if a.get("linked_task_id") else {}))
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
@@ -594,6 +596,15 @@ def _action_create(a: Dict[str, Any]) -> str:
         "message": _create_message, **_gateway_liveness_notice(),
     }
     return _dumps(_with_guidance(_result, job, deliver))
+
+
+def _action_pause_linked(a: Dict[str, Any]) -> str:
+    """Pause jobs stamped to ``task_id``; never claims unlinked jobs were paused."""
+    task_id = a.get("task_id") or a.get("linked_task_id")
+    if not (isinstance(task_id, str) and task_id.strip()):
+        return tool_error("task_id is required for action 'pause_linked'", success=False)
+    receipt = pause_jobs_for_task(task_id.strip(), reason=a.get("reason") or "pause_linked")
+    return _dumps({"success": True, **receipt})
 
 
 def _action_list(a: Dict[str, Any]) -> str:
@@ -824,7 +835,9 @@ def _action_update(job: Dict[str, Any], a: Dict[str, Any]) -> str:
 
 
 # Actions that need no job_id, and job-bound actions (job resolved first).
-_JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
+_JOBLESS_ACTIONS = {
+    "create": _action_create, "list": _action_list, "pause_linked": _action_pause_linked,
+}
 _JOB_ACTIONS = {
     "remove": _action_remove, "update": _action_update,
     "run": _action_run, "run_now": _action_run, "trigger": _action_run,
@@ -882,10 +895,10 @@ def cronjob(
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
-    paused_reason: Optional[str] = None) -> str:
+    paused_reason: Optional[str] = None,
+    linked_task_id: Optional[str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
-    del a["task_id"]  # unused but kept for handler signature compatibility
     try:
         normalized = (action or "").strip().lower()
         handler = _JOBLESS_ACTIONS.get(normalized)
@@ -923,7 +936,7 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
+    "description": """Manage scheduled cron jobs: action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'pause_linked' pauses jobs stamped to a Kanban task_id (receipt lists paused ids only); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -933,11 +946,19 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run, pause_linked. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run"
+            },
+            "linked_task_id": {
+                "type": "string",
+                "description": "Create only: optional Kanban task id stamped on the job so archive/pause_linked can pause it. Omit or blank = unlinked (legacy)."
+            },
+            "task_id": {
+                "type": "string",
+                "description": "Required for pause_linked: pause only cron jobs whose linked_task_id equals this Kanban task id."
             },
             "prompt": {
                 "type": "string",
@@ -1028,7 +1049,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason")
+    "paused_reason", "linked_task_id", "task_id")
 
 
 def _cronjob_handler(args, **kw):
@@ -1040,7 +1061,6 @@ def _cronjob_handler(args, **kw):
         include_disabled=args.get("include_disabled", True),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
-        task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         paused=args.get("paused", False),
         **{key: args.get(key) for key in _HANDLER_FORWARDED_ARGS},

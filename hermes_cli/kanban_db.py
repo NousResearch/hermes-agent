@@ -3506,7 +3506,25 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
+    # Fail-open: a missing cron store or lock must not undo a successful archive.
+    _fail_open_pause_linked_jobs(task_id)
     return True
+
+
+def _fail_open_pause_linked_jobs(task_id: str) -> dict:
+    """Pause cron jobs stamped to ``task_id``. Never raises; never blocks archive."""
+    receipt = {"paused": [], "skipped_unlinked": 0, "errors": []}
+    try:
+        from cron.jobs import pause_jobs_for_task
+        receipt = pause_jobs_for_task(task_id, reason=f"task {task_id} archived")
+    except Exception as exc:
+        receipt = {
+            "paused": [],
+            "skipped_unlinked": 0,
+            "errors": [{"error": f"cron cascade skipped: {exc}"}],
+        }
+    archive_task.last_pause_receipt = receipt
+    return receipt
 
 
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:

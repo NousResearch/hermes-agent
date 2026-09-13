@@ -1055,6 +1055,22 @@ ClawRouter 需要在 Base 或 Solana 上有 USDC 充值的钱包用于支付。�
 
 ---
 
+### AIHubMix — 多提供商聚合
+
+[AIHubMix](https://aihubmix.com) 将多家厂商的模型汇聚到单个 OpenAI 兼容端点，使用同一个 API key。请在 AIHubMix 控制台创建 key，并在其模型列表中确认你的账号可用的模型 ID。
+
+```yaml
+model:
+  default: gpt-5.6-sol
+  provider: custom
+  base_url: https://aihubmix.com/v1
+  api_key: your-aihubmix-key
+```
+
+社区 model provider 插件 [hermes-provider-aihubmix](https://github.com/AIhubmix/hermes-provider-aihubmix) 会将其注册为具名的 `aihubmix` 提供商，从而支持 `--provider aihubmix`，并将 `/model` 选择器过滤为声明支持工具调用的条目。请按该插件 README 的说明将其安装到 `~/.hermes/plugins/model-providers/`，它不改动任何核心文件。参见[模型提供商插件](/developer-guide/model-provider-plugin)。
+
+---
+
 ### 其他兼容提供商
 
 任何具有 OpenAI 兼容 API 的服务均可使用。一些常用选项：
@@ -1066,6 +1082,7 @@ ClawRouter 需要在 Base 或 Solana 上有 USDC 充值的钱包用于支付。�
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek 模型 |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | 快速开源模型托管 |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | 托管 OpenAI 兼容推理 |
+| [AIHubMix](https://aihubmix.com) | `https://aihubmix.com/v1` | 多厂商聚合，单个 OpenAI 兼容 key |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | 晶圆级芯片推理 |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral 模型 |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | 直连 OpenAI |

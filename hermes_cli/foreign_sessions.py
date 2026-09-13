@@ -298,10 +298,105 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     return None
 
 
+def _diverted_jsonl_records(path: Path) -> List[Dict[str, str]]:
+    """Parse diverted transcript JSONL into appendable ``role``/``content`` pairs."""
+    records: List[Dict[str, str]] = []
+    for obj in _read_json_lines(path):
+        role = obj.get("role")
+        content = obj.get("content")
+        if not isinstance(role, str) or not role.strip():
+            continue
+        if content is None:
+            continue
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False, default=str)
+        if not content.strip():
+            continue
+        records.append({"role": role, "content": content})
+    return records
+
+
+def _diverted_jsonl_path(session_id: Optional[str], path) -> Optional[Path]:
+    if path:
+        return Path(path).expanduser()
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "sessions" / f"{sid}.jsonl"
+
+
+def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: bool = False) -> Optional[str]:
+    """Replay diverted JSONL into an existing (or newly created) Hermes session.
+
+    Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
+    prints the path and non-empty line count. Idempotent: a suffix already stored
+    is not appended again. Empty or unusable lines are skipped.
+    """
+    sid = (session_id or "").strip()
+    jsonl = Path(path).expanduser()
+    if not sid:
+        print("Error: --from diverted requires --session-id or a JSONL path whose stem is the session id.")
+        return None
+    if not jsonl.is_file():
+        print(f"Error: diverted transcript not found: {jsonl}")
+        return None
+    line_count = sum(1 for line in jsonl.read_text(encoding="utf-8").splitlines() if line.strip())
+    if inspect_only:
+        print(f"Diverted transcript: {jsonl}")
+        print(f"Lines: {line_count}")
+        return sid
+    owns_db = db is None
+    try:
+        if owns_db:
+            from hermes_state import SessionDB
+            db = SessionDB()
+    except Exception as e:
+        print(f"Error: could not open session database: {e}")
+        print(f"Diverted transcript remains at: {jsonl}")
+        return None
+    try:
+        if db.get_session(sid) is None:
+            db.create_session(sid, "cli")
+        incoming = _diverted_jsonl_records(jsonl)
+        existing = [(m.get("role"), m.get("content")) for m in db.get_messages(sid)]
+        incoming_pairs = [(r["role"], r["content"]) for r in incoming]
+        skip = 0
+        for k in range(min(len(existing), len(incoming_pairs)), 0, -1):
+            if existing[-k:] == incoming_pairs[:k]:
+                skip = k
+                break
+        for record in incoming[skip:]:
+            db.append_message(sid, record["role"], record["content"])
+        print(f"✓ Replayed diverted transcript into {sid}")
+        print(f"  Source: {jsonl}")
+        print(f"  Continue it with:  hermes --resume {sid}")
+        return sid
+    except Exception as e:
+        print(f"Error: could not replay diverted transcript {jsonl}: {e}")
+        print(f"Diverted transcript remains at: {jsonl}")
+        return None
+    finally:
+        if owns_db and db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
 def run_sessions_import(args, db=None) -> Optional[str]:
     """`hermes sessions import` entry point. Returns new session id or None."""
     source = getattr(args, "from_source", None)
     path = getattr(args, "path", None)
+    if source == "diverted":
+        session_id = getattr(args, "session_id", None)
+        jsonl = _diverted_jsonl_path(session_id, path)
+        if jsonl is None:
+            print("Error: --from diverted requires --session-id or a JSONL path.")
+            return None
+        if not session_id:
+            session_id = jsonl.stem
+        return import_diverted_transcript(
+            session_id, jsonl, db=db, inspect_only=bool(getattr(args, "inspect_only", False)),
+        )
     if path:
         # A missing file is reported as such, not as the misleading "cannot infer source".
         if not Path(path).exists():

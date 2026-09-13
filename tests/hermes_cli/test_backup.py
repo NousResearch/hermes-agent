@@ -1416,6 +1416,32 @@ class TestQuickSnapshot:
         assert summary, restored_log
         assert summary[-1].startswith(f"Restored {len(non_db)} files"), summary[-1]
 
+    def test_import_db_member_refuses_missing_target_with_deleted_holders(
+        self, tmp_path, monkeypatch
+    ):
+        """A missing pathname can still have deleted WAL/SHM holders; do not os.replace."""
+        import hermes_cli.backup as backup_mod
+
+        staged = tmp_path / "backup-state.db"
+        _write_session_db(staged, 1, 1)
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.write(staged, "state.db")
+        target = tmp_path / "fresh" / "state.db"
+        target.parent.mkdir()
+        assert not target.exists()
+
+        monkeypatch.setattr(backup_mod, "_foreign_db_holder_pids", lambda _p: [99999])
+        with zipfile.ZipFile(zip_path) as zf:
+            with pytest.raises(OSError):
+                backup_mod._import_db_member(zf, "state.db", target)
+        assert not target.exists()
+
+        monkeypatch.setattr(backup_mod, "_foreign_db_holder_pids", lambda _p: [])
+        with zipfile.ZipFile(zip_path) as zf:
+            backup_mod._import_db_member(zf, "state.db", target)
+        assert target.is_file()
+
     def test_restore_state_db_live_connection(self, hermes_home):
         """Restoring state.db must update data visible through a live connection.
 

@@ -248,6 +248,8 @@ class MCPServerTransportMixin:
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
+        except BaseExceptionGroup as _eg:
+            return self._reconnect_or_reraise_group(_eg)
         finally:  # clean exit, exceptions AND cancellation
             if new_pids:
                 self._release_spawned_children(new_pids)

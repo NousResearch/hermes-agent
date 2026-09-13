@@ -121,6 +121,15 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    add("--done-when", metavar="CMD", default=None, help=(
+        "One-shot mode only: a shell command that must exit 0 before the run "
+        "counts as done (e.g. --done-when 'pytest -q'). On failure the gate's "
+        "exit code and output tail are fed back to the agent for up to "
+        "--done-when-retries repair turns; if it still fails, hermes exits 3. "
+        "No effect outside -z/--oneshot."))
+    add("--done-when-retries", metavar="N", type=int, default=3, help=(
+        "Repair turns allowed after a failed --done-when gate (default 3). "
+        "One-shot mode only."))
     # --model / --provider are accepted at the top level so they can pair with -z without the
     # `chat` subcommand; if neither -z nor a subcommand consumes them, they fall through as None.
     inherited(parser, "-m", "--model", default=None, help=(

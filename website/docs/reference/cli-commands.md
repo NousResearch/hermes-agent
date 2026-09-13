@@ -186,6 +186,8 @@ Per-run overrides (no mutation to `~/.hermes/config.yaml`):
 | `-m` / `--model <model>` | `HERMES_INFERENCE_MODEL` | Override the model for this run |
 | `--provider <provider>` | _(none)_ | Override the provider for this run |
 | `--usage-file <path>` | _(none)_ | Write a JSON usage report after the run (see below) |
+| `--done-when <cmd>` | _(none)_ | Deterministic completion gate: a shell command that must exit 0 (see below) |
+| `--done-when-retries <n>` | _(none)_ | Repair turns after a failed `--done-when` gate (default 3) |
 
 ```bash
 hermes -z "…" --provider openrouter --model openai/gpt-5.5
@@ -203,6 +205,28 @@ Same agent, same tools, same skills — just strips every interactive / cosmetic
 hermes -z "summarize this repo" --usage-file /tmp/usage.json
 jq .estimated_cost_usd /tmp/usage.json
 ```
+
+#### `--done-when` — deterministic completion gate
+
+`hermes -z "…"` ends when the agent stops talking — but an agent that *explains* a failing test suite and an agent that *fixes* it both produce a final response. `--done-when` makes "done" mechanically checkable, the same way `/goal gate add` does for standing goals:
+
+```bash
+hermes -z "fix the failing tests in tests/api/" --done-when "pytest tests/api/ -q"
+```
+
+How it works:
+
+1. After the first turn, the gate command runs (5-minute timeout, bounded output tail).
+2. **Gate passes** → normal exit 0.
+3. **Gate fails** → the exit code and the last ~3 KB of output become a follow-up user message — the agent gets up to `--done-when-retries` repair turns (default 3) to fix the actual failure, not explain it.
+4. **Retries exhausted** → the run's final response still prints, but the process exits **3** so CI / cron / scripts see the red state instead of a 0-exit with failing tests inside.
+
+```bash
+# CI-style: fail the pipeline unless the tests actually pass
+hermes -z "make the build green" --done-when "pytest -q" --done-when-retries 5 || exit 1
+```
+
+A 0-exit now carries a guarantee the caller can rely on: the deterministic gate passed. Gate semantics deliberately mirror [quality gates](/user-guide/features/goals#quality-gates) (bounded tail, timeout, retry cap) so the two features behave the same way in scripts and in interactive goal loops.
 
 ## `hermes model`
 

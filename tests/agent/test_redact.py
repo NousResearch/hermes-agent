@@ -985,6 +985,26 @@ class TestTerminalOutputRedaction:
                 "profileSecret456",
             ),
             ("sed -n '1,20p' ~/.zprofile", "api_key: zprofileSecret789", "zprofileSecret789"),
+            (
+                'cat "$HERMES_HOME/config.yaml"',
+                "SERVICE_TOKEN=variablePathSecret123456789",
+                "variablePathSecret123456789",
+            ),
+            (
+                'cat "${HERMES_HOME}/config.yaml"',
+                "SERVICE_TOKEN=variablePathSecret123456789",
+                "variablePathSecret123456789",
+            ),
+            (
+                "awk '{print $1; print $2}' ~/.bashrc",
+                "export SERVICE_TOKEN=awkQuotedSecret123",
+                "awkQuotedSecret123",
+            ),
+            (
+                "grep 'foo|bar' ~/.hermes/config.yaml",
+                "SERVICE_TOKEN=grepQuotedSecret456",
+                "grepQuotedSecret456",
+            ),
         ],
     )
     def test_secret_bearing_file_commands_mask_assignments(self, command, output, secret):
@@ -1000,7 +1020,7 @@ class TestTerminalOutputRedaction:
             "cat ~/.hermes/config.example.yaml",
             "cat ~/.hermes/config.template.yaml",
             "cat ~/.bashrc.example",
-            'cat "$HERMES_HOME/config.yaml"',
+            'cat "$OTHER/config.yaml"',
             "grep TOKEN app.py",
             "awk '/TOKEN/' settings.yaml",
             "sed -n '1,20p' template.yaml",

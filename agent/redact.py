@@ -764,8 +764,35 @@ _TEXT_FILE_READ_COMMANDS = frozenset({"grep", "awk", "sed"})
 
 
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments of a shell command, stripped, empties dropped."""
-    return [seg.strip() for seg in re.split(r"[|;&]+", command) if seg.strip()]
+    """Pipeline/sequence segments, split only on unquoted ``| ; &``.
+
+    Quote-aware so ``awk '{print $1; print $2}'`` / ``grep 'foo|bar'`` stay
+    one segment. Backslash is not an escape (Windows ``C:\\Users\\...``).
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for ch in command:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in "|;&":
+            seg = "".join(buf).strip()
+            if seg:
+                segments.append(seg)
+            buf = []
+            continue
+        buf.append(ch)
+    seg = "".join(buf).strip()
+    if seg:
+        segments.append(seg)
+    return segments
 
 
 def _command_reads_env_file(command: str | None) -> bool:
@@ -787,9 +814,18 @@ def _command_reads_env_file(command: str | None) -> bool:
     return False
 
 
+_HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
+
+
 def _is_secret_bearing_file_arg(arg: str) -> bool:
     """Recognize explicit Hermes config and standard shell startup paths."""
     path = arg.strip("\"'").replace("\\", "/")
+    hermes_home = False
+    for prefix in _HERMES_HOME_PREFIXES:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            hermes_home = True
+            break
     if "$" in path:
         return False
     parts = [part.lower() for part in path.split("/") if part]
@@ -797,7 +833,9 @@ def _is_secret_bearing_file_arg(arg: str) -> bool:
         return False
     if parts[-1] in _SECRET_BEARING_FILE_BASENAMES:
         return True
-    return parts[-1] == "config.yaml" and ".hermes" in parts[:-1]
+    if parts[-1] != "config.yaml":
+        return False
+    return hermes_home or ".hermes" in parts[:-1]
 
 
 def _command_reads_secret_bearing_file(command: str | None) -> bool:

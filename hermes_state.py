@@ -27,7 +27,12 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import (
+    _corruption_warned_fingerprints,  # noqa: F401  (re-export: tests reset the per-process dedupe)
+    escape_like as _escape_like,
+    stat_db_file_identity as _stat_db_file_identity,
+    tolerant_decode_bytes as _tolerant_decode_bytes,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -72,6 +77,21 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 logger = logging.getLogger(__name__)
 
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
+
+
+def _tolerant_text_factory(data: bytes) -> str:
+    """Decode a TEXT cell strictly when possible; undecodable bytes (e.g. a multi-byte
+    character truncated by a mid-write process death) degrade to U+FFFD in that one cell
+    instead of aborting every session-list/load query with OperationalError (#109450).
+
+    Read/display surfaces stay tolerant on every connection (the read pool and the writer,
+    which _read_ctx degrades display queries onto when WAL is off or the pool is exhausted).
+    Read-modify-write seams instead decode strictly at the seam via BLOB casts
+    (_merge_model_config_json, set_message_reaction), so a malformed cell aborts the mutation
+    instead of being U+FFFD-rewritten over the original data. The warning is content-free
+    (length + sha256 fingerprint, comparable against suspect cells via python), bounded, and
+    thread-safe — see hermes_state_common.tolerant_decode_bytes."""
+    return _tolerant_decode_bytes(data)
 
 
 def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -> int:
@@ -408,7 +428,22 @@ class SessionDB(
             resolved = data.pop("_system_prompt_resolved")
             if "system_prompt" in data:
                 data["system_prompt"] = resolved
+        # sessions has no legitimate BLOB column: any bytes is a corrupt cell that landed in BLOB
+        # storage and bypassed text_factory (sqlite3 contract). Normalize every field centrally so
+        # the public session dict stays serializable str for BOTH storage classes — not just
+        # system_prompt but also title, model, end_reason, ... (#109465 review, completeness gap 2).
+        for key, value in data.items():
+            if isinstance(value, bytes):
+                data[key] = _tolerant_decode_bytes(value)
         return data
+
+    @staticmethod
+    def _public_cell(value: Any) -> Any:
+        """Scalar twin of ``_session_row_dict``: a corrupt BLOB-stored cell crossing a public
+        scalar or manually assembled projection (single-column reads like titles/roles, or
+        hand-built dicts like handoff/routing/cwd rollups) degrades to str here, so both
+        storage classes stay JSON-serializable on every read surface (#109465 review)."""
+        return _tolerant_decode_bytes(value) if isinstance(value, bytes) else value
 
     @staticmethod
     def _close_connection_quietly(conn: Optional[sqlite3.Connection]) -> None:
@@ -585,6 +620,7 @@ class SessionDB(
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _tolerant_text_factory
         return conn
 
     def _handle_quarantine_if_invalid(self, already_locked: bool = False) -> None:
@@ -619,6 +655,12 @@ class SessionDB(
         )
         try:
             conn.row_factory = sqlite3.Row
+            conn.text_factory = _tolerant_text_factory
+            # Tolerant here too (not just the read pool): _read_ctx degrades display/list queries
+            # onto the writer when WAL is off, the pool is exhausted, or a pooled open failed
+            # (slower beats EMFILE) — those surfaces must survive a corrupt cell (#109450).
+            # Read-modify-write seams stay fail-closed via strict BLOB casts at the seam itself
+            # (see _merge_model_config_json), not via connection-wide strict decoding.
             mode = apply_wal_with_fallback(conn, db_label="state.db")
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.

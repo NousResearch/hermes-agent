@@ -296,14 +296,16 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
         return slug, f"slug:{slug}"
 
 
-def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
+def _kb_poll_board(_kb, slug: str, session_key: "str | list[str]") -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
-    writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
-    falls through so delivery is preserved)."""
+    writable unless it has a subscription owned by this session or by a session it descends from — the rotation
+    counterpart of ``session_key`` (a failed read-only probe — locked/corrupt DB — falls through so delivery is
+    preserved). Each subscription is claimed at most once no matter how many of those keys match it."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
+    claim_keys = [session_key] if isinstance(session_key, str) else list(session_key)
     with contextlib.suppress(Exception):
-        if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
+        if not any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=key) for key in claim_keys):
             return []
     try:
         conn = _kbc.connect(board=slug)
@@ -316,7 +318,7 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
         except Exception:
             return []
         for sub in subs:
-            if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
+            if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") not in claim_keys:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
@@ -333,12 +335,43 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
     return texts
 
 
+def _kanban_claim_keys(session_key: str) -> list:
+    """The live key first, then the rotation chain it descends from.
+
+    ``kanban_create`` binds a subscription to the key of the session that created the task. Context
+    compression ends that session and forks a continuation, and every resume path follows the tip, so
+    after a reconnect the live key is the child while the subscription still names the rotated-out
+    parent — claiming on exact equality left those completions unclaimed forever (#108410). The walk
+    is bounded and cycle-safe: a rotation chain is short, and corrupt lineage must not spin.
+    """
+    keys = [session_key]
+    try:
+        from tui_gateway.server import _get_db
+
+        db = _get_db()
+        seen = {session_key}
+        key = session_key
+        for _ in range(16):
+            row = db.get_session(key) if hasattr(db, "get_session") else None
+            parent = str((row or {}).get("parent_session_id") or "")
+            if not parent or parent in seen:
+                break
+            seen.add(parent)
+            keys.append(parent)
+            key = parent
+    except Exception:
+        pass
+    return keys
+
+
 def _collect_kanban_notifications(session: dict) -> list:
     """Claim unseen terminal kanban events for this session's ``platform="tui"`` subscriptions (``kanban_create``
     auto-subscribes with ``chat_id=HERMES_SESSION_KEY``; no "tui" messaging adapter exists, so this poller is the
-    delivery path). Same atomic cursor-claim as the gateway notifier: exactly-once even if a gateway polls the same DB.
+    delivery path). A subscription is matched by the live session key or by any session it descends from, so a
+    completion created before context compression still reaches the conversation after the continuation takes over.
+    Same atomic cursor-claim as the gateway notifier: exactly-once even if a gateway polls the same DB.
 
-    See #59890.
+    See #59890, #108410.
     """
     session_key = str(session.get("session_key") or "")
     if not session_key or session.get("_finalized"):
@@ -358,7 +391,8 @@ def _collect_kanban_notifications(session: dict) -> list:
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    claim_keys = _kanban_claim_keys(session_key)
+    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, claim_keys)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:

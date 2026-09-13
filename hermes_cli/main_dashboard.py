@@ -150,8 +150,26 @@ def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTE
     return True
 
 
+def _cgroup_paths_from_proc_text(text: str):
+    """Yield cgroup paths from a ``/proc/<pid>/cgroup`` body.
+
+    Unified hierarchy (v2) uses ``0::<path>``. Legacy systemd (v1) uses
+    ``<id>:name=systemd:<path>``. Other v1 controllers are ignored.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "::" in line:
+            yield line.split("::", 1)[1]
+            continue
+        parts = line.split(":", 2)
+        if len(parts) == 3 and "name=systemd" in parts[1]:
+            yield parts[2]
+
+
 def _pid_unified_cgroup_entries(pid: int):
-    """Yield the ``0::<path>`` cgroup paths from ``/proc/<pid>/cgroup``; nothing when unreadable."""
+    """Yield cgroup paths from ``/proc/<pid>/cgroup``; nothing when unreadable."""
     try:
         cgroup_path = Path(f"/proc/{pid}/cgroup")
         if not cgroup_path.is_file():
@@ -159,10 +177,17 @@ def _pid_unified_cgroup_entries(pid: int):
         text = cgroup_path.read_text(encoding="utf-8", errors="replace")
     except (OSError, PermissionError):
         return
-    for line in text.splitlines():
-        parts = line.strip().split("::", 1)
-        if len(parts) == 2:
-            yield parts[1]
+    yield from _cgroup_paths_from_proc_text(text)
+
+
+def _systemd_unit_from_cgroup_text(text: str) -> str | None:
+    """Leaf ``*.service`` name from a ``/proc/<pid>/cgroup`` body, or None."""
+    for cg_path in _cgroup_paths_from_proc_text(text):
+        if cg_path.endswith(".service"):
+            svc_name = cg_path.rsplit("/", 1)[-1]
+            if svc_name:
+                return svc_name
+    return None
 
 
 def _get_systemd_service_for_pid(pid: int) -> str | None:
@@ -170,12 +195,14 @@ def _get_systemd_service_for_pid(pid: int) -> str | None:
 
     None when the PID isn't part of a service, the file is unreadable, or off Linux.
     """
-    for cg_path in _pid_unified_cgroup_entries(pid):
-        if cg_path.endswith(".service"):
-            svc_name = cg_path.rsplit("/", 1)[-1]
-            if svc_name:
-                return svc_name
-    return None
+    try:
+        cgroup_path = Path(f"/proc/{pid}/cgroup")
+        if not cgroup_path.is_file():
+            return None
+        text = cgroup_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, PermissionError):
+        return None
+    return _systemd_unit_from_cgroup_text(text)
 
 
 def _extract_scope_from_cgroup(cgroup_entry: str) -> str | None:

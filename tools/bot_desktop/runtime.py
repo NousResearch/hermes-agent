@@ -14,6 +14,7 @@ Chromium spawns merge in so the agent acts on this profile's screen and nowhere 
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -152,10 +153,13 @@ def _launcher_pid() -> Optional[int]:
     return pid if actual is not None and abs(actual - born) < 0.01 else None
 
 
+_X_LOCK_DIR = Path("/tmp")  # where X servers write .X<n>-lock (tests point it at a scratch dir)
+
+
 def _display_in_use(num: int) -> bool:
     """A live X server owns ``:num``: its lock file names a running pid. A lock left by a crashed
     server (dead pid) does not count, so the number can be reclaimed."""
-    lock = Path(f"/tmp/.X{num}-lock")
+    lock = _X_LOCK_DIR / f".X{num}-lock"
     try:
         pid = int(lock.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -166,20 +170,32 @@ def _display_in_use(num: int) -> bool:
 _ALLOC_LOCK = Path("/tmp/.hermes-bot-desktop-alloc.lock")  # host-wide: profiles allocate from one band
 
 
-def _allocate_display() -> int:
-    """Pick this profile's display number under a host-wide lock. The recorded number is only reused
-    when no OTHER server holds it now: after profile A stops, B may have taken A's old number, and
-    A's launcher must never unlink B's socket and lock."""
-    import fcntl
-    with open(_ALLOC_LOCK, "a+", encoding="utf-8") as fh:  # windows-footgun: ok — Linux-only runtime
+@contextlib.contextmanager
+def _flocked(path: Path):
+    import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start)
+    with open(path, "a+", encoding="utf-8") as fh:  # windows-footgun: ok — Linux-only runtime
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        recorded = _read(state_dir() / "display")
-        if recorded and recorded.isdigit() and not _display_in_use(int(recorded)):
-            return int(recorded)
-        for num in range(_DISPLAY_MIN, _DISPLAY_MAX + 1):
-            if not _display_in_use(num):
-                return num
+        try:
+            yield fh
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _pick_display() -> int:
+    """Caller holds ``_ALLOC_LOCK``. The recorded number is only reused when no OTHER server holds it now:
+    after profile A stops, B may have taken A's number, and A's launcher must never unlink B's socket."""
+    recorded = _read(state_dir() / "display")
+    if recorded and recorded.isdigit() and not _display_in_use(int(recorded)):
+        return int(recorded)
+    for num in range(_DISPLAY_MIN, _DISPLAY_MAX + 1):
+        if not _display_in_use(num):
+            return num
     raise RuntimeError("no free X display number in the Bot Desktop band")
+
+
+def _allocate_display() -> int:
+    with _flocked(_ALLOC_LOCK):
+        return _pick_display()
 
 
 def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -273,20 +289,29 @@ def _profile_name() -> str:
 
 def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
-    ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker."""
+    ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
+
+    Two locks, both held from the running-check to the launcher's publish: the per-profile ``start.lock``
+    so two start() calls for one profile spawn one launcher (the loser sees it running), and the host-wide
+    display-allocation lock so a second profile cannot pick the same number before this Xvnc has written
+    ``/tmp/.X<n>-lock`` (it would then fail and its launcher's stale-lock cleanup could remove our socket)."""
     if not is_supported_host():
         raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
     missing = missing_binaries()
     if missing:
         hint = install_command() or "install TigerVNC (Xvnc) and the Xfce core components"
         raise RuntimeError(f"Bot Desktop needs {', '.join(missing)} on the gateway host. Install: {hint}")
-    if _launcher_pid() is not None and published_env().get("DISPLAY"):
-        return status()
-
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     os.chmod(sd, 0o700)
-    num = _allocate_display()
+    with _flocked(sd / "start.lock"):
+        if _launcher_pid() is not None and published_env().get("DISPLAY"):
+            return status()
+        with _flocked(_ALLOC_LOCK):
+            return _spawn_and_wait(sd, _pick_display(), wait_seconds)
+
+
+def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     (sd / "display").write_text(str(num), encoding="utf-8")
     env_file = sd / "env"
     env_file.unlink(missing_ok=True)
@@ -328,8 +353,16 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
 
 def stop() -> bool:
     """Stop this profile's desktop; True when a running launcher was signalled."""
-    pid = _launcher_pid()
+    if not is_supported_host():
+        return False
     sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    with _flocked(sd / "start.lock"):
+        return _stop_locked(sd)
+
+
+def _stop_locked(sd: Path) -> bool:
+    pid = _launcher_pid()
     if pid is None:
         (sd / "env").unlink(missing_ok=True)
         return False

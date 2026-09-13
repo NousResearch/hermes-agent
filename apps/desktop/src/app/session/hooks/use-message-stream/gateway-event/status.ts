@@ -1,18 +1,25 @@
+import { registryBackendScopeKey } from '@hermes/shared'
+
 import { translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
+import { reviewSummaryMessage } from '@/lib/chat-messages/review-summary'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import { setTurnStartedAt } from '@/store/session'
+import { $focusedRuntimeId, $focusedStoredSessionId, knownOwnerForSession } from '@/store/session-states'
+import { markSessionUnreadFinished } from '@/store/session-unread'
 import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
@@ -91,37 +98,46 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'review.summary') {
-    // Self-improvement background review saved something to memory/skills
-    // and emitted a persistent summary (Python formats it as
-    // "💾 Self-improvement review: …"). The CLI prints this via
-    // prompt_toolkit and the Ink TUI renders it as a system line; the
-    // desktop has neither, so without this handler the skill/memory
-    // change happens silently. Surface it as a persistent system message
-    // in the transcript so the user is always informed — it must not be a
-    // transient toast that can be missed.
-    //
-    // Typed here with the `review:` marker (same convention as `steer:` /
-    // `slash:`) so SystemMessage can paint it as the memory-write row it
-    // is instead of sniffing the backend's prose. The leading 💾 goes with
-    // it — the row draws its own glyph.
-    const text = coerceGatewayText(payload?.text)
-      .trim()
-      .replace(/^[^\p{L}\p{N}]+/u, '')
+    const receipt = reviewSummaryMessage(payload ?? {}, occurredAt)
 
-    if (text && sessionId) {
+    if (receipt && sessionId) {
       flushQueuedDeltas(sessionId)
-      updateSessionState(sessionId, state => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          {
-            id: `review-summary-${Date.now()}`,
-            role: 'system',
-            parts: [textPart(`review:${text}`, occurredAt)],
-            timestamp: occurredAt
-          }
-        ]
-      }))
+      let added = false
+
+      const next = updateSessionState(sessionId, state => {
+        if (state.messages.some(message => message.id === receipt.id)) {
+          return state
+        }
+
+        added = true
+
+        return { ...state, messages: [...state.messages, receipt] }
+      })
+
+      // Review finishes after the foreground busy->idle edge. Do not fake another
+      // turn, steal focus or re-light an already delivered receipt on replay.
+      const storedId =
+        next.storedSessionId || (typeof payload?.stored_session_id === 'string' ? payload.stored_session_id : null)
+
+      const profile = normalizeProfileKey(
+        event.profile || next.transcriptProvenance?.profile || deps.activeGatewayProfile
+      )
+
+      const focusedOwner = knownOwnerForSession($focusedRuntimeId.get() || $focusedStoredSessionId.get())
+
+      const focusedProfile =
+        typeof focusedOwner === 'string' ? focusedOwner : focusedOwner?.profile || $activeGatewayProfile.get()
+
+      const focusedConnection =
+        typeof focusedOwner === 'object' && focusedOwner ? focusedOwner.connectionId : activeGatewayConnectionId()
+
+      const fromFocusedOwner =
+        registryBackendScopeKey(event.connectionId ?? activeGatewayConnectionId(), profile) ===
+        registryBackendScopeKey(focusedConnection, normalizeProfileKey(focusedProfile))
+
+      if (added && storedId && !(storedId === $focusedStoredSessionId.get() && fromFocusedOwner)) {
+        markSessionUnreadFinished(storedId, profile)
+      }
     }
 
     return true

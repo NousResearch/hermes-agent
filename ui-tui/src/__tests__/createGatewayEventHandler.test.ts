@@ -309,6 +309,33 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
   })
 
+  it('deduplicates a replayed durable review and retains its authored timestamp', async () => {
+    const { toTranscriptMessages } = await import('../domain/messages.js')
+
+    let history = toTranscriptMessages([
+      {
+        role: 'system',
+        text: 'Saved',
+        timestamp: 123,
+        display_kind: 'review_summary',
+        display_metadata: { review_id: 'one' }
+      }
+    ])
+
+    const ctx = buildCtx([])
+
+    ctx.transcript.setHistoryItems = (update: (rows: Msg[]) => Msg[]) => {
+      history = update(history)
+    }
+
+    const onEvent = createGatewayEventHandler(ctx)
+    onEvent({ type: 'review.summary', payload: { text: 'Saved', review_id: 'one', timestamp: 123 } })
+    onEvent({ type: 'review.summary', payload: { text: 'Another', review_id: 'two', timestamp: 456 } })
+    expect(history).toHaveLength(2)
+    expect(history.map(row => row.createdAt)).toEqual([123, 456])
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+  })
+
   it('ignores review.summary events with empty or missing text', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

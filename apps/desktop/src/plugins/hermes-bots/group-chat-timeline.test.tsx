@@ -72,3 +72,28 @@ it('keeps every public member reply readable in room arrival order across interl
     expect(text).toContain(name)
   }
 })
+
+it('interleaves read-only review receipts by authored time without adding them to group dialogue', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  const log = [
+    { id: 'before', from: { kind: 'user' as const, name: 'You' }, text: 'BEFORE', at: 1000 },
+    { id: 'after', from: { kind: 'member' as const, name: 'Builder' }, text: 'AFTER', at: 3000 }
+  ]
+  $groupChats.set({
+    Room: {
+      log,
+      watermarks: {},
+      reviewReceipts: [{ id: 'r1', at: 2000, text: 'REVIEW SAVED', member: 'Builder', memberKey: 'Builder' }]
+    }
+  })
+  const { container } = render(<GroupChatWorkspace group="Room" members={[]} />)
+  const text = container.textContent || ''
+  expect(text.indexOf('REVIEW SAVED')).toBeGreaterThan(text.indexOf('BEFORE'))
+  expect(text.indexOf('AFTER')).toBeGreaterThan(text.indexOf('REVIEW SAVED'))
+  expect(container.querySelector('[data-review-receipt="r1"] time')?.getAttribute('datetime')).toBe(
+    '1970-01-01T00:00:02.000Z'
+  )
+  expect($groupChats.get().Room.log).toEqual(log)
+})

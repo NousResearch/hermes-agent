@@ -1396,6 +1396,25 @@ export const host = {
     })
   },
 
+  /** Read a session's review receipts from its explicit owning source. This
+   *  never resumes a hidden Group Chat runtime or changes the active profile. */
+  listReviewSummaries: async (
+    route: PluginProfileRoute,
+    sessionId: string
+  ): Promise<{ session_id: string; messages: unknown[] }> => {
+    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim() || !sessionId.trim()) {
+      throw new Error('Review reads require an owning route and stored session id')
+    }
+
+    const query = new URLSearchParams({ profile: route.targetProfile })
+
+    return hermesApi<{ session_id: string; messages: unknown[] }>({
+      connectionId: route.connectionId,
+      path: `/api/sessions/${encodeURIComponent(sessionId)}/review-summaries?${query.toString()}`,
+      timeoutMs: 15_000
+    })
+  },
+
   /** Mutate the durable hidden flag through the source primary. Keeping the
    *  owner profile in the body (not request.profile) prevents Electron from
    *  starting a profile backend merely to reconcile persisted visibility. */

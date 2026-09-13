@@ -77,6 +77,7 @@ export const SystemMessage: FC = () => {
         {detail && (
           <span className={cn(SCAFFOLD_LABEL_CLASS, 'tool-memory-legendary-meta min-w-0 wrap-anywhere')}>{detail}</span>
         )}
+        <MessageTimelineTimestamp className="shrink-0" />
       </MessagePrimitive.Root>
     )
   }

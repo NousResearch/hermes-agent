@@ -865,6 +865,9 @@ def build_turn_context(
     Order matters: the DB session row is created only AFTER the system prompt is built
     (else it persists system_prompt=NULL and costs a cache miss) and BEFORE preflight
     compression."""
+    # Hosts may supply raw display history instead of the model projection.
+    if conversation_history:
+        conversation_history = [m for m in conversation_history if m.get("display_kind") != "review_summary"]
     from agent.turn_context_compaction import run_turn_start_compaction
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).

@@ -638,6 +638,7 @@ export interface SessionInfo {
 }
 
 export type TimelineDisplayMetadata =
+  | { review_id: string; source_session_id?: string }
   | { model: string; provider?: string }
   | {
       delegation_id: string

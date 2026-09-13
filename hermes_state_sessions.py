@@ -591,6 +591,39 @@ class SessionSessionsMixin:
 
         return self._execute_write(_do)
 
+    def update_session_workspace_project_affinity(
+        self, session_id: str, *, cwd: str, project_id: str, project_root: str,
+        project_context_hash: str,
+    ) -> Optional[tuple[int, int]]:
+        """Atomically move a workspace and persist its Runtime-confirmed Project owner."""
+        normalized = tuple((value or "").strip() or None for value in (
+            project_id, project_root, project_context_hash,
+        ))
+        if not session_id or not cwd or not all(normalized):
+            return None
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT project_id, project_root, project_affinity_generation, project_context_hash, "
+                "git_metadata_generation FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            git_generation = int(row["git_metadata_generation"] or 0) + 1
+            current_affinity = (row["project_id"], row["project_root"], row["project_context_hash"])
+            affinity_generation = int(row["project_affinity_generation"] or 0)
+            if current_affinity != normalized:
+                affinity_generation += 1
+            conn.execute(
+                "UPDATE sessions SET cwd = ?, git_branch = NULL, git_repo_root = NULL, "
+                "git_metadata_generation = ?, project_id = ?, project_root = ?, "
+                "project_affinity_generation = ?, project_context_hash = ? WHERE id = ?",
+                (cwd, git_generation, *normalized[:2], affinity_generation, normalized[2], session_id),
+            )
+            return git_generation, affinity_generation
+
+        return self._execute_write(_do)
+
     def backfill_repo_roots(self, cwd_to_root: Dict[str, str]) -> None:
         """Backfill git repo roots for cwds without one; never clobbers a recorded root."""
         pairs = [(root, cwd) for cwd, root in cwd_to_root.items() if root and cwd]

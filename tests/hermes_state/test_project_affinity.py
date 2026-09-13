@@ -196,3 +196,34 @@ def test_compression_child_inherits_project_affinity_atomically(tmp_path):
         assert child["project_context_hash"] == parent["project_context_hash"] == "sha256:context"
     finally:
         db.close()
+
+
+def test_workspace_and_project_affinity_move_is_one_persisted_claim(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        old_cwd = str(tmp_path / "old")
+        new_cwd = str(tmp_path / "new")
+        db.create_session("move", source="desktop", cwd=old_cwd)
+
+        first = db.update_session_workspace_project_affinity(
+            "move", cwd=new_cwd, project_id="project-1", project_root=new_cwd,
+            project_context_hash="sha256:one",
+        )
+        second = db.update_session_workspace_project_affinity(
+            "move", cwd=new_cwd, project_id="project-1", project_root=new_cwd,
+            project_context_hash="sha256:one",
+        )
+
+        row = db.get_session("move")
+        assert first == (1, 1)
+        assert second == (2, 1)
+        assert row["cwd"] == new_cwd
+        assert row["git_metadata_generation"] == 2
+        assert row["git_branch"] is None
+        assert row["git_repo_root"] is None
+        assert row["project_id"] == "project-1"
+        assert row["project_root"] == new_cwd
+        assert row["project_affinity_generation"] == 1
+        assert row["project_context_hash"] == "sha256:one"
+    finally:
+        db.close()

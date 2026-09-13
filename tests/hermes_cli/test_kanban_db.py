@@ -469,8 +469,25 @@ def test_complete_task_structured_refusals_preserve_dependency_and_cas_invariant
         ok, refusal = kb.complete_task(conn, parent_a, with_reason=True)
         assert (ok, refusal.code, refusal.task_status) == (False, "terminal_state", "done")
 
-        assert kb.complete_task(conn, parent_b)
+        running = kb.create_task(conn, title="running")
+        claimed = kb.claim_task(conn, running)
+        ok, refusal = kb.complete_task(
+            conn, running, expected_run_id=claimed.current_run_id + 1, with_reason=True,
+        )
+        assert (ok, refusal.code) == (False, "run_mismatch")
+        assert kb.complete_task(conn, running, expected_run_id=claimed.current_run_id)
+
+        acceptance_task = kb.create_task(conn, title="acceptance")
         original_prepare = acceptance_store.prepare_acceptance
+        monkeypatch.setattr(acceptance_store, "prepare_acceptance", lambda *_args: False)
+        ok, refusal = kb.complete_task(conn, acceptance_task, with_reason=True)
+        assert (ok, refusal.code) == (False, "acceptance_refused")
+        monkeypatch.setattr(acceptance_store, "prepare_acceptance", original_prepare)
+
+        successful = kb.create_task(conn, title="successful")
+        assert kb.complete_task(conn, successful, with_reason=True) == (True, None)
+
+        assert kb.complete_task(conn, parent_b)
 
         def reopen_parent(db, task_id, expected_run_id, metadata):
             with kb.write_txn(db):

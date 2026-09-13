@@ -86,6 +86,23 @@ def platform_gate_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def decode_json_list_literal(raw):
+    """Decode a JSON-encoded allowlist written by ``hermes config set``.
+
+    String-typed defaults keep list literals verbatim on write (``allowed_chats`` is
+    declared as ``""``), so the config can hold ``'["-100","-200"]'`` as a string.
+    Malformed JSON passes through unchanged and keeps the legacy comma-split path.
+    """
+    if isinstance(raw, str) and raw.lstrip()[:1] == "[":
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            return raw
+        if isinstance(loaded, list):
+            return loaded
+    return raw
+
+
 def extra_or_secret(extra: Optional[dict], key: str, env: str, default: Any = "",
                     *, blank_is_unset: bool = True) -> Any:
     """``config.extra[key]`` when set, else the scoped env var ``env`` (else ``default``).

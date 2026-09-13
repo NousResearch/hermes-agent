@@ -938,24 +938,17 @@ def _spawn_side_agent(
 
     def run():
         session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
-        # Bug #50233: ephemeral agent threads don't inherit the session's HERMES_HOME override (the
-        # ContextVar set on the session-create thread doesn't propagate here), so a background turn under a
-        # non-default profile would run against the wrong home. Re-bind the override for the duration of
-        # this turn, exactly as the normal prompt turn does, and restore it afterward.
-        # Bug #50233: ephemeral preview-restart agent threads don't inherit the session's HERMES_HOME
-        # override (the ContextVar set on the session-create thread doesn't propagate here). Re-bind it for
-        # the duration of the turn, mirroring the normal prompt turn, then restore it. NOTE: we deliberately
-        # do NOT close this agent through task-wide process cleanup — the whole point of preview.restart is
-        # to leave a background server running under this task_id, and AIAgent.close() would kill every
-        # process for the task_id and tear down the very server the restart just started.
-        profile_home = session.get("profile_home")
-        home_token = set_hermes_home_override(profile_home) if profile_home else None
+        # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
+        # session-create thread), so a side turn under a non-default profile ran against the wrong home.
+        # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
+        # does: home alone left terminal_tool on the launch process's ambient TERMINAL_* (a docker
+        # secondary's background/btw/preview agent ran local). NOTE: we deliberately do NOT close this
+        # agent through task-wide process cleanup — the whole point of preview.restart is to leave a
+        # background server running under this task_id, and AIAgent.close() would kill every process for
+        # the task_id and tear down the very server the restart just started.
         try:
-            try:
+            with _session_profile_runtime_scope(session):
                 text = body()
-            finally:
-                if home_token is not None:
-                    reset_hermes_home_override(home_token)
             _emit(event, parent, {"task_id": task_id, **extra, "text": text})
         except Exception as e:
             _emit(event, parent, {"task_id": task_id, **extra, "text": f"error: {e}"})

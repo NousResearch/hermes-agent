@@ -492,6 +492,11 @@ def _profile_home(profile: str | None) -> Path | None:
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)
+    if home not in _served_profile_homes:
+        # Last moment ambient TERMINAL_* is provably the launch profile's own: freeze it for
+        # launch-profile turns before any secondary code runs (tui_gateway/launch_terminal_policy.py).
+        from tui_gateway.launch_terminal_policy import capture_launch_terminal_env
+        capture_launch_terminal_env()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 

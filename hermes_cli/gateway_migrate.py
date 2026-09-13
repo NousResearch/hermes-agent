@@ -37,6 +37,8 @@ class ProfileGateway:
     home: Path
     pid: Optional[int] = None
     service: Optional[tuple[str, bool]] = None  # ("systemd", system) | ("launchd", False)
+    uid: Optional[int] = None  # owner of the gateway process/unit; None = unknown (never "different")
+    runtime_home: Optional[Path] = None  # HERMES_HOME the installed unit pins, when it differs from ``home``
 
     @property
     def is_default(self) -> bool:
@@ -56,6 +58,7 @@ class ProfileGateway:
         return {
             "profile": self.name, "home": str(self.home), "pid": self.pid,
             "service": None if self.service is None else {"kind": self.service[0], "system": self.service[1]},
+            "uid": self.uid, "runtime_home": None if self.runtime_home is None else str(self.runtime_home),
         }
 
 
@@ -163,6 +166,11 @@ def _live_gateway_pid(home: Path) -> Optional[int]:
     with contextlib.suppress(Exception):
         return get_runtime_status_running_pid(read_runtime_status(home / "gateway_state.json"), expected_home=home)
     return None
+
+
+def _gateway_identity(home: Path, pid: Optional[int], service: Optional[tuple[str, bool]]) -> tuple[Optional[int], Path]:
+    from hermes_cli.gateway_migrate_guards import gateway_identity
+    return gateway_identity(home, pid, service)
 
 
 def _installed_service(home: Path) -> Optional[tuple[str, bool]]:
@@ -392,10 +400,12 @@ def build_migration_plan() -> MigrationPlan:
     """Enumerate profiles + their gateway footprint, then run every preflight check."""
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
     default_home = _default_home()
-    profiles = [
-        ProfileGateway(name=name, home=home, pid=_live_gateway_pid(home), service=_installed_service(home))
-        for name, home in _profile_homes()
-    ]
+    profiles = []
+    for name, home in _profile_homes():
+        pid, service = _live_gateway_pid(home), _installed_service(home)
+        uid, runtime_home = _gateway_identity(home, pid, service)
+        profiles.append(ProfileGateway(name=name, home=home, pid=pid, service=service, uid=uid,
+                                       runtime_home=None if runtime_home == home else runtime_home))
     plan = MigrationPlan(
         default_home=default_home, profiles=profiles,
         multiplex_flag_on=_read_multiplex_flag(default_home),
@@ -407,6 +417,10 @@ def build_migration_plan() -> MigrationPlan:
     configs = _load_profile_configs(plan)
     for check in _PREFLIGHT_CHECKS:
         check(plan, configs)
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers
+    # Notices, not blockers: the explicit command is the operator's decision; only the update hook
+    # refuses to cross these boundaries on its own.
+    plan.notices.extend(f"Not migrated automatically by `hermes update`: {b}" for b in auto_migration_blockers(plan))
     plan.notices.append(
         "Profiles created after the migration are served by the running multiplexer as soon as "
         "they exist (it rescans profiles/ on create/delete and every 30s)."
@@ -508,11 +522,11 @@ def format_rollback_plan(default_home: Path, manifest: dict, *, dry_run: bool) -
     return lines
 
 
-def format_update_warning(plan: MigrationPlan) -> list[str]:
+def format_update_warning(plan: MigrationPlan, auto_blockers: list[str]) -> list[str]:
     return [
         "⚠ Your profiles each run their own gateway. A single multiplexed gateway is the recommended",
         "  setup, but this install cannot be migrated automatically yet:",
-        *[f"    • {b}" for b in plan.blockers],
+        *[f"    • {b}" for b in (*plan.blockers, *auto_blockers)],
         f"  After fixing the above, run:  {MIGRATE_COMMAND}",
         "  (`hermes update` will migrate automatically once nothing blocks it.)",
     ]
@@ -774,15 +788,19 @@ def cmd_migrate(args) -> None:
 
 def maybe_auto_migrate_after_update() -> None:
     """``hermes update`` hook: with >= 2 profiles, per-profile gateways present and multiplex off,
-    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block."""
-    if _host_supports_migration() is not None:
+    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block.
+    ``gateway.auto_multiplex_migration: false`` on the default profile opts out; a secondary behind a
+    service-domain / UNIX-user / HERMES_HOME boundary blocks this path only (the explicit command decides)."""
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers, auto_migration_opted_out
+    if _host_supports_migration() is not None or auto_migration_opted_out(_default_home()):
         return
     plan = build_migration_plan()
     if plan.already_multiplexed or len(plan.profiles) < 2 or not plan.standalone_secondaries:
         return
     print()
-    if plan.blocked:
-        _print(format_update_warning(plan))
+    auto_blockers = auto_migration_blockers(plan)
+    if plan.blocked or auto_blockers:
+        _print(format_update_warning(plan, auto_blockers))
         return
     print("→ Migrating per-profile gateways onto one multiplexed default gateway...")
     _print(format_plan(plan, dry_run=False))

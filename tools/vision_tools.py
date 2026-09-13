@@ -797,7 +797,7 @@ async def vision_analyze_tool(
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
 
-def check_vision_requirements() -> bool:
+def check_video_requirements() -> bool:
     """True when ``call_llm(task="vision")`` could resolve a client.
 
     Mirrors its fallback chain: explicit ``auxiliary.vision.provider``, then auto (main
@@ -813,6 +813,15 @@ def check_vision_requirements() -> bool:
         return any(
             resolve_vision_provider_client(**kw)[1] is not None for kw in ({}, {"provider": "auto"})
         )
+
+
+def check_vision_requirements() -> bool:
+    """Image gate (``vision_analyze``, ``browser_vision``): an aux vision client OR the native fast
+    path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
+    provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
+    ``video_analyze`` keeps the aux-only gate — its handler has no native path.
+    """
+    return _should_use_native_vision_fast_path() or check_video_requirements()
 
 
 from tools.registry import registry, tool_error
@@ -1044,7 +1053,7 @@ registry.register(
     toolset="video",
     schema=VIDEO_ANALYZE_SCHEMA,
     handler=_handle_video_analyze,
-    check_fn=check_vision_requirements,
+    check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬")
 

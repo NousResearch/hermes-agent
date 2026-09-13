@@ -48,6 +48,7 @@ _ALLOW_BOTS_ENV = {
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
+from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal  # noqa: E402
 from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
 
 
@@ -67,9 +68,10 @@ def _registry_entry(platform):
 
 
 def _coerce_allow_set(raw) -> set[str]:
-    """Parse an allowlist (YAML list or comma-separated scalar) into a set of strings."""
+    """Parse an allowlist (YAML list, JSON list literal string, or comma-separated scalar) into a set of strings."""
     if raw is None:
         return set()
+    raw = _decode_json_list_literal(raw)
     if isinstance(raw, list):
         return {str(part).strip() for part in raw if str(part).strip()}
     return {part.strip() for part in str(raw).split(",") if part.strip()}

@@ -18,7 +18,11 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal,
+    get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env,
+)
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -5058,6 +5062,7 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get(key)
         if raw is None:
             raw = _scoped_gate_env(env_name)
+        raw = _decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -5131,6 +5136,7 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("ignored_threads")
         if raw is None:
             raw = _scoped_gate_env("TELEGRAM_IGNORED_THREADS")
+        raw = _decode_json_list_literal(raw)
         ignored: set[int] = set()
         for value in (raw if isinstance(raw, list) else str(raw).split(",")):
             text = str(value).strip()

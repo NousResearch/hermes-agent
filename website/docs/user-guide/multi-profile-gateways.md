@@ -327,8 +327,11 @@ profile B receives B's value for such a name, or nothing if B has none, never th
 default profile's. MCP servers are connected **per profile**: two profiles that
 both name a server `github` with their own token get two connections and each
 sees only its own tools; profiles whose `mcp_servers` entry is identical (same
-route *and* credentials) share one connection, and an owner's `/reload-mcp`
-re-registers the sharing profiles' tools without them reloading. Terminal settings
+route *and* credentials, including mTLS `client_cert`/`client_key`) share one
+connection, and an owner's `/reload-mcp`
+re-registers the sharing profiles' tools without them reloading. `auth: oauth`
+servers are never shared across profiles: each profile holds its own token under
+its own `mcp-tokens/` and opens its own connection. Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the
@@ -450,7 +453,10 @@ adapters are built the moment its `config.yaml`/`.env` carries a bot token
 default profile's `gateway_state.json` is updated, and `hermes -p <name> gateway
 status` reports it as served — no restart, and the other profiles' adapters and
 in-flight turns are untouched. Deleting a profile stops and unroutes its
-adapters the same way. The one-credential-one-poller rule still applies: a
+adapters the same way, and `hermes profile rename` unroutes the old name before
+the directory moves and hot-serves the new one (the old name is not resurrected
+by the adapters or the cron ticker that were still bound to it). The
+one-credential-one-poller rule still applies: a
 hot-added profile that reuses another profile's token is parked with a
 `duplicate_credential` error, never started as a second poller.
 
@@ -805,6 +811,43 @@ Single-profile installs are never migrated (there is nothing to gain), and an
 install that is already multiplexing is left alone. `hermes update` also does
 nothing when no secondary profile runs its own gateway — it never flips modes
 on an install where nothing was running.
+
+### Boundaries `hermes update` never crosses on its own
+
+The unattended hook only folds profiles that share **one UNIX user, one service
+domain and one `profiles/` tree** — the shape `hermes profile create` produces.
+A standalone secondary behind any of these boundaries stops the automatic path:
+
+| boundary | example |
+|---|---|
+| different service manager or scope | default on user systemd, a secondary on **system** systemd (or launchd), or the default detached with a service-managed secondary |
+| different UNIX user | a system unit with its own `User=`, or a live gateway owned by another uid |
+| `HERMES_HOME` outside `<default home>/profiles/` | a unit pinning `HERMES_HOME=/opt/hermes/profiles/emma` |
+
+In that case `hermes update` prints the boundary it found plus
+`hermes gateway migrate --multiplex`, and changes nothing — no unit is removed
+and `gateway.multiplex_profiles` stays off. Collapsing such a fleet replaces a
+kernel-enforced boundary (file ownership, `User=`) with in-process isolation,
+which is an operator's decision. The explicit command still makes it: the same
+findings appear as **notices** in `hermes gateway migrate --multiplex --dry-run`
+so you can read them first, and `--multiplex` proceeds when you confirm.
+
+### Opting out of the automatic migration
+
+Set `gateway.auto_multiplex_migration: false` on the **default** profile to keep
+the automatic fold from ever running on this install:
+
+```bash
+hermes config set gateway.auto_multiplex_migration false
+```
+
+`hermes update` then leaves per-profile gateways exactly as they are, with no
+output and no changes, however eligible the install looks. The setting lives in
+config, so it survives updates — the decision is made once rather than
+re-litigated on every release. It governs the **automatic** path only:
+`hermes gateway migrate --multiplex` is an explicit request and still migrates
+(and is the supported way to opt back in). Absent or `true` keeps the default
+behaviour described above.
 
 The explicit command is different: `hermes gateway migrate --multiplex` with
 two or more profiles and **no** standalone secondary gateway still applies the

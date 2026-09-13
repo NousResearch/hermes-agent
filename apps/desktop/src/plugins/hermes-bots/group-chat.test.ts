@@ -102,8 +102,9 @@ describe('room naming', () => {
 describe('speaker labels', () => {
   it('the default profile speaks as Hermes in transcripts, not @default', async () => {
     const { rounds } = await loadRoom()
+    const { formatGroupChatLine } = await import('./group-round-prompt')
 
-    const line = rounds.formatGroupChatLine(
+    const line = formatGroupChatLine(
       { from: { kind: 'member', name: 'default' }, text: 'hello room' } as GroupMessage,
       'builder'
     )
@@ -112,15 +113,16 @@ describe('speaker labels', () => {
 
     // Other members keep their profile name; the (you) suffix survives.
     expect(
-      rounds.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' } as GroupMessage, 'default')
+      formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' } as GroupMessage, 'default')
     ).toBe('Hermes (you): hi')
     expect(
-      rounds.formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' } as GroupMessage, 'research')
+      formatGroupChatLine({ from: { kind: 'member', name: 'builder' }, text: 'yo' } as GroupMessage, 'research')
     ).toBe('builder: yo')
   })
 
   it('honor friendly identity: Bot Mode title, then display_name, never a stale Hermes', async () => {
     const { chat, rounds } = await loadRoom()
+    const { formatGroupChatLine } = await import('./group-round-prompt')
     const data = await import('./data')
 
     // A renamed default (core display_name via `hermes profile rename`) must
@@ -130,7 +132,7 @@ describe('speaker labels', () => {
 
     expect(chat.groupSpeakerLabel('default')).toBe('Lucy')
     expect(
-      rounds.formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' } as GroupMessage, 'builder')
+      formatGroupChatLine({ from: { kind: 'member', name: 'default' }, text: 'hi' } as GroupMessage, 'builder')
     ).toBe('Lucy: hi')
 
     // A Bot Mode title outranks display_name (same precedence as displayName).

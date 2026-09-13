@@ -154,6 +154,10 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Opt in only when a timed-out probe can kill its command without tearing
+    # down the whole backend. SDK adapters cancel by stopping the sandbox.
+    _sudo_nopasswd_probe_supported: bool = False
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False
@@ -472,6 +476,15 @@ class BaseEnvironment(ABC):
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
         pass
 
+    def _mark_recreated(self) -> None:
+        """Flag that the live container/sandbox was replaced while serving the
+        current command. ``execute`` folds the flag into the result as
+        ``environment_recreated`` so the tool layer can warn the model that
+        background processes died and non-persisted files may be gone —
+        without this the recovery is silent and the model keeps assuming the
+        old workspace state (lobehub/lobehub#19329 class)."""
+        self._recreated_notice_pending = True
+
     # --- Unified execute() ---
     def execute(
         self,
@@ -562,6 +575,9 @@ class BaseEnvironment(ABC):
             {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
             if bounded.timed_out else bounded.value)
         self._update_cwd(result)
+        if getattr(self, "_recreated_notice_pending", False):
+            self._recreated_notice_pending = False
+            result["environment_recreated"] = True
         return result
 
     def _kill_spawned_tree(self, spawned) -> None:
@@ -587,9 +603,22 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
+        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD."""
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(command)
+        return _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works)
+
+    _SUDO_PROBE_TIMEOUT_S = 3
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
+        Fails closed: any error or a timed-out probe means "assume a password is needed"."""
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        try:
+            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

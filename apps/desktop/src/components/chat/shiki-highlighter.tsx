@@ -123,19 +123,20 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   defer = false
 }) => {
   const { t } = useI18n()
-  const trimmed = (code ?? '').replace(/^\n+/, '').trimEnd()
+  // Preserve the parser payload for both display and copy, including whitespace.
+  const content = code ?? ''
 
   // Streaming may hand us empty/incomplete fences — render nothing rather
   // than a transient empty card.
-  if (!trimmed.trim()) {
+  if (!content.trim()) {
     return null
   }
 
-  if (isLikelyProseCodeBlock(language, trimmed)) {
-    return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{trimmed}</div>
+  if (isLikelyProseCodeBlock(language, content)) {
+    return <div className="aui-prose-fence whitespace-pre-wrap wrap-anywhere text-foreground">{content}</div>
   }
 
-  const plain = defer || exceedsHighlightBudget(trimmed)
+  const plain = defer || exceedsHighlightBudget(content)
 
   return (
     <CodeCard data-streaming={defer ? 'true' : undefined}>
@@ -145,15 +146,15 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         iconClassName="size-2.5"
         label={t.assistant.tool.copyCode}
         showLabel={false}
-        text={trimmed}
+        text={content}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
             {plain ? (
-              <PlainCode code={trimmed} />
+              <PlainCode code={content} />
             ) : (
-              <LazyShiki code={trimmed} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
+              <LazyShiki code={content} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
             )}
           </Pre>
         </ExpandableBlock>

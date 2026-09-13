@@ -137,6 +137,7 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys, 
     assert again.already_multiplexed and gm.apply_migration(again) is True
 
     fleet.ops.clear()
+    fleet.pids["default"] = os.getpid()
 
     def _graceful_restart(home):
         # The managed gateway accepts its own deferred restart only after every secondary is restored.

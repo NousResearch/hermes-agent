@@ -61,8 +61,10 @@ normalize_modal_mode = coerce_modal_mode
 
 
 def has_direct_modal_credentials() -> bool:
-    """Return True when direct Modal credentials/config are available."""
-    if os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"):
+    """Return True when direct Modal credentials/config are available. The token pair is a
+    profile credential: read it through the secret scope so the default profile's Modal
+    account never selects the direct backend for a multiplexed secondary."""
+    if _scoped_credential("MODAL_TOKEN_ID") and _scoped_credential("MODAL_TOKEN_SECRET"):
         return True
     try:
         return (Path.home() / ".modal.toml").exists()

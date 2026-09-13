@@ -439,7 +439,7 @@ class GatewaySlashCommandsMixin(
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
-        if sibling_keys and self._is_user_authorized(source):
+        if sibling_keys and self._is_user_authorized_for_source(source):
             for sibling_key in sibling_keys:
                 await _stop(sibling_key, "stop_command_thread_sibling")
             logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",

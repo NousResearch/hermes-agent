@@ -139,10 +139,17 @@ def _nous_inference_env_override() -> Optional[str]:
     """User-set ``NOUS_INFERENCE_BASE_URL`` override (trailing slash stripped) or None.
 
     Documented dev/staging escape hatch; the env source is trusted, so unlike Portal-returned URLs
-    it is intentionally NOT gated by the network host allowlist.
+    it is intentionally NOT gated by the network host allowlist. Read through the profile-aware
+    resolver so a multiplexed profile uses its own override and never inherits the default
+    profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        override = get_secret("NOUS_INFERENCE_BASE_URL")
+    except UnscopedSecretError:
+        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
+    return _optional_base_url(override)
 
 
 def _nous_portal_env_override() -> Optional[str]:

@@ -187,7 +187,7 @@ def _typed_stop_phrase_response(rid, text):
     return _ok(rid, {"voice_stopped": True})
 
 
-_HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation"}
+_HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
 
 
 def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
@@ -537,6 +537,10 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+# Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
+_CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -575,8 +579,13 @@ def _(rid, params: dict) -> dict:
         # leaves the session untouched.  The reason travels as machine-readable data.
         reason = getattr(limit_message, "reason", None)
         return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
+    # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
+    session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
+    # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
+    # user row stays the words the user said); anything else clears it.
+    voice_context = params.get("voice_context")
+    session["voice_live_context"] = (
+        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or

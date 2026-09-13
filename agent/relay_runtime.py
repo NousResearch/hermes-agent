@@ -922,7 +922,14 @@ class RelaySessionCoordinator:
             return host.register_subagent(event, metadata=metadata)
         return host.ensure_session({"session_id": session_id}, metadata=metadata)
 
-    def begin_turn(self, lease: ConversationLease, *, turn_id: str, task_id: str) -> RelayTurnContext:
+    def begin_turn(
+        self,
+        lease: ConversationLease,
+        *,
+        turn_id: str,
+        task_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> RelayTurnContext:
         if lease.released:
             raise RuntimeError("Hermes Relay conversation lease is released")
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
@@ -942,10 +949,17 @@ class RelaySessionCoordinator:
         if host is not None:
             # Rotation happens HERE: no live turn scope on the stack, so the session scope can close/reopen LIFO.
             _warn_on_error("segment rotation", self._maybe_rotate_segment, host, lease.session)
+            turn_metadata = dict(metadata or {})
+            turn_metadata.update(
+                runtime_metadata(
+                    host.runtime_id,
+                    **{"hermes.execution_surface": lease.platform or "unknown"},
+                )
+            )
             turn.handle = _warn_on_error(
                 "turn initialization", host.run_in_session, lease.session, host.relay.scope.push,
                 TURN_SCOPE, host.relay.ScopeType.Function, handle=lease.session.handle, input={},
-                metadata=runtime_metadata(host.runtime_id, **{"hermes.execution_surface": lease.platform or "unknown"}),
+                metadata=turn_metadata,
                 timeout=_SCOPE_OP_TIMEOUT,
             )
         turn._previous_turn = _CURRENT_TURN.get()

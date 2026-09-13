@@ -30,6 +30,7 @@ import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
 import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt, showTip } from '@/store/tips'
+import { checkTutorialLifetime } from '@/store/tutorial-lifetime'
 
 import { offerLocalSetupTip } from './local-setup-offer'
 
@@ -68,6 +69,8 @@ export function useTipRotation(copy: Translations['tips']) {
   const navigate = useNavigate()
 
   useEffect(() => {
+    checkTutorialLifetime()
+
     let lastTypedAt = 0
     let settledAt = Date.now() + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
 
@@ -82,6 +85,8 @@ export function useTipRotation(copy: Translations['tips']) {
     }
 
     const offer = () => {
+      checkTutorialLifetime()
+
       if (!$tipsEnabled.get() || $activeTip.get()) {
         return
       }

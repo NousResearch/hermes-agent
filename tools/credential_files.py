@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 # Session-scoped registry; ContextVar prevents cross-session bleed in the gateway.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
 
-# Cache for config-based file list (loaded once per process; tests reset it).
-_config_files: List[Dict[str, str]] | None = None
+# Cache for config-based file list, one entry per profile home (tests reset it).
+_config_files: Dict[str, List[Dict[str, str]]] = {}
 # Reused across calls so sanitized skill copies don't accumulate.
 _safe_skills_tempdir: Path | None = None
 
@@ -118,10 +118,14 @@ def register_credential_files(entries: list, container_base: str = "/root/.herme
 
 
 def _load_config_files() -> List[Dict[str, str]]:
-    """Load ``terminal.credential_files`` from config.yaml (cached)."""
-    global _config_files
-    if _config_files is not None:
-        return _config_files
+    """Load ``terminal.credential_files`` from config.yaml (cached per profile home: the
+    multiplexed gateway must never mount the launch profile's credential files into a
+    secondary profile's sandbox)."""
+    from hermes_constants import hermes_home_key
+    home_key = hermes_home_key()
+    cached = _config_files.get(home_key)
+    if cached is not None:
+        return cached
 
     result: List[Dict[str, str]] = []
     try:
@@ -141,8 +145,8 @@ def _load_config_files() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
-    _config_files = result
-    return _config_files
+    _config_files[home_key] = result
+    return result
 
 
 def get_credential_file_mounts() -> List[Dict[str, str]]:
@@ -301,7 +305,7 @@ def map_cache_path_to_container(host_path: str, container_base: str = "/root/.he
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:
     """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless Docker + cache dir."""
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if _terminal_backend() != "docker":
         return container_path
     mapped = _remap_cache_path(container_path, container_base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
     return mapped if mapped is not None else container_path
@@ -310,6 +314,13 @@ def from_agent_visible_cache_path(container_path: str, container_base: str = "/r
 # Backends whose file-sync lands under the remote home: ``~/.hermes`` is
 # expanded by the remote shell, so it resolves regardless of the actual home.
 _HOME_RELATIVE_BACKENDS = frozenset({"ssh", "daytona", "vercel_sandbox"})
+
+
+def _terminal_backend() -> str:
+    """Active ``TERMINAL_ENV`` through the per-turn terminal scope (a routed multiplex profile's
+    backend, never the launch profile's process env)."""
+    from tools.terminal_scope import terminal_env
+    return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
 
 
 def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.hermes") -> str:
@@ -326,7 +337,7 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     actual remote home. Previously these backends synced the bytes but still rendered the dangling host path
     (#76577 gap).
     """
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    backend = _terminal_backend()
     if backend in _HOME_RELATIVE_BACKENDS:
         container_base = "~/.hermes"
     elif backend not in ("docker", "modal"):

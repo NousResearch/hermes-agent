@@ -36,7 +36,6 @@ from hermes_constants import named_profile_is_deleted
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -720,38 +719,19 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool, profile_allowlist: Optional[List[str]] = None) -> List[Tuple[str, Path]]:
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
-    ``multiplex=True``: default plus every live named profile, optionally filtered by
-    *profile_allowlist* (invalid entries skipped, missing ones warned once)."""
+    ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
+    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
     active = get_active_profile_name() or "default"
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    allowed: Optional[set[str]] = None
-    if profile_allowlist is not None:
-        allowed = set()
-        for entry in profile_allowlist:
-            if not isinstance(entry, str):
-                continue
-            try:
-                name = _canon_valid(entry)
-            except ValueError:
-                continue
-            if name != "default":
-                allowed.add(name)
-    for entry in _iter_named_profile_dirs():
-        if allowed is None or entry.name in allowed:
-            serve.append((entry.name, entry))
-    if allowed is not None:
-        missing = tuple(sorted(allowed - {name for name, _ in serve}))
-        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
-            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
-            logger.warning("Skipping missing gateway.multiplex_profile_allowlist profile(s): %s", ", ".join(missing))
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
     return serve
 
 
@@ -848,12 +828,17 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
 def _initialize_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    clone_channels: bool = False,
     *, _target_dir: Path,
 ) -> Path:
     """Initialize a staged profile directory before publication.
 
     ``clone_from`` defaults to the active profile when cloning. ``clone_all`` copies all state;
     ``clone_config`` copies config.yaml/.env/SOUL.md, installed skills, and identity files.
+    Either clone strips the source's messaging channels — bot tokens, allowlists, platform
+    sections, pairing/session state — unless ``clone_channels`` opts in: a copied bot credential
+    makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
+    was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills."""
     if no_skills and (clone_from is not None or clone_config or clone_all):
@@ -874,6 +859,11 @@ def _initialize_profile(
         _clone_all_into(source_dir, profile_dir, canon)
     else:
         _bootstrap_profile_dir(profile_dir, source_dir)
+    if source_dir is not None and not clone_channels:
+        from hermes_cli.profile_channels import strip_channel_settings
+        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
+        if stripped:
+            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
 
     # Seed an empty .env so the profile owns a credentials file from day one. Without it,
     # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
@@ -920,6 +910,7 @@ def create_profile(
     no_alias: bool = False,
     no_skills: bool = False,
     description: Optional[str] = None,
+    clone_channels: bool = False,
 ) -> Path:
     """Build a named profile behind a tombstone, then publish it atomically."""
     canon = normalize_profile_name(name)
@@ -936,6 +927,7 @@ def create_profile(
             no_alias=no_alias,
             no_skills=no_skills,
             description=description,
+            clone_channels=clone_channels,
             _target_dir=staging_dir,
         )
 
@@ -946,7 +938,15 @@ def create_profile(
         initialize,
     )
     _maybe_register_gateway_service(canon)
+    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+    # rescans periodically, so a missed signal only delays serving).
+    _notify_multiplexer(canon)
     return profile_dir
+
+
+def _notify_multiplexer(canon: str) -> None:
+    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    notify_multiplexer_profiles_changed(canon)
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
@@ -1335,6 +1335,10 @@ def _delete_profile_confirmed(
     # the rmtree below fail with ENOTEMPTY and — before the ensure_hermes_home
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
+
+    # The retirement tombstone tells the multiplexer to stop this profile's adapters and
+    # release its handles before we remove the directory.
+    _notify_multiplexer(canon)
 
     with contextlib.suppress(Exception):
         from hermes_state_registry import close_all_under as _close_session_dbs_under

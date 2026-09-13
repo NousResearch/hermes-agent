@@ -194,8 +194,8 @@ def recommended_entry(budget: HardwareBudget,
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
     (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
     the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
-    candidate); fastest-resident (nothing resident clears the floor); least-painful-spilled
-    (nothing runs resident; fastest from host memory — MoE by construction).
+    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
+    eligible entry runs resident; spilled models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
@@ -213,7 +213,9 @@ def recommended_entry(budget: HardwareBudget,
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
     if resident:
         return (max(resident, key=speed)[0], "fastest-resident")
-    return (max(fitting, key=lambda t: speed(t, spilled=True))[0], "least-painful-spilled")
+    # A spilled model may be usable, but it is not a recommendation. Keep it
+    # discoverable through Browse so the user can opt in with the degradation visible.
+    return None
 
 
 # ── catalog data: packaged JSON, refreshed from GitHub in memory ─

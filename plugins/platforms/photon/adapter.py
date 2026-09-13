@@ -759,7 +759,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
             source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
-                                       user_id=sender_id, user_name=sender_id or None)
+                                       user_id=sender_id, user_name=sender_id or None, message_id=message_id)
             return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
                                 raw_message=event, timestamp=timestamp, **kwargs)
         if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)

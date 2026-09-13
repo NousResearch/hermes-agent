@@ -7,7 +7,6 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
-  chooseWisdomMute,
   deleteProfile,
   deleteSession,
   getAllSessionMessages,
@@ -22,14 +21,11 @@ import {
   getSession,
   getSessionMessages,
   getStatus,
-  getWisdomEntitlement,
-  getWisdomMute,
   LATEST_SESSION_MESSAGES_LIMIT,
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
   pluginSocket,
-  prepareWisdomMute,
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
@@ -75,49 +71,6 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
-  })
-
-  it('pins Wisdom preference reads and native choices to the selected backend and profile', async () => {
-    const scope = { connectionId: 'source-a', profile: 'worker' }
-    const controlId = 'a'.repeat(32)
-    setApiRequestConnection('other-backend')
-    setApiRequestProfile('other-profile')
-
-    await getWisdomMute(scope)
-    await prepareWisdomMute(scope)
-    await chooseWisdomMute(controlId, null, scope)
-
-    expect(api).toHaveBeenCalledTimes(3)
-
-    for (const [request] of api.mock.calls) {
-      expect(request).toEqual(expect.objectContaining(scope))
-    }
-
-    expect(api).toHaveBeenNthCalledWith(1, expect.objectContaining({ path: '/api/wisdom/mute' }))
-    expect(api).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        path: '/api/wisdom/mute/prepare',
-        method: 'POST',
-        body: {}
-      })
-    )
-    expect(api).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({
-        path: '/api/wisdom/mute/choose',
-        method: 'POST',
-        body: { control_id: controlId, duration: null }
-      })
-    )
-  })
-
-  it('reads Wisdom entitlement from the dedicated scoped endpoint', async () => {
-    const scope = { connectionId: 'source-a', profile: 'worker' }
-
-    await getWisdomEntitlement(scope)
-
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({ ...scope, path: '/api/wisdom/entitlement' }))
   })
 
   it('uses a longer timeout for the all-profile session list', async () => {

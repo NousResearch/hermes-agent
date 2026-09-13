@@ -1161,6 +1161,9 @@ export function installBrowserDesktopBridge(): boolean {
         return false
       }
     },
+    savePastedText: (text: string) => stageBrowserFile(
+      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), browserProfile()
+    ),
     sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
     selectPaths: options => selectBrowserFiles(bootstrap, options, browserProfile()),
     settings: {

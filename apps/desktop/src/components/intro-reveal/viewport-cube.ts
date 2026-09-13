@@ -1,21 +1,14 @@
-/** Canvas geometry and texture noise derive from score time so every playback agrees. */
+/** Canvas geometry and texture noise derive from score time, so every playback draws the same frames. */
 
 import { INTRO_BEATS } from './timeline'
 
 const N = 4
 
-/** How long the cube is alive. The surface stops drawing here, so the last
- *  slot's tear-out is timed against it. */
+/** End of the cube's draw window. use-intro-clock.ts stops calling drawViewport at this time. */
 export const VIEWPORT_END_MS = INTRO_BEATS.find(b => b.id === 'everywhere')!.t + 700
 
-/**
- * Materials are PLACED, not cycled. A round robin made the mark whichever slot
- * the modulo happened to land on — five materials at 2.1s each put her 4.5s
- * after the node appeared, i.e. most of the way through the cube's life. These
- * are cues like every other schedule in the sequence: she arrives as the node
- * does, the harder materials fill the middle, and she comes back to tear
- * herself apart as the scene changes.
- */
+/** Each material has an explicit start time, so the two `texture` slots sit at chosen moments in the
+ *  sequence. Cycling the list at a fixed interval placed them wherever the modulo fell. */
 const VIEWPORT_SCHEDULE = [
   { at: 0, mode: 'standard' },
   { at: 1900, mode: 'metal' },
@@ -37,8 +30,8 @@ export interface ViewportSlot {
   until: number
 }
 
-/** The material showing at `t`, with the window it occupies — the caller needs
- *  the bounds for the crossfade, the tear ramps and the label's decode. */
+/** The material showing at `t`, with the start and end of its window. Callers use the bounds for the
+ *  crossfade, the tear ramps and the label's decode. */
 export function viewportSlot(t: number): ViewportSlot {
   let index = 0
 
@@ -64,9 +57,8 @@ interface Quad {
   cell: [number, number]
 }
 
-/** Subdivided cube quads, rotated + projected. Always a true cube — the
- *  subdivision exists so per-face shading has facets to work with, and so the
- *  texture pass has small enough cells for an affine map to pass for one. */
+/** Subdivided cube quads, rotated and projected. The subdivision keeps each texture cell small enough that
+ *  an affine map reads as a perspective one. */
 function cubeQuads(t: number, w: number, h: number): Quad[] {
   const rx = t * 0.00042
   const ry = t * 0.00071
@@ -74,7 +66,7 @@ function cubeQuads(t: number, w: number, h: number): Quad[] {
   const sx = Math.sin(rx)
   const cy = Math.cos(ry)
   const sy = Math.sin(ry)
-  // Roomy: the cube never grazes the viewport frame.
+  // Scaled off the smaller side so the cube stays clear of the viewport frame.
   const scale = Math.min(w, h) * 0.24
   const quads: Quad[] = []
 
@@ -143,13 +135,10 @@ function cubeQuads(t: number, w: number, h: number): Quad[] {
   return quads.sort((a, b) => a.z - b.z)
 }
 
-// ── Texture pass ──────────────────────────────────────────────────────────
-//
-// The mark itself, mapped onto the cube, torn apart on the way in and out.
-// The RGB rip is a real channel separation: the cube renders once, is split
-// into red/green/blue, and the three are re-composited with 'lighter' at
-// diverging offsets. At zero offset they sum back to the untouched image, so
-// "settled" costs nothing extra to express — the glitch IS the offset.
+// Texture pass: the image mapped onto the cube, with an RGB channel separation.
+// The cube renders once, is split into red, green and blue copies, and the three
+// are re-composited with 'lighter' at diverging offsets. At zero offset they sum
+// back to the untouched image.
 
 const CHANNEL_TINTS = ['#ff0000', '#00ff00', '#0000ff'] as const
 const SLICES = 14
@@ -157,8 +146,8 @@ const SLICES = 14
 let texture: HTMLImageElement | null = null
 let textureRequested = false
 
-/** Kicks the load on first use, then answers from memory. Null until decoded,
- *  which the caller reads as "paint the resting material instead". */
+/** Starts the image load on the first call and returns the cached image afterwards. Returns null until the
+ *  image decodes, and paintTexturedCube draws nothing on those frames. */
 function textureImage(): HTMLImageElement | null {
   if (textureRequested || globalThis.document === undefined) {
     return texture
@@ -172,10 +161,10 @@ function textureImage(): HTMLImageElement | null {
     texture = img
   }
 
-  // The cinematic's own cut of the mark, not `nous-girl.jpg` — that one is the
-  // BrandMark tile art (dark on white) and reads as a solid white block once
-  // it is wrapped around a cube. This one is light-on-dark line work, so the
-  // cube keeps the viewport's depth and the channel split has edges to tear.
+  // Not `nous-girl.jpg`: that asset is the BrandMark tile art, dark on white, and
+  // reads as a solid white block once it is wrapped around a cube. This one is
+  // light-on-dark line work, so the faces keep their shading and the channel
+  // split has edges to offset.
   img.src = `${import.meta.env.BASE_URL}intro-nous-girl.png`
 
   return null
@@ -183,8 +172,8 @@ function textureImage(): HTMLImageElement | null {
 
 const scratch = new Map<string, HTMLCanvasElement>()
 
-/** A cleared offscreen at device resolution. `scale` bakes in the DPR so
- *  callers keep drawing in the same CSS pixels the quads are projected into. */
+/** A cleared offscreen context at device resolution. `scale` applies the DPR, so callers keep drawing in the
+ *  same CSS pixels the quads are projected into. */
 function buffer(key: string, w: number, h: number, scale: number): CanvasRenderingContext2D {
   let canvas = scratch.get(key)
 
@@ -208,19 +197,18 @@ function buffer(key: string, w: number, h: number, scale: number): CanvasRenderi
   return ctx
 }
 
-/** Deterministic value noise — the tear has to replay identically. */
+/** Deterministic value noise. The tear has to replay identically on every playback. */
 function hash(n: number): number {
   const s = Math.sin(n * 12.9898) * 43758.5453
 
   return s - Math.floor(s)
 }
 
-/** 0 settled, 1 fully torn. Rips in, holds mostly clean with stutters, rips
- *  out — so the mark resolves long enough to be read before it comes apart. */
+/** 0 is settled, 1 is fully torn. Starts fully torn and settles over the first 460ms, stutters at random
+ *  during the hold, then tears out over the last 420ms of the slot. */
 function tearAmount(local: number, span: number): number {
   const arriving = 1 - Math.min(1, local / 460)
   const leaving = Math.max(0, (local - (span - 420)) / 420)
-  // A new draw every 90ms, and most of them are nothing.
   const step = Math.floor(local / 90)
   const stutter = hash(step) > 0.88 ? hash(step * 1.7) * 0.5 : 0
 
@@ -229,8 +217,8 @@ function tearAmount(local: number, span: number): number {
 
 let scanPattern: CanvasPattern | null = null
 
-/** CRT line grille. Built once — it is painted under the buffer's DPR
- *  transform, so it holds a constant weight in CSS pixels at any scale. */
+/** Scanline pattern of one dark row in three, built once. It is filled under the buffer's DPR transform, so
+ *  the lines keep a constant weight in CSS pixels at any scale. */
 function scanlines(ctx: CanvasRenderingContext2D): CanvasPattern | null {
   if (!scanPattern) {
     const canvas = document.createElement('canvas')
@@ -278,8 +266,8 @@ function paintTexturedCube(
 
   const local = t - slot.at
 
-  // The surface hands us a DPR-scaled context and CSS-pixel geometry. Match it
-  // on the offscreens, or the whole pass renders at 1x and gets upscaled.
+  // The surface passes a DPR-scaled context and CSS-pixel geometry. The offscreens
+  // use the same DPR, otherwise this pass renders at 1x and is upscaled.
   const dpr = ctx.getTransform().a || 1
   const dw = Math.ceil(w * dpr)
   const dh = Math.ceil(h * dpr)
@@ -291,10 +279,9 @@ function paintTexturedCube(
 
   for (const q of quads) {
     const [p0, p1, , p3] = q.pts
-    // Cells are clipped, and two clips meeting on an edge each antialias to
-    // half cover — which on a white texture reads as a grey hairline grid.
-    // Overlapping them instead is free: the texture is opaque and drawn back
-    // to front, so a later cell simply repaints the seam.
+    // Two clips that meet on an edge each antialias to half cover, which on a
+    // white texture reads as a grey hairline grid. The cells overlap instead: the
+    // texture is opaque and drawn back to front, so a later cell repaints the seam.
     const poly = inflate(q.pts, 0.6)
 
     cube.save()
@@ -307,31 +294,28 @@ function paintTexturedCube(
 
     cube.closePath()
     cube.clip()
-    // The mark is light-on-dark line work, so the face needs a body of its own
-    // first — otherwise the cube's unlit areas are the same black as the
-    // viewport behind it and the solid dissolves into stray white curves. This
-    // also repaints the inflated overlap opaque before the line work lands.
+    // The image is light-on-dark line work, so each face needs an opaque fill
+    // first. Without it the cube's unlit areas are the same black as the viewport
+    // behind it and only stray white curves show. The fill also covers the
+    // inflated overlap before the line work is drawn.
     cube.fillStyle = `rgb(${12 + q.shade * 20}, ${13 + q.shade * 22}, ${17 + q.shade * 28})`
     cube.fillRect(0, 0, w, h)
-    // Affine map from the unit cell to this quad. It ignores the fourth
-    // corner, which is what makes the texture swim slightly across a face —
-    // PS1 warping, and exactly the register this pass is going for.
+    // Affine map from the unit cell to this quad. It ignores the fourth corner, so
+    // the texture swims slightly across a face (affine texture warping).
     cube.transform(p1[0] - p0[0], p1[1] - p0[1], p3[0] - p0[0], p3[1] - p0[1], p0[0], p0[1])
-    // Add the line work rather than painting over: on this art black is empty,
-    // so 'lighter' IS the lambert — a grazing face contributes less light.
+    // 'lighter' adds the line work instead of covering the fill: black in the
+    // image contributes nothing, and the alpha below scales with the face's shade.
     cube.globalCompositeOperation = 'lighter'
     cube.globalAlpha = 0.55 + q.shade * 0.45
     cube.drawImage(img, q.cell[0] * sw, q.cell[1] * sh, sw, sh, -0.06, -0.06, 1.12, 1.12)
     cube.restore()
   }
 
-  // ── CRT pass, inside the cube's own alpha so none of it touches the empty
-  //    space around the solid. Both ride the channel split below, so the rip
-  //    tears the grille along with the mark rather than sliding over it.
+  // CRT pass, drawn with 'source-atop' so it stays inside the cube's own alpha and
+  // does not touch the empty space around the solid. It is composited before the
+  // channel split below, so the split offsets the sweep and the grille too.
   cube.globalCompositeOperation = 'source-atop'
 
-  // A read head sweeping the solid: the brightest thing in the viewport, and
-  // what sells the cube as a projection rather than a painted object.
   const sweep = ((local % 1150) / 1150) * 1.3 - 0.15
   const bar = cube.createLinearGradient(0, (sweep - 0.13) * h, 0, (sweep + 0.13) * h)
 
@@ -349,13 +333,13 @@ function paintTexturedCube(
   }
 
   const step = Math.floor(local / 90)
-  // A sliver of separation survives the settle, so even the held frames carry
-  // a little instability rather than snapping to a clean print.
+  // The 0.7 term keeps a minimum separation, so held frames still show a small
+  // offset instead of a clean image.
   const rip = (tear * 8 + 0.7) * dpr
 
   ctx.save()
-  // Composite in device space: the offsets are pixel work, and the buffers are
-  // already at device resolution.
+  // Composite in device space: the offsets are in device pixels and the buffers
+  // are already at device resolution.
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalCompositeOperation = 'lighter'
   ctx.globalAlpha = alpha
@@ -365,20 +349,20 @@ function paintTexturedCube(
 
     chan.drawImage(cube.canvas, 0, 0)
     // Isolate one channel: multiply by a primary, then re-apply the cube's own
-    // alpha, because a full-canvas fill would otherwise tint the empty space.
+    // alpha, because the full-canvas fill also tints the empty space.
     chan.globalCompositeOperation = 'multiply'
     chan.fillStyle = CHANNEL_TINTS[c]
     chan.fillRect(0, 0, dw, dh)
     chan.globalCompositeOperation = 'destination-in'
     chan.drawImage(cube.canvas, 0, 0)
 
-    // Red left, blue right, green anchored — the classic separation. Slices
-    // ride on top so the tear breaks the silhouette, not just the colour.
+    // dx offsets red left and blue right and leaves green at 0. The per-slice
+    // jitter below breaks the silhouette as well as the colour.
     const dx = (c - 1) * rip
 
     for (let s = 0; s < SLICES; s += 1) {
-      // Integer, abutting bands. Any overlap would be summed twice by
-      // 'lighter' and read as bright rules across the cube.
+      // Bands are integer and abutting. Overlapping rows would be summed twice by
+      // 'lighter' and show as bright lines across the cube.
       const y0 = Math.round((s * dh) / SLICES)
       const band = Math.round(((s + 1) * dh) / SLICES) - y0
       const jitter = (hash(step * 31 + s) - 0.5) * 2 * tear * 11 * dpr
@@ -391,16 +375,15 @@ function paintTexturedCube(
 }
 
 export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number, t: number) {
-  // Start the texture fetch on the very first frame. Its pass is eight seconds
-  // into the sequence, and a cold decode arriving mid-crossfade would show the
-  // wireframe dissolving into an empty cube.
+  // Start the image load on the first frame. The first `texture` slot opens at
+  // 3700ms, and a decode that arrives during a crossfade would show the cube
+  // empty for those frames.
   textureImage()
 
   const slot = viewportSlot(t)
   const mode = slot.mode
-  // Materials CROSSFADE at slot boundaries — the incoming one comes up over
-  // the outgoing, like a shader recompile settling. Never a hard swap. The
-  // geometry is ALWAYS a cube.
+  // Materials crossfade at slot boundaries: the incoming material fades up over
+  // the outgoing one.
   const prevEntry = VIEWPORT_SCHEDULE[slot.index - 1]
   const prevMode = prevEntry?.mode ?? mode
   const fade = Math.min(CROSSFADE_MS, (slot.until - slot.at) * 0.4)
@@ -442,8 +425,7 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
     ctx.fillText(label, px + 2, py + 3)
   }
 
-  // Rotation readout, top-left; verts, bottom-right. N=4 → 6·(N+1)² shared
-  // grid verts per face is the honest-ish count for the subdivided cube.
+  // The 6 * 5 * 5 below is 6 faces times (N + 1)² shared grid vertices, for N = 4.
   const deg = (r: number) => ((((r * 180) / Math.PI) % 360) | 0).toString().padStart(3, ' ')
 
   ctx.fillStyle = 'rgba(255,255,255,0.22)'
@@ -453,10 +435,8 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
   ctx.fillText(verts, w - ctx.measureText(verts).width - 12, h - 10)
   ctx.restore()
 
-  // One painter per material. `standard` is the resting state: the plain
-  // white default cube under ambient light — lambert with a lifted floor so
-  // no face ever goes black. `texture` is not here: it is a whole-cube pass
-  // (below) because its channel split has to happen in screen space.
+  // One painter per material. `texture` is not handled here: it is a whole-cube
+  // pass below, because its channel split has to happen in screen space.
   const paint = (m: ViewportMode, q: Quad, alpha: number) => {
     if (alpha <= 0.01 || m === 'texture') {
       return
@@ -518,10 +498,9 @@ export function drawViewport(ctx: CanvasRenderingContext2D, w: number, h: number
   if (mode === 'texture') {
     paintTexturedCube(ctx, quads, w, h, slot, t, blend)
   } else if (prevMode === 'texture' && prevEntry) {
-    // Still on ITS clock, not the incoming slot's — the tear-out that began at
-    // the end of its own window has to carry through the crossfade. Reading
-    // the new slot's local time restarted the ramp and re-tore a mark that was
-    // supposed to be already in pieces.
+    // The outgoing texture keeps its own slot bounds, so the tear-out that began
+    // at the end of its window carries through the crossfade. Reading the incoming
+    // slot's local time restarts the tear ramp instead.
     paintTexturedCube(
       ctx,
       quads,

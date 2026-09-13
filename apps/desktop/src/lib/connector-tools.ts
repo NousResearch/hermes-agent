@@ -1,7 +1,30 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 
-/** Connector names/results as presentation data, never authorization. */
+import type { ChatMessage } from '@/lib/chat-messages'
+
+export function latestConnectorPart(messages: ChatMessage[]) {
+  return messages
+    .flatMap(message => message.parts)
+    .filter(part => {
+      if (part.type !== 'tool-call') {
+        return false
+      }
+
+      if (part.toolName === 'manage_connections') {
+        const input = recordOf(part.args)
+
+        return (
+          (input.action ?? 'status') !== 'status' || (Array.isArray(input.connectors) && input.connectors.length > 0)
+        )
+      }
+
+      return connectorCalls(part.toolName, part.args).length > 0
+    })
+    .at(-1)
+}
+
+/** Connector names and statuses from the tool payload, for display only. No field here grants access. */
 export interface ConnectorRow {
   connector: string
   connected?: boolean
@@ -38,10 +61,13 @@ const TITLES: ConnectorTitles = {
   gmail: 'Gmail',
   googlecalendar: 'Google Calendar',
   googledrive: 'Google Drive',
+  googledocs: 'Google Docs',
   slack: 'Slack',
   github: 'GitHub',
   notion: 'Notion',
   linear: 'Linear',
+  jira: 'Jira',
+  todoist: 'Todoist',
   figma: 'Figma',
   discord: 'Discord',
   stripe_mcp: 'Stripe',
@@ -146,7 +172,7 @@ export function connectionRows(
   return [...rows.values()]
 }
 
-/** Token-bearing auth links are opened only by a deliberate user action. */
+/** The connect URL carries an authorization token, so only https with no embedded credentials is returned. */
 export function connectorAuthorizationUrl(value: ToolCallMessagePart['result']): string | null {
   const text = connectorText(value)
 

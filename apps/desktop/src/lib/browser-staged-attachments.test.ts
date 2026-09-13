@@ -21,6 +21,7 @@ const source: HermesStagedUpload = {
 const sourceName = source.path.split('/').pop()!
 const refText = '@file:/srv/hermes/profiles/owner/attachments/web-123-notes.txt'
 const file = () => new File(['payload'], 'notes.txt', { type: 'text/plain' })
+const pastedText = 'Pasted notes\nこんにちは 🌍'
 
 const rawAttachment = (path = source.path): ComposerAttachment => ({
   id: `file:${path}`, kind: 'file', label: path.split('/').pop() || path, path
@@ -70,7 +71,7 @@ afterEach(() => {
 })
 
 describe('browser staged attachment transport', () => {
-  it.each(['picker', 'drop', 'edit-message drop'] as const)(
+  it.each(['picker', 'drop', 'paste', 'edit-message drop'] as const)(
     '%s sends provenance to the owning gateway without downloading or retransmitting bytes',
     async flow => {
       const fetchMock = await installBrowser()
@@ -93,6 +94,8 @@ describe('browser staged attachment transport', () => {
             this.dispatchEvent(new Event('change'))
           })
           await act(async () => { await result.current.pickContextPaths('file') })
+        } else if (flow === 'paste') {
+          await act(async () => { await result.current.attachPastedText(pastedText) })
         } else {
           await act(async () => { await result.current.attachDroppedItems([{ file: file(), path: '' }]) })
         }
@@ -120,7 +123,25 @@ describe('browser staged attachment transport', () => {
       expect(result.refText).toBe(refText)
       expect(result.stagedUpload).toEqual(source)
       expect(fetchMock).toHaveBeenCalledTimes(1)
-      expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe('/api/chat/file-upload')
+      const [input, init] = fetchMock.mock.calls[0]
+      const uploadUrl = new URL(String(input))
+      expect(uploadUrl.pathname).toBe('/api/chat/file-upload')
+      expect(uploadUrl.searchParams.get('profile')).toBe('owner')
+
+      if (flow === 'paste') {
+        const uploadedFile = (init?.body as FormData).get('file') as File
+        expect(uploadedFile.name).toMatch(/\.txt$/)
+        expect(uploadedFile.type).toBe('text/plain')
+
+        const uploadedText = await new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result)
+          reader.onerror = () => reject(reader.error)
+          reader.readAsText(uploadedFile)
+        })
+
+        expect(uploadedText).toBe(pastedText)
+      }
     }
   )
 

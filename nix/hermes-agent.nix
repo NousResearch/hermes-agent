@@ -330,8 +330,8 @@ stdenv.mkDerivation (finalAttrs: {
 
       # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
       # derivation, after all overrides are applied) so the desktop wrapper
-      # can prepend its `/bin` to PATH.  The desktop's resolver step 4
-      # ("existing hermes on PATH") then picks up the fully wrapped
+      # can pin its `hermes` command via HERMES_DESKTOP_HERMES. The
+      # deployment override then picks up the fully wrapped
       # `hermes` binary — venv with all deps, bundled skills/plugins,
       # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
       # of the agent resolution in the desktop wrapper.

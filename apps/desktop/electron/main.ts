@@ -2467,7 +2467,7 @@ function backendSupportsServe(backend) {
         timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
         // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
-        // (see resolveHermesBackend step 4); execFileSync of a .cmd without
+        // (see resolveHermesBackend's command override); execFileSync of a .cmd without
         // shell throws EINVAL on modern Node, which the catch below would
         // mis-cache as "serve unsupported" for the process lifetime.
         shell: Boolean(backend.shell),
@@ -4427,7 +4427,58 @@ function resolveHermesBackend(backendArgs: string[]): ResolvedHermesBackend {
     }
   }
 
-  // 3. ACTIVE_HERMES_ROOT — the canonical install at
+  // 3. HERMES_DESKTOP_HERMES — an explicit deployment override (used by the
+  //    Nix wrapper), not a discovered PATH candidate. The pinned backend is
+  //    the only valid runtime there. Resolve it before any mutable install,
+  //    which may belong to an older release or a different Python environment.
+  const hermesOverride: string | undefined = process.env.HERMES_DESKTOP_HERMES
+  let hermesCommand: string | null = null
+
+  if (hermesOverride) {
+    const resolvedOverride: string | null = findOnPath(hermesOverride)
+
+    if (resolvedOverride) {
+      hermesCommand = resolvedOverride
+    } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
+      hermesCommand = hermesOverride
+    } else {
+      rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
+    }
+
+    if (hermesCommand) {
+      if (looksLikeDesktopAppBinary(hermesCommand)) {
+        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
+        hermesCommand = null
+      } else {
+        const unwrapped: ReturnType<typeof unwrapWindowsVenvHermesCommand> = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
+
+        if (unwrapped) {
+          return unwrapped
+        }
+
+        const shellForProbe: boolean = isCommandScript(hermesCommand)
+
+        if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+          return {
+            label: `existing Hermes CLI at ${hermesCommand}`,
+            command: hermesCommand,
+            args: backendArgs,
+            bootstrap: false,
+            env: {},
+            kind: 'command',
+            shell: shellForProbe,
+            local: 'installed'
+          }
+        }
+
+        rememberLog(
+          `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
+        )
+      }
+    }
+  }
+
+  // 4. ACTIVE_HERMES_ROOT — the canonical install at
   //    %LOCALAPPDATA%\\hermes\\hermes-agent (Windows) or ~/.hermes/hermes-agent.
   //    A valid bootstrap marker proves Desktop finished the first-run install
   //    flow, but marker provenance is NOT the same thing as runtime usability:
@@ -4450,56 +4501,6 @@ function resolveHermesBackend(backendArgs: string[]): ResolvedHermesBackend {
 
   if (bootstrapRepairRequested) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
-  }
-
-  // 4. HERMES_DESKTOP_HERMES — an explicit deployment override (used by the
-  //    Nix wrapper), not a discovered PATH candidate. The pinned backend is
-  //    the only valid runtime there; never fall through to bootstrap for it.
-  const hermesOverride = process.env.HERMES_DESKTOP_HERMES
-  let hermesCommand = null
-
-  if (hermesOverride) {
-    const resolvedOverride = findOnPath(hermesOverride)
-
-    if (resolvedOverride) {
-      hermesCommand = resolvedOverride
-    } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
-      hermesCommand = hermesOverride
-    } else {
-      rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
-    }
-
-    if (hermesCommand) {
-      if (looksLikeDesktopAppBinary(hermesCommand)) {
-        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
-        hermesCommand = null
-      } else {
-        const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
-
-        if (unwrapped) {
-          return unwrapped
-        }
-
-        const shellForProbe = isCommandScript(hermesCommand)
-
-        if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-          return {
-            label: `existing Hermes CLI at ${hermesCommand}`,
-            command: hermesCommand,
-            args: backendArgs,
-            bootstrap: false,
-            env: {},
-            kind: 'command',
-            shell: shellForProbe,
-            local: 'installed'
-          }
-        }
-
-        rememberLog(
-          `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
-        )
-      }
-    }
   }
 
   // 5. Nothing usable yet -- signal the bootstrap runner that we need to

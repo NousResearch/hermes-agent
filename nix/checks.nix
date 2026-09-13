@@ -999,6 +999,15 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           mkdir -p $out
         '';
 
+        # A pre-existing CLI install must not override the package's backend.
+        desktop-backend = pkgs.runCommand "hermes-desktop-backend" {
+          nativeBuildInputs = [ hermes-agent.python pkgs.cage ];
+        } ''
+          python3 ${./tests/desktop-backend.py} \
+            ${self'.packages.desktop}/bin/hermes-desktop ${hermes-agent}/bin/hermes
+          mkdir -p $out
+        '';
+
         # Verify CLI subcommands are accessible
         cli-commands = pkgs.runCommand "hermes-cli-commands" { } ''
           set -e

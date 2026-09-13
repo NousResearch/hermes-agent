@@ -22,13 +22,6 @@ from hermes_cli import kanban_db_connect as kanban_db
 CandidateRequestStatus = Literal["candidate", "duplicate", "cooldown", "rejected"]
 _LIFECYCLE_NONTERMINAL = frozenset({"candidate", "benchmarked", "verified", "staged", "active"})
 _LIFECYCLE_TERMINAL = frozenset({"rejected", "expired", "revoked"})
-_ALLOWED_LIFECYCLE_TRANSITIONS = {
-    "candidate": frozenset({"benchmarked"}),
-    "benchmarked": frozenset({"verified", "expired"}),
-    "verified": frozenset({"staged", "expired"}),
-    "staged": frozenset({"active", "expired"}),
-    "expired": frozenset({"candidate"}),
-}
 _DEFAULT_COOLDOWN_SECONDS = 3_600
 _MAX_SOURCE_KEY_CHARS = 512
 _MAX_PROFILE_ID_CHARS = 96
@@ -102,16 +95,6 @@ class CandidateProfileRequest:
     reason: str
 
 
-@dataclass(frozen=True, slots=True)
-class CandidateLifecycleSnapshot:
-    """The immutable scope and newest append-only state for one candidate."""
-
-    candidate_id: str
-    request_hash: str
-    signature_hash: str
-    permissions_hash: str
-    policy_digest: str
-    lifecycle_status: str
 
 
 def _capability_rejection_code(signature: CapabilitySignature) -> str | None:
@@ -335,143 +318,8 @@ class CandidateProfileRequests:
             reason="local no-match queued for bounded inert candidate review",
         )
 
-    def lifecycle_snapshot(self, candidate_id: str) -> CandidateLifecycleSnapshot | None:
-        """Read a candidate's latest state without treating a transition as mutable.
 
-        Lifecycle rows share the original request hash and are appended with a
-        derived request id.  The original candidate id remains the stable
-        receipt identity throughout promotion.
-        """
-        if not isinstance(candidate_id, str) or not candidate_id:
-            raise ValueError("candidate_id must be a non-empty string")
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-            original = conn.execute(
-                """
-                SELECT request_id, generation_id, request_hash, signature_hash, permissions_hash,
-                       policy_digest
-                FROM candidate_profile_requests WHERE request_id = ?
-                """,
-                (candidate_id,),
-            ).fetchone()
-            if original is None:
-                return None
-            latest = conn.execute(
-                """
-                SELECT lifecycle_status FROM candidate_profile_requests
-                WHERE generation_id = ? ORDER BY id DESC LIMIT 1
-                """,
-                (original["generation_id"] or original["request_id"],),
-            ).fetchone()
-        if latest is None:
-            return None
-        return CandidateLifecycleSnapshot(
-            candidate_id=original["request_id"],
-            request_hash=original["request_hash"],
-            signature_hash=original["signature_hash"],
-            permissions_hash=original["permissions_hash"],
-            policy_digest=original["policy_digest"],
-            lifecycle_status=latest["lifecycle_status"],
-        )
 
-    def append_lifecycle_transition(
-        self,
-        candidate_id: str,
-        *,
-        expected_status: str,
-        next_status: str,
-        reason_code: str,
-        receipt_hash: str,
-        before_transition: Callable[[object], None] | None = None,
-    ) -> CandidateLifecycleSnapshot | None:
-        """Append one monotonic lifecycle observation, never update a candidate.
-
-        ``receipt_hash`` is intentionally opaque and only contributes to a
-        deterministic derived row id; it is not persisted as raw advisory or
-        benchmark content in the candidate ledger.
-        """
-        if next_status not in _ALLOWED_LIFECYCLE_TRANSITIONS.get(expected_status, frozenset()):
-            raise ValueError("candidate lifecycle transition is not permitted")
-        if not _REASON_CODE_RE.fullmatch(reason_code):
-            raise ValueError("reason_code must be a bounded canonical code")
-        if not _OPAQUE_REFERENCE_RE.fullmatch(receipt_hash):
-            raise ValueError("receipt_hash must be a SHA-256 hex digest")
-        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
-            with kanban_db.write_txn(conn):
-                original = conn.execute(
-                    """
-                    SELECT request_id, generation_id, request_hash, signature_hash, permissions_hash,
-                           source_key_hash, requested_profile_id, policy_digest, evidence_ref_hashes_json
-                    FROM candidate_profile_requests WHERE request_id = ?
-                    """,
-                    (candidate_id,),
-                ).fetchone()
-                if original is None:
-                    return None
-                latest = conn.execute(
-                    """
-                    SELECT lifecycle_status FROM candidate_profile_requests
-                    WHERE generation_id = ? ORDER BY id DESC LIMIT 1
-                    """,
-                    (original["generation_id"] or original["request_id"],),
-                ).fetchone()
-                if latest is None or latest["lifecycle_status"] != expected_status:
-                    return None
-                if before_transition is not None:
-                    before_transition(conn)
-                transition_id = (
-                    f"cpr_{original['request_hash'][:24]}_"
-                    f"{_hash((candidate_id, expected_status, next_status, receipt_hash))[:8]}"
-                )
-                conn.execute(
-                    """
-                    INSERT INTO candidate_profile_requests (
-                        request_id, generation_id, request_hash, signature_hash, permissions_hash, source_key_hash,
-                        requested_profile_id,
-                        policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
-                        cooldown_until, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
-                    """,
-                    (
-                        transition_id,
-                        original["generation_id"] or original["request_id"],
-                        original["request_hash"],
-                        original["signature_hash"],
-                        original["permissions_hash"],
-                        original["source_key_hash"],
-                        original["requested_profile_id"],
-                        original["policy_digest"],
-                        original["evidence_ref_hashes_json"],
-                        next_status,
-                        reason_code,
-                        int(self._clock()),
-                    ),
-                )
-        return self.lifecycle_snapshot(candidate_id)
-
-    def reopen_expired(
-        self,
-        candidate_id: str,
-        *,
-        expected_status: str,
-        receipt_hash: str,
-    ) -> CandidateLifecycleSnapshot | None:
-        """Record receipt expiry and reopen the candidate for a fresh generation."""
-        expired = self.append_lifecycle_transition(
-            candidate_id,
-            expected_status=expected_status,
-            next_status="expired",
-            reason_code="receipt_expired",
-            receipt_hash=receipt_hash,
-        )
-        if expired is None:
-            return None
-        return self.append_lifecycle_transition(
-            candidate_id,
-            expected_status="expired",
-            next_status="candidate",
-            reason_code="receipt_renewed",
-            receipt_hash=_hash((receipt_hash, "renewed")),
-        )
 
     @staticmethod
     def _insert(

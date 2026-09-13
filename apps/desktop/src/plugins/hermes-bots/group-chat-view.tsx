@@ -521,8 +521,13 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         return
       }
 
+      const canonicalMembers = props.members.map(member => ({
+        ...member,
+        handle: botHandle(member.name, member)
+      }))
+
       setBusy(true)
-      void createCanonicalGroup(route, props.group, props.members)
+      void createCanonicalGroup(route, props.group, canonicalMembers)
         .then(({ room }) => {
           if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
         })

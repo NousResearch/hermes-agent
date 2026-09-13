@@ -223,6 +223,54 @@ function moveSource(kind: 'profile' | 'gateway' | 'same-route-activation') {
   }
 }
 
+it.each([false, true])('inline fresh creation freezes visible handles and preserves target identity (source moved: %s)', async moved => {
+  const picked: RosterRow[] = [
+    { name: 'default', connectionId: 'local' },
+    { name: 'reviewer-alias', handle: 'reviewer-laptop', connectionId: 'local',
+      route: { connectionId: 'local', profile: 'default', targetProfile: 'reviewer', mode: 'local' } }
+  ]
+  const originalMembers = structuredClone(picked)
+  let finish!: () => void
+
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true }}
+
+    if (method === 'groups.create') {
+      const room = { room_id: params.room_id, name: params.name, members: params.members }
+
+      return new Promise(resolve => { finish = () => resolve({ room }) })
+    }
+
+    throw new Error(`Unexpected RPC: ${method}`)
+  })
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={picked} />) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
+  expect(picked).toEqual(originalMembers)
+  expect(openWorkspace).not.toHaveBeenCalled()
+  picked[0].handle = 'changed-after-click'
+  picked[1].route!.targetProfile = 'another-profile'
+  await act(async () => {
+    if (moved) {moveSource('same-route-activation')}
+    finish()
+  })
+  const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
+  expect(creates).toHaveLength(1)
+  const [route, , params] = creates[0]
+  expect(route).toMatchObject({ connectionId: 'local', profile: 'default', targetProfile: 'default' })
+  expect(params).toMatchObject({ name: 'Existing', profile: 'default', members: [
+    { member_id: 'default', profile: 'default', handle: 'hermes', target: { kind: 'local', profile: 'default' } },
+    { member_id: 'reviewer', profile: 'reviewer', handle: 'reviewer-laptop', target: { kind: 'local', profile: 'reviewer' } }
+  ] })
+  expect(params.room_id).toEqual(expect.any(String))
+  expect(params.room_id).not.toBe('Existing')
+  expect(updateGroupChat).not.toHaveBeenCalled()
+  expect($groupChats.get()).toEqual({})
+  expect(Object.values($canonicalGroupBindings.get())).toEqual(moved ? [] : [
+    { connectionId: 'local', profile: 'default', roomId: params.room_id }
+  ])
+  expect(openWorkspace).toHaveBeenCalledTimes(moved ? 0 : 1)
+})
+
 it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a creation approved before the %s moved is kept on its owner and never published', async kind => {
   const pending = pendingCreation()
   const { onCreated, onClose } = await submitDialog()

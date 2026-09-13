@@ -164,17 +164,31 @@ def _openai_http_client_kwargs(base_url: Optional[str], *, async_mode: bool = Fa
     return {"http_client": client} if client is not None else {}
 
 
+def _opencode_zen_free_header_override(api_key: Any, headers: Optional[dict]) -> Optional[dict]:
+    """Blank ``Authorization`` when ``api_key`` is the keyless free-tier placeholder (the Zen
+    relay 401s any recognized-looking bearer). Shared by every client builder — sync
+    (:func:`_create_openai_client`) and the sync→async rebuild (:func:`_to_async_client`) — so
+    a client that starts keyless never regains a bearer partway through its lifecycle."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
+        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
+            return {**(headers or {}), **opencode_zen_free_headers()}
+    return headers
+
+
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     if _aux_probe_active():
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # OpenCode Zen free tier: the keyless placeholder must never hit the wire (relay 401s any
-    # unrecognized bearer) — blank the Authorization header.
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
+    # unrecognized bearer) — blank the Authorization header. Only assign the key back when the
+    # override actually produces something: an unconditional assignment would introduce a
+    # ``default_headers=None`` kwarg for every non-keyless caller that never passed one, which
+    # is a behavior change from the pre-refactor code (callers/tests assert the key is absent).
+    _headers = _opencode_zen_free_header_override(api_key, kwargs.get("default_headers"))
+    if _headers is not None:
+        kwargs["default_headers"] = _headers
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
@@ -4349,6 +4363,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             inferred = ""
         headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
+    headers = _opencode_zen_free_header_override(sync_client.api_key, headers)
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)

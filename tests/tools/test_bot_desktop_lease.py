@@ -93,7 +93,7 @@ def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
 
     monkeypatch.setattr(tool, "_get_backend", lambda session_id="": object())
 
-    def _dispatch_then_takeover(backend, action, args):
+    def _dispatch_then_takeover(backend, action, args, **_):
         lease.acquire("human")  # a whole take-over / hand-back cycle inside the driver call:
         lease.release("human")  # control is back, but the frame is still the human's turn
         return json.dumps({"ok": True, "action": action, "png_b64": "SECRET"})

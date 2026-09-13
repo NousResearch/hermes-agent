@@ -386,8 +386,13 @@ class SessionUsageMixin:
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
-        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        shrink with paging. Spend prefers the billed figure over the estimate.
+
+        Pre-#105535 this filtered ``parent_session_id IS NULL`` which excluded every
+        post-compression segment (and branch/reset children).  Now counts all non-delegate,
+        non-archived rows with messages, so compression continuations contribute."""
+        from hermes_state_sessions import _delegate_from_json
+        where = [f"{_delegate_from_json()} IS NULL", "message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
             where.append("COALESCE(archived, 0) = 0")
@@ -398,3 +403,4 @@ class SessionUsageMixin:
              WHERE {' AND '.join(where)}
             """, params)
         return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+

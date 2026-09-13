@@ -772,37 +772,49 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
-    all_skills = _find_all_skills(skip_disabled=True)  # include disabled ones to annotate status
+    all_skills = _find_all_skills(skip_disabled=True)
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
                    title="Installed Skills" + (" (enabled only)" if enabled_only else ""))
 
-    counts = {"hub": 0, "builtin": 0, "local": 0}
-    enabled_count = disabled_count = 0
+    counts = {"hub": 0, "builtin": 0, "local": 0, "plugin": 0}
+    enabled_count = disabled_count = gated_count = 0
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
         hub_entry = hub_installed.get(name)
-        if hub_entry:
+        if skill.get("_source_type") == "plugin":
+            source_type, source_display, trust = "plugin", skill.get("_source_display", "plugin"), "plugin"
+        elif hub_entry:
             source_type, source_display = "hub", hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
         else:
             source_type = source_display = trust = "builtin" if name in builtin_names else "local"
         is_enabled = name not in disabled_names
-        if source_filter not in ("all", source_type) or (enabled_only and not is_enabled):
+        platform_compatible = skill.get("platform_compatible", True)
+        environment_compatible = skill.get("environment_compatible", True)
+        is_active = is_enabled and platform_compatible and environment_compatible
+        if source_filter not in ("all", source_type) or (enabled_only and not is_active):
             continue
         counts[source_type] += 1
-        enabled_count += is_enabled
+        enabled_count += is_active
         disabled_count += not is_enabled
+        gated_count += is_enabled and not is_active
+        status = (
+            "[dim red]disabled[/]" if not is_enabled
+            else "[yellow]platform-gated[/]" if not platform_compatible
+            else "[yellow]environment-gated[/]" if not environment_compatible
+            else "[bold green]enabled[/]"
+        )
         table.add_row(name, skill.get("category", ""), source_display,
                       _trust_cell(trust, source_display),
-                      "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]")
+                      status)
 
     c.print(table)
     tail = (f"{enabled_count} enabled shown" if enabled_only
-            else f"{enabled_count} enabled, {disabled_count} disabled")
+            else f"{enabled_count} enabled, {disabled_count} disabled, {gated_count} gated")
     c.print(f"[dim]{counts['hub']} hub-installed, {counts['builtin']} builtin, "
-            f"{counts['local']} local — {tail}[/]\n")
+            f"{counts['local']} local, {counts['plugin']} plugin — {tail}[/]\n")
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:

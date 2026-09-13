@@ -307,7 +307,7 @@ export default function SkillsPage() {
       }));
   }, [skills, t]);
 
-  const enabledCount = skills.filter((s) => s.enabled).length;
+  const enabledCount = skills.filter((s) => s.available ?? s.enabled).length;
 
   useLayoutEffect(() => {
     if (loading) {
@@ -498,6 +498,7 @@ export default function SkillsPage() {
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
+                        gatedLabel={t.common.inactive}
                       />
                     ))}
                   </div>
@@ -560,6 +561,7 @@ export default function SkillsPage() {
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
+                        gatedLabel={t.common.inactive}
                       />
                     ))}
                   </div>
@@ -739,7 +741,9 @@ function SkillRow({
   onToggle,
   onEdit,
   noDescriptionLabel,
+  gatedLabel,
 }: SkillRowProps) {
+  const available = skill.available ?? skill.enabled;
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -753,26 +757,37 @@ function SkillRow({
         <div className="flex items-center gap-2 mb-0.5">
           <span
             className={`font-mono-ui text-sm ${
-              skill.enabled ? "text-foreground" : "text-muted-foreground"
+              available ? "text-foreground" : "text-muted-foreground"
             }`}
           >
             {skill.name}
           </span>
+          {skill.gated_by && (
+            <Badge
+              tone="secondary"
+              className="text-xs"
+              title={`${skill.gated_by}-gated`}
+            >
+              {gatedLabel}
+            </Badge>
+          )}
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
           {skill.description || noDescriptionLabel}
         </p>
       </div>
-      <Button
-        ghost
-        size="icon"
-        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
-        aria-label={`Edit ${skill.name}`}
-        onClick={onEdit}
-      >
-        <Pencil />
-      </Button>
+      {skill.provenance !== "plugin" && (
+        <Button
+          ghost
+          size="icon"
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+          title="Edit SKILL.md"
+          aria-label={`Edit ${skill.name}`}
+          onClick={onEdit}
+        >
+          <Pencil />
+        </Button>
+      )}
     </div>
   );
 }
@@ -803,6 +818,7 @@ interface PanelItemProps {
 
 interface SkillRowProps {
   noDescriptionLabel: string;
+  gatedLabel: string;
   onToggle: () => void;
   onEdit: () => void;
   skill: SkillInfo;

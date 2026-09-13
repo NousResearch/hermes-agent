@@ -133,7 +133,7 @@ skill_view("superpowers:writing-plans")
 skill_view("writing-plans")
 ```
 
-Plugin skills are **not** listed in the system prompt and don't appear in `skills_list`. They're opt-in — load them explicitly when you know a plugin provides one. When loaded, the agent sees a banner listing sibling skills from the same plugin.
+Plugin skills appear in `skills_list`. They remain explicit-load only by default; plugin authors can opt namespaced Skills into the system prompt so normal Skill Retrieval discovers them without collisions. When loaded, the agent sees a banner listing sibling skills from the same plugin.
 
 For how to ship skills in your own plugin, see [Build a Hermes Plugin → Bundle skills](/developer-guide/plugins#bundle-skills).
 

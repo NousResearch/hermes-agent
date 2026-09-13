@@ -21,7 +21,8 @@ interface OsDoor {
 }
 interface Mod {
   bindCompletionNotify(r: Rest, t?: Translate, os?: OsDoor): void
-  onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean>
+  kanbanEventsSince(slug: string, sourceKey?: string): number | undefined
+  onKanbanEventsFrame(slug: string, events?: CompletionEvent[], sourceKey?: string): Promise<boolean>
 }
 
 const { hostMock } = vi.hoisted(() => ({
@@ -104,6 +105,10 @@ describe('authoritative baseline', () => {
     expect(fired).toBe(true)
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
 
+    // Reconnecting subscribers can pass the accepted high-water mark to the
+    // server, so an event missed between socket frames is replayed safely.
+    expect(m.kanbanEventsSince('smoke')).toBe(101)
+
     // Same event delivered again (duplicate frame) must not re-notify.
     const again = await m.onKanbanEventsFrame('smoke', [ev(101, 'completed', { summary: 'Done' })])
 
@@ -178,6 +183,37 @@ describe('authoritative baseline', () => {
     const fired = await m2.onKanbanEventsFrame('smoke', [ev(150, 'completed')])
     expect(fired).toBe(false)
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('rebinds the cursor when the backend or profile changes', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
+    expect(hostMock.notify).toHaveBeenCalledTimes(1)
+
+    // The same renderer instance can reconnect to another source whose event
+    // ids overlap. Rebinding must discard the old source's high-water mark.
+    const nextRest = makeRest(() => 200)
+    m.bindCompletionNotify(nextRest as never)
+    const fired = await m.onKanbanEventsFrame('smoke', [ev(150, 'completed')])
+
+    expect(fired).toBe(false)
+    expect(hostMock.notify).toHaveBeenCalledTimes(1)
+    expect(nextRest).toHaveBeenCalledWith('/board?board=smoke')
+  })
+
+  it('keeps cursors independent for the same board across active sources', async () => {
+    let baseline = 100
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => baseline) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')], 'source-a')
+    baseline = 0
+    await m.onKanbanEventsFrame('smoke', [ev(50, 'completed')], 'source-b')
+
+    expect(hostMock.notify).toHaveBeenCalledTimes(2)
+    expect(m.kanbanEventsSince('smoke', 'source-a')).toBe(101)
+    expect(m.kanbanEventsSince('smoke', 'source-b')).toBe(50)
   })
 
   it('baseline failure is fail-closed: unknown baseline suppresses, later success binds', async () => {

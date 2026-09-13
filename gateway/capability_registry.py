@@ -85,11 +85,18 @@ def _hash_payload(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _kanban_db():
-    """Load board storage only when registry I/O begins."""
-    from hermes_cli import kanban_db
+def _connect_closing():
+    """Load the canonical Kanban connection helper only when registry I/O begins."""
+    from hermes_cli.kanban_db_connect import connect_closing
 
-    return kanban_db
+    return connect_closing
+
+
+def _write_txn():
+    """Load the canonical Kanban transaction helper only when needed."""
+    from hermes_cli.kanban_db_connect import write_txn
+
+    return write_txn
 
 
 def _expiry_timestamp(expires_at: datetime | int | float | None) -> int | None:
@@ -187,7 +194,7 @@ class CapabilityRegistry:
     @contextmanager
     def _connection(self) -> Iterator[object]:
         """Open the board-local registry connection after idempotent schema setup."""
-        with _kanban_db().connect_closing(self._db_path, board=self._board) as conn:
+        with _connect_closing()(self._db_path, board=self._board) as conn:
             conn.executescript(_SCHEMA)
             yield conn
 
@@ -210,7 +217,7 @@ class CapabilityRegistry:
         created_at = int(time.time())
         expires_at_timestamp = _expiry_timestamp(expires_at)
         with self._connection() as conn:
-            with _kanban_db().write_txn(conn):
+            with _write_txn()(conn):
                 existing = conn.execute(
                     """
                     SELECT profiles.id FROM capability_profiles AS profiles
@@ -285,7 +292,7 @@ class CapabilityRegistry:
         if isinstance(created_at, bool) or not isinstance(created_at, int):
             raise ValueError("now must be an integer timestamp")
         with self._connection() as conn:
-            with _kanban_db().write_txn(conn):
+            with _write_txn()(conn):
                 declaration = conn.execute(
                     """
                     SELECT profiles.id, revocations.revocation_hash
@@ -350,6 +357,8 @@ class CapabilityRegistry:
         try:
             self._validate_profile_id(profile_id)
         except ValueError:
+            return False
+        if profile_id not in self._configured_profiles:
             return False
         try:
             with self._connection() as conn:

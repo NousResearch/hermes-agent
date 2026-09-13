@@ -80,7 +80,7 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
-def test_no_nudge_after_kanban_request_review(clear_kanban_env):
+def test_rejected_kanban_request_review_is_nudged(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_review")
     messages = [
         {
@@ -101,22 +101,32 @@ def test_no_nudge_after_kanban_request_review(clear_kanban_env):
             "content": "moved to review",
         },
     ]
-    assert session_called_kanban_terminal(messages) is True
-    assert build_kanban_stop_nudge(messages=messages) is None
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
 
 
-def test_no_nudge_after_kanban_request_changes(clear_kanban_env):
+def test_successful_kanban_request_changes_stops_nudge(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_review")
     messages = [
         {
             "role": "tool",
             "name": "kanban_request_changes",
             "tool_call_id": "1",
-            "content": "returned to implementer",
+            "content": '{"ok": true, "status": "changes_requested"}',
         }
     ]
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_rejected_kanban_request_changes_is_nudged(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_review")
+    messages = [{
+        "role": "tool", "name": "kanban_request_changes",
+        "tool_call_id": "1", "content": '{"ok": false, "error": "not reviewer"}',
+    }]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages) is not None
 
 
 def test_successful_terminal_transition_matches_current_durable_result(

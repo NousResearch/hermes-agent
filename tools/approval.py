@@ -966,6 +966,19 @@ def _kanban_pull_request_creation(command: str) -> bool:
                     for index, token in enumerate(lowered[:-1]):
                         if token in {"-x", "--request"} and lowered[index + 1] == "post":
                             return True
+                if executable == "curl" and any(
+                    token in {
+                        "-d", "--data", "--data-raw", "--data-binary",
+                        "--data-ascii", "--data-urlencode", "--json",
+                    }
+                    or token.startswith((
+                        "--data=", "--data-raw=", "--data-binary=",
+                        "--data-ascii=", "--data-urlencode=", "--json=", "-d=",
+                    ))
+                    or (token.startswith("-d") and token != "-d")
+                    for token in lowered
+                ):
+                    return True
                 if executable == "gh" and any(
                     token in {"-f", "--raw-field", "--field", "-fhead", "-fbase"}
                     or token.startswith("-f")

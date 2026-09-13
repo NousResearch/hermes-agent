@@ -17,7 +17,8 @@ def _cap(value):
 
 
 class WorkerCapacity:
-    def __init__(self, conn, *, model_cap=None, model_caps=None, profile_caps=None):
+    def __init__(self, conn, *, model_cap=None, model_caps=None, profile_caps=None,
+                 other_running_rows=None):
         from hermes_cli.config import load_config_readonly
 
         config = (load_config_readonly() or {}).get("kanban") or {}
@@ -29,6 +30,8 @@ class WorkerCapacity:
         self.models = Counter()
         self.profiles = Counter()
         for row in conn.execute("SELECT * FROM tasks WHERE status = 'running'"):
+            self.record(row, row["assignee"])
+        for row in other_running_rows or ():
             self.record(row, row["assignee"])
 
     def route(self, row, assignee):

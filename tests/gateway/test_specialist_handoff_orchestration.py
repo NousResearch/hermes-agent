@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -112,3 +113,33 @@ def test_router_accepts_task_orchestrator_for_broad_actionable_work():
 
     assert decision.dispatches is True
     assert decision.profile == "task-orchestrator"
+
+
+def test_deterministic_specialist_route_requires_active_capability_declaration(tmp_path):
+    from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
+    from gateway.specialist_routing import classify_specialist_request
+
+    signature = CapabilitySignature(
+        domain="exception-burndown",
+        actions=("patch",),
+        evidence_class="advisory",
+        requested_permissions=("kanban:create",),
+    )
+    registry = CapabilityRegistry(
+        db_path=tmp_path / "registry.db",
+        configured_profiles={"burndown-patch-steward": signature},
+    )
+    request = "Perform the exception burndown and patch the confirmed failures."
+
+    denied = asyncio.run(
+        classify_specialist_request(request, lambda _messages: "", registry=registry)
+    )
+    assert denied.dispatches is False
+    assert denied.audit_reason == "registry_unresolved"
+
+    registry.register_configured_profile("burndown-patch-steward")
+    allowed = asyncio.run(
+        classify_specialist_request(request, lambda _messages: "", registry=registry)
+    )
+    assert allowed.dispatches is True
+    assert allowed.profile == "burndown-patch-steward"

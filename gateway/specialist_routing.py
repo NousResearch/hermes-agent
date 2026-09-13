@@ -213,6 +213,8 @@ async def classify_specialist_request(
         return _general("empty_request")
     explicit_burndown = classify_explicit_burndown_patch_request(request)
     if explicit_burndown is not None:
+        if registry is not None and not registry.is_profile_declared(explicit_burndown.profile or ""):
+            return _general("registry_unresolved")
         return explicit_burndown
     if not callable(classifier):
         return _general("classifier_unavailable")

@@ -97,7 +97,6 @@ def test_progress_context_is_exact_and_labeled():
     command = run.call_args.args[0]
     assert command[command.index("--root-task-id") + 1] == "t_root"
 
-
 def test_malformed_context_limit_falls_back_without_dropping_response():
     config = json.loads(json.dumps(CONFIG))
     config["kanban"]["vault_reports"]["max_context_chars"] = "not-an-integer"

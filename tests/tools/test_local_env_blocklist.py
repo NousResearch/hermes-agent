@@ -50,8 +50,9 @@ def _run_with_env(extra_os_env=None, self_env=None):
     captured = {}
     test_environ = {
         "PATH": "/usr/bin:/bin",
-        "HOME": "/home/user",
-        "USER": "testuser",
+            "HOME": "/home/user",
+            "USER": "testuser",
+            "HERMES_INTERACTIVE": "1",
     }
     if extra_os_env:
         test_environ.update(extra_os_env)
@@ -211,8 +212,6 @@ class TestProviderEnvBlocklist:
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
-            "GITHUB_TOKEN": "ghp_secret",
-            "GH_TOKEN": "gh_alias_secret",
             "GATEWAY_ALLOW_ALL_USERS": "true",
             "GATEWAY_ALLOWED_USERS": "alice,bob",
             "MODAL_TOKEN_ID": "modal-id",
@@ -1784,6 +1783,71 @@ class TestHermesInternalDynamicSecrets:
         assert "AUXILIARY_VISION_API_KEY" not in run_env
         assert "GATEWAY_RELAY_SECRET" not in run_env
         assert run_env.get("AUXILIARY_VISION_PROVIDER") == "openai"
+
+    def test_make_run_env_preserves_operator_git_auth_configuration(self):
+        """The foreground terminal must retain the user's authenticated Git path."""
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "GH_CONFIG_DIR": "/home/operator/.config/gh",
+            "GIT_CONFIG_GLOBAL": "/home/operator/.gitconfig",
+            "GH_TOKEN": "ghp-operator-token",
+            "GIT_TERMINAL_PROMPT": "1",
+            "HERMES_INTERACTIVE": "1",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env["GH_CONFIG_DIR"] == "/home/operator/.config/gh"
+        assert run_env["GIT_CONFIG_GLOBAL"] == "/home/operator/.gitconfig"
+        assert run_env["GH_TOKEN"] == "ghp-operator-token"
+        assert run_env["GIT_TERMINAL_PROMPT"] == "1"
+
+    def test_make_run_env_trusted_terminal_uses_home_git_defaults(self):
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/operator",
+            "HERMES_INTERACTIVE": "1",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env.get("GH_CONFIG_DIR") != os.devnull
+        assert run_env.get("GIT_CONFIG_GLOBAL") != os.devnull
+
+    def test_make_run_env_gateway_does_not_restore_operator_git_auth(self):
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/operator",
+            "HERMES_INTERACTIVE": "1",
+            "HERMES_SESSION_PLATFORM": "discord",
+            "GH_CONFIG_DIR": "/home/operator/.config/gh",
+            "GH_TOKEN": "ghp-operator-token",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env["GH_CONFIG_DIR"] == os.devnull
+        assert "GH_TOKEN" not in run_env
+
+    def test_protected_kanban_terminal_scrubs_operator_git_auth(self):
+        """Protected workers retain the credential boundary despite using a terminal."""
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HERMES_KANBAN_TASK": "task-1",
+            "GH_CONFIG_DIR": "/home/operator/.config/gh",
+            "GIT_CONFIG_GLOBAL": "/home/operator/.gitconfig",
+            "GH_TOKEN": "ghp-operator-token",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env["GH_CONFIG_DIR"] == os.devnull
+        assert run_env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert "GH_TOKEN" not in run_env
 
     def test_gateway_relay_static_names_in_blocklist(self):
         """The static relay names are also added to the name-based blocklist so

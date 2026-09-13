@@ -14,6 +14,13 @@ def test_remote_kanban_private_work_requires_task_and_protected_provider(monkeyp
     assert _remote_kanban_private_work("ollama-launch") is False
 
 
+def test_remote_kanban_private_work_checks_protected_fallbacks(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+    assert _remote_kanban_private_work(
+        "ollama-launch", [{"provider": "openai-codex", "model": "reviewer"}]
+    ) is True
+
+
 def test_remote_kanban_toolsets_are_bounded_to_worker_capabilities():
     assert _remote_kanban_toolsets(["computer-use", "memory"]) == [
         "terminal",

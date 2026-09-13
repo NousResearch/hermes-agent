@@ -2746,6 +2746,8 @@ def test_ci_audit_handoff_completes_current_task_without_waiting_for_model(
 
     assert calls[0][0] == [
         sys.executable,
+        "-E",
+        "-P",
         "-m",
         "hermes_cli.main",
         "kanban",

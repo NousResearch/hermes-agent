@@ -4953,7 +4953,54 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             timeout = 12.0
         return {"enabled": True, "confidence_threshold": threshold,
                 "timeout_seconds": max(1.0, min(30.0, timeout)),
-                "model": str(raw.get("model") or "").strip(), "board": board}
+                "model": str(raw.get("model") or "").strip(), "board": board,
+                "capabilities": raw.get("capabilities")}
+
+    @staticmethod
+    def _specialist_capability_registry(settings: dict[str, Any]):
+        """Build the board-local registry from explicit operator declarations."""
+        raw = settings.get("capabilities")
+        from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
+        from gateway.specialist_routing import SPECIALIST_PROFILES
+
+        if not isinstance(raw, dict) or not raw:
+            # Specialist routing is enabled only by explicit configuration;
+            # without declarations it remains fail-closed and cannot hand off.
+            return CapabilityRegistry(board=settings["board"], configured_profiles={})
+
+        declarations = {}
+        try:
+            def tokens(value):
+                if isinstance(value, str) or not isinstance(value, (list, tuple)):
+                    raise TypeError("capability tokens must be a list")
+                return tuple(value)
+
+            for profile, value in raw.items():
+                if profile not in SPECIALIST_PROFILES or not isinstance(value, dict):
+                    # Any malformed declaration invalidates the whole registry;
+                    # returning None would be interpreted as "no registry" and
+                    # let arbitrary specialist profiles through.
+                    return CapabilityRegistry(board=settings["board"], configured_profiles={})
+                declarations[profile] = CapabilitySignature(
+                    domain=value["domain"],
+                    actions=tokens(value["actions"]),
+                    evidence_class=value["evidence_class"],
+                    requested_permissions=tokens(value["requested_permissions"]),
+                )
+            registry = CapabilityRegistry(
+                board=settings["board"], configured_profiles=declarations,
+            )
+            for profile in declarations:
+                registry.register_configured_profile(profile)
+            return registry
+        except (KeyError, TypeError, ValueError):
+            return CapabilityRegistry(board=settings["board"], configured_profiles={})
+
+    def toolsets_for_source(self, source) -> Optional[List[str]]:
+        """Return source-scoped toolsets; voice fast-lane turns are tool-free."""
+        if getattr(source, "_voice_fast_lane", False):
+            return []
+        return None
 
     async def _maybe_answer_progress_event(self, event: MessageEvent) -> bool:
         """Answer a source-scoped status question before model specialist routing."""
@@ -5011,6 +5058,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return await classify_specialist_request(
             event.text, _classifier, threshold=settings["confidence_threshold"],
             timeout=settings["timeout_seconds"],
+            registry=self._specialist_capability_registry(settings),
         )
 
     async def _maybe_route_specialist_event(self, event: MessageEvent) -> bool:

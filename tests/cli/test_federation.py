@@ -141,6 +141,31 @@ def test_seed_apply_writes_role_identity_metadata(tmp_path: Path) -> None:
     assert "Your working style:" in (profile_dir / "SOUL.md").read_text()
 
 
+def test_seed_recovers_abandoned_reservation_without_profile_directory(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST)
+    profile_dir = tmp_path / "profiles" / "writer"
+    profile_dir.parent.mkdir(parents=True)
+    reservation = profile_dir.parent / ".writer.federation_seed.lock"
+    reservation.write_text(json.dumps({"created_at": 0, "pid": -1}))
+
+    def create_profile(**kwargs):
+        profile_dir.mkdir()
+        return profile_dir
+
+    result = seed_federation(
+        manifest,
+        role_ids=["writer"],
+        existing_profiles=set(),
+        apply=True,
+        create_profile=create_profile,
+        profile_dir_for=lambda name: profile_dir,
+    )
+
+    assert result["created"] == ["writer"]
+    assert profile_dir.is_dir()
+    assert not reservation.exists()
+
+
 def test_seed_refresh_existing_preserves_soul_and_adopts_route(tmp_path: Path) -> None:
     manifest = load_manifest(MANIFEST)
     profile_dir = tmp_path / "profiles" / "writer"
@@ -237,7 +262,7 @@ def test_write_role_config_persists_toolsets_without_a_model_policy(tmp_path: Pa
     assert config["toolsets"] == ["kanban", "file"]
 
 
-def test_seed_cleans_up_partial_new_profile_after_failure(tmp_path: Path) -> None:
+def test_seed_preserves_partial_profile_after_setup_failure(tmp_path: Path) -> None:
     manifest = load_manifest(MANIFEST)
     profile_dir = tmp_path / "profiles" / "writer"
     profile_dir.parent.mkdir()
@@ -256,7 +281,51 @@ def test_seed_cleans_up_partial_new_profile_after_failure(tmp_path: Path) -> Non
     )
 
     assert result["failed"]
-    assert not profile_dir.exists()
+    # The directory may belong to a concurrent seeder after the initial
+    # existence check; failed setup must never delete another invocation's
+    # profile or credentials.
+    assert profile_dir.exists()
+    assert (profile_dir / ".federation_seed_incomplete").is_file()
+
+
+def test_seed_groups_rejects_incomplete_profile(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST)
+    profile_dir = tmp_path / "profiles" / "writer"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / ".federation_seed_incomplete").write_text("incomplete\n")
+    default = tmp_path / "default"
+    default.mkdir()
+
+    result = seed_federation_groups(
+        manifest,
+        apply=True,
+        profile_dir_for=lambda name: default if name == "default" else profile_dir,
+    )
+
+    assert result["failed"]
+    assert "writer" in result["failed"][0]["error"]
+
+
+def test_seed_refresh_repairs_incomplete_profile_and_clears_artifacts(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST)
+    profile_dir = tmp_path / "profiles" / "writer"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / ".federation_seed_incomplete").write_text("incomplete\n")
+    (profile_dir.parent / ".writer.federation_seed.lock").write_text("")
+
+    result = seed_federation(
+        manifest,
+        role_ids=["writer"],
+        existing_profiles={"writer"},
+        apply=True,
+        refresh_existing=True,
+        profile_dir_for=lambda name: profile_dir,
+    )
+
+    assert result["failed"] == []
+    assert result["refreshed_existing"] == ["writer"]
+    assert not (profile_dir / ".federation_seed_incomplete").exists()
+    assert not (profile_dir.parent / ".writer.federation_seed.lock").exists()
 
 
 def test_seed_does_not_refresh_owned_profile_without_explicit_opt_in(tmp_path: Path) -> None:

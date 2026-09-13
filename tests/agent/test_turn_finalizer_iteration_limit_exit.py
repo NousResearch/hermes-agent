@@ -414,6 +414,28 @@ def test_guardrail_halt_closes_kanban_run_before_worker_exits(
     assert result["turn_exit_reason"] == "guardrail_halt"
 
 
+def test_guardrail_halt_forwards_worker_fence(monkeypatch):
+    """A stale worker must identify its run and claim when recording a halt."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-guardrail")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:task-guardrail:42")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent(budget_remaining=60)
+    agent._tool_guardrail_halt_decision = SimpleNamespace(
+        tool_name="terminal", code="same_tool_failure_halt",
+        to_metadata=lambda: {},
+    )
+
+    _finalize(agent, final_response="stopped", exit_reason="guardrail_halt", api_call_count=1)
+
+    assert record.call_args.kwargs["expected_run_id"] == 42
+    assert record.call_args.kwargs["expected_claim_lock"] == "host:task-guardrail:42"
+
+
 def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     """When budget is NOT exhausted but turn is interrupted and a kanban
     task is active, the bounded fallback must NOT fire (#87096).

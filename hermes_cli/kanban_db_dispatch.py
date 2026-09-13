@@ -1036,6 +1036,8 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1054,11 +1056,23 @@ def _record_task_failure(
     error = error[:500]
     with _kb.write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries, current_run_id "
+            "SELECT consecutive_failures, status, max_retries, current_run_id, claim_lock "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
+        if expected_run_id is not None and row["current_run_id"] != int(expected_run_id):
+            return False
+        if expected_claim_lock is not None and row["claim_lock"] != expected_claim_lock:
+            return False
+        fence_sql = ""
+        fence_params: tuple[object, ...] = ()
+        if expected_run_id is not None:
+            fence_sql += " AND current_run_id = ?"
+            fence_params += (int(expected_run_id),)
+        if expected_claim_lock is not None:
+            fence_sql += " AND claim_lock = ?"
+            fence_params += (expected_claim_lock,)
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1080,14 +1094,14 @@ def _record_task_failure(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (retry_status, failures, error, task_id),
+                    "WHERE id = ? AND status = 'running'" + fence_sql,
+                    (retry_status, failures, error, task_id, *fence_params),
                 )
             else:
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
-                    (failures, error, task_id),
+                    "last_failure_error = ? WHERE id = ?" + fence_sql,
+                    (failures, error, task_id, *fence_params),
                 )
             # Timeout/crash path's caller already emitted its own event.
             if end_run:
@@ -1109,8 +1123,8 @@ def _record_task_failure(
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
+            "WHERE id = ? AND status IN ('running', 'ready', 'review')" + fence_sql,
+            (failures, error, task_id, *fence_params),
         )
         payload = {
             "failures": failures,
@@ -1456,6 +1470,18 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
     board to one file) yields 0. Fails open per board.
     """
+    return len(running_task_rows_other_boards(board))
+
+
+def running_task_rows_other_boards(board: Optional[str] = None) -> list[dict[str, Any]]:
+    """Return running-task snapshots from every active board except ``board``.
+
+    Board-local SQLite files are independent scheduler domains, but model and
+    workspace capacity are host resources. Copy rows while each connection is
+    open so callers can apply those guards without retaining connections.
+    A broken board fails open independently and cannot prevent healthy boards
+    from dispatching.
+    """
     try:
         current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
     except Exception:
@@ -1463,8 +1489,8 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     try:
         boards = _kb.list_boards(include_archived=False)
     except Exception:
-        return 0
-    total = 0
+        return []
+    rows: list[dict[str, Any]] = []
     for meta in boards:
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
@@ -1476,13 +1502,15 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
                 continue
             other = _kbc.connect(board=slug)
             try:
-                total += count_running_tasks(other)
+                rows.extend(dict(row) for row in other.execute(
+                    "SELECT * FROM tasks WHERE status = 'running'"
+                ).fetchall())
             finally:
                 with contextlib.suppress(Exception):
                     other.close()
         except Exception:
             continue
-    return total
+    return rows
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
@@ -1522,13 +1550,12 @@ def dispatch_once(
     max_in_progress_by_profile: Optional[dict] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
-    """Run one dispatcher tick under the board's single-writer lock.
+    """Run one dispatcher tick under host admission and board writer locks.
 
-    Wraps :func:`_dispatch_once_locked` in the non-blocking :func:`_dispatch_tick_lock`
-    so two dispatchers on one ``kanban.db`` never race a write tick on WAL
-    frames. The loser returns an empty ``DispatchResult`` with
-    ``skipped_locked=True`` and writes nothing; the lock is keyed on the
-    resolved DB path so unrelated boards tick in parallel.
+    The host lock makes the cross-board running-task snapshot and claim decision
+    one critical section; the board lock remains the per-database single-writer
+    guard. A contended dispatcher returns an empty ``DispatchResult`` with
+    ``skipped_locked=True`` and writes nothing.
     """
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
@@ -1552,17 +1579,20 @@ def dispatch_once(
     try:
         db_path = _kb.kanban_db_path(board=board)
     except Exception:
-        # Must not lose the tick — fall through to an unguarded dispatch.
-        result = _locked_tick()
-        _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
-        return result
-    with _kbc._dispatch_tick_lock(db_path) as held:
-        if not held:
+        db_path = None
+    with _kbc._dispatch_host_admission_lock() as host_held:
+        if not host_held:
             result = DispatchResult(skipped_locked=True)
-        else:
+        elif db_path is None:
             result = _locked_tick()
-            # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
-            _kbc._maybe_checkpoint_wal(conn, db_path)
+        else:
+            with _kbc._dispatch_tick_lock(db_path) as held:
+                if not held:
+                    result = DispatchResult(skipped_locked=True)
+                else:
+                    result = _locked_tick()
+                    # Still under both locks: periodic PASSIVE WAL checkpoint.
+                    _kbc._maybe_checkpoint_wal(conn, db_path)
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
@@ -1597,6 +1627,7 @@ def _dispatch_lane_task(
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
     capacity,
+    other_running_rows: list[dict[str, Any]],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1666,10 +1697,16 @@ def _dispatch_lane_task(
             result.auto_blocked.append(claimed.id)
         return False
     physical_workspace = str(Path(workspace).resolve())
-    for owner in conn.execute(
+    owners = list(conn.execute(
         "SELECT id, workspace_path FROM tasks WHERE status = 'running' AND id != ? "
         "AND workspace_path IS NOT NULL", (claimed.id,),
-    ):
+    ))
+    owners.extend(
+        {"id": owner["id"], "workspace_path": owner.get("workspace_path")}
+        for owner in other_running_rows
+        if owner.get("workspace_path") is not None
+    )
+    for owner in owners:
         if str(Path(owner["workspace_path"]).resolve()) == physical_workspace:
             result.workspace_collisions.append((claimed.id, owner["id"], physical_workspace))
             # Contention is a scheduling delay, not a failed worker attempt.
@@ -1909,6 +1946,7 @@ def _dispatch_once_locked(
     )
     if not may_spawn:
         return result
+    other_running_rows = running_task_rows_other_boards(board)
 
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
@@ -1939,17 +1977,23 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+        for other_row in other_running_rows:
+            assignee = other_row.get("assignee")
+            if assignee:
+                per_profile_running[assignee] = per_profile_running.get(assignee, 0) + 1
     from hermes_cli.kanban_worker_capacity import WorkerCapacity
 
     capacity = WorkerCapacity(
         conn, model_cap=max_in_progress_per_model,
         model_caps=max_in_progress_by_model, profile_caps=max_in_progress_by_profile,
+        other_running_rows=other_running_rows,
     )
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
         capacity=capacity,
+        other_running_rows=other_running_rows,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

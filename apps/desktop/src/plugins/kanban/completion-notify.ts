@@ -17,13 +17,13 @@
  *    desktop shell fires only while the user is AWAY from Hermes. This is the
  *    door that covers "walked away and the worker hit a blocker".
  *
- * Cursor contract: first observation of a board baselines
- * seen[board] = GET /board latest_event_id (MAX task_events.id for that
+ * Cursor contract: first observation of a board/source pair baselines
+ * seen[source][board] = GET /board latest_event_id (MAX task_events.id for that
  * board). Events id <= seen are historical/replay — never notified, no
  * cursor change. id > seen advances cursor for EVERY kind; only terminal
  * kinds emit. Reconnect replays from 0; cursor filters. Board switch never
  * mixes cursors; returning reuses prior cursor (never reset to current MAX).
- * Fail-closed: while a board's baseline is unknown, no event can be
+ * Fail-closed: while a board/source baseline is unknown, no event can be
  * classified so none is notified. Empty slug ('') suppressed.
  */
 
@@ -69,6 +69,15 @@ const TERMINAL_NOTIFY = new Map<string, { titleKey: string; toast: ToastKind }>(
 const seenEventIdByBoard = new Map<string, number>()
 const baselinePending = new Set<string>()
 
+function cursorKey(slug: string, sourceKey = 'default'): string {
+  return `${sourceKey}::${slug}`
+}
+
+/** Return the last accepted event id for a board/source pair, when known. */
+export function kanbanEventsSince(slug: string, sourceKey?: string): number | undefined {
+  return seenEventIdByBoard.get(cursorKey(slug, sourceKey))
+}
+
 let rest: Rest | null = null
 let translate: PluginTranslate | null = null
 let osDoor: PluginOs | null = null
@@ -98,28 +107,34 @@ function t(key: string, ...args: unknown[]): string {
 }
 
 export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate, os?: PluginOs): void {
+  // A plugin instance can be rebound to a different backend/profile without a
+  // renderer restart. Event ids are only meaningful within that source.
+  seenEventIdByBoard.clear()
+  baselinePending.clear()
   rest = r
   translate = pluginTranslate ?? null
   osDoor = os ?? null
 }
 
-async function ensureBaseline(slug: string): Promise<void> {
-  if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) {
+async function ensureBaseline(slug: string, sourceKey: string): Promise<void> {
+  const key = cursorKey(slug, sourceKey)
+
+  if (seenEventIdByBoard.has(key) || baselinePending.has(key)) {
     return
   }
 
-  baselinePending.add(slug)
+  baselinePending.add(key)
 
   try {
     const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
       latest_event_id?: unknown
     }
 
-    seenEventIdByBoard.set(slug, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
+    seenEventIdByBoard.set(key, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
   } catch {
     // Fail-closed: unknown baseline → notifications stay suppressed.
   } finally {
-    baselinePending.delete(slug)
+    baselinePending.delete(key)
   }
 }
 
@@ -189,13 +204,18 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
 /** Consume one /events frame for a board. Returns true when a terminal-event
  *  notification was fired. Never throws: notification failure cannot
  *  interfere with api.ts cache invalidation. */
-export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean> {
+export async function onKanbanEventsFrame(
+  slug: string,
+  events?: CompletionEvent[],
+  sourceKey = 'default'
+): Promise<boolean> {
   if (!events?.length || slug === '' || !rest) {
     return false
   }
 
-  await ensureBaseline(slug)
-  const seen = seenEventIdByBoard.get(slug)
+  const key = cursorKey(slug, sourceKey)
+  await ensureBaseline(slug, sourceKey)
+  const seen = seenEventIdByBoard.get(key)
 
   if (seen === undefined) {
     return false
@@ -211,7 +231,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     }
 
     cursor = ev.id
-    seenEventIdByBoard.set(slug, cursor)
+    seenEventIdByBoard.set(key, cursor)
     accepted.push(ev)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 

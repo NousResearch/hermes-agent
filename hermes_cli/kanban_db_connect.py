@@ -216,6 +216,43 @@ def _dispatch_tick_lock(db_path: Path):
                 handle.close()
 
 
+@contextlib.contextmanager
+def _dispatch_host_admission_lock():
+    """Non-blocking host-wide admission guard for a dispatch tick.
+
+    A board-local lock protects one database, but the dispatcher must also keep
+    the cross-board running-task snapshot and claim/spawn decision atomic. All
+    boards therefore share one lock under the shared Kanban home. Filesystem
+    lock failures degrade to the existing best-effort behavior.
+    """
+    from hermes_cli import kanban_db as _kb_local
+
+    lock_path = _kb_local.kanban_home() / "kanban" / "dispatch-host.lock"
+    handle = None
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        try:
+            acquired = _try_lock_nb(handle)
+        except (OSError, AttributeError):
+            acquired = False
+    except OSError:
+        acquired = True
+        handle = None
+    try:
+        yield acquired
+    finally:
+        if handle is not None:
+            try:
+                if acquired:
+                    _unlock(handle)
+            except (OSError, AttributeError):
+                pass
+            finally:
+                handle.close()
+
+
 # Periodic explicit WAL checkpoint from the dispatcher tick: a passive
 # autocheckpoint can be starved on a busy multi-process board (any open reader
 # snapshot blocks the WAL reset), letting -wal grow between gateway restarts.

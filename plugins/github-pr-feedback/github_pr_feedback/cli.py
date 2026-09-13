@@ -2056,7 +2056,7 @@ def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
     if not task_id:
         return
     board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
-    argv = [sys.executable, "-m", "hermes_cli.main", "kanban"]
+    argv = [sys.executable, "-E", "-P", "-m", "hermes_cli.main", "kanban"]
     if board:
         argv.extend(["--board", board])
     argv.extend(
@@ -2096,7 +2096,7 @@ def _block_current_ci_task(
     board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     reason = f"Exact-head CI receipt {receipt.receipt_id}: "
     reason += ", ".join(blockers) if blockers else "handoff did not complete"
-    argv = [sys.executable, "-m", "hermes_cli.main", "kanban"]
+    argv = [sys.executable, "-E", "-P", "-m", "hermes_cli.main", "kanban"]
     if board:
         argv.extend(["--board", board])
     argv.extend(["block", task_id])

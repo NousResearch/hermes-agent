@@ -794,3 +794,26 @@ def test_review_transitions_preserve_consecutive_failures(conn) -> None:
         )
     assert kb.complete_task(conn, ok_id, summary="done")
     assert _failures(conn, ok_id) == 0
+
+
+def test_failure_recording_ignores_stale_worker_fence(conn) -> None:
+    """A replaced worker cannot record a failure against the newer run."""
+    task_id, review = _claimed_review(conn, "Stale guardrail worker")
+    assert review.current_run_id is not None
+    assert review.claim_lock
+
+    assert not kbd._record_task_failure(
+        conn,
+        task_id,
+        "stale worker halted",
+        outcome="crashed",
+        release_claim=True,
+        end_run=True,
+        expected_run_id=review.current_run_id + 1,
+        expected_claim_lock=review.claim_lock,
+    )
+
+    current = kb.get_task(conn, task_id)
+    assert current is not None
+    assert current.status == "running"
+    assert current.current_run_id == review.current_run_id

@@ -82,6 +82,15 @@ class TestGatewayResolveEnabledToolsetsForSource:
         assert "terminal" in res and "file" in res and "web" in res
         assert "vision" not in res  # platform list fully replaced, not merged
 
+    def test_empty_override_is_an_authoritative_tool_free_route(self):
+        wa = _make_adapter({})
+        wa.toolsets_for_source = lambda source: []
+        gr = _make_runner(wa)
+        res = GatewayRunner._resolve_enabled_toolsets_for_source(
+            gr, BASE_CONFIG, _Src("webhook:voice-fast-lane"), "webhook"
+        )
+        assert res == []
+
     def test_override_validated_like_platform_config(self):
         # Contract: resolving with an override is byte-identical to resolving
         # the same list configured as platform_toolsets.webhook.

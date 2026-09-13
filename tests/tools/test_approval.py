@@ -93,6 +93,10 @@ class TestKanbanPullRequestCreationGuard:
             "gh pr create --fill",
             "gh api -X POST repos/acme/widgets/pulls -f head=codex/fix -f base=stable",
             "curl -X POST https://api.github.com/repos/acme/widgets/pulls",
+            "curl --data '{\"head\":\"codex/fix\"}' https://api.github.com/repos/acme/widgets/pulls",
+            "curl --data-ascii '{\"head\":\"codex/fix\"}' https://api.github.com/repos/acme/widgets/pulls",
+            "curl --data-ascii='{\"head\":\"codex/fix\"}' https://api.github.com/repos/acme/widgets/pulls",
+            "curl --json '{\"head\":\"codex/fix\"}' https://api.github.com/repos/acme/widgets/pulls",
             "bash -lc 'gh pr create --fill'",
         ),
     )

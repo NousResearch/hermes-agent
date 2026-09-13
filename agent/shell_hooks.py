@@ -369,9 +369,17 @@ def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[st
                        r["returncode"], spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
-    if parsed is None and fail_closed and stdout and not _is_json_object(stdout):
-        # A fail-closed gate must not silently allow on garbage stdout (e.g. a stack trace).
-        return _fail_closed_block(spec, "unparseable stdout (expected a JSON object)")
+    if parsed is None and fail_closed and (
+        spec.event == "pre_kanban_complete" or (stdout and not _is_json_object(stdout))
+    ):
+        # Completion gates must not silently allow on an empty response; other
+        # fail-closed hooks reject malformed JSON but retain a valid {} no-op.
+        reason = (
+            "unparseable stdout (expected a JSON object)"
+            if stdout
+            else "missing decision"
+        )
+        return _fail_closed_block(spec, reason)
     return parsed
 
 

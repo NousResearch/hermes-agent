@@ -128,15 +128,33 @@ def _tool_call_name(tc: Any) -> str:
 
 
 def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
+    """True if this conversation has a successful terminal Kanban result."""
+    review_call_ids: set[str] = set()
+    review_tools = {"kanban_request_review", "kanban_request_changes"}
     for msg in filter(lambda m: isinstance(m, dict), messages or ()):
         role = msg.get("role")
-        if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
-        ):
-            return True
-        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
-            return True
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                name = _tool_call_name(tc)
+                if name in {"kanban_complete", "kanban_block"}:
+                    return True
+                if name in review_tools:
+                    call_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if call_id:
+                        review_call_ids.add(str(call_id))
+        elif role == "tool":
+            name = str(msg.get("name") or "")
+            if name in {"kanban_complete", "kanban_block"}:
+                return True
+            if name in review_tools and (
+                not review_call_ids or str(msg.get("tool_call_id") or "") in review_call_ids
+            ):
+                try:
+                    payload = json.loads(msg.get("content") or "")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("ok") is True:
+                    return True
     return False
 
 

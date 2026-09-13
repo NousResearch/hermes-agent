@@ -89,17 +89,26 @@ def _record_kanban_guardrail_halt(
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _hermes_cli_kanban_db_connect.connect()
         try:
+            failure_kwargs = {
+                "outcome": "crashed",
+                "release_claim": True,
+                "end_run": True,
+                "event_payload_extra": {
+                    "guardrail": code,
+                    "tool_name": tool_name,
+                },
+            }
+            raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+            if raw_run_id.isdigit():
+                failure_kwargs["expected_run_id"] = int(raw_run_id)
+            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip()
+            if claim_lock:
+                failure_kwargs["expected_claim_lock"] = claim_lock
             _kbd._record_task_failure(
                 _conn,
                 kanban_task,
                 error,
-                outcome="crashed",
-                release_claim=True,
-                end_run=True,
-                event_payload_extra={
-                    "guardrail": code,
-                    "tool_name": tool_name,
-                },
+                **failure_kwargs,
             )
         finally:
             try:

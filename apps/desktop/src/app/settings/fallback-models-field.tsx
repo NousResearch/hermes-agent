@@ -13,7 +13,6 @@ import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 
 import { CONTROL_TEXT } from './constants'
-import { ModelSelect } from './model-select'
 
 // An entry is `{provider, model}` plus whatever routing the user hand-wrote
 // (`base_url`, `api_key`, `key_env`, `api_mode`, ...). The editor only edits
@@ -88,7 +87,7 @@ export function FallbackModelsField({
 
   const customModels = useStore($customModels)
 
-  useNousPricingRefresh({ providers: modelOptions.data?.providers, refetch: modelOptions.refetch })
+  useNousPricingRefresh({ queryKey: ['model-options', 'global'] })
 
   const providers = withCustomModels(
     (modelOptions.data?.providers ?? []).filter(provider => provider.slug),
@@ -146,14 +145,16 @@ export function FallbackModelsField({
                 ))}
               </SelectContent>
             </Select>
-            <ModelSelect
-              className="min-w-52 flex-1"
-              models={providerRow?.models ?? []}
-              onValueChange={model => updateRow(index, { model })}
-              provider={providerRow}
-              providerSlug={entry.provider}
-              value={entry.model}
-            />
+            <Select onValueChange={model => updateRow(index, { model })} value={entry.model}>
+              <SelectTrigger className={cn('min-w-52 flex-1', CONTROL_TEXT)}>
+                <SelectValue placeholder={m.model} />
+              </SelectTrigger>
+              <SelectContent>
+                {(providerRow?.models ?? []).map(model => (
+                  <ModelSelectItem key={model} model={model} provider={providerRow} />
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               aria-label={t.common.remove}
               onClick={() => commit(rows.filter((_, i) => i !== index))}

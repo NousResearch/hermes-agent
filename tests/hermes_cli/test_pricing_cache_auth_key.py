@@ -209,3 +209,51 @@ class TestNousCatalogExpiry:
             lambda: now + _NOUS_CATALOG_TTL_SECONDS + 1,
         )
         assert peek_cached_pricing(BASE) == {}
+
+
+def test_nous_cache_only_rejects_rotated_deleted_and_inherited_auth_without_network(
+    per_org_catalog, monkeypatch, tmp_path,
+):
+    """Persisted auth changes invalidate the pricing hint before any live refresh."""
+    from hermes_cli import auth
+
+    profile = tmp_path / "profile"
+    root = tmp_path / "root"
+    shared = tmp_path / "shared"
+    for directory in (profile, root, shared):
+        directory.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared))
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: root / "auth.json")
+
+    # Real local store reads/writes; the only replaced boundary is live token
+    # resolution, which would otherwise contact the auth service in this test.
+    def credentials():
+        state = auth._load_provider_state(auth._load_auth_store(), "nous") or {}
+        return state.get("access_token", ""), BASE
+
+    monkeypatch.setattr(models_pricing, "_resolve_nous_pricing_credentials", credentials)
+
+    def save(token, path=None):
+        auth._save_auth_store({"providers": {"nous": {"access_token": token}}}, target_path=path)
+
+    def warm_and_rotate(path):
+        save("tok-a", path)
+        models_pricing.get_pricing_for_provider("nous", force_refresh=True)
+        assert list(models_pricing.get_pricing_for_provider("nous", cached_only=True)) == ["org-a/only"]
+        reads = len(per_org_catalog)
+        save("tok-b", path)
+        assert models_pricing.get_pricing_for_provider("nous", cached_only=True) == {}
+        assert len(per_org_catalog) == reads
+        models_pricing.get_pricing_for_provider("nous", force_refresh=True)
+        assert list(models_pricing.get_pricing_for_provider("nous", cached_only=True)) == ["org-b/only"]
+
+    warm_and_rotate(None)
+    # A logout removes the source; the old warm token must not survive it.
+    assert auth.clear_provider_auth("nous")
+    assert models_pricing.get_pricing_for_provider("nous", cached_only=True) == {}
+    warm_and_rotate(root / "auth.json")
+    # Sibling processes publish rotated grants to the shared store.
+    (shared / "nous_auth.json").write_text('{"generation": "new"}')
+    assert models_pricing.get_pricing_for_provider("nous", cached_only=True) == {}

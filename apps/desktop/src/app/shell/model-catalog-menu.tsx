@@ -277,8 +277,7 @@ export function ModelCatalogMenu({
   })
 
   useNousPricingRefresh({
-    providers: modelOptions.data?.providers,
-    refetch: modelOptions.refetch
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -1164,7 +1163,11 @@ function ModelFamilyRow({
             <span className="text-[0.62rem] tabular-nums text-(--ui-text-tertiary)">{loadProgress.percent}%</span>
           </span>
         ) : null}
-        {showPricing && pricing ? <ModelPrice pricing={pricing} /> : null}
+        {provider.slug === 'nous' && !provider.free_tier_row
+          ? pricing && <NousModelPrice price={pricing} />
+          : showPricing && pricing
+            ? <ModelPrice pricing={pricing} />
+            : null}
         {settings.map(setting => (
           <ModelChip key={setting} setting>
             {setting}

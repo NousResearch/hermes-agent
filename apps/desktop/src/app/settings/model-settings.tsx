@@ -35,7 +35,6 @@ import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, findCatalogProvider } from '@/lib/model-options'
 import { composerServiceTier } from '@/lib/model-status-label'
-import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
@@ -286,6 +285,8 @@ function StaleAuxWarning({ applying, onDismiss, onReset, slots, taskLabel }: Sta
   )
 }
 
+const NO_MODEL_PROVIDERS: ModelOptionProvider[] = []
+
 interface ModelSettingsProps {
   /** Visibility only: changing pages must not reset drafts or cancel autosave. */
   subpage?: string
@@ -369,7 +370,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         // config-file reads — behind a single all-or-nothing Promise.all.
         const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
           getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
+          refetchCatalog({ cancelRefetch: false, throwOnError: true }),
           getAuxiliaryModels(scopeProfile),
           getMoaModels(scopeProfile)
         ])
@@ -439,19 +440,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         }
       }
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [m.loadFailed, scopeProfile, setCaughtError, refetchCatalog]
   )
-
-  const refreshCatalog = useCallback(async () => {
-    const epoch = profileEpoch.current
-    const options = await getGlobalModelOptions(undefined, scopeProfile)
-
-    if (profileEpoch.current === epoch) {
-      setProviders(options.providers ?? [])
-    }
-  }, [scopeProfile])
-
-  useNousPricingRefresh({ providers, refetch: refreshCatalog, scope: scopeProfile })
 
   useEffect(() => {
     void refresh()
@@ -461,6 +451,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
+    void queryClient.cancelQueries({ queryKey: catalogKey, exact: true })
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
     // truth. Ordinary same-profile refreshes still preserve in-progress edits.
@@ -767,7 +758,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         nextModel = ''
       }
 
-      const options = await getGlobalModelOptions(undefined, scopeProfile)
+      const { data: options } = await refetchCatalog({ cancelRefetch: false, throwOnError: true })
 
       if (profileEpoch.current !== epoch) {
         return
@@ -782,7 +773,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     } finally {
       setActivating(false)
     }
-  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
+  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError, refetchCatalog])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
   // to the shared onboarding flow scoped to this provider's real sign-in. The

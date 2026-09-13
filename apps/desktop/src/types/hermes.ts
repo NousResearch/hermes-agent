@@ -1,3 +1,5 @@
+export type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
+
 import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'

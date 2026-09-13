@@ -1278,8 +1278,7 @@ function CronEditorDialog({
   })
 
   useNousPricingRefresh({
-    providers: modelOptions.data?.providers,
-    refetch: modelOptions.refetch,
+    queryKey: ['model-options', 'global'],
     enabled: open && !scriptOnlyJob && !isBlueprint
   })
 

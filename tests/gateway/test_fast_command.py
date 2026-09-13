@@ -180,7 +180,7 @@ def test_load_service_tier_accepts_flex(monkeypatch):
     """agent.service_tier: flex must survive config load, not be dropped as unknown."""
     monkeypatch.setattr(
         gateway_run,
-        "_load_gateway_runtime_config",
+        "_load_gateway_config",
         lambda: {"agent": {"service_tier": "flex"}},
     )
 

@@ -2910,6 +2910,13 @@ def _show_skill_settings() -> None:
         pass
 
 
+def check_mark(ok: bool) -> str:
+    """Return a colored check/cross mark."""
+    if ok:
+        return color("\u2713", Colors.GREEN)
+    return color("\u2717", Colors.RED)
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -2942,10 +2949,34 @@ def show_config():
     _show_compression_section(config)
     _show_aux_overrides(config)
 
+    # Messaging Platforms — derived from the platform registry so all
+    # built-in and plugin-registered platforms are shown automatically.
     _section("Messaging Platforms")
-    for label, env_key in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN")):
-        state = 'configured' if get_env_value(env_key) else color('not configured', Colors.DIM)
-        print(f"  {label + ':':<13} {state}")
+    try:
+        # Ensure plugin platforms are discovered so the registry is populated
+        from hermes_cli.plugins import get_plugin_manager
+        get_plugin_manager().discover_and_load()
+    except Exception:
+        pass
+    try:
+        from gateway.platform_registry import platform_registry
+        entries = platform_registry.all_entries()
+        if not entries:
+            print(f"  {color('(no platforms registered)', Colors.DIM)}")
+        for entry in sorted(entries, key=lambda e: e.label.lower()):
+            # Check required env vars instead of calling check_fn(), which
+            # probes SDK availability and can trigger lazy-install side
+            # effects.  This tells the user whether the platform is
+            # configured (env vars set), not whether its SDK is installed.
+            configured = (
+                all(get_env_value(var) for var in (entry.required_env or []))
+                if entry.required_env else False
+            )
+            status_str = "configured" if configured else "not configured"
+            source_hint = " (plugin)" if getattr(entry, 'source', None) == 'plugin' else ""
+            print(f"  {entry.label:<14} {check_mark(configured)} {status_str}{source_hint}")
+    except Exception:
+        print(f"  {color('(registry unavailable)', Colors.DIM)}")
 
     _show_skill_settings()
 

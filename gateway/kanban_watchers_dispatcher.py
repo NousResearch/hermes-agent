@@ -41,6 +41,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    capacity_pools: dict
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -114,6 +115,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Named host-wide pools (several profiles share one backend budget).
+        capacity_pools=_kbd().normalize_capacity_pools(kanban_cfg.get("capacity_pools")),
     )
 
 
@@ -181,6 +184,10 @@ class _KanbanDispatcher:
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        # asdict() turns CapacityPool dataclasses into nested dicts; dispatch_once
+        # re-normalizes that mapping. Keep the parsed objects when present.
+        if self.settings.capacity_pools:
+            kwargs["capacity_pools"] = self.settings.capacity_pools
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

@@ -20,6 +20,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import Iterable
 from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -133,6 +134,13 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    skipped_pool_capped: list[tuple[str, str, int, int]] = field(default_factory=list)
+    """``(task_id, pool, current_running_count, cap)`` deferred because a named
+    ``kanban.capacity_pools`` entry is full. Host-wide and cross-board; the
+    card stays ready. Appended after existing fields so positional
+    ``DispatchResult(...)`` construction in plugins keeps working.
+    Separate from per-profile so several assignees that share one context
+    (a vendor, a local role, a person) share one budget."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1342,24 +1350,44 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
-def count_running_tasks(conn: sqlite3.Connection) -> int:
+def count_running_tasks(
+    conn: sqlite3.Connection,
+    assignees: Optional[Iterable[str]] = None,
+) -> int:
     """Number of tasks in ``status='running'``.
 
     Used by the multi-board sweep to count OTHER boards' workers against the
     host-level budget — the memory-derived cap bounds the machine, not the
     board. Fails open to 0 so a broken board doesn't brick dispatch on healthy ones.
+    ``assignees`` restricts the count to those profile names (capacity pools);
+    an empty iterable is 0. ``None`` counts every running task.
     """
     try:
+        if assignees is None:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()[0]
+            )
+        members = tuple(assignees)
+        if not members:
+            return 0
+        placeholders = ",".join("?" * len(members))
         return int(
             conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running' "
+                f"AND assignee IN ({placeholders})",
+                members,
             ).fetchone()[0]
         )
     except Exception:
         return 0
 
 
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+def count_running_tasks_other_boards(
+    board: Optional[str] = None,
+    assignees: Optional[Iterable[str]] = None,
+) -> int:
     """Total ``running`` tasks across every board EXCEPT ``board``.
 
     Caps bound the HOST, but each board's tick only sees its own DB; without
@@ -1387,13 +1415,171 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
                 continue
             other = _kbc.connect(board=slug)
             try:
-                total += count_running_tasks(other)
+                total += count_running_tasks(other, assignees=assignees)
             finally:
                 with contextlib.suppress(Exception):
                     other.close()
         except Exception:
             continue
     return total
+
+
+@dataclass(frozen=True)
+class CapacityPool:
+    """One named context: several profiles share one in-flight budget."""
+
+    name: str
+    max_in_progress: int
+    members: tuple[str, ...]
+
+
+def normalize_capacity_pools(raw: Any) -> dict[str, CapacityPool]:
+    """Parse ``kanban.capacity_pools`` into named host-wide admission pools.
+
+    Opt-in. Empty / unset / invalid input returns ``{}`` so existing installs
+    dispatch exactly as they do today. A typo in one pool is ignored; valid
+    siblings still apply. A profile listed in two pools keeps the first.
+    """
+    if raw is None or raw == {}:
+        return {}
+    if not isinstance(raw, Mapping):
+        _kb._log.warning(
+            "kanban dispatcher: invalid kanban.capacity_pools=%r; "
+            "expected a mapping of pool name to {max_in_progress, members}",
+            raw,
+        )
+        return {}
+    pools: dict[str, CapacityPool] = {}
+    claimed: dict[str, str] = {}
+    for raw_name, raw_spec in raw.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            _kb._log.warning(
+                "kanban dispatcher: invalid capacity pool name %r; ignoring",
+                raw_name,
+            )
+            continue
+        name = raw_name.strip()
+        if not isinstance(raw_spec, Mapping):
+            _kb._log.warning(
+                "kanban dispatcher: invalid capacity pool %r spec %r; "
+                "expected a mapping with max_in_progress and members",
+                name, raw_spec,
+            )
+            continue
+        try:
+            cap = int(raw_spec.get("max_in_progress"))
+        except (TypeError, ValueError):
+            cap = 0
+        if cap < 1:
+            cap = None
+        if cap is None:
+            _kb._log.warning(
+                "kanban dispatcher: capacity pool %r missing a positive "
+                "max_in_progress; ignoring",
+                name,
+            )
+            continue
+        raw_members = raw_spec.get("members") or ()
+        if isinstance(raw_members, str):
+            raw_members = (raw_members,)
+        if not isinstance(raw_members, (list, tuple, set)):
+            _kb._log.warning(
+                "kanban dispatcher: capacity pool %r members %r is not a list; ignoring",
+                name, raw_members,
+            )
+            continue
+        members: list[str] = []
+        for raw_member in raw_members:
+            if not isinstance(raw_member, str) or not raw_member.strip():
+                _kb._log.warning(
+                    "kanban dispatcher: capacity pool %r ignoring invalid member %r",
+                    name, raw_member,
+                )
+                continue
+            member = raw_member.strip()
+            previous = claimed.get(member)
+            if previous is not None:
+                _kb._log.warning(
+                    "kanban dispatcher: profile %r is already in capacity pool %r; "
+                    "not adding it to %r",
+                    member, previous, name,
+                )
+                continue
+            claimed[member] = name
+            members.append(member)
+        if not members:
+            _kb._log.warning(
+                "kanban dispatcher: capacity pool %r has no valid members; ignoring",
+                name,
+            )
+            continue
+        pools[name] = CapacityPool(
+            name=name, max_in_progress=cap, members=tuple(members),
+        )
+    return pools
+
+
+def configured_capacity_pools() -> dict[str, CapacityPool]:
+    """Read ``kanban.capacity_pools`` from config, or ``{}`` when unset/invalid."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("capacity_pools")
+    except Exception:
+        return {}
+    return normalize_capacity_pools(raw)
+
+
+def dispatch_caps_from_config(kanban_cfg: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    """Kwargs every ``dispatch_once`` caller must pass so no entry point is uncapped.
+
+    Dashboard nudge, CLI ``hermes kanban dispatch``, the gateway watcher and
+    the standalone daemon all go through this so a UI default of ``max=8``
+    cannot bypass host / per-profile / pool admission.
+    """
+    loaded_from_disk = False
+    if kanban_cfg is None:
+        loaded_from_disk = True
+        try:
+            from hermes_cli.config import load_config_readonly
+            raw_cfg = load_config_readonly() or {}
+            kanban_cfg = raw_cfg.get("kanban", {}) if isinstance(raw_cfg, dict) else {}
+        except Exception:
+            kanban_cfg = {}
+    if not isinstance(kanban_cfg, Mapping):
+        kanban_cfg = {}
+    default_assignee = (kanban_cfg.get("default_assignee") or "").strip() or None
+
+    def _opt_positive(raw: Any) -> Optional[int]:
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value >= 1 else None
+
+    host_cap = (
+        configured_max_in_progress() if loaded_from_disk
+        else _opt_positive(kanban_cfg.get("max_in_progress"))
+    )
+    return {
+        "default_assignee": default_assignee,
+        "max_in_progress": resolve_max_in_progress(host_cap),
+        "max_in_progress_per_profile": _opt_positive(
+            kanban_cfg.get("max_in_progress_per_profile")
+        ),
+        "max_spawn": _opt_positive(kanban_cfg.get("max_spawn")),
+        "capacity_pools": normalize_capacity_pools(kanban_cfg.get("capacity_pools")),
+    }
+
+
+def _pool_index(pools: Mapping[str, CapacityPool]) -> dict[str, str]:
+    """``{profile: pool_name}`` for every member of every pool."""
+    index: dict[str, str] = {}
+    for pool in pools.values():
+        for member in pool.members:
+            index.setdefault(member, pool.name)
+    return index
 
 
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
@@ -1429,6 +1615,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    capacity_pools: Optional[Mapping[str, Any]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1452,6 +1639,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            capacity_pools=capacity_pools,
         )
 
     try:
@@ -1501,6 +1689,9 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    capacity_pools: Mapping[str, CapacityPool],
+    pool_by_assignee: Mapping[str, str],
+    pool_running: dict[str, int],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1522,6 +1713,15 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    pool_name = pool_by_assignee.get(assignee)
+    pool = capacity_pools.get(pool_name) if pool_name else None
+    if pool is not None:
+        current_pool = pool_running.get(pool.name, 0)
+        if current_pool >= pool.max_in_progress:
+            result.skipped_pool_capped.append(
+                (task_id, pool.name, current_pool, pool.max_in_progress)
+            )
+            return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1538,10 +1738,13 @@ def _dispatch_lane_task(
         return False
 
     def _count_spawn(name: str) -> None:
-        # Later rows in this tick respect the per-profile cap; subsequent
-        # ticks re-query from the DB.
+        # Later rows in this tick respect the per-profile and pool caps;
+        # subsequent ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        spawned_pool = pool_by_assignee.get(name) if name else None
+        if spawned_pool:
+            pool_running[spawned_pool] = pool_running.get(spawned_pool, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -1761,6 +1964,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    capacity_pools: Optional[Mapping[str, Any]] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1807,10 +2011,24 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    pools = (
+        capacity_pools if isinstance(capacity_pools, dict)
+        and all(isinstance(v, CapacityPool) for v in capacity_pools.values())
+        else normalize_capacity_pools(capacity_pools)
+    )
+    pool_by_assignee = _pool_index(pools)
+    pool_running: dict[str, int] = {}
+    for pool in pools.values():
+        pool_running[pool.name] = (
+            count_running_tasks(conn, assignees=pool.members)
+            + count_running_tasks_other_boards(board, assignees=pool.members)
+        )
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        capacity_pools=pools, pool_by_assignee=pool_by_assignee,
+        pool_running=pool_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2343,13 +2561,14 @@ def run_daemon(
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
-            max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            caps = dispatch_caps_from_config()
+            if max_spawn is not None:
+                caps["max_spawn"] = max_spawn
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
-                    max_spawn=max_spawn,
-                    max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    **caps,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

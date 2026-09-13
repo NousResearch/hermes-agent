@@ -879,6 +879,7 @@ All commands are also available as a slash command in the interactive CLI and in
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.capacity_pools` | unset (`{}`) | Named host-wide admission pools. Each name is an operator-chosen context (a vendor, a local role, a person). Each pool has `max_in_progress` and a `members` list of assignee profiles that share that budget. Running members are counted across every board and both dispatch lanes. Extra cards stay Ready (`skipped_pool_capped`); they are not dropped. Unlisted profiles are unpooled. Opt-in: empty/absent leaves existing installs unchanged. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
@@ -887,6 +888,16 @@ kanban:
   max_in_progress: 2
   auto_promote_children: false
   default_workdir: ~/work/active-project
+  capacity_pools:
+    grok:
+      max_in_progress: 6
+      members: [reviewer, researcher]
+    spark:
+      max_in_progress: 1
+      members: [coder, implementer]
+    claude:
+      max_in_progress: 3
+      members: [planner]
 ```
 
 ### Scheduled task starts (`scheduled_at`)

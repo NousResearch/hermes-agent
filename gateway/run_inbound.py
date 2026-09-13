@@ -962,7 +962,11 @@ class GatewayInboundMixin:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
         if self._draining:
-            return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
+            if self._should_send_drain_notice(source):
+                return True, f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now.", command
+            # Already told this chat inside the cooldown window; stay silent instead of repeating
+            # the identical refusal for every message sent during the drain (#109002).
+            return True, None, command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         qcmd = self._hm_quick_commands().get(command) if command else None

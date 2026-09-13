@@ -34,7 +34,7 @@ def desktop_env(tmp_path, monkeypatch):
     desktop_dir.mkdir(parents=True)
     (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
 
-    calls = {"builds": 0, "build_needed": True}
+    calls = {"builds": 0, "build_needed": True, "syncs": 0}
 
     class _FakeMain:
         PROJECT_ROOT = tmp_path
@@ -51,6 +51,10 @@ def desktop_env(tmp_path, monkeypatch):
         def _run_logged_subprocess(cmd, cwd=None, env=None):
             calls["builds"] += 1
             return _Result(1, stdout="Error: [stage-native-deps] boom")
+
+        @staticmethod
+        def _sync_macos_installed_desktop_app(desktop_dir):
+            calls["syncs"] += 1
 
     monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
     monkeypatch.setattr(
@@ -78,8 +82,8 @@ def test_failed_rebuild_returns_false_and_keeps_the_retry_hint(desktop_env, caps
     assert "Update complete" not in out
 
 
-def test_successful_rebuild_returns_true(desktop_env, monkeypatch, capsys):
-    desktop_dir, _calls = desktop_env
+def test_successful_rebuild_syncs_installed_macos_app(desktop_env, monkeypatch, capsys):
+    desktop_dir, calls = desktop_env
     builds = []
     monkeypatch.setattr(
         update_cmd._m(),
@@ -88,6 +92,7 @@ def test_successful_rebuild_returns_true(desktop_env, monkeypatch, capsys):
     )
     assert _run(desktop_dir) is True
     assert len(builds) == 1
+    assert calls["syncs"] == 1
     assert "Desktop app up to date" in capsys.readouterr().out
 
 

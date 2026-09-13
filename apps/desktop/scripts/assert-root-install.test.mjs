@@ -11,6 +11,7 @@ import {
   findPnpManifest,
   requiredPackages
 } from '../scripts/assert-root-install.mjs'
+import { electronBundleOptions } from '../scripts/electron-bundle-options.mjs'
 
 // Build a throwaway repo shaped like this one: an app workspace whose
 // dependencies are hoisted to the repo root, which is what the guard walks.
@@ -216,55 +217,68 @@ test('checkRootInstall keeps the floor when the manifest is unreadable', () => {
 // file, a directory, an unrelated file or a corrupt manifest with the same name must
 // not block a build. These fixtures run the real esbuild resolver.
 
-// A minimal Yarn PnP state for a lone root workspace that declares no dependencies —
-// the shape `yarn` leaves behind when run in an otherwise empty folder.
-const PNP_STATE = JSON.stringify({
-  dependencyTreeRoots: [{ name: 'stray-root', reference: 'workspace:.' }],
-  enableTopLevelFallback: true,
-  fallbackExclusionList: [['stray-root', ['workspace:.']]],
-  fallbackPool: [],
-  ignorePatternData: null,
-  packageRegistryData: [
-    [null, [[null, { packageLocation: './', packageDependencies: [], linkType: 'SOFT' }]]],
-    ['stray-root', [['workspace:.', { packageLocation: './', packageDependencies: [['stray-root', 'workspace:.']], linkType: 'SOFT' }]]]
-  ]
-})
+// A minimal Yarn PnP state for a lone root workspace, the shape `yarn` leaves
+// behind when run in a parent folder. `declared` lists packages the manifest maps
+// to this repo's hoisted node_modules; anything else is forbidden.
+function pnpState(declared = []) {
+  const hard = name => [name, [['npm:1.0.0', { packageLocation: `./repo/node_modules/${name}/`, packageDependencies: [[name, 'npm:1.0.0']], linkType: 'HARD' }]]]
+  const deps = declared.map(name => [name, 'npm:1.0.0'])
+  return JSON.stringify({
+    dependencyTreeRoots: [{ name: 'stray-root', reference: 'workspace:.' }],
+    enableTopLevelFallback: true,
+    fallbackExclusionList: [['stray-root', ['workspace:.']]],
+    fallbackPool: [],
+    ignorePatternData: null,
+    packageRegistryData: [
+      [null, [[null, { packageLocation: './', packageDependencies: deps, linkType: 'SOFT' }]]],
+      ['stray-root', [['workspace:.', { packageLocation: './', packageDependencies: [['stray-root', 'workspace:.'], ...deps], linkType: 'SOFT' }]]],
+      ...declared.map(hard)
+    ]
+  })
+}
 
 const PNP_FIXTURES = {
-  'valid .pnp.data.json': outer => fs.writeFileSync(path.join(outer, '.pnp.data.json'), PNP_STATE),
+  'valid .pnp.data.json': outer => fs.writeFileSync(path.join(outer, '.pnp.data.json'), pnpState()),
   'valid .pnp.cjs': outer => fs.writeFileSync(path.join(outer, '.pnp.cjs'), [
     '"use strict";',
-    `const RAW_RUNTIME_STATE =\n'${PNP_STATE}';`,
+    `const RAW_RUNTIME_STATE =\n'${pnpState()}';`,
     'function $$SETUP_STATE(hydrateRuntimeState, basePath) {',
     '  return hydrateRuntimeState(JSON.parse(RAW_RUNTIME_STATE), {basePath: basePath || __dirname});',
     '}',
     ''
   ].join('\n')),
+  'partial .pnp.data.json': outer => fs.writeFileSync(path.join(outer, '.pnp.data.json'), pnpState(['probe-pkg'])),
   'empty .pnp.cjs': outer => fs.writeFileSync(path.join(outer, '.pnp.cjs'), ''),
   '.pnp.cjs directory': outer => fs.mkdirSync(path.join(outer, '.pnp.cjs')),
   'unrelated .pnp.js': outer => fs.writeFileSync(path.join(outer, '.pnp.js'), 'module.exports = {}\n'),
   'corrupt .pnp.data.json': outer => fs.writeFileSync(path.join(outer, '.pnp.data.json'), '{"packageRegistryData": ['),
 }
 
-// An app workspace nested under `outer`, with one resolvable package hoisted to the repo root.
+// An app workspace nested under `outer` whose entry imports two packages hoisted
+// to the repo root, plus bundle options shaped like electron-bundle-options.mjs.
 function makePnpTree(fixture) {
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-pnp-'))
   const appDir = path.join(outer, 'repo', 'apps', 'desktop')
-  const pkgDir = path.join(outer, 'repo', 'node_modules', 'probe-pkg')
-  fs.mkdirSync(appDir, { recursive: true })
-  fs.mkdirSync(pkgDir, { recursive: true })
+  fs.mkdirSync(path.join(appDir, 'electron'), { recursive: true })
   fs.writeFileSync(path.join(outer, 'repo', 'package.json'), JSON.stringify({ name: 'repo', private: true, workspaces: ['apps/*'] }))
-  fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', dependencies: { 'probe-pkg': '1.0.0' } }))
-  fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'probe-pkg', version: '1.0.0', main: 'index.js' }))
-  fs.writeFileSync(path.join(pkgDir, 'index.js'), 'module.exports = 1\n')
+  fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', dependencies: { 'probe-pkg': '1.0.0', 'second-pkg': '1.0.0' } }))
+  for (const name of ['probe-pkg', 'second-pkg']) {
+    const pkgDir = path.join(outer, 'repo', 'node_modules', name)
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, version: '1.0.0', main: 'index.js' }))
+    fs.writeFileSync(path.join(pkgDir, 'index.js'), `module.exports = ${JSON.stringify(name)}\n`)
+  }
+  const entry = path.join(appDir, 'electron', 'main.ts')
+  fs.writeFileSync(entry, "import probe from 'probe-pkg'\nimport second from 'second-pkg'\nconsole.log(probe, second)\n")
   if (fixture) PNP_FIXTURES[fixture](outer)
-  return { outer, appDir }
+  const bundleOptions = [{ entryPoints: [entry], bundle: true, platform: 'node', format: 'esm', external: ['electron'] }]
+  return { outer, appDir, bundleOptions }
 }
 
 test('checkPnpResolution passes without any PnP manifest', async () => {
-  const { outer, appDir } = makePnpTree(null)
+  const { outer, appDir, bundleOptions } = makePnpTree(null)
   try {
-    assert.deepEqual(await checkPnpResolution(appDir, 'probe-pkg'), { ok: true })
+    assert.deepEqual(await checkPnpResolution(appDir, { bundleOptions }), { ok: true })
   } finally {
     fs.rmSync(outer, { recursive: true, force: true })
   }
@@ -272,29 +286,57 @@ test('checkPnpResolution passes without any PnP manifest', async () => {
 
 for (const fixture of ['valid .pnp.data.json', 'valid .pnp.cjs']) {
   test(`checkPnpResolution fails and names the manifest for a ${fixture} above the repo`, async () => {
-    const { outer, appDir } = makePnpTree(fixture)
+    const { outer, appDir, bundleOptions } = makePnpTree(fixture)
     try {
-      const result = await checkPnpResolution(appDir, 'probe-pkg')
+      const result = await checkPnpResolution(appDir, { bundleOptions })
       assert.equal(result.ok, false)
       assert.ok(result.error.includes(path.join(fs.realpathSync(outer), fixture.split(' ')[1])), result.error)
       assert.match(result.error, /Plug'n'Play/)
-      assert.match(result.error, /probe-pkg/)
+      assert.match(result.error, /"probe-pkg"/)
+      assert.match(result.error, /"second-pkg"/)
     } finally {
       fs.rmSync(outer, { recursive: true, force: true })
     }
   })
 }
 
+// A manifest can declare some bundle dependencies and omit others. Probing one
+// package would pass here while the real bundle still fails, so every import
+// reachable from the entrypoints must be resolved.
+test('checkPnpResolution names the omitted package when the manifest declares only some bundle dependencies', async () => {
+  const { outer, appDir, bundleOptions } = makePnpTree('partial .pnp.data.json')
+  try {
+    const result = await checkPnpResolution(appDir, { bundleOptions })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /"second-pkg"/)
+    assert.doesNotMatch(result.error, /"probe-pkg"/)
+  } finally {
+    fs.rmSync(outer, { recursive: true, force: true })
+  }
+})
+
 for (const fixture of ['empty .pnp.cjs', '.pnp.cjs directory', 'unrelated .pnp.js', 'corrupt .pnp.data.json']) {
   test(`checkPnpResolution does not block the build for a stray ${fixture} above the repo`, async () => {
-    const { outer, appDir } = makePnpTree(fixture)
+    const { outer, appDir, bundleOptions } = makePnpTree(fixture)
     try {
-      assert.deepEqual(await checkPnpResolution(appDir, 'probe-pkg'), { ok: true })
+      assert.deepEqual(await checkPnpResolution(appDir, { bundleOptions }), { ok: true })
     } finally {
       fs.rmSync(outer, { recursive: true, force: true })
     }
   })
 }
+
+// Without explicit options the check resolves the real Electron bundles, so their
+// entrypoints must exist where bundle-electron-main.mjs builds them from.
+test('electronBundleOptions points at the real main and preload entrypoints', () => {
+  const desktopDir = path.resolve(import.meta.dirname, '..')
+  const options = electronBundleOptions(desktopDir)
+  assert.deepEqual(options.map(o => o.format), ['esm', 'cjs'])
+  for (const { entryPoints, external } of options) {
+    assert.ok(fs.existsSync(entryPoints[0]), entryPoints[0])
+    assert.ok(external.includes('electron'))
+  }
+})
 
 test('findPnpManifest detects every manifest name and returns null when absent', () => {
   for (const name of ['.pnp.cjs', '.pnp.js', '.pnp.data.json']) {

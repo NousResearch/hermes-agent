@@ -15,6 +15,7 @@ import { existsSync, readFileSync, realpathSync } from "fs"
 import { createRequire } from "module"
 import { resolve, join, dirname } from "path"
 import { isMain } from "./utils.mjs"
+import { electronBundleOptions } from "./electron-bundle-options.mjs"
 
 // Packages the build *consumes*, as opposed to merely declares. Each one is
 // load-bearing for a distinct build step, and each one has been observed
@@ -84,7 +85,7 @@ export function requiredPackages(appDir) {
 // nothing in that error points outside the repo. An empty file, a directory, or an
 // unrelated file with the same name is ignored by esbuild, so the filename alone
 // must not fail the build: `findPnpManifest` is only a cheap pre-filter, and
-// `checkPnpResolution` asks esbuild itself.
+// `checkPnpResolution` asks esbuild itself, using the real bundle options.
 const PNP_MANIFESTS = [".pnp.cjs", ".pnp.js", ".pnp.data.json"]
 export { PNP_MANIFESTS }
 
@@ -102,56 +103,51 @@ export function findPnpManifest(fromDir) {
   }
 }
 
-const PNP_PROBE_ENTRY = "assert-root-install-pnp-probe"
-
-// Resolves `probePackage` through esbuild from `appDir` — same working directory
-// as the real bundle — without writing or bundling anything: the probe module is
-// served from memory and every resolved file is stubbed. Fails only when esbuild
-// reports that a Plug'n'Play manifest blocked the import; any other esbuild error
-// is left for the build itself to report.
-export async function checkPnpResolution(requestedAppDir, probePackage = "vite") {
-  const candidate = findPnpManifest(requestedAppDir)
-  if (!candidate) return { ok: true }
+// Runs the real Electron bundles (electron-bundle-options.mjs) in memory from
+// `appDir` — the same working directory, entrypoints and externals as
+// bundle-electron-main.mjs, with nothing written — and collects every import that
+// esbuild says a Plug'n'Play manifest blocked. A manifest can list some of the
+// packages the bundles need and omit others, so probing a single package is not
+// enough. Any other esbuild error is left for the build itself to report.
+export async function checkPnpResolution(requestedAppDir, { bundleOptions } = {}) {
+  if (!findPnpManifest(requestedAppDir)) return { ok: true }
 
   // The build's working directory is always a real path; esbuild matches the
   // manifest against real paths, so a symlinked spelling (macOS /var -> /private/var)
   // would silently skip PnP and hide the failure this check exists to catch.
   const appDir = realpathSync(requestedAppDir)
-  const probePath = join(appDir, `${PNP_PROBE_ENTRY}.js`)
+  const realEntry = entry => (existsSync(entry) ? realpathSync(entry) : entry)
   const { build } = await import("esbuild")
-  try {
-    await build({
-      entryPoints: [PNP_PROBE_ENTRY],
-      absWorkingDir: appDir,
-      bundle: true,
-      write: false,
-      platform: "node",
-      logLevel: "silent",
-      plugins: [{
-        name: PNP_PROBE_ENTRY,
-        setup(pluginBuild) {
-          pluginBuild.onResolve({ filter: new RegExp(`^${PNP_PROBE_ENTRY}$`) }, () => ({ path: probePath }))
-          pluginBuild.onLoad({ filter: /.*/ }, args =>
-            args.path === probePath
-              ? { contents: `import ${JSON.stringify(probePackage)}`, loader: "js", resolveDir: appDir }
-              : { contents: "", loader: "js" })
-        }
-      }]
-    })
-    return { ok: true }
-  } catch (err) {
-    const note = (err.errors ?? []).flatMap(message => message.notes ?? [])
-      .find(n => n.text.includes("Plug'n'Play"))
-    if (!note) return { ok: true }
-    const manifest = note.location?.file ? resolve(appDir, note.location.file) : candidate
-    return {
-      ok: false,
-      error:
-        `esbuild is using the Yarn Plug'n'Play manifest at ${manifest}, which does not ` +
-        `list this npm workspace, so the build cannot resolve installed packages ` +
-        `(${note.text.replace(/:\s*$/, "")}). Move or delete that file — it is usually ` +
-        `left over from running yarn in a parent folder — then rebuild.`
+  const blocked = new Map() // package -> manifest esbuild used
+
+  for (const options of bundleOptions ?? electronBundleOptions(appDir)) {
+    try {
+      await build({
+        ...options,
+        entryPoints: options.entryPoints.map(realEntry),
+        absWorkingDir: appDir,
+        write: false,
+        logLevel: "silent"
+      })
+    } catch (err) {
+      for (const message of err.errors ?? []) {
+        const note = (message.notes ?? []).find(n => n.text.includes("Plug'n'Play"))
+        if (!note) continue
+        const pkg = note.text.match(/importing "([^"]+)"/)?.[1] ?? message.text
+        blocked.set(pkg, note.location?.file ? resolve(appDir, note.location.file) : findPnpManifest(appDir))
+      }
     }
+  }
+
+  if (blocked.size === 0) return { ok: true }
+  const packages = [...blocked.keys()].map(name => `"${name}"`).join(", ")
+  return {
+    ok: false,
+    error:
+      `esbuild is using the Yarn Plug'n'Play manifest at ${[...new Set(blocked.values())].join(", ")}, ` +
+      `which does not list ${packages} for this npm workspace, so the Electron bundle cannot ` +
+      `resolve them. Move or delete that file — it is usually left over from running yarn ` +
+      `in a parent folder — then rebuild.`
   }
 }
 

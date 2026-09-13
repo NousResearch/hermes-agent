@@ -556,6 +556,18 @@ class TestBuildConverseKwargs:
         )
         assert "inferenceConfig" not in kwargs
 
+    def test_bedrock_openai_frontier_models_never_receive_sampling_params(self):
+        """Bedrock-hosted GPT-5.x / GPT-6 reject temperature/topP in Converse (ValidationException:
+        "This model doesn't support the temperature field"); gpt-oss and other vendors still accept them."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        msgs = [{"role": "user", "content": "Hi"}]
+        for model in ("us.openai.gpt-6-astra", "openai.gpt-6-astra", "global.openai.gpt-5.6-sol"):
+            cfg = build_converse_kwargs(model=model, messages=msgs, temperature=0.3, top_p=0.9)["inferenceConfig"]
+            assert "temperature" not in cfg and "topP" not in cfg, model
+        for model in ("openai.gpt-oss-20b-1:0", "qwen.qwen3-vl-235b-a22b"):
+            cfg = build_converse_kwargs(model=model, messages=msgs, temperature=0.3)["inferenceConfig"]
+            assert cfg["temperature"] == 0.3, model
+
     def test_cache_point_added_for_supported_model(self):
         """Claude and Nova on the Converse path get cachePoint markers on
         system, tools, and the message before the newest turn."""

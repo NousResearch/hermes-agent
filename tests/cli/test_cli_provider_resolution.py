@@ -683,3 +683,29 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
 
 
+
+
+def test_runtime_credentials_pass_current_model_as_target_model(monkeypatch):
+    """The per-turn provider re-resolution must carry the ACTIVE model: Bedrock chooses the wire
+    protocol per model (Claude -> anthropic_messages, everything else -> bedrock_converse), so
+    resolving by provider alone re-applies the config default's wire after a /model switch."""
+    cli = _import_cli()
+    seen = {}
+
+    def _runtime_resolve(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "bedrock",
+            "api_mode": "bedrock_converse",
+            "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "api_key": "aws-sdk",
+            "source": "aws-sdk-default-chain",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="us.openai.gpt-6-astra", compact=True, max_turns=1)
+    assert shell._ensure_runtime_credentials() is True
+    assert seen.get("target_model") == "us.openai.gpt-6-astra"
+    assert shell.api_mode == "bedrock_converse"

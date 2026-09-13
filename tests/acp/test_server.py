@@ -549,7 +549,7 @@ class TestSlashCommands:
         original_session_db = object()
         state.agent._session_db = original_session_db
 
-        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
+        def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force, **kwargs):
             assert state.agent._session_db is None
             assert messages == state.history
             assert system_prompt == "system"
@@ -582,8 +582,10 @@ class TestSlashCommands:
             ],
             "system",
             approx_tokens=40,
-            task_id=state.session_id,
+            focus_topic=None,
             force=True,
+            defer_context_engine_notification=True,
+            task_id=state.session_id,
         )
         mock_save.assert_called_once_with(state.session_id)
 

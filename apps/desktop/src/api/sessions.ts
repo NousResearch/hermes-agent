@@ -191,6 +191,9 @@ export interface SidebarSessionsResponse {
   recents: SidebarSessionSlice
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
+  /** Fourth source-scoped slice (kanban dispatcher workers). Absent on older
+   *  backends — callers must treat that as an empty slice, not an error. */
+  kanban?: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
 }
 
@@ -201,6 +204,7 @@ export interface SidebarSessionsRequest {
   cronLimit: number
   messagingLimit: number
   messagingExclude: string[]
+  kanbanLimit: number
 }
 
 // The batched /sidebar endpoint shipped later than the per-slice route, so a
@@ -226,19 +230,21 @@ export function resetSidebarBatchCapability() {
 // Rides the same Electron remote-splice
 // interception as the pre-batching desktop, so remote profiles stay correct.
 async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
-  const [recents, cron, messaging] = await Promise.all([
+  const [recents, cron, messaging, kanban] = await Promise.all([
     listAllProfileSessions(req.recentsLimit, 1, 'exclude', 'recent', req.recentsProfile, {
       excludeSources: req.recentsExclude
     }),
     listAllProfileSessions(req.cronLimit, 1, 'exclude', 'recent', req.recentsProfile, { source: 'cron' }),
     listAllProfileSessions(req.messagingLimit, 1, 'exclude', 'recent', req.recentsProfile, {
       excludeSources: req.messagingExclude
-    })
+    }),
+    listAllProfileSessions(req.kanbanLimit, 1, 'exclude', 'recent', req.recentsProfile, { source: 'kanban' })
   ])
 
   const recentsErrors = recents.errors ?? []
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
+  const kanbanErrors = kanban.errors ?? []
 
   return {
     recents: {
@@ -253,6 +259,10 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
     messaging: {
       sessions: messaging.sessions,
       ...(messagingErrors.length ? { errors: messagingErrors } : {})
+    },
+    kanban: {
+      sessions: kanban.sessions,
+      ...(kanbanErrors.length ? { errors: kanbanErrors } : {})
     }
   }
 }
@@ -283,7 +293,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
     recents_profile: req.recentsProfile,
     recents_limit: String(Math.max(1, req.recentsLimit)),
     cron_limit: String(Math.max(1, req.cronLimit)),
-    messaging_limit: String(Math.max(1, req.messagingLimit))
+    messaging_limit: String(Math.max(1, req.messagingLimit)),
+    kanban_limit: String(Math.max(1, req.kanbanLimit))
   })
 
   if (req.recentsExclude.length) {
@@ -330,6 +341,12 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       ...result.messaging,
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
+    },
+    // Older backend without the kanban slice: empty, not an error.
+    kanban: {
+      ...result.kanban,
+      sessions: stampActiveConnectionOwner(result.kanban?.sessions ?? []),
+      ...(result.kanban?.errors?.length || result.errors?.length ? { errors: result.kanban?.errors ?? result.errors } : {})
     },
     errors: result.errors
   }

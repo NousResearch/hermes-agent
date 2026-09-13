@@ -85,7 +85,7 @@ describe('Hermes REST helpers', () => {
   })
 
   it('batches the sidebar slices into a single request with per-slice limits + excludes', async () => {
-    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] }, kanban: { sessions: [] } })
 
     await listSidebarSessions({
       recentsProfile: 'work',
@@ -93,14 +93,15 @@ describe('Hermes REST helpers', () => {
       recentsExclude: ['cron', 'tool'],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: ['cron', 'desktop']
+      messagingExclude: ['cron', 'desktop'],
+      kanbanLimit: 50
     })
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path:
           '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
-          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
+          '&messaging_limit=100&kanban_limit=50&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
         timeoutMs: 60_000
       })
     )
@@ -109,7 +110,7 @@ describe('Hermes REST helpers', () => {
   it('routes session, profile, and model reads through the active registry source', async () => {
     api.mockImplementation(async ({ path }: { path: string }) =>
       path.startsWith('/api/profiles/sessions/sidebar')
-        ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } }
+        ? { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] }, kanban: { sessions: [] } }
         : emptySessionsResponse
     )
     setApiRequestConnection('personal')
@@ -122,7 +123,8 @@ describe('Hermes REST helpers', () => {
       recentsExclude: [],
       cronLimit: 20,
       messagingLimit: 20,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 20
     })
     await getProfiles()
     await getGlobalModelInfo()
@@ -143,7 +145,7 @@ describe('Hermes REST helpers', () => {
   it('routes the batched sidebar refresh through the active backend scope', async () => {
     setApiRequestConnection('cubi')
     setApiRequestProfile('default')
-    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] }, kanban: { sessions: [] } })
 
     await listSidebarSessions({
       recentsProfile: 'default',
@@ -151,7 +153,8 @@ describe('Hermes REST helpers', () => {
       recentsExclude: ['cron'],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: ['cron', 'desktop']
+      messagingExclude: ['cron', 'desktop'],
+      kanbanLimit: 50
     })
 
     expect(api).toHaveBeenCalledWith(
@@ -237,12 +240,14 @@ describe('Hermes REST helpers', () => {
       recentsExclude: [],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 50
     })
 
     expect(result.recents.sessions).toEqual([])
     expect(result.cron.sessions).toEqual([])
     expect(result.messaging.sessions).toEqual([])
+    expect(result.kanban?.sessions).toEqual([])
   })
 
   it('counts pinned rows toward a full legacy page so older sessions stay reachable', async () => {
@@ -273,6 +278,7 @@ describe('Hermes REST helpers', () => {
       recentsLimit: 20,
       recentsExclude: [],
       cronLimit: 50,
+      kanbanLimit: 50,
       messagingLimit: 100,
       messagingExclude: []
     })
@@ -297,6 +303,10 @@ describe('Hermes REST helpers', () => {
         return Promise.resolve({ ...emptySessionsResponse, sessions: [row('cron-1')], total: 1 })
       }
 
+      if (path.includes('source=kanban')) {
+        return Promise.resolve({ ...emptySessionsResponse, sessions: [row('kanban-1')], total: 1 })
+      }
+
       if (path.includes('exclude_sources=cron%2Cdesktop')) {
         return Promise.resolve({ ...emptySessionsResponse, sessions: [row('msg-1')], total: 1 })
       }
@@ -315,7 +325,8 @@ describe('Hermes REST helpers', () => {
       recentsExclude: ['cron', 'tool'],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: ['cron', 'desktop']
+      messagingExclude: ['cron', 'desktop'],
+      kanbanLimit: 50
     })
 
     // Slices reassembled from the legacy per-slice route with the same
@@ -326,15 +337,17 @@ describe('Hermes REST helpers', () => {
     expect(result.recents.profiles_truncated).toEqual({ default: false })
     expect(result.cron.sessions.map(s => s.id)).toEqual(['cron-1'])
     expect(result.messaging.sessions.map(s => s.id)).toEqual(['msg-1'])
+    expect(result.kanban?.sessions.map(s => s.id)).toEqual(['kanban-1'])
 
     const paths = api.mock.calls.map(call => (call[0] as { path: string }).path)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions/sidebar'))).toHaveLength(1)
-    expect(paths.filter(p => p.startsWith('/api/profiles/sessions?'))).toHaveLength(3)
+    expect(paths.filter(p => p.startsWith('/api/profiles/sessions?'))).toHaveLength(4)
     expect(
       paths.filter(path => path.startsWith('/api/profiles/sessions?') && path.includes('profile=work'))
-    ).toHaveLength(3)
+    ).toHaveLength(4)
     expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
+    expect(paths).toContainEqual(expect.stringContaining('source=kanban'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
   })
 
@@ -364,7 +377,8 @@ describe('Hermes REST helpers', () => {
       recentsExclude: [],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 50
     })
 
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
@@ -386,7 +400,8 @@ describe('Hermes REST helpers', () => {
       recentsExclude: [],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 50
     }
 
     await listSidebarSessions(req)
@@ -397,9 +412,9 @@ describe('Hermes REST helpers', () => {
     )
 
     // First refresh probes once and learns; the second goes straight to the
-    // per-slice route (3 calls each refresh, no repeated dead probe).
+    // per-slice route (4 calls each refresh, no repeated dead probe).
     expect(batchedProbes).toHaveLength(1)
-    expect(api.mock.calls.length).toBe(1 + 3 + 3)
+    expect(api.mock.calls.length).toBe(1 + 4 + 4)
   })
 
   it('re-probes the batched route after a gateway switch resets the capability flag', async () => {
@@ -415,13 +430,14 @@ describe('Hermes REST helpers', () => {
       recentsExclude: [],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 50
     }
 
     await listSidebarSessions(req)
     // Soft gateway switch: the next backend may support the batched route.
     resetSidebarBatchCapability()
-    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] }, kanban: { sessions: [] } })
 
     const result = await listSidebarSessions(req)
 
@@ -443,7 +459,8 @@ describe('Hermes REST helpers', () => {
         recentsExclude: [],
         cronLimit: 50,
         messagingLimit: 100,
-        messagingExclude: []
+        messagingExclude: [],
+        kanbanLimit: 50
       })
     ).rejects.toThrow('timed out')
 
@@ -451,14 +468,15 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledTimes(1)
 
     // And the next refresh still uses the batched route.
-    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] }, kanban: { sessions: [] } })
     await listSidebarSessions({
       recentsProfile: 'all',
       recentsLimit: 20,
       recentsExclude: [],
       cronLimit: 50,
       messagingLimit: 100,
-      messagingExclude: []
+      messagingExclude: [],
+      kanbanLimit: 50
     })
 
     expect((api.mock.calls[1][0] as { path: string }).path).toMatch(/^\/api\/profiles\/sessions\/sidebar\?/)

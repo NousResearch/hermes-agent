@@ -15,6 +15,7 @@ import {
   setCurrentBranch,
   setCurrentCwdTransient,
   setFreshDraftReady,
+  setKanbanSessions,
   setMessages,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -202,6 +203,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
+  setKanbanSessions([])
   // Clearing $sessionStates automatically clears $workingSessionIds and
   // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
   // $unreadFinishedSessionIds is separate, so wipe it explicitly. Only the

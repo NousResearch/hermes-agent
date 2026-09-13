@@ -85,6 +85,7 @@ vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
   $connection: atom<null | { mode: string }>(null),
   $cronSessions: atom<unknown[]>([]),
+  $kanbanSessions: atom<unknown[]>([]),
   $messagingSessions: atom<unknown[]>([]),
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),

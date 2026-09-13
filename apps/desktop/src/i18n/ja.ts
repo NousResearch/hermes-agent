@@ -2250,6 +2250,7 @@ export const ja = defineLocale({
     pinned: 'ピン留め',
     sessions: 'セッション',
     cronJobs: 'Cronジョブ',
+    kanbanSessions: 'Kanban',
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     showProjects: 'プロジェクトを表示',

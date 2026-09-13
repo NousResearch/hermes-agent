@@ -70,7 +70,14 @@ def local_fallback_steps(route, step_factory):
                 # progress. Stop this layer instead of cycling forever.
                 break
             visited.add(identity)
-            classification = classify_destination(provider, base_url, api_mode)
+            # Configuration can name an override the provider resolver ignored.
+            # Only the resolved client can establish the physical HTTP endpoint.
+            physical_base = getattr(client, "base_url", None)
+            physical_mode = getattr(client, "api_mode", None)
+            classification = classify_destination(
+                provider, str(physical_base) if physical_base is not None else None,
+                physical_mode if isinstance(physical_mode, str) else None,
+            )
             if classification in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
                 auxiliary._record_route_info(route.route_info, provider, model)
                 response, _ = yield from auxiliary._rung(

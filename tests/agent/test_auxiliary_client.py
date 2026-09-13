@@ -5607,3 +5607,23 @@ def test_vision_auto_parameter_retry_keeps_concrete_provider(monkeypatch, async_
     result = asyncio.run(auxiliary.async_call_llm(**kwargs)) if async_mode else auxiliary.call_llm(**kwargs)
     assert result is expected
     assert providers == ["openai-codex", "openai-codex"]
+
+
+def test_local_recovery_rejects_declared_loopback_with_remote_client(monkeypatch):
+    import agent.auxiliary_client as auxiliary
+
+    primary = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    remote = MagicMock(base_url="https://openrouter.ai/api/v1")
+    remote._hermes_fallback_destination = auxiliary._FallbackDestination(
+        "openrouter", "http://127.0.0.1:11434/v1", "chat_completions", "model")
+    healthy = MagicMock(base_url="http://127.0.0.1:11435/v1")
+    expected = _aux_egress_response("healthy")
+    healthy.chat.completions.create.return_value = expected
+    monkeypatch.setattr(auxiliary, "_get_cached_client", lambda *a, **kw: (primary, "model"))
+    candidates = iter([(remote, "model", "openrouter"), (healthy, "model", "custom")])
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", lambda *a, **kw: next(candidates))
+    result = auxiliary.call_llm(task="compression", provider="openai-codex", model="gpt-5.4",
+                               messages=[{"role": "user", "content": "token=super-secret-value"}])
+    assert result is expected
+    remote.chat.completions.create.assert_not_called()
+    primary.chat.completions.create.assert_not_called()

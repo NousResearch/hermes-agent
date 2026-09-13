@@ -67,6 +67,36 @@ def _validate_dashboard_cron_effective_job(job: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
 
 
+def _validate_dashboard_cron_security(effective: Dict[str, Any], updates: Optional[Dict[str, Any]] = None) -> None:
+    """Prompt-scan and credential-safety guards the agent tool path applies
+    (``tools/cronjob_tools.py``). A dashboard-created or -edited job must not
+    bypass them.
+
+    ``updates=None`` (create, blueprint instantiate) validates every field
+    present. A mapping scopes the prompt/deliver checks to touched fields —
+    mirroring the tool's update path — while ``base_url`` always checks the
+    EFFECTIVE pair so an unrelated edit cannot leave an unsafe
+    provider+endpoint combination schedulable.
+    """
+    from tools.cronjob_job_args import (
+        _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
+    from tools.cronjob_prompt_scan import _scan_cron_prompt
+
+    def _touched(key: str) -> bool:
+        return updates is None or key in updates
+
+    prompt = _cron_optional_text(effective.get("prompt"))
+    error = (
+        (_touched("prompt") and prompt and _scan_cron_prompt(prompt))
+        or _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
+        or (_touched("deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("deliver"))))
+        or (_touched("failure_deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("failure_deliver")))))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+
 def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_name: str) -> None:
     for ref in refs or ():
         # "self" (the continuity toggle) resolves to the job's own id at run time — it can't be
@@ -243,6 +273,12 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         no_agent = bool(body.no_agent)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
+        _validate_dashboard_cron_security({
+            "prompt": body.prompt,
+            "provider": _cron_optional_text(body.provider),
+            "base_url": _cron_optional_text(body.base_url, strip_trailing_slash=True),
+            "deliver": _cron_optional_text(body.deliver) or "local",
+        })
         return _mutate_cron_for_profile(
             profile_name,
             "create_job",

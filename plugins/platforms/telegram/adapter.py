@@ -4780,9 +4780,30 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a video natively as a Telegram video message."""
+        video_kwargs: Dict[str, Any] = {"video": None, "caption": self._caption_1024(caption)}
+        try:
+            import subprocess
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,duration", "-of", "json", video_path],
+                capture_output=True, text=True, timeout=15)
+            stream = json.loads(probe.stdout)["streams"][0]
+            if stream.get("width") and stream.get("height"):
+                video_kwargs["width"] = int(stream["width"])
+                video_kwargs["height"] = int(stream["height"])
+                video_kwargs["supports_streaming"] = True
+                if stream.get("duration"):
+                    video_kwargs["duration"] = int(float(stream["duration"]))
+        except Exception as probe_err:
+            logger.debug("[%s] ffprobe video metadata unavailable for %s: %s", self.name, video_path, probe_err)
+
+        def _build(f):
+            video_kwargs["video"] = f
+            return video_kwargs
+
         return await self._send_local_file(
             "Video", video_path, chat_id, reply_to, metadata, "video",
-            lambda f: {"video": f, "caption": self._caption_1024(caption)},
+            _build,
             lambda e: self._warn_then(
                 "video", e, super(TelegramAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
             ))
@@ -4998,8 +5019,16 @@ class TelegramAdapter(BasePlatformAdapter):
         ch = m.group(0)
         if s > 0 and seg[s - 1] == '\\':  # already escaped
             return ch
-        if ch == '(' and s > 0 and seg[s - 1] == ']':  # opens a link [text](url)
-            return ch
+        if ch == '(' and s > 0 and seg[s - 1] == ']':  # opens a link [text](url)?
+            # Only keep the '(' unescaped when the link is actually closed on
+            # the same line. A link truncated by chunk splitting has no closing
+            # ')' and its bare '(' makes Telegram reject the whole chunk
+            # ("character '(' is reserved"), forcing the plain-text fallback
+            # and losing all bold formatting.
+            rest = seg[s + 1:]
+            close = rest.find(')')
+            if close != -1 and '\n' not in rest[:close]:
+                return ch
         if ch == ')':  # closes a link URL? walk back matching depth
             before = seg[:s]
             if '](http' in before or '](' in before:
@@ -5970,8 +5999,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
                 except ValueError as e:
-                    logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
-                    return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")
+                    # Image MIME on a non-raster document (e.g. DWG/DXF sent as `image/vnd.dwg`): cache
+                    # as a generic binary document instead of dropping the bytes. Override the MIME to
+                    # octet-stream so cache_media_bytes skips its image branch (which would return None).
+                    logger.warning("[Telegram] Image-MIME but non-image bytes (%s); caching as a generic document: %s",
+                                   display, _redact_telegram_error_text(e))
+                    from gateway.platforms.base import cache_media_bytes_async as _cache_doc_async
+                    cached = await _cache_doc_async(
+                        bytes(image_bytes),
+                        filename=original_filename or f"document{ext or '.bin'}",
+                        mime_type="application/octet-stream",
+                    )
+                    if cached is None:
+                        return await self._dispatch_with_text(event, f"Document '{display}' could not be cached.")
+                    event.media_urls = [cached.path]
+                    event.media_types = [cached.media_type]
+                    logger.info("[Telegram] Cached user %s at %s (%s)", cached.kind, cached.path, cached.media_type)
+                    await self.handle_message(event)
+                    return True
                 self._set_cached_media(
                     event, cached_path, doc_mime if doc_mime.startswith(
                         "image/"

@@ -1,0 +1,11 @@
+name: watch
+version: 0.2.0
+description: "Watch the screen and judge what's happening — live commentary while you work, or review of a recorded take. Explicit start/stop: nothing is captured until asked. Capture is ffmpeg; the live loop gates on calibrated per-source salience so an idle screen costs nothing, and every decision is logged so a brief can be re-tuned offline for free."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+hooks:
+  - on_session_end

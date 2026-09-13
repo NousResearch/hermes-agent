@@ -91,6 +91,136 @@ class TestHermesTokenStorage:
         data = json.loads(token_path.read_text())
         assert data["access_token"] == "abc123"
 
+    def test_set_refreshed_tokens_preserves_refresh_token_when_payload_omits_it(self, tmp_path, monkeypatch):
+        """Follow-up to #62333 (#109932): ``set_refreshed_tokens()`` is the refresh-scoped choke
+        point every REFRESH writer for a server's tokens passes through -- ``HermesProviderMixin``'s
+        in-memory carry-forward (#62333's fix) and any other/older/stale refresh caller (the
+        reporter's own evidence names a `hermes update` that "pulled new code but did not restart
+        running gateways", i.e. a pre-#62333 handler still resident in a long-lived gateway
+        process). #62333 only patched the in-memory merge on ONE caller; a refresh payload that
+        reaches storage already missing ``refresh_token`` -- for any reason -- must still not
+        overwrite a good on-disk refresh_token with nothing. This is the storage-level regression
+        test #25876's review asked for and that none of the ~6 duplicate PRs against #62333 ever
+        added. Carry-forward is scoped to this refresh-only method, NOT the generic ``set_tokens()``
+        used by fresh authorization-code/device grants -- see
+        ``test_set_tokens_does_not_inherit_refresh_token_on_fresh_grant`` for why that distinction
+        matters (Maya's remediation finding on PR #110201).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("zoho-style-server")
+
+        first = MagicMock()
+        first.model_dump.return_value = {
+            "access_token": "at-1", "token_type": "Bearer", "refresh_token": "rt-original", "expires_in": 3600,
+        }
+        asyncio.run(storage.set_tokens(first))
+        token_path = tmp_path / "mcp-tokens" / "zoho-style-server.json"
+        assert json.loads(token_path.read_text())["refresh_token"] == "rt-original"
+
+        # Simulate a refresh-response payload that omits refresh_token reaching
+        # set_refreshed_tokens() DIRECTLY -- i.e. with no upstream in-memory carry-forward
+        # already applied (the exact shape a stale pre-#62333 process, or any future refresh
+        # caller that forgets the merge, would produce). The storage layer itself must refuse
+        # to erase the stored one.
+        stale_write = MagicMock()
+        stale_write.model_dump.return_value = {
+            "access_token": "at-2", "token_type": "Bearer", "expires_in": 3600,
+        }  # no refresh_token key at all -- worse than None, this is what exclude_none=True produces
+        asyncio.run(storage.set_refreshed_tokens(stale_write))
+
+        on_disk = json.loads(token_path.read_text())
+        assert on_disk["access_token"] == "at-2", "access token must still rotate"
+        assert on_disk["refresh_token"] == "rt-original", (
+            "refresh_token silently dropped -- storage-level regression of #62333 / #109932")
+
+    def test_set_refreshed_tokens_preserves_refresh_token_across_multiple_consecutive_cycles(self, tmp_path, monkeypatch):
+        """A single-refresh test cannot catch a bug that only manifests on repeat cycles (this is
+        literally what happened in production for #109932: the reporter's FIRST post-restore
+        refresh succeeded and retained the token; a LATER cycle dropped it again). Drive several
+        consecutive non-rotating refreshes through ``set_refreshed_tokens()`` and assert the
+        refresh_token, and each new access token, survive every single one -- mirroring the
+        reporter's sanitized before/after token-file states (access_present/refresh_present
+        booleans + changing mtime).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("zoho-style-server")
+        token_path = tmp_path / "mcp-tokens" / "zoho-style-server.json"
+
+        seed = MagicMock()
+        seed.model_dump.return_value = {
+            "access_token": "at-0", "token_type": "Bearer", "refresh_token": "rt-durable", "expires_in": 3600,
+        }
+        asyncio.run(storage.set_tokens(seed))
+
+        seen_mtimes = [token_path.stat().st_mtime_ns]
+        for cycle in range(1, 6):
+            # Every cycle: the AS does not rotate, so the refresh response omits refresh_token
+            # entirely (RFC 6749 §6) -- reproducing the exact non-rotating-AS shape (Zoho,
+            # Google, Futu, TinyFish, Asana per #62333's fix commit).
+            non_rotating_response = MagicMock()
+            non_rotating_response.model_dump.return_value = {
+                "access_token": f"at-{cycle}", "token_type": "Bearer", "expires_in": 3600,
+            }
+            asyncio.run(storage.set_refreshed_tokens(non_rotating_response))
+
+            on_disk = json.loads(token_path.read_text())
+            assert on_disk["access_token"] == f"at-{cycle}", f"cycle {cycle}: access token did not rotate"
+            assert on_disk.get("refresh_token") == "rt-durable", (
+                f"cycle {cycle}: refresh_token missing after a successful refresh -- "
+                "matches #109932's exact recurring-loss pattern")
+            mtime = token_path.stat().st_mtime_ns
+            assert mtime != seen_mtimes[-1], f"cycle {cycle}: token file was not rewritten"
+            seen_mtimes.append(mtime)
+
+        # A genuinely rotating AS's new refresh_token must still win (carry-forward only fills
+        # gaps -- #62333's second invariant must not regress).
+        rotating_response = MagicMock()
+        rotating_response.model_dump.return_value = {
+            "access_token": "at-final", "token_type": "Bearer", "refresh_token": "rt-rotated", "expires_in": 3600,
+        }
+        asyncio.run(storage.set_refreshed_tokens(rotating_response))
+        final = json.loads(token_path.read_text())
+        assert final["refresh_token"] == "rt-rotated"
+
+    def test_set_tokens_does_not_inherit_refresh_token_on_fresh_grant(self, tmp_path, monkeypatch):
+        """Negative regression test required by Maya's remediation on PR #110201 (both the
+        same-family and mandatory cross-model-family reviews): the generic ``set_tokens()`` used
+        by a FRESH authorization-code exchange or device grant (RFC 8628) must NOT carry forward
+        an old refresh_token left on disk by a prior grant. Unconditional carry-forward in
+        generic storage would let a brand-new, successful grant that happens to omit
+        ``refresh_token`` in its response silently inherit a stale/prior-user's refresh_token --
+        potentially a different user/session on a shared machine, or a previously-revoked
+        credential -- reverting the effective identity/grant at the next refresh cycle. This is
+        exactly the HIGH-severity confused-identity path the cross-model reviewer proved with a
+        temporary test against the unscoped version of this fix.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("shared-machine-server")
+        token_path = tmp_path / "mcp-tokens" / "shared-machine-server.json"
+
+        # Seed an old refresh_token on disk, as if left behind by a PRIOR grant/user.
+        old_grant = MagicMock()
+        old_grant.model_dump.return_value = {
+            "access_token": "at-old-user", "token_type": "Bearer", "refresh_token": "rt-old-user", "expires_in": 3600,
+        }
+        asyncio.run(storage.set_tokens(old_grant))
+        assert json.loads(token_path.read_text())["refresh_token"] == "rt-old-user"
+
+        # A successful FRESH grant (device or auth-code exchange) whose response omits
+        # refresh_token entirely -- the generic write path used by login_device() and
+        # _handle_token_response(), NOT a refresh.
+        fresh_grant_no_refresh_token = MagicMock()
+        fresh_grant_no_refresh_token.model_dump.return_value = {
+            "access_token": "at-new-user", "token_type": "Bearer", "expires_in": 3600,
+        }  # no refresh_token key -- what exclude_none=True produces when the AS omits it
+        asyncio.run(storage.set_tokens(fresh_grant_no_refresh_token))
+
+        on_disk = json.loads(token_path.read_text())
+        assert on_disk["access_token"] == "at-new-user"
+        assert "refresh_token" not in on_disk or on_disk["refresh_token"] is None, (
+            "fresh grant must not inherit a prior grant's refresh_token -- generic set_tokens() "
+            "must keep pure replacement semantics (Maya's remediation on PR #110201)")
+
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
     def test_token_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Tokens must land on disk at 0o600 with no umask-default exposure window.

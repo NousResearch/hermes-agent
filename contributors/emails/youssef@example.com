@@ -1,0 +1,2 @@
+Youssef
+# PR #30 CI unblock (check-attribution) — unrelated inherited fork-history contributor; no resolvable GitHub account for this placeholder email (credited via Co-authored-by display name in upstream PR NousResearch/hermes-agent#108194; upstream release PR #108536 independently flagged this exact email as a non-actionable unknown credited by display name), kept as display name per existing no-github-match convention in scripts/release.py

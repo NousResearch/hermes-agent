@@ -328,14 +328,46 @@ class HermesTokenStorage:
     async def get_tokens(self) -> "OAuthToken | None":
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)
 
-    async def set_tokens(self, tokens: "OAuthToken") -> None:
-        payload = _model_json(tokens)
+    def _persist_token_payload(self, payload: dict) -> None:
         # Absolute ``expires_at``: see _rebase_expires_in.
         if payload.get("expires_in") is not None:
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
                 payload["expires_at"] = time.time() + int(payload["expires_in"])
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
+
+    async def set_tokens(self, tokens: "OAuthToken") -> None:
+        """Replace stored tokens verbatim with *tokens*. Pure replacement semantics: a fresh
+        authorization-code exchange or device grant (RFC 8628) establishes a brand-new grant
+        and must NOT inherit any refresh_token left on disk from a prior grant -- doing so can
+        silently mix a new user/session's access token with a different (possibly stale or
+        revoked) prior grant's refresh_token, reverting the effective identity at the next
+        refresh. Callers persisting the result of an actual token *refresh* -- where "unchanged"
+        vs "revoked" ambiguity from RFC 6749 §6 applies -- must use ``set_refreshed_tokens()``
+        instead."""
+        payload = _model_json(tokens)
+        self._persist_token_payload(payload)
+
+    async def set_refreshed_tokens(self, tokens: "OAuthToken") -> None:
+        """Persist the result of a successful OAuth *refresh* (never a fresh authorization-code
+        exchange or device grant -- see ``set_tokens()``).
+
+        RFC 6749 §6: a refresh response may omit refresh_token when the authorization server
+        does not rotate it; the omitted field means "unchanged", not "revoked". #62333 fixed
+        this by having HermesProviderMixin._handle_refresh_response merge the prior token
+        in-memory before calling storage -- that in-memory merge still applies, but this method
+        is the storage-level backstop: it's the choke point every refresh-scoped write passes
+        through, so a refresh caller that forgets the in-memory merge (or a future one that
+        never learns to do it) still can't erase a good on-disk refresh_token with an omission.
+        A genuinely rotating authorization server's new refresh_token still wins -- this only
+        fills a gap, never overwrites a present value. A caller that means to actually clear
+        credentials uses remove() (deletes the file), never a bare omission."""
+        payload = _model_json(tokens)
+        if not payload.get("refresh_token"):
+            existing = _read_json(self._tokens_path())
+            if existing and existing.get("refresh_token"):
+                payload["refresh_token"] = existing["refresh_token"]
+        self._persist_token_payload(payload)
 
     @staticmethod
     def _coerce_secret_auth_method(data: dict) -> bool:

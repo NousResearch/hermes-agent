@@ -364,6 +364,8 @@ export const zh = defineLocale({
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
       'session.archive': '归档当前会话',
+      'conversation.scrollPageUp': '向上翻动一页会话',
+      'conversation.scrollPageDown': '向下翻动一页会话',
       'workspace.newWorktree': '新建工作树',
       'workspace.openFolder': '打开文件夹为项目',
       'composer.focus': '聚焦输入框',

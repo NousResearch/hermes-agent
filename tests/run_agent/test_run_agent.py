@@ -4752,12 +4752,11 @@ class TestRunConversation:
             "_record_task_failure should not be called outside kanban mode"
         )
 
-    # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
+    # ── Output-cap retry: provider remainder is authoritative ──
 
     def test_output_cap_retry_uses_provider_available_out(self, agent):
-        """run_conversation retries an output-cap error with max_tokens <=
-        available_out - 64, and does NOT halve context_length or trigger
-        compression.
+        """run_conversation retries an output-cap error with the exact
+        provider-reported remainder and does not mutate conversation history.
         """
         self._setup_agent(agent)
         agent.api_mode = "chat_completions"
@@ -4794,9 +4793,9 @@ class TestRunConversation:
 
         second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
         assert result["completed"] is True
-        assert second_call["max_tokens"] <= 936
+        assert second_call["max_tokens"] == 1000
         assert agent.context_compressor.context_length == 200_000
-        mock_compress.assert_called_once()
+        mock_compress.assert_not_called()
 
     def test_output_cap_retry_before_generic_retry_exhaustion(self, agent):
         """Provider max-output-cap 400s clamp via the output-cap handler, not
@@ -4840,7 +4839,7 @@ class TestRunConversation:
         assert len(agent.client.chat.completions.create.call_args_list) == 2
         second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
         assert result["completed"] is True
-        assert second_call["max_tokens"] <= 65_472
+        assert second_call["max_tokens"] == 65_536
         assert agent.context_compressor.context_length == 200_000
 
     def test_output_cap_retry_when_gateway_wraps_error_as_rate_limit(self, agent):
@@ -4903,7 +4902,7 @@ class TestRunConversation:
         assert len(agent.client.chat.completions.create.call_args_list) == 2
         second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
         assert result["completed"] is True
-        assert second_call["max_tokens"] <= 65_472
+        assert second_call["max_tokens"] == 65_536
         assert agent.context_compressor.context_length == 200_000
         # The clamp, not provider failover, must have recovered: no fallback
         # slot consumed and the model unchanged.
@@ -4955,21 +4954,12 @@ class TestRunConversation:
         assert result["completed"] is True
         # The current branch (messages-only estimate) would send max_tokens
         # near 199927 — this test fails on it.
-        assert second_call["max_tokens"] <= 936
+        assert second_call["max_tokens"] == 1000
         assert agent.context_compressor.context_length == 200_000
-        mock_compress.assert_called_once()
+        mock_compress.assert_not_called()
 
-    def test_output_cap_retry_triggers_compression_and_recovers(self, agent):
-        """Regression for the output-cap death-loop (#55546 / #61761).
-
-        When the provider reports an output-cap error on a near-full context
-        window, the retry must NOT just shrink max_tokens by a tiny amount and
-        spin forever. It must fire _compress_context() to actually free tokens
-        so the session recovers instead of exhausting compression_attempts.
-
-        This locks in the fix: previously the output-cap path set
-        restart_with_compressed_messages without ever calling the compressor.
-        """
+    def test_output_cap_retry_preserves_history_and_recovers(self, agent):
+        """A request-specific provider remainder makes compaction unnecessary."""
         self._setup_agent(agent)
         agent.api_mode = "chat_completions"
         agent.provider = "openrouter"
@@ -4991,7 +4981,6 @@ class TestRunConversation:
         ok_resp = _mock_response(content="done", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [exc, ok_resp]
 
-        # Compress drops the huge history (15 msgs -> 1), freeing tokens.
         mock_compress = MagicMock(return_value=(
             [{"role": "user", "content": "hello"}],
             "You are helpful.",
@@ -5005,24 +4994,11 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
-        # Compression fired exactly once, on the output-cap retry.
-        mock_compress.assert_called_once()
-        # The compressed messages were re-sent and the call succeeded.
+        mock_compress.assert_not_called()
         assert result["completed"] is True
         assert result["final_response"] == "done"
-        # The retry honored the reduced max_tokens (available_out - 64).
         second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
-        assert second_call["max_tokens"] <= 936
-        # LOCK IN THE FIX: the retry must actually SEND the compressed history
-        # (the 1-message payload from _compress_context + its new system
-        # prompt), not the original multi-message window. Without this, the
-        # output-cap retry would call the compressor but re-transmit the same
-        # oversized request forever.
-        second_messages = second_call.get("messages", [])
-        assert second_messages[-1].get("content") == "hello"
-        assert len(second_messages) == 2
-        assert second_messages[0]["role"] == "system"
-        # context_length was NOT mutated by an output-cap error.
+        assert second_call["max_tokens"] == 1000
         assert agent.context_compressor.context_length == 200_000
 
     def test_output_cap_retry_compression_no_progress_terminates_bounded(self, agent):
@@ -5030,10 +5006,8 @@ class TestRunConversation:
         progress AND no images to strip), the output-cap retry must terminate
         via the max-attempts guard instead of spinning forever.
 
-        The compressor is injected to return the input unchanged (same list
-        object, no lock-defer — just zero progress), and the provider keeps
-        rejecting, so the only correct outcome is a bounded
-        ``compression_exhausted`` failure, not an unbounded loop.
+        The provider keeps rejecting its own reported remainder, so the only
+        correct outcome is a bounded failure, not an unbounded loop.
         """
         self._setup_agent(agent)
         agent.api_mode = "chat_completions"

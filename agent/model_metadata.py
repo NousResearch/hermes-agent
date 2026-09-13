@@ -1161,12 +1161,18 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     if not _any_phrase_group(error_lower, _PARSEABLE_OUTPUT_CAP_SIGNALS):
         return None
+    # Dispatcher uses ``available_tokens=N`` while Anthropic uses
+    # ``available_tokens: N``. Zero means the input itself has exhausted the
+    # window, so it belongs to context compaction rather than output clamping.
+    available_match = re.search(r'available_tokens\s*(?:=|:)\s*(\d+)', error_lower)
+    if available_match:
+        available = int(available_match.group(1))
+        return available if available >= 1 else None
     # Direct cap figures, most specific first: "exceeds model's maximum output tokens (65536)", "Range of
     # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
-        r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
         # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
         r'output limit (?:of|is)\s*(\d+)',
@@ -1217,7 +1223,7 @@ _OUTPUT_CAP_SIGNALS = (
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
-    "prompt length", "prompt contains", "reduce the length",
+    "estimated_input", "prompt length", "prompt contains", "reduce the length",
 )
 # Narrower than _OUTPUT_CAP_SIGNALS: only phrasings we can extract a number from.
 # "requested N output tokens" means the OUTPUT cap is the problem (the input fits) —
@@ -1241,6 +1247,11 @@ def is_output_cap_error(error_msg: str) -> bool:
     output-cap 400 misclassified as context overflow death-loops the compressor (same max_tokens, same
     rejection). Signal: talks about max_tokens as a cap/range/limit and NOT about an oversized input."""
     error_lower = error_msg.lower()
+    if (
+        re.search(r'available_tokens\s*(?:=|:)\s*0(?:\D|$)', error_lower)
+        and re.search(r'(?:estimated_input|input)\s*(?:=|:)\s*\d+', error_lower)
+    ):
+        return False
     # An error that ALSO describes an oversized INPUT is a genuine overflow — compression can fix it.
     return (
         any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens"))

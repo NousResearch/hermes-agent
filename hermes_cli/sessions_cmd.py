@@ -73,6 +73,17 @@ def _export_dir(output) -> Path:
     return Path(output).expanduser() if output and output != "-" else get_hermes_home() / "session-exports"
 
 
+def _output_file_in_dir(output, default_name: str):
+    """Single-file exports accept a directory too (``--help`` calls the positional a path, and md/qmd take
+    one): an existing directory, or one spelled with a trailing separator, means ``<dir>/<default_name>``."""
+    if not output or output == "-":
+        return output
+    if output.endswith(("/", os.sep)) or os.path.isdir(output):
+        os.makedirs(output, exist_ok=True)
+        return os.path.join(output, default_name)
+    return output
+
+
 def _write_output(output, text, summary) -> None:
     """Write to stdout when *output* is empty or ``-``; else to the file + print *summary*."""
     if not output or output == "-":
@@ -375,6 +386,10 @@ def _export_flat(kind, args, collect):
         return
     sessions = collect()
     if sessions is not None:
+        from hermes_cli.session_export import default_save_filename
+        name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
+                else f"hermes_sessions.{args.format}")
+        args.output = _output_file_in_dir(args.output, name)
         _write_output(args.output, *render(args, sessions))
 
 
@@ -421,6 +436,7 @@ def _export_trace(db, args, filters):
             if not jsonl:
                 print(f"No transcript to export for session '{ids[0]}'.")
                 return
+            args.output = _output_file_in_dir(args.output, f"{ids[0]}.trace.jsonl")
             _write_output(args.output, jsonl, f"Exported 1 session trace to {args.output}")
         else:
             out_dir = _export_dir(args.output)

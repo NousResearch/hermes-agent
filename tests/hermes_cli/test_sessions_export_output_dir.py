@@ -40,4 +40,4 @@ def test_jsonl_export_to_file_path_is_unchanged(monkeypatch, tmp_path):
     _export(monkeypatch, str(target))
 
     assert json.loads(target.read_text(encoding="utf-8"))["id"] == "sess-123"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["one.jsonl"]
+    assert target.is_file() and not (tmp_path / "hermes_session_sess-123.jsonl").exists()

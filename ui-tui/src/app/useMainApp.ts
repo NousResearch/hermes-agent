@@ -19,10 +19,11 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
+  AnyGatewayEvent,
   ClarifyRespondResponse,
   ConfigSetResponse,
-  GatewayEvent,
   SessionActiveListResponse,
   SessionCloseResponse,
   TerminalResizeResponse
@@ -46,6 +47,7 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
+import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
@@ -60,7 +62,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { useInputHandlers } from './useInputHandlers.js'
+import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -207,6 +209,7 @@ export function useMainApp(gw: GatewayClient) {
   // Bumped by the gateway `reaction` event (core-detected affection).
   const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [bellOnPrompt, setBellOnPrompt] = useState(false)
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -228,7 +231,7 @@ export function useMainApp(gw: GatewayClient) {
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
-  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
+  const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const submitLiteralRef = useRef<(value: string) => void>(() => {})
@@ -578,7 +581,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy, turnStartedAt])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
   useEffect(() => {
@@ -589,8 +592,19 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     let stopped = false
+    applyAgentSnapshot(ui.sid)
 
     const refresh = () => {
+      const sid = ui.sid
+      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<SubagentListResponse>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
       gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
@@ -632,7 +646,12 @@ export function useMainApp(gw: GatewayClient) {
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
-  const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+  const marker =
+    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+      ? '⚠'
+      : ui.busy
+        ? '⏳'
+        : '✓'
 
   const tabCwd = ui.info?.cwd
 
@@ -857,7 +876,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, stdout, sys },
+        system: { bellOnComplete, bellOnPrompt, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -869,6 +888,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      bellOnPrompt,
       composerActions.setInput,
       gateway,
       panel,
@@ -889,7 +909,7 @@ export function useMainApp(gw: GatewayClient) {
   onEventRef.current = onEvent
 
   useEffect(() => {
-    const handler = (ev: GatewayEvent) => onEventRef.current(ev)
+    const handler = (ev: AnyGatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
       turnController.reset()
@@ -909,7 +929,7 @@ export function useMainApp(gw: GatewayClient) {
       // dead/respawning gateway. recoverSidRef carries the session forward, and
       // resumeById restores sid once the fresh gateway is ready.
       recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+      patchUiState({ busy: false, compacting: false, sid: null, status: 'gateway exited' })
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
@@ -1050,6 +1070,26 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
+  const answerVaultUnlock = useCallback(
+    (password: string) => {
+      if (!overlay.vaultUnlock) {
+        return
+      }
+
+      const requestId = overlay.vaultUnlock.requestId
+
+      if (!password) {
+        patchOverlayState({ vaultUnlock: null })
+      }
+
+      return respondWith('vault.unlock.respond', { password, request_id: requestId }, () => {
+        patchOverlayState({ vaultUnlock: null })
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [overlay.vaultUnlock, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1160,6 +1200,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
@@ -1183,6 +1224,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultUnlock,
       clearSelection,
       closeLiveSession,
       newPromptSession,
@@ -1203,10 +1245,15 @@ export function useMainApp(gw: GatewayClient) {
 
         composerActions.syncTokens(value)
 
+        if (shouldDetachEditedHistoryInput(composerState.historyIdx, composerRefs.historyRef.current, value)) {
+          composerRefs.historyDraftRef.current = value
+          composerActions.setHistoryIdx(null)
+        }
+
         return value
       })
     },
-    [composerActions]
+    [composerActions, composerRefs, composerState.historyIdx]
   )
 
   const appComposer = useMemo(

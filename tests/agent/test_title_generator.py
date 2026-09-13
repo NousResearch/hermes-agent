@@ -8,6 +8,9 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    derive_title,
+    is_titleable_user_message,
+    _strip_thinking_prefix,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -620,4 +623,48 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", self.MARKER) is None
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
+        )
+
+
+class TestThinkingOpenerStripped:
+    """A model-emitted thinking preamble in the opening message must not become the title (#110139)."""
+
+    @pytest.mark.parametrize("opener", [
+        "Here's a thinking process",
+        "here is a thinking process",
+        "Here's my thinking",
+        "let me think about this",
+        "Let me think step by step",
+        "MY THINKING PROCESS",
+    ])
+    def test_derive_title_skips_past_the_opener(self, opener):
+        assert derive_title(f"{opener}: fix the login button on mobile") == "fix the login button on mobile"
+
+    def test_opener_on_its_own_line(self):
+        assert derive_title("Here's a thinking process\nHow do I rotate Postgres credentials?") == (
+            "How do I rotate Postgres credentials?"
+        )
+
+    def test_opener_fused_with_the_request(self):
+        assert derive_title("let me think about this parser bug carefully") == "parser bug carefully"
+
+    def test_messages_without_an_opener_are_unchanged(self):
+        assert derive_title("Postgres connection pool exhaustion at startup") == (
+            "Postgres connection pool exhaustion at startup"
+        )
+
+    def test_opener_only_message_derives_no_title(self):
+        assert derive_title("Here's a thinking process") is None
+
+    def test_thinking_opener_is_still_a_real_question_for_the_guard(self):
+        # Unlike _MACHINE_PREFIXES these openers are not Hermes-authored, so titling must not skip the turn.
+        assert is_titleable_user_message("Here's a thinking process: fix the login button") is True
+
+    def test_instant_title_path_uses_the_cleaned_line(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+        assert apply_instant_title(db, "sess-1", "Here's a thinking process: fix the login button") == (
+            "fix the login button"
         )

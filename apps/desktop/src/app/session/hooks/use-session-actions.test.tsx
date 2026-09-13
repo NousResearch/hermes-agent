@@ -995,7 +995,12 @@ function ResumeHarness({
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
   onViewSync?: (sessionId: string, state: ClientSessionState) => void
   onReady: (
-    resume: (storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+    resume: (
+      storedSessionId: string,
+      replaceRoute?: boolean,
+      ownerRoute?: SessionProfileRoute,
+      options?: { authoritativeSnapshot?: boolean }
+    ) => Promise<unknown>
   ) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
@@ -2861,6 +2866,84 @@ describe('resumeSession warm-cache mapping integrity', () => {
       expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
     )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('forces a message-bearing resume over a warm cache for an authoritative replay-gap snapshot', async () => {
+    const pending = {
+      id: 'user-pending',
+      parts: [{ type: 'text' as const, text: 'local pending prompt' }],
+      pending: true,
+      role: 'user' as const
+    }
+
+    const warm = clientState('stored-A')
+    warm.messages = [
+      { id: 'old-user', parts: [{ type: 'text', text: 'old prompt' }], role: 'user' },
+      pending
+    ]
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-A', 'rt-A']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['rt-A', warm]]) }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method !== 'session.resume') {
+        throw new Error(`unexpected ${method}`)
+      }
+
+      expect(params).toMatchObject({
+        defer_history: false,
+        omit_messages: false,
+        session_id: 'stored-A'
+      })
+
+      return {
+        info: { model: 'snapshot-model', yolo: true },
+        message_count: 2,
+        messages: [
+          { content: 'new prompt', role: 'user', timestamp: 1 },
+          { content: 'new answer', role: 'assistant', timestamp: 2 }
+        ],
+        resumed: 'stored-A',
+        running: true,
+        session_id: 'rt-A'
+      } as never
+    })
+
+    setSessions([storedSession({ id: 'stored-A', message_count: 2 })])
+    setMessages(warm.messages)
+    stashSessionDraft('stored-A', 'keep typing', [])
+
+    let resume:
+      | ((
+          storedSessionId: string,
+          replaceRoute?: boolean,
+          ownerRoute?: SessionProfileRoute,
+          options?: { authoritativeSnapshot?: boolean }
+        ) => Promise<unknown>)
+      | undefined
+
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="stored-A"
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).toBeDefined())
+    await resume!('stored-A', true, undefined, { authoritativeSnapshot: true })
+
+    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(['session.resume'])
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(JSON.stringify($messages.get())).toContain('new answer')
+    expect($messages.get()).toContainEqual(pending)
+    expect(sessionStateByRuntimeIdRef.current.get('rt-A')).toMatchObject({
+      busy: true,
+      model: 'snapshot-model',
+      yolo: true
+    })
+    expect(takeSessionDraft('stored-A').text).toBe('keep typing')
+    clearSessionDraft('stored-A')
   })
 
   it('re-arms a pending clarify in place on the warm session.activate path', async () => {

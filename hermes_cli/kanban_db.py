@@ -3012,30 +3012,10 @@ def redact_review_value(value: Any) -> Any:
     return value
 
 
-def _declare_handoff_artifacts(
-    metadata: Optional[dict], artifacts: Optional[Iterable[str]],
-) -> Optional[dict]:
-    """Fold an explicit ``artifacts`` argument into ``metadata["artifacts"]``
-    (order-preserving, deduped). Returns ``metadata`` untouched when there is
-    nothing to add, so callers can pass ``None`` through."""
-    if not artifacts:
-        return metadata
-    items = [str(item).strip() for item in artifacts if item is not None and str(item).strip()]
-    if not items:
-        return metadata
-    updated = dict(metadata) if isinstance(metadata, dict) else {}
-    existing = updated.get("artifacts")
-    merged = list(existing) if isinstance(existing, (list, tuple)) else []
-    merged.extend(items)
-    updated["artifacts"] = list(dict.fromkeys(str(p).strip() for p in merged if str(p).strip()))
-    return updated
-
-
 def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
-    artifacts: Optional[Iterable[str]] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3045,7 +3025,7 @@ def request_review(
     claim is only cleared with proof of ownership (``expected_run_id``) or
     ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
 
-    ``artifacts`` (or ``metadata["artifacts"]``) names the handoff's deliverable
+    ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
     *reviewer's* completion is what cleans the managed scratch workspace up, so
     the files are staged into the task's durable attachments dir here and the
@@ -3060,10 +3040,9 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
-    # Declared (explicit arg or metadata["artifacts"]) and prose-referenced files
+    # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
-    metadata = _declare_handoff_artifacts(metadata, artifacts)
     metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
     now = int(time.time())
     with write_txn(conn):

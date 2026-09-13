@@ -921,7 +921,7 @@ async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, 
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
         assert kb.request_review(
-            conn, tid, summary="ready for review", artifacts=[str(scratch)],
+            conn, tid, summary="ready for review", metadata={"artifacts": [str(scratch)]},
             expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, tid) if e.kind == "review_requested"][-1]
         attachments = kb.list_attachments(conn, tid)

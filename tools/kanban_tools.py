@@ -677,7 +677,7 @@ def _handle_request_review(args: dict, **kw) -> str:
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
-                artifacts=artifacts, expected_run_id=_worker_run_id(tid), with_reason=True)
+                expected_run_id=_worker_run_id(tid), with_reason=True)
         except kb.ArtifactPreservationError as artifact_err:
             # Same contract as kanban_complete (#22923): the transition rolled
             # back, the task is untouched and retryable — say so explicitly or

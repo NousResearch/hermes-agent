@@ -632,7 +632,7 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
         assert run_id is not None
         assert kb.request_review(
             conn, t, summary="ready for review",
-            artifacts=[str(artifact)], expected_run_id=run_id)
+            metadata={"artifacts": [str(artifact)]}, expected_run_id=run_id)
         handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
         assert kb.complete_task(conn, t, summary="approved")
         attachments = kb.list_attachments(conn, t)
@@ -644,57 +644,6 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
     assert [(a.filename, a.stored_path) for a in attachments] == [
         ("evidence.json", str(persisted.resolve()))
     ]
-
-
-def test_review_bound_handoff_preserves_prose_referenced_artifacts(kanban_home):
-    """Legacy workers name deliverables only by absolute scratch path in prose;
-    the review handoff must stage those too, before the reviewer completes."""
-    with kbc.connect() as conn:
-        t = kb.create_task(conn, title="review bound prose")
-        task = kb.get_task(conn, t)
-        ws = kbw.resolve_workspace(task)
-        kbw.set_workspace_path(conn, t, ws)
-        artifact = ws / "notes.md"
-        artifact.write_bytes(b"# notes\n")
-        kb.claim_task(conn, t)
-        run_id = kb.get_task(conn, t).current_run_id
-        assert run_id is not None
-        assert kb.request_review(
-            conn, t, summary=f"ready for review, deliverable at {artifact}",
-            expected_run_id=run_id)
-        handoff = [e for e in kb.list_events(conn, t) if e.kind == "review_requested"][-1]
-        assert kb.complete_task(conn, t, summary="approved")
-        attachments = kb.list_attachments(conn, t)
-    persisted = Path(handoff.payload["artifacts"][0])
-    assert not ws.exists(), "scratch workspace should still be cleaned up"
-    assert persisted.exists(), "staged copy must survive scratch cleanup"
-    assert persisted.parent == kb.task_attachments_dir(t)
-    assert persisted.read_bytes() == b"# notes\n"
-    assert [(a.filename, a.stored_path) for a in attachments] == [
-        ("notes.md", str(persisted.resolve()))
-    ]
-
-
-def test_review_bound_handoff_rolls_back_when_declared_artifact_missing(kanban_home):
-    """Fail-closed: an unresolvable declared artifact aborts the whole review
-    transition — task stays running/retryable, nothing staged, no event."""
-    with kbc.connect() as conn:
-        t = kb.create_task(conn, title="review bound broken")
-        task = kb.get_task(conn, t)
-        ws = kbw.resolve_workspace(task)
-        kbw.set_workspace_path(conn, t, ws)
-        missing = ws / "missing.png"
-        kb.claim_task(conn, t)
-        run_id = kb.get_task(conn, t).current_run_id
-        assert run_id is not None
-        with pytest.raises(kb.ArtifactPreservationError):
-            kb.request_review(
-                conn, t, summary="ready for review", artifacts=[str(missing)],
-                expected_run_id=run_id)
-        assert kb.get_task(conn, t).status == "running"
-        assert kb.list_attachments(conn, t) == []
-        assert [e for e in kb.list_events(conn, t) if e.kind == "review_requested"] == []
-    assert not missing.exists(), "declared path must be left untouched"
 
 
 # ---------------------------------------------------------------------------

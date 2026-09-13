@@ -17,7 +17,7 @@ transport:
   command: uvx
   args:
     - "--from"
-    - "fidelis-memory==0.0.95"
+    - "fidelis-memory==0.0.97"
     - "fidelis"
     - "mcp"
     - "serve"
@@ -45,7 +45,7 @@ post_install: |
   One-time setup on the host running Hermes:
     ollama serve &
     ollama pull nomic-embed-text
-    python3 -m pip install "fidelis-memory==0.0.95"
+    python3 -m pip install "fidelis-memory==0.0.97"
     fidelis init      # installs a launchd (macOS) / systemd --user (Linux)
                        # background service for fidelis-server
 

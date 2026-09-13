@@ -5,6 +5,7 @@ hermesNpmLib.buildNpmPackage {
     "web"
     "apps/shared"
     "scripts/build/web.mjs"
+    "scripts/build/freshness.mjs"
     "scripts/build/frontend-common.mjs"
   ];
 

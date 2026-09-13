@@ -5,6 +5,7 @@ hermesNpmLib.buildNpmPackage {
     "ui-tui"
     "apps/shared"
     "scripts/build/tui.mjs"
+    "scripts/build/freshness.mjs"
     "scripts/build/frontend-common.mjs"
   ];
 

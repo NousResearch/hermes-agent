@@ -71,6 +71,7 @@ let
       "apps/desktop"
       "apps/shared"
       "scripts/build/desktop.mjs"
+      "scripts/build/freshness.mjs"
       "scripts/build/frontend-common.mjs"
     ];
     pname = "hermes-desktop-renderer";

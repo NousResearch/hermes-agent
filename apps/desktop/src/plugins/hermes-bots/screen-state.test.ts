@@ -58,6 +58,18 @@ describe('lease epoch ordering', () => {
     setScreenLease(bot, legacy)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(legacy)
   })
+
+  it('a same-holder event still advances the epoch watermark', () => {
+    const first = { ...human, epoch: 1 }
+    const reacquired = { ...human, epoch: 3 }
+    const staleRelease = { ...agent, epoch: 2 }
+
+    setScreenLease(bot, first)
+    setScreenLease(bot, reacquired)
+    setScreenLease(bot, staleRelease)
+
+    expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(reacquired)
+  })
 })
 
 describe('status request ordering', () => {

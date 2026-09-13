@@ -79,7 +79,24 @@ class GGUFHeader:
         "full_attention_interval",
         "GDN-hybrid discriminator (qwen35 family): every Nth layer is full attention, the rest "
         "are linear/recurrent. 0 = not present.")
+    key_length_swa = _arch_int(
+        "attention.key_length_swa",
+        "Per-token key size for sliding-window layers when it differs from the global "
+        "attention.key_length (e.g. gemma3/gemma4). 0 = not present.")
+    value_length_swa = _arch_int(
+        "attention.value_length_swa",
+        "Per-token value size for sliding-window layers when it differs from the global "
+        "attention.value_length. 0 = not present.")
     del _arch_int
+
+    @property
+    def sliding_window_pattern(self) -> list[int] | None:
+        """Per-layer SWA pattern declared by the file itself: a truthy entry marks a
+        sliding-window layer, falsy marks global. None when the file doesn't declare one (older
+        GGUFs, or architectures without per-layer SWA metadata) — callers should fall back to a
+        coarser signal."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return [int(x) for x in v] if isinstance(v, list) else None
 
     @property
     def n_vocab(self) -> int:

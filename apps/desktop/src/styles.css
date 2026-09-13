@@ -1009,7 +1009,9 @@
     color 100ms ease-out,
     background-color 100ms ease-out;
 
-  &:hover {
+  &:hover,
+  &:focus-visible,
+  &:has(:focus-visible) {
     background-color: var(--ui-row-hover-background);
     transition: none;
   }

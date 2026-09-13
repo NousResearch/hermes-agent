@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 from neural.brain import Brain
 from neural.bus import NeuralBus
-from neural.events import NeuralEvent
+from neural.events import NeuralEvent, NeuralSignal
 from neural.guardian import Guardian
 from neural.memory import Memory
 from neural.processing import NeuralProcessor
@@ -51,7 +51,13 @@ class NeuralRuntime:
         self.bus.publish(event)
         return event
 
-    def process(self, event: NeuralEvent, *, reinforce: bool = False, success: bool = True):
+    def process(
+        self,
+        event: NeuralEvent,
+        *,
+        reinforce: bool = False,
+        success: bool = True,
+    ) -> list[NeuralSignal]:
         """Process an observation through advisory neurons only."""
         return self.processor.process(event, reinforce=reinforce, success=success)
 

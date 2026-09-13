@@ -43,6 +43,18 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
+// Positional tab-slot jumps — no default chords (shipped unbound). These
+// activate the Nth visible tab in the focused zone's tab strip, distinct
+// from profile switching (profile.switch.N) and recent-session jumping
+// (session.slot.N).
+export const TAB_SLOT_COUNT = 9
+
+const TAB_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: TAB_SLOT_COUNT }, (_, i) => ({
+  id: `view.tabSlot.${i + 1}`,
+  category: 'view' as const,
+  defaults: []
+}))
+
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
 export const SESSION_SLOT_COUNT = 9
 
@@ -68,6 +80,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'composer.voice', category: 'composer', defaults: IS_MAC ? ['ctrl+b'] : [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
+  // Tab-slot actions BEFORE profile switchers so that rebinding mod+N to a
+  // tab slot wins the combo-index race (first action to claim a combo wins).
+  ...TAB_SLOT_ACTIONS,
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
   ...PROFILE_SWITCH_ACTIONS,
   { id: 'profile.next', category: 'profiles', defaults: ['mod+shift+]'] },

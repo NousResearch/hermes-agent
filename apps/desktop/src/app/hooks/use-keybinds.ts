@@ -17,7 +17,7 @@ import {
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
-import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
+import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT, TAB_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
@@ -127,16 +127,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   }
 
   for (let slot = 1; slot <= PROFILE_SLOT_COUNT; slot += 1) {
-    // ⌘1…⌘9 switch the FOCUSED zone's tab when it's a real tab strip; only a
-    // single-pane (or unfocused) layout falls through to the profile switch.
     profileSwitchHandlers[`profile.switch.${slot}`] = () => {
-      const pane = activateTreeTabSlot(slot)
-
-      if (pane) {
-        leavePageForWorkspaceChat(pane)
-      } else {
-        switchProfileToSlot(slot)
-      }
+      switchProfileToSlot(slot)
     }
   }
 
@@ -153,6 +145,21 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     sessionSlotHandlers[`session.slot.${slot}`] = () => {
       closeSwitcher()
       goToSession(slotSessionId(slot))
+    }
+  }
+
+  // view.tabSlot.N: activate the Nth visible tab in the focused zone's tab
+  // strip. Ships unbound — users who want positional tab switching can assign
+  // chords in Settings → Keyboard Shortcuts.
+  const tabSlotHandlers: HandlerMap = {}
+
+  for (let slot = 1; slot <= TAB_SLOT_COUNT; slot += 1) {
+    tabSlotHandlers[`view.tabSlot.${slot}`] = () => {
+      const pane = activateTreeTabSlot(slot)
+
+      if (pane) {
+        leavePageForWorkspaceChat(pane)
+      }
     }
   }
 
@@ -228,6 +235,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
     ...sessionSlotHandlers,
+    ...tabSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,

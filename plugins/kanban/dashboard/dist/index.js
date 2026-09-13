@@ -127,6 +127,16 @@
     completion_blocked_hallucination: "⚠ Completion blocked — phantom card ids",
     suspected_hallucinated_references: "⚠ Prose referenced phantom card ids",
   };
+  // Informational (NOT warning) events: the cited ids are real, they just live on
+  // another board. Kept out of FALLBACK_DIAGNOSTIC_EVENT_LABELS on purpose so
+  // isDiagnosticEvent() stays phantom-only and the ⚠ / phantom-chip render path
+  // can never badge a legitimate cross-board citation.
+  const FALLBACK_INFO_EVENT_LABELS = {
+    cross_board_references: "ℹ Cited task ids live on another board",
+  };
+  const INFO_EVENT_KIND_KEYS = {
+    cross_board_references: "crossBoardReferences",
+  };
   const FALLBACK_TRASH = {
     label: "Trash",
     title: "Drag a card here to permanently delete it",
@@ -167,6 +177,16 @@
     const key = DIAGNOSTIC_EVENT_KIND_KEYS[kind];
     if (!key) return null;
     return tx(t, key, FALLBACK_DIAGNOSTIC_EVENT_LABELS[kind]);
+  }
+  function getInfoEventLabel(t, kind) {
+    const key = INFO_EVENT_KIND_KEYS[kind];
+    if (!key) return null;
+    return tx(t, key, FALLBACK_INFO_EVENT_LABELS[kind]);
+  }
+  // Kind label for the *plain* (non-warning) event row: prefers a friendly
+  // informational label, else the raw kind so nothing is ever swallowed.
+  function getPlainEventKindLabel(t, kind) {
+    return getInfoEventLabel(t, kind) || kind;
   }
 
   const COLUMN_DOT = {
@@ -4050,7 +4070,7 @@
                     timeAgo ? timeAgo(e.created_at) : ""),
                 )
               : h("div", { className: "hermes-kanban-event-header-plain" },
-                  h("span", { className: "hermes-kanban-event-kind" }, e.kind),
+                  h("span", { className: "hermes-kanban-event-kind" }, getPlainEventKindLabel(i18n, e.kind)),
                   h("span", { className: "hermes-kanban-event-ago" },
                     timeAgo ? timeAgo(e.created_at) : ""),
                 ),

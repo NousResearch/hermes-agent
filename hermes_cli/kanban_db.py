@@ -2687,23 +2687,132 @@ def _completed_event_payload(
     return payload
 
 
+def _other_board_db_paths(conn: sqlite3.Connection) -> list[tuple[str, Path]]:
+    """``(slug, kanban.db path)`` for every board EXCEPT the one ``conn`` is on.
+
+    A worker legitimately cites tasks that live on another board (e.g. a shared
+    cross-tenant board), so a ``t_<hex>`` id absent from THIS board's DB must be
+    resolved against the others before it is called hallucinated."""
+    current: Optional[Path] = None
+    try:
+        current = Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve()
+    except Exception:
+        current = None
+    out: list[tuple[str, Path]] = []
+    try:
+        boards = list_boards()
+    except Exception:
+        return out
+    for meta in boards:
+        slug = meta.get("slug")
+        if not slug:
+            continue
+        try:
+            path = kanban_db_path(board=slug)
+        except Exception:
+            continue
+        try:
+            if current is not None and path.resolve() == current:
+                continue
+        except Exception:
+            pass
+        if path.is_file():
+            out.append((slug, path))
+    return out
+
+
+def _resolve_refs_across_boards(
+    conn: sqlite3.Connection, missing: list[str],
+) -> tuple[list[str], dict[str, str]]:
+    """Split ``missing`` (ids absent from this board) into
+    ``(truly_phantom, {id: board_slug})`` by looking each id up on every other
+    board's DB (read-only). Never creates a board or writes anything."""
+    if not missing:
+        return [], {}
+    remaining = list(missing)
+    cross_board: dict[str, str] = {}
+    for slug, path in _other_board_db_paths(conn):
+        if not remaining:
+            break
+        other: Optional[sqlite3.Connection] = None
+        try:
+            other = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            other.row_factory = sqlite3.Row
+            still_missing = set(_missing_task_ids(other, remaining))
+        except Exception:
+            continue
+        finally:
+            if other is not None:
+                with contextlib.suppress(Exception):
+                    other.close()
+        for rid in remaining:
+            if rid not in still_missing:
+                cross_board[rid] = slug
+        remaining = [rid for rid in remaining if rid in still_missing]
+    return remaining, cross_board
+
+
 def _flag_phantom_prose_refs(
     conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
     summary: Optional[str], result: Optional[str], verified_cards: list[str],
 ) -> None:
     """Advisory post-commit scan of summary+result for unresolvable ``t_<hex>``
     references; emits ``suspected_hallucinated_references`` in its own txn so
-    the completion is already durable. Never blocks."""
+    the completion is already durable. Never blocks.
+
+    An id absent from THIS board is first looked up on every OTHER board
+    (``_resolve_refs_across_boards``). One that resolves there is recorded as
+    ``cross_board_references`` (informational — the citation was real, just not
+    local) and is NOT treated as a hallucination. Only ids that resolve nowhere
+    count as phantoms, and only those spawn a ``verify:`` child task so the
+    hallucinated claim is independently re-checked."""
     scan_text = " ".join(filter(None, [summary, result]))
     if not scan_text:
         return
-    phantom_refs = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
-    if phantom_refs:
+    missing = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
+    if not missing:
+        return
+    phantom_refs, cross_board = _resolve_refs_across_boards(conn, missing)
+    if cross_board:
         with write_txn(conn):
             _append_event(
-                conn, task_id, "suspected_hallucinated_references",
-                {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
+                conn, task_id, "cross_board_references",
+                {"refs": cross_board, "source": "completion_summary",
+                 "note": "cited task ids exist on another board — legitimate, not hallucinated"},
+                run_id=run_id,
             )
+    if not phantom_refs:
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "suspected_hallucinated_references",
+            {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
+        )
+    # Auto-create a re-verification child task so the phantom claim gets
+    # independently checked by the same profile.
+    try:
+        task = get_task(conn, task_id)
+        if task and task.assignee:
+            phantoms_str = ", ".join(phantom_refs)
+            create_task(
+                conn,
+                title=f"verify: {task.title}",
+                assignee=task.assignee,
+                parents=[task_id],
+                body=(
+                    f"The completion summary of parent task {task_id} referenced "
+                    f"task ids that exist on NO board: {phantoms_str}. "
+                    "The worker likely hallucinated a test/verification step.\n\n"
+                    "Re-check the specific claim(s) involving these ids "
+                    "and confirm whether the parent task's actual work is complete "
+                    "and correct. If the phantom claim was the only evidence of a "
+                    "verification step, re-run that verification now. "
+                    "Complete this task with the outcome."
+                ),
+                created_by="system",
+            )
+    except Exception:
+        _log.warning("Failed to create verify child for phantom refs on %s", task_id, exc_info=True)
 
 
 def _merge_completion_prose_artifacts(

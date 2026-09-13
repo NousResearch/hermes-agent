@@ -103,6 +103,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     _MAX_FLOOD_STRIKES = 3  # consecutive flood failures before edits are disabled
 
+    # After this many consecutive draft-frame failures, fall back to the
+    # edit-based streaming path.  A single transient error (short flood
+    # control, temporary Bot API hiccup) should not kill draft streaming for
+    # the entire response.
+    _MAX_DRAFT_FAILURES = 3
+
     # Class-wide monotonic draft-id counter (Telegram animates a draft only when the
     # same non-zero draft_id is reused).  RANDOM seed: draft_id keys the relay
     # connector's sealed-stream tombstones, which outlive this process — a replayed id
@@ -168,6 +174,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Per-run state, constructed fresh each turn, so a refusal can never
         # mute a healthy destination on a later turn.
         self._egress_declined = False
+        # monotonic() deadline until which draft frames are skipped outright
+        # after a long flood-control wait (SendResult.retry_after) — sending
+        # another draft frame (or, worse, falling through to a real
+        # send/edit) before the platform's own cooldown elapses just repeats
+        # the flood-control hit. None when not cooling down.
+        self._draft_cooldown_until: Optional[float] = None
+        # Set by _send_draft_frame on every call: True iff the most recent
+        # miss was a flood-control cooldown (skipped outright or a fresh
+        # retryable result), as opposed to an ordinary draft rejection.
+        # _send_or_edit reads this to decide whether a failed frame should
+        # wait for the next tick or fall through to a real send/edit.
+        self._last_draft_retryable = False
         self._use_native_streaming = False
         self._native_stream_opened = False  # seed sent: bubble open, zero content
         self._native_last_pushed_len = 0    # throttle under WeCom's 30 frames/min
@@ -710,8 +728,21 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
             # platform-limit check (_len_fn is for overflow).
+            # Guard: require at least 1 second REGARDLESS of edit_interval so
+            # fast LLMs can't fire the threshold faster than platforms'
+            # per-chat edit rate limits. A fixed constant, not min()/max()
+            # against _current_edit_interval: for a long configured interval
+            # (e.g. 10s, to pace gently) this still lets a big buffer flush
+            # early at the 1s mark instead of waiting the full interval —
+            # the whole point of this early-fire branch, see
+            # TestBufferThresholdFloor — while for a short interval (e.g.
+            # 0.1s) it actually floors at 1s instead of collapsing straight
+            # back to `interval` the way min(interval, 1.0) did, which let a
+            # sub-second interval blow straight through the stated
+            # one-second protection.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                                   and elapsed >= 1.0))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(

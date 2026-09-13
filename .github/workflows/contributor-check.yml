@@ -52,7 +52,24 @@ jobs:
               continue  # GitHub id+login noreply emails auto-resolve
             fi
 
-            if [ -f "contributors/emails/${email}" ]; then
+            # Case-insensitive match on purpose. Email hostnames are
+            # case-insensitive per DNS, so a mapping file differing only by
+            # case already covers this address. A plain `[ -f ]` is
+            # case-SENSITIVE on this Linux runner, so it would report the
+            # address unmapped and send the contributor to add_contributor.py
+            # — which now refuses a variant spelling, because the two files
+            # cannot coexist on a macOS/Windows checkout (one shows as
+            # permanently modified and `git rebase` refuses to run).
+            # grep -x -F: exact whole-line fixed-string compare, so an email
+            # containing glob or regex metacharacters cannot mis-match.
+            # `tr` folds ASCII only, while add_contributor.py uses casefold().
+            # Equivalent here: commit-author emails are ASCII (internationalised
+            # domains reach git as punycode), so no author email can fold one
+            # way and not the other. Keeping `tr` avoids embedding an indented
+            # Python heredoc in this YAML block.
+            EMAIL_LC=$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')
+            if ls -1 contributors/emails 2>/dev/null \
+                 | tr '[:upper:]' '[:lower:]' | grep -qxF "$EMAIL_LC"; then
               continue  # mapped via the contributors directory
             fi
 

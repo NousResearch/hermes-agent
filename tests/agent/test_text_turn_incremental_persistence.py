@@ -67,7 +67,7 @@ def _run_text_turn(agent, answer: str, *, flush_side_effect=None):
     *at call time*, so the assertion cannot be satisfied by a later mutation
     of the same live list.
     """
-    from tests.run_agent.test_run_agent import _mock_response
+    from tests.agent.test_run_agent import _mock_response
 
     agent.client.chat.completions.create.side_effect = [
         _mock_response(content=answer, finish_reason="stop"),

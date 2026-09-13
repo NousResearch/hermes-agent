@@ -2,8 +2,8 @@
 
 from unittest.mock import patch
 
-from tests.cli.test_tool_progress_scrollback import _make_cli
-import tests.cli.test_tool_progress_scrollback as _scrollback
+from tests.hermes_cli.test_tool_progress_scrollback import _make_cli
+import tests.hermes_cli.test_tool_progress_scrollback as _scrollback
 
 
 def _announce(cli, names):

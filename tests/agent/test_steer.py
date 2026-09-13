@@ -816,7 +816,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
 
         import agent.agent_runtime_helpers as _arh
 
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
         agent.client.chat.completions.create.side_effect = [
@@ -882,7 +882,7 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         from agent.conversation_loop import _clone_message_for_send  # noqa: F401
         from unittest.mock import patch
 
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
         agent.client.chat.completions.create.side_effect = [

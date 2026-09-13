@@ -24,8 +24,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _fast_retry_backoff(monkeypatch):
-    """Short-circuit retry backoff for all tests in this directory."""
+def _fast_retry_backoff(request, monkeypatch):
+    """Short-circuit retry backoff for all tests in this directory.
+
+    Tests that assert on the real backoff value opt out with
+    ``@pytest.mark.real_retry_backoff``.
+    """
+    if request.node.get_closest_marker("real_retry_backoff"):
+        return
     # The agent.turn_* retry paths import ``jittered_backoff`` lazily from
     # ``agent.retry_utils``; patch it there so rate-limit / invalid-response /
     # server-error retries don't burn real wall-clock seconds.

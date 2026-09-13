@@ -7,7 +7,7 @@ Rewind "Summarize up to here" action (v2.1.139, May 2026).
 
 from unittest.mock import MagicMock, patch
 
-from tests.cli.test_cli_init import _make_cli
+from tests.hermes_cli.test_cli_init import _make_cli
 
 
 def _make_history() -> list[dict[str, str]]:

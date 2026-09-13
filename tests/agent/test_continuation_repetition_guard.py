@@ -45,7 +45,7 @@ def loop_agent():
 
 
 def _stub(content):
-    from tests.run_agent.test_run_agent import _mock_assistant_msg
+    from tests.agent.test_run_agent import _mock_assistant_msg
 
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,

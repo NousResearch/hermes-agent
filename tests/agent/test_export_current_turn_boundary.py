@@ -86,7 +86,7 @@ def loop_agent():
 
 
 def _stub(content, finish_reason="stop"):
-    from tests.run_agent.test_run_agent import _mock_assistant_msg
+    from tests.agent.test_run_agent import _mock_assistant_msg
 
     return SimpleNamespace(
         id="chatcmpl-test",

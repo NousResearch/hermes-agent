@@ -41,7 +41,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests.cli.test_cli_init import _make_cli
+from tests.hermes_cli.test_cli_init import _make_cli
 
 
 def _make_history() -> list[dict[str, str]]:

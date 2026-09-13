@@ -53,7 +53,7 @@ def loop_agent():
 
 def _thinking_only_response():
     """Reasoning tokens, no visible text — what triggers the prefill retry."""
-    from tests.run_agent.test_run_agent import _mock_response
+    from tests.agent.test_run_agent import _mock_response
     return _mock_response(
         content="",
         finish_reason="stop",
@@ -63,7 +63,7 @@ def _thinking_only_response():
 
 def _final_response(text="Here is the answer."):
     """An ordinary text turn that ends the loop."""
-    from tests.run_agent.test_run_agent import _mock_response
+    from tests.agent.test_run_agent import _mock_response
     return _mock_response(content=text, finish_reason="stop")
 
 

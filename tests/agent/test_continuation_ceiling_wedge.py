@@ -40,7 +40,7 @@ def loop_agent():
 
 
 def _stub(content):
-    from tests.run_agent.test_run_agent import _mock_assistant_msg
+    from tests.agent.test_run_agent import _mock_assistant_msg
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
         model="test/model",
@@ -80,7 +80,7 @@ class TestContinuationCeilingWedge:
     def test_new_user_message_issues_fresh_request(self, loop_agent):
         """Core regression: after the ceiling, a new user turn must reach
         the provider instead of replaying wedge state."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         result1 = self._exhaust_ceiling(loop_agent)
         assert "truncated after 4 continuation attempts" in (result1.get("error") or "")
@@ -153,7 +153,7 @@ class TestContinuationCeilingWedge:
         sanitized api_messages must never carry them — only the
         chat-completions transport strips underscore keys, so anthropic
         and bedrock requests would otherwise send them to the provider."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         seen_api_messages = []
         original = loop_agent._build_api_kwargs
@@ -214,7 +214,7 @@ class TestContinuationCeilingWedge:
     def test_new_turn_does_not_inherit_continuation_counter(self, loop_agent):
         """A single truncation on the turn AFTER the ceiling must get its
         own full 4-attempt budget, not the exhausted counter."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         result1 = self._exhaust_ceiling(loop_agent)
         loop_agent.client.chat.completions.create.side_effect = [

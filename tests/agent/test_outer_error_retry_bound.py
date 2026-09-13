@@ -39,7 +39,7 @@ def loop_agent():
     """AIAgent with a mocked OpenAI client (mirrors test_run_agent's fixture)
     so we can stage responses on ``.chat.completions.create``."""
     from run_agent import AIAgent
-    from tests.run_agent.test_run_agent import _mock_response
+    from tests.agent.test_run_agent import _mock_response
 
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),

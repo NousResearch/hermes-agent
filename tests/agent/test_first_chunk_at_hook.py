@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
-from tests.run_agent.test_run_agent import (
+from tests.agent.test_run_agent import (
     _make_tool_defs,
     _mock_response,
 )

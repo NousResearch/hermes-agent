@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from tests.run_agent.test_streaming import _make_stream_chunk
+from tests.agent.test_streaming import _make_stream_chunk
 
 
 def _make_agent():
@@ -160,7 +160,7 @@ class TestStaleWatchdogNeverClosesSharedClient:
     ):
         """Connection drop mid tool-call → silent retry closes only the
         request-local client; the shared primary is left alone."""
-        from tests.run_agent.test_streaming import _make_tool_call_delta
+        from tests.agent.test_streaming import _make_tool_call_delta
 
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
 

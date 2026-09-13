@@ -292,7 +292,7 @@ class TestProjectionStopsReheal:
         from unittest.mock import patch
 
         import agent.agent_runtime_helpers as _arh
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
         agent.client.chat.completions.create.side_effect = [
@@ -351,7 +351,7 @@ class TestProjectionStopsReheal:
         from unittest.mock import patch
 
         import agent.agent_runtime_helpers as _arh
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
         agent.client.chat.completions.create.side_effect = [

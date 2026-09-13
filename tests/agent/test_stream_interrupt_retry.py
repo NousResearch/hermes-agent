@@ -185,7 +185,7 @@ class TestStreamInterruptBeforeRetry:
         import httpx
         import time
 
-        from tests.run_agent.test_streaming import (
+        from tests.agent.test_streaming import (
             _make_stream_chunk,
             _make_tool_call_delta,
         )

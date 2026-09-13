@@ -107,6 +107,36 @@ class TestPathResolution:
         assert kb.kanban_db_path() == forced
         assert kb.kanban_db_path(board="ignored") == forced
 
+    def test_board_metadata_db_path_is_caller_effective_under_pin(
+        self, fresh_home, monkeypatch,
+    ):
+        """``read_board_metadata()['db_path']`` follows the pin — do not "fix" it.
+
+        The two consumers of that field (``gateway.kanban_watchers_notifier``,
+        ``tui_gateway.session_notifications``) key a seen-DB set on it so a
+        pinned DB is polled once instead of once per aliased slug, and it stays
+        consistent with ``connect()``/``_board_counts()`` in the same process.
+        A board's CANONICAL file is ``board_db_path_unpinned()``, which the
+        cross-board readers use and which is never affected by the pin.
+        """
+        kb.create_board("second")
+        canonical_second = fresh_home / "kanban" / "boards" / "second" / "kanban.db"
+        assert kb.board_db_path_unpinned("second") == canonical_second
+
+        pinned = fresh_home / "kanban.db"  # the default board's legacy DB
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+
+        metas = {m["slug"]: m["db_path"] for m in kb.list_boards(include_archived=False)}
+        assert set(metas) == {"default", "second"}
+        # Every slug reports the pinned file: the watcher dedupe keys on this,
+        # and every path-taking API in this process resolves the same way.
+        assert {str(Path(p).expanduser().resolve()) for p in metas.values()} == {
+            str(pinned.resolve())
+        }
+        assert kb.kanban_db_path(board="second") == pinned
+        # Canonical derivation stays pin-blind for cross-board reads.
+        assert kb.board_db_path_unpinned("second") == canonical_second
+
 
 # ---------------------------------------------------------------------------
 # Current-board resolution

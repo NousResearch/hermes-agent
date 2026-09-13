@@ -1364,8 +1364,12 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
 
     Caps bound the HOST, but each board's tick only sees its own DB; without
     this a derived cap of N gets multiplied by the number of active boards.
-    Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
+    Boards are matched by their CANONICAL DB path and read through that path
+    directly: ``HERMES_KANBAN_DB`` pins EVERY slug to the caller's own file, so
+    resolving siblings with :func:`~hermes_cli.kanban_db.kanban_db_path` (and
+    opening them with a bare ``connect(board=slug)``) both collapsed the scan
+    onto the caller's board — a pinned worker reported 0 other-board workers, so
+    the host-level cap was silently not enforced. Fails open per board.
     """
     try:
         current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
@@ -1379,13 +1383,15 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     for meta in boards:
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
+            path = _kb.board_db_path_unpinned(slug).expanduser()
             resolved = str(path.resolve())
             if current_path is not None and resolved == current_path:
                 continue
             if not path.exists():
                 continue
-            other = _kbc.connect(board=slug)
+            # Explicit path, not board=slug: the pin would send every sibling
+            # back to the caller's own file and double-count it here.
+            other = _kbc.connect(db_path=path)
             try:
                 total += count_running_tasks(other)
             finally:

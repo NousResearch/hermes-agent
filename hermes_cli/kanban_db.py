@@ -549,7 +549,20 @@ def _default_board_display_name(slug: str) -> str:
 
 def read_board_metadata(board: Optional[str] = None) -> dict:
     """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
+    raises — a missing/malformed file yields the synthesized entry.
+
+    ``db_path`` is the CALLER-EFFECTIVE path (:func:`kanban_db_path`), not a
+    board's canonical file: every path-taking API in this process resolves
+    through ``HERMES_KANBAN_DB``, so with that pin set the entry reports the
+    pinned file for EVERY slug. That is deliberate and load-bearing — the two
+    consumers of this field (``gateway.kanban_watchers_notifier`` and
+    ``tui_gateway.session_notifications``) key a seen-DB set on it so a pinned
+    DB is polled once instead of once per aliased slug, and it keeps the value
+    consistent with ``connect()`` / ``_board_counts()`` in the same process.
+    A caller that needs a board's CANONICAL file (cross-board reads from a
+    pinned worker, e.g. :func:`_other_board_db_paths`) must use
+    :func:`board_db_path_unpinned` instead of this field.
+    """
     slug = _slug_or_default(board)
     meta: dict[str, Any] = {
         "slug": slug,
@@ -590,6 +603,8 @@ def write_board_metadata(
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
+    # (Caller-effective — pinned when HERMES_KANBAN_DB is set; see
+    # read_board_metadata for the watcher dedupe that depends on it.)
     meta.pop("db_path", None)
     if name is not None:
         meta["name"] = str(name).strip() or _default_board_display_name(slug)

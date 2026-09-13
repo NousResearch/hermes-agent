@@ -12,9 +12,11 @@ One install per profile at a time; a second request while one runs is refused.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shlex
+import signal
 import subprocess
 import threading
 from typing import Callable, Optional
@@ -38,24 +40,41 @@ def assert_not_running() -> None:
             raise InstallBusy("an install is already running for this profile")
 
 
-def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str], None],
-                     timeout_seconds: float = 900.0) -> int:
-    """Run the package install; returns the process exit code (0 = success, ``-1`` = cancelled)."""
-    if not runtime.is_supported_host():
-        raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
-    cmd = runtime.install_command()
-    if cmd is None:
-        raise RuntimeError("no supported package manager (apt-get, dnf, pacman) found on this host")
+def claim() -> str:
+    """Atomically take this profile's install slot; raises :class:`InstallBusy` when taken. A caller that
+    claims before handing off to a worker passes ``claimed=True`` to :func:`install_packages`, which then
+    owns releasing it — a check-then-spawn pair (``assert_not_running`` + later claim on the worker) lets
+    two Install clicks both pass the check."""
     key = hermes_home_key()
     with _install_lock:
         if key in _running:
             raise InstallBusy("an install is already running for this profile")
         _running.add(key)
+    return key
+
+
+def release(key: str) -> None:
+    with _install_lock:
+        _running.discard(key)
+
+
+def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str], None],
+                     timeout_seconds: float = 900.0, claimed: bool = False) -> int:
+    """Run the package install; returns the process exit code (0 = success, ``-1`` = cancelled).
+    ``claimed=True``: the caller already holds the slot via :func:`claim`; it is released here either way."""
+    key = hermes_home_key() if claimed else None
     try:
+        if not runtime.is_supported_host():
+            raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
+        cmd = runtime.install_command()
+        if cmd is None:
+            raise RuntimeError("no supported package manager (apt-get, dnf, pacman) found on this host")
+        if key is None:
+            key = claim()
         return _run(cmd, ask_password=ask_password, on_line=on_line, timeout_seconds=timeout_seconds)
     finally:
-        with _install_lock:
-            _running.discard(key)
+        if key is not None:
+            release(key)
 
 
 def _sudo_nopasswd() -> bool:
@@ -90,7 +109,13 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
         proc.stdin.close()  # type: ignore[union-attr]
     except OSError:
         pass
-    timer = threading.Timer(timeout_seconds, proc.kill)
+    # The package manager runs in its own session (start_new_session); killing only sudo would leave apt/dnf
+    # running as root with the dpkg lock while the slot is released, so the whole group goes.
+    def _kill_group() -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (is_supported_host)
+
+    timer = threading.Timer(timeout_seconds, _kill_group)
     timer.start()
     try:
         for line in proc.stdout:  # type: ignore[union-attr]

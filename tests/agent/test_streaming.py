@@ -1202,6 +1202,60 @@ class TestAnthropicStreamCallbacks:
         assert "eager_input_streaming" not in seen_tools[0][0]
         assert seen_tools[1][0]["eager_input_streaming"] is False
 
+    def test_anthropic_partial_tool_names_do_not_survive_into_next_attempt(self):
+        """A tool name from an attempt that died before any text is attempt-local: when the
+        retry streams plain text and then drops, the partial stub must not blame ``old_tool``
+        (that would also make the third attempt look mid-tool-call and thus retryable)."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        class _Stream:
+            response = None
+
+            def __init__(self, events, error):
+                self._events, self._error = events, error
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                yield from self._events
+                raise self._error
+
+        attempts = [
+            _Stream([SimpleNamespace(type="content_block_start",
+                                     content_block=SimpleNamespace(type="tool_use", name="old_tool"))],
+                    ValueError("expected value at line 1 column 11")),
+            _Stream([SimpleNamespace(type="content_block_delta",
+                                     delta=SimpleNamespace(type="text_delta", text="Plain answer."))],
+                    ConnectionError("connection dropped")),
+        ]
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: attempts.pop(0)
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        emitted = []
+        agent._fire_stream_delta = lambda text: emitted.append(text)
+
+        response = agent._interruptible_streaming_api_call(
+            {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
+
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert "old_tool" not in (response.choices[0].message.content or "")
+        assert not any("old_tool" in t for t in emitted)
+
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
         self, mock_replace, monkeypatch,

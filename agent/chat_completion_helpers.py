@@ -2584,6 +2584,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.stream_attempt_state["current"] += 1
             attempt_id = int(self.stream_attempt_state["current"])
         self.provider_tool_in_flight["yes"] = False
+        # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
+        # before any text must not label a later attempt's partial stub or its retry decision.
+        self.result["partial_tool_names"] = []
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:

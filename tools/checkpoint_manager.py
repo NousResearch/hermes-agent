@@ -640,7 +640,12 @@ class CheckpointManager:
         if not self._git_available:
             return False
         abs_dir = str(_normalize_path(working_dir))
-        if abs_dir in {"/", str(Path.home())}:  # never snapshot root/home
+
+        # Skip root, home, and other overly broad directories.  Compare
+        # canonical paths so macOS' /tmp -> /private/tmp alias cannot bypass
+        # the home-directory safety guard when HOME is under /tmp.
+        canonical_home = str(_normalize_path(str(Path.home())))
+        if abs_dir in {"/", canonical_home}:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
         if abs_dir in self._checkpointed_dirs:

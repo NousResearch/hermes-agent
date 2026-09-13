@@ -59,6 +59,14 @@ class TestSchema:
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         assert "max_elements" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
+    def test_schema_qualifies_minimized_windows_support(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+
+        description = COMPUTER_USE_SCHEMA["description"]
+        assert "hidden/minimized windows" not in description
+        assert "window_minimized" in description
+        assert "restore" in description.lower()
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):

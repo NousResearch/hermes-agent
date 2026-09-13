@@ -135,6 +135,48 @@ def test_refresh_reconciles_once_when_the_last_plugin_source_is_removed(monkeypa
     assert called == {"reset": 2, "load": 2, "scope": 2}    # and not again: nothing left to reconcile
 
 
+def test_refresh_retries_removal_cleanup_after_a_failed_attempt(monkeypatch):
+    """The reconcile marker must survive a failed cleanup (#107695 review on f5f88d5058): clearing it
+    before the fallible reset/reload/refresh left the removed plugin's credential active while every
+    later no-source discovery returned early. It clears only once cleanup succeeds."""
+    mgr = PluginManager()
+    calls = {"load": 0}
+    fail = {"on": True}
+
+    import agent.secret_sources.registry as reg
+
+    sources = [_StubSource()]
+    monkeypatch.setattr(reg, "list_plugin_sources", lambda: list(sources))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"secrets": {"myvault": {"enabled": True}}})
+    monkeypatch.setattr("hermes_cli.env_loader.reset_secret_source_cache", lambda *a, **kw: None)
+    monkeypatch.setattr("agent.secret_scope.refresh_installed_secret_scope", lambda *a, **kw: True)
+
+    def _load(**kw):
+        calls["load"] += 1
+        if fail["on"]:
+            raise RuntimeError("reload blew up")
+
+    monkeypatch.setattr("hermes_cli.env_loader.load_hermes_dotenv", _load)
+
+    fail["on"] = False
+    mgr._refresh_secret_sources_after_discovery()   # enabled: marker set
+    assert calls["load"] == 1
+
+    sources.clear()
+    fail["on"] = True
+    mgr._refresh_secret_sources_after_discovery()   # removal cleanup attempt fails
+    assert calls["load"] == 2
+    assert mgr._plugin_secret_sources_reconciled is True   # NOT cleared by a failed attempt
+
+    fail["on"] = False
+    mgr._refresh_secret_sources_after_discovery()   # retried, succeeds
+    assert calls["load"] == 3
+    assert mgr._plugin_secret_sources_reconciled is False
+
+    mgr._refresh_secret_sources_after_discovery()   # nothing left to reconcile
+    assert calls["load"] == 3
+
+
 def test_refresh_respects_custom_is_enabled(monkeypatch):
     """A source with custom activation (no ``enabled`` key) is re-pulled."""
     mgr = PluginManager()

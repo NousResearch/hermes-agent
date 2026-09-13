@@ -1295,7 +1295,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
             if not self._plugin_secret_sources_reconciled:
                 return
-            self._plugin_secret_sources_reconciled = False
+            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
+            # fallible, and clearing first left the stale credential active with no retry on the next
+            # discovery (review on f5f88d5058).
         else:
             self._plugin_secret_sources_reconciled = True
         try:
@@ -1312,6 +1314,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # into the installed scope or THIS fire never sees the plugin credential.
             from agent.secret_scope import refresh_installed_secret_scope
             refresh_installed_secret_scope(Path(home))
+            if not enabled_names:
+                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
                          ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
         except Exception as exc:

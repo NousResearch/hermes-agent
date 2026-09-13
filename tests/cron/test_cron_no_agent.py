@@ -559,6 +559,86 @@ def test_a_routed_profile_script_never_receives_a_launch_source_value_that_lost_
     assert os.environ["CUSTOM_VAULT_SECRET"] == "launch-value"  # parent untouched
 
 
+def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own(hermes_env, monkeypatch):
+    """Managed-scope precedence (#107695 review on f5f88d5058): the administrator's managed ``.env`` is
+    applied LAST with override in the launch process, so it beats the user's own ``.env``. Recording its
+    keys as launch residue stripped ``ORG_POLICY_FLAG`` before the routed overlay, and the routed
+    profile's own value replaced policy. Managed keys are not residue, and they are re-applied over the
+    routed scope so the child sees the same precedence the launch process does."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader, managed_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    managed = launch / "managed"
+    managed.mkdir()
+    (managed / ".env").write_text("ORG_POLICY_FLAG=managed-value\n", encoding="utf-8")
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set(env_loader._LOADED_DOTENV_KEYS))
+    monkeypatch.setattr(env_loader, "_MANAGED_DOTENV_KEYS", set())
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed)
+    monkeypatch.setenv("ORG_POLICY_FLAG", "placeholder")
+    env_loader._apply_managed_env()  # the boot-time managed load
+    assert os.environ["ORG_POLICY_FLAG"] == "managed-value"
+    assert "ORG_POLICY_FLAG" in env_loader.managed_dotenv_keys()
+    assert "ORG_POLICY_FLAG" not in env_loader.launch_dotenv_keys()
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    script = routed / "scripts" / "probe_policy.sh"
+    script.write_text('#!/bin/bash\necho "${ORG_POLICY_FLAG:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    # The routed user's own .env carries a competing value for the managed key.
+    scope_token = secret_scope.set_secret_scope({"ORG_POLICY_FLAG": "user-value"})
+    try:
+        ok, output = _run_job_script("probe_policy.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "managed-value"
+    assert os.environ["ORG_POLICY_FLAG"] == "managed-value"  # parent untouched
+
+
+def test_strip_launch_profile_env_never_treats_managed_keys_as_residue(hermes_env, monkeypatch):
+    """The exclusion stands on its own (#107695 review on f5f88d5058): ``kanban_db_dispatch`` and
+    ``scheduler_delivery`` strip and spawn ``hermes -p <profile>`` with NO scope overlay and no managed
+    re-apply afterwards, so for them the strip itself must leave administrator-managed keys in place.
+
+    The case that matters is a key defined in BOTH the user's launch ``.env`` and the managed ``.env`` —
+    the precedence conflict managed override exists for. That key IS launch residue by every other rule
+    (it is in the launch file and was recorded as loaded), and only the managed exclusion keeps the
+    policy value in the child. A launch-only recorded key is still removed."""
+    from agent import secret_scope
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from tools.environments.local import strip_launch_profile_env
+
+    launch = get_process_hermes_home()
+    routed = launch / "profiles" / "ops"
+    routed.mkdir(parents=True, exist_ok=True)
+    # The user's own .env ALSO sets ORG_POLICY_FLAG; the managed .env overrode it at boot.
+    (launch / ".env").write_text("ORG_POLICY_FLAG=user-value\n", encoding="utf-8")
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"LAUNCH_ONLY_RECORDED", "ORG_POLICY_FLAG"})
+    monkeypatch.setattr(env_loader, "_MANAGED_DOTENV_KEYS", {"ORG_POLICY_FLAG"})
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    try:
+        env = strip_launch_profile_env({"ORG_POLICY_FLAG": "managed-value", "LAUNCH_ONLY_RECORDED": "stale"})
+    finally:
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert env == {"ORG_POLICY_FLAG": "managed-value"}
+
+
 def test_single_profile_child_keeps_its_own_external_source_value(hermes_env, monkeypatch):
     """No multiplexing: os.environ IS this profile's environment, so the source-name strip must not
     run at all — the child keeps its own vault value even if the per-home snapshot were missing."""

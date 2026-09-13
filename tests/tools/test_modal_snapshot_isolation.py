@@ -60,7 +60,7 @@ def _install_modal_test_modules(
     _reset_modules(("tools", "hermes_cli", "modal"))
 
     hermes_cli = types.ModuleType("hermes_cli")
-    hermes_cli.__path__ = []  # type: ignore[attr-defined]
+    hermes_cli.__path__ = [str(REPO_ROOT / "hermes_cli")]  # type: ignore[attr-defined]
     sys.modules["hermes_cli"] = hermes_cli
     hermes_home = tmp_path / "hermes-home"
     os.environ["HERMES_HOME"] = str(hermes_home)

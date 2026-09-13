@@ -112,8 +112,7 @@ class TestDispatchFailurePathsClearClaim:
                 raise RuntimeError("cannot schedule new futures")
 
         pool = _ExplodingPool()
-        with patch.object(sched, "_get_parallel_pool", return_value=pool), \
-             patch.object(sched, "_get_sequential_pool", return_value=pool):
+        with patch.object(sched, "_get_parallel_pool", return_value=pool):
             self._tick_one(job)
         reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
         assert reloaded.get("run_claim") is None

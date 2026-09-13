@@ -17,11 +17,10 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import (
-    MessageEvent,
-    MessageType,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +307,10 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", photo=[first_photo])
         msg2 = _make_message(photo=[second_photo])
 
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
+        with patch(
+            "plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+            new=AsyncMock(side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]),
+        ):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0

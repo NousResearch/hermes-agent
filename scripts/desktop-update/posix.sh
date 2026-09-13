@@ -128,22 +128,27 @@ notify_fallback() { # status message — renderer-free recovery surface.
   # and must not eat the message). The GUARANTEED channel is the result
   # file: a manual/error outcome is durably marked and the next Desktop
   # boot surfaces it in a dialog (handoff-result.ts + main.ts).
-  case "$1" in manual|error) ;; *) return 0 ;; esac
+  # `done` is the renderer-less success path (#103058): publish "done" used
+  # to return here before any OS notification, so Chromium-less machines
+  # got silence until relaunch.
+  case "$1" in done|manual|error) ;; *) return 0 ;; esac
+  local _msg="$2"
+  [ "$1" = "done" ] && [ -z "$_msg" ] && _msg="Hermes update complete."
   if [ "$(uname)" = "Darwin" ]; then
-    /usr/bin/osascript -e "display notification \"$(printf '%s' "$2" | sed 's/"/\\"/g')\" with title \"Hermes update\"" 2>/dev/null && return 0
+    /usr/bin/osascript -e "display notification \"$(printf '%s' "$_msg" | sed 's/"/\\"/g')\" with title \"Hermes update\"" 2>/dev/null && return 0
   else
     if command -v notify-send >/dev/null 2>&1; then
-      notify-send -u critical "Hermes update" "$2" 2>/dev/null && return 0
+      notify-send -u critical "Hermes update" "$_msg" 2>/dev/null && return 0
     fi
     local p
     if command -v zenity >/dev/null 2>&1; then
-      zenity --warning --title="Hermes update" --text="$2" 2>/dev/null &
+      zenity --warning --title="Hermes update" --text="$_msg" 2>/dev/null &
       p=$!; sleep 1
       kill -0 "$p" 2>/dev/null && return 0
       wait "$p" 2>/dev/null
     fi
     if command -v kdialog >/dev/null 2>&1; then
-      kdialog --title "Hermes update" --sorry "$2" 2>/dev/null &
+      kdialog --title "Hermes update" --sorry "$_msg" 2>/dev/null &
       p=$!; sleep 1
       kill -0 "$p" 2>/dev/null && return 0
       wait "$p" 2>/dev/null
@@ -151,7 +156,7 @@ notify_fallback() { # status message — renderer-free recovery surface.
   fi
   # No immediate surface landed. The durable channel takes over: the result
   # is marked manual/failed and the next boot shows it in a real dialog.
-  log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $2"
+  log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $_msg"
 }
 
 write_status() { # status message -- atomic replace; the server reads per poll

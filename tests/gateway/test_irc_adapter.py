@@ -66,6 +66,32 @@ class TestIRCAdapterInit:
         assert adapter.use_tls is True
 
 
+class TestIRCAdapterLockConflict:
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
+        """``acquire_scoped_lock`` returns ``(acquired, existing)``; a live foreign holder must stop
+        connect() before any socket is opened (the tuple is truthy, so a bare ``if not`` never fired)."""
+        import gateway.status as gateway_status
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setattr(
+            gateway_status, "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242, "profile": "other"}))
+        opened = []
+
+        async def _no_connect(*a, **k):
+            opened.append(a)
+            raise AssertionError("socket must not be opened on a lock conflict")
+        monkeypatch.setattr(asyncio, "open_connection", _no_connect)
+        adapter = IRCAdapter(PlatformConfig(enabled=True, extra={
+            "server": "irc.example", "nickname": "hermes", "channel": "#x"}))
+        assert await adapter.connect() is False
+        assert adapter._fatal_error_code == "irc_lock"
+        assert "other" in adapter._fatal_error_message
+        assert opened == []
+
+
 class TestIRCAdapterSend:
 
     @pytest.fixture

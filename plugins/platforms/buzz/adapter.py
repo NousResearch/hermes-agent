@@ -9,6 +9,7 @@ BUZZ_PRIVATE_KEY (nsec or hex): it reaches the CLI via the subprocess env and is
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -669,7 +670,6 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
         self._membership_since = self._poll_count = 0
-        self._lock_key: Optional[str] = None
         # Channels the relay permanently rejected ("restricted"); persists across reconnects so we never re-subscribe.
         # channel_id -> { "chat_type", "last_ts", "seen": OrderedDict[event_id, None], "event_meta":
         # OrderedDict[event_id, (author_pubkey, content_snippet)], } event_meta backs NIP-10 reply-parent
@@ -761,17 +761,9 @@ class BuzzAdapter(BasePlatformAdapter):
         self._display_name = str(profiles[0].get("display_name") or "").strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
         # Two profiles must not drive the same identity on one relay (duplicate replies, split de-dupe state).
-        try:
-            from gateway.status import acquire_scoped_lock
-            lock_key = f"{self.relay_url}:{self._self_pubkey}"
-            if not acquire_scoped_lock("buzz", lock_key):
-                return self._connect_failed(
-                    "lock_conflict", "Buzz identity in use by another profile",
-                    "Buzz: identity %s… on %s already in use by another profile", self._self_pubkey[:8], self.relay_url,
-                )
-            self._lock_key = lock_key
-        except ImportError:
-            self._lock_key = None  # status module not available (e.g. tests)
+        if not self._acquire_platform_lock(
+                "buzz", f"{self.relay_url}:{self._self_pubkey}", f"Buzz identity {self._self_pubkey[:8]}… on {self.relay_url}"):
+            return False
         # Map channel ids to names and pick the watch set.
         code, out, err = await self._run_cli(["channels", "list"])
         if code != 0:
@@ -826,14 +818,8 @@ class BuzzAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
-        lock_key = getattr(self, "_lock_key", None)
-        if lock_key:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("buzz", lock_key)
-            except Exception:
-                pass
-            self._lock_key = None
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
         await self._cancel_task(self._ws_task)
         self._ws_task = None
         await self._cancel_task(self._poll_task)

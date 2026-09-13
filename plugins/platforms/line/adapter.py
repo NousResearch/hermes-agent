@@ -425,7 +425,6 @@ class LineAdapter(BasePlatformAdapter):
         self._cache = RequestCache()
         self._dedup = _MessageDeduplicator()
         self._bot_user_id: Optional[str] = None
-        self._lock_key: Optional[str] = None
         self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
         self._media_temp_paths: Set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
@@ -439,14 +438,9 @@ class LineAdapter(BasePlatformAdapter):
         if not self.channel_access_token or not self.channel_secret:
             return self._fail("config_missing", "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set")
         # One profile per channel token; lock on a hash so the secret never hits disk.
-        try:
-            from gateway.status import acquire_scoped_lock
-            tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-            if not acquire_scoped_lock("line", tok_hash):
-                return self._fail("lock_conflict", "LINE channel already in use by another profile")
-            self._lock_key = tok_hash
-        except ImportError:
-            self._lock_key = None
+        tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
+        if not self._acquire_platform_lock("line", tok_hash, "LINE channel"):
+            return False
         self._client = _LineClient(self.channel_access_token)
         try:  # best-effort self-userId for self-echo filtering (LINE rarely echoes anyway)
             self._bot_user_id = await self._client.get_bot_user_id()
@@ -500,11 +494,8 @@ class LineAdapter(BasePlatformAdapter):
             _unlink_quietly(path)
         self._media_temp_paths.clear()
         self._media_tokens.clear()
-        if self._lock_key:
-            with contextlib.suppress(Exception):
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("line", self._lock_key)
-            self._lock_key = None
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
 
     async def _handle_health(self, request) -> Any:
         from aiohttp import web

@@ -128,10 +128,10 @@ def import_reference(asset_id: str, kind: str, filename: str, index: int) -> dic
     imported = [obj for obj in bpy.data.objects if obj not in before]
     meshes = [obj for obj in imported if obj.type == "MESH"]
     row_y = 3.2 if kind == "building" else -2.0
-    step = 2.45 if kind == "building" else 2.65
+    step = 3.0 if kind == "building" else 2.65
     count = 8 if kind == "building" else 6
     x = (index - (count - 1) / 2) * step
-    target = 2.9 if kind == "building" else 1.7
+    target = 2.4 if kind == "building" else 1.7
     normalize(imported, target, (x, row_y, 0))
     coll = get_collection(f"Hunyuan {kind.title()} References")
     for obj in imported:
@@ -206,21 +206,6 @@ def setup_scene() -> None:
 
 def export_board() -> None:
     bpy.ops.object.select_all(action="DESELECT")
-
-
-def strip_render_metadata() -> None:
-    """Remove Blender's workstation path and render-stamp chunks from PNG output."""
-    sips = shutil.which("sips")
-    if sips is None:
-        return
-    clean = BOARD_RENDER.with_name(f"{BOARD_RENDER.stem}.clean{BOARD_RENDER.suffix}")
-    subprocess.run(
-        [sips, "-s", "format", "png", str(BOARD_RENDER), "--out", str(clean)],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    clean.replace(BOARD_RENDER)
     labels = [obj for obj in bpy.context.scene.objects if obj.type == "FONT"]
     for obj in labels:
         obj.select_set(True)
@@ -246,6 +231,21 @@ def strip_render_metadata() -> None:
         if obj.name.endswith("_export"):
             bpy.data.objects.remove(obj, do_unlink=True)
     bpy.ops.object.select_all(action="DESELECT")
+
+
+def strip_render_metadata() -> None:
+    """Remove Blender's workstation path and render-stamp chunks from PNG output."""
+    sips = shutil.which("sips")
+    if sips is None:
+        return
+    clean = BOARD_RENDER.with_name(f"{BOARD_RENDER.stem}.clean{BOARD_RENDER.suffix}")
+    subprocess.run(
+        [sips, "-s", "format", "png", str(BOARD_RENDER), "--out", str(clean)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    clean.replace(BOARD_RENDER)
 
 
 def main() -> None:

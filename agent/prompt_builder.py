@@ -1352,8 +1352,8 @@ def _build_skills_system_prompt_inner(
     project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
-        tuple(sorted(str(t) for t in (available_tools or set()))),
-        tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        (available_tools is None, tuple(sorted(str(t) for t in (available_tools or set())))),
+        (available_toolsets is None, tuple(sorted(str(ts) for ts in (available_toolsets or set())))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:

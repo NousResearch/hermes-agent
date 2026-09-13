@@ -335,6 +335,7 @@ import {
   spliceRegistrySessionRows,
   tagRegistrySessionResponse
 } from './profile-session-routing'
+import { findSupportedPythonOnPath, readPythonVersion } from './python-runtime'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
@@ -2707,6 +2708,12 @@ function findPythonForRoot(root) {
   const override = process.env.HERMES_DESKTOP_PYTHON
 
   if (override && fileExists(override)) {
+    if (!IS_WINDOWS) {
+      const version = readPythonVersion(override)
+
+      rememberLog(`[backend] Using explicit Python${version ? ` ${version}` : ''} at ${override}`)
+    }
+
     return override
   }
 
@@ -2718,8 +2725,28 @@ function findPythonForRoot(root) {
     const candidate = path.join(root, relativePath)
 
     if (fileExists(candidate)) {
+      if (!IS_WINDOWS) {
+        const version = readPythonVersion(candidate)
+
+        rememberLog(`[backend] Using repo-local Python${version ? ` ${version}` : ''} at ${candidate}`)
+      }
+
       return candidate
     }
+  }
+
+  if (!IS_WINDOWS) {
+    const selection = findSupportedPythonOnPath(['python3', 'python'], findOnPath)
+
+    if (selection) {
+      rememberLog(`[backend] Selected Python ${selection.version} at ${selection.path} from PATH`)
+
+      return selection.path
+    }
+
+    rememberLog('[backend] No supported Python (>=3.11,<3.14) found on PATH')
+
+    return null
   }
 
   return findSystemPython()

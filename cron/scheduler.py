@@ -2701,8 +2701,8 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
             # adapters were torn down first, #82232). Record the delivery failure on its own via update_job:
             # mark_job_run also advances next_run_at and the repeat counter, and running that a second time
             # for one run would skip a fire or auto-delete the job early.
-            from cron.jobs import update_job
-            update_job(job["id"], {"last_delivery_error": delivery_error})
+            from cron.jobs import update_job, _sanitize_persisted_error
+            update_job(job["id"], {"last_delivery_error": _sanitize_persisted_error(delivery_error)})
         except Exception as _rec_err:
             logger.debug(
                 "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)

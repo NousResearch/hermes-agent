@@ -36,6 +36,38 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from utils import atomic_replace, atomic_write_text
 
+# Bound on persisted error text length, matching cron/incidents.py's
+# MAX_ERROR_CHARS convention — a truncated-but-safe record is more useful
+# than an unbounded one that grows jobs.json without limit.
+_MAX_PERSISTED_ERROR_CHARS = 2000
+
+
+def _sanitize_persisted_error(error: Optional[str]) -> Optional[str]:
+    """Redact secrets and bound length before persisting an error to jobs.json.
+
+    ``jobs.json`` survives gateway restarts, job edits, and profile backups
+    indefinitely — unlike a log line, a raw provider error string written
+    here (e.g. an OpenRouter 403 whose body embeds a
+    ``.../workspaces/.../keys/<KEY_ID>`` management link) sits on disk until
+    the field is next overwritten. Mirrors ``cron/incidents.py::_redact_error``
+    and ``cron/delivery_queue.py``'s ``_finish`` sanitization at the other
+    cron persistence chokepoints. Best-effort: a redaction failure must never
+    block recording that a job failed (see issue #102700).
+    """
+    if error is None:
+        return None
+    text = str(error)
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+
+        text = redact_sensitive_text(text, force=True, redact_url_credentials=True)
+    except Exception:
+        logger.warning("Failed to redact sensitive text before persisting cron error", exc_info=True)
+    return text[:_MAX_PERSISTED_ERROR_CHARS]
+
+
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
 croniter = None
@@ -2205,7 +2237,7 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     clears it."""
     def apply(jobs, _i, job):
         job["last_fire_error"] = {
-            "at": _hermes_now().isoformat(), "detail": str(detail or "")[:500]}
+            "at": _hermes_now().isoformat(), "detail": _sanitize_persisted_error(str(detail or ""))[:500]}
         save_jobs(jobs)
         return True
 
@@ -2224,7 +2256,7 @@ def _record_run_outcome(
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
-    job["last_error"] = None if success else error
+    job["last_error"] = None if success else _sanitize_persisted_error(error)
     if success:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
@@ -2235,7 +2267,7 @@ def _record_run_outcome(
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
-    job["last_delivery_error"] = delivery_error
+    job["last_delivery_error"] = _sanitize_persisted_error(delivery_error)
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
     job.pop("pending_slot", None)

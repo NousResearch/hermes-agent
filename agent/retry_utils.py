@@ -87,12 +87,18 @@ def _error_text(error: Any) -> str:
 
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
     """True only for the narrow Z.AI Coding Plan overload shape (429 + code
-    1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast."""
+    1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast.
+
+    Model match is the ``glm-5`` family, not a frozen version: the plan rotates
+    models (5.2 → 5.3 → 5.3-flash) under one endpoint, and a pinned version silently
+    drops every overload onto the generic fail-fast path — which benches the only
+    credential instead of riding out a transient overload.
+    """
     text = _error_text(error)
     return (
         getattr(error, "status_code", None) == 429
         and "api.z.ai/api/coding/paas/v4" in (base_url or "").lower()
-        and "glm-5.2" in (model or "").lower()
+        and "glm-5" in (model or "").lower()
         and ("1305" in text or "temporarily overloaded" in text)
     )
 

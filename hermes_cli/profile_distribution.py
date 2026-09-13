@@ -305,7 +305,7 @@ def _has_cron_jobs(staged: Path) -> bool:
 
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
-    from hermes_cli.profiles import _canon_valid, get_profile_dir
+    from hermes_cli.profiles import _canon_valid, _validate_new_profile_target, get_profile_dir, profile_exists
     from hermes_cli import __version__ as hermes_version
     staged, provenance = _stage_source(source, workdir)
     _reject_distribution_symlinks(staged)
@@ -327,6 +327,8 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
     manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     target_dir = get_profile_dir(canon)
     existing = target_dir.is_dir()
+    if not profile_exists(canon):
+        _validate_new_profile_target(canon)
     return InstallPlan(
         manifest=manifest, staged_dir=staged, provenance=provenance, target_dir=target_dir, existing=existing,
         preserves_config=existing, has_cron=_has_cron_jobs(staged),

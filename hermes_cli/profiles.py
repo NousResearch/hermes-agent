@@ -220,6 +220,15 @@ def _canon_valid(name: str) -> str:
     return canon
 
 
+def _validate_new_profile_target(canon: str) -> None:
+    """Reserve the historical default namespace without locking out legacy profiles."""
+    if canon == "main":
+        raise ValueError(
+            "Profile name 'main' is reserved for the default profile's session namespace. "
+            "Choose a different name."
+        )
+
+
 def _existing_profile_dir(name: str) -> Tuple[str, Path]:
     """``(canon, profile_dir)`` for an existing profile; FileNotFoundError otherwise."""
     canon = _canon_valid(name)
@@ -818,6 +827,7 @@ def create_profile(
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = _canon_valid(name)
+    _validate_new_profile_target(canon)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
@@ -1565,6 +1575,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     # Default-profile archives have "default/" at top level; importing as "default" would
     # target ~/.hermes itself.
     canon = _canon_valid(inferred_name)
+    _validate_new_profile_target(canon)
     if canon == "default":
         raise ValueError(
             "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
@@ -1653,6 +1664,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         print(f"✓ Display name set: {cleaned} (canonical id remains 'default')")
         return _get_default_hermes_home()
     new_canon = _canon_valid(new_name)
+    _validate_new_profile_target(new_canon)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
     old_dir = get_profile_dir(old_canon)

@@ -164,6 +164,7 @@ class _PathReadBudget:
             warn = (handles > _HANDLES_PER_PATH_WARN and not self._duplicate_handles_warned)
             if warn:
                 self._duplicate_handles_warned = True
+                creation_sites = ", ".join(sorted(member._creation_site for member in self._members))
         if warn:
             # Writer connections cannot be capped; the only bound is not opening
             # redundant handles, so make the duplicate visible before it's an incident.
@@ -174,8 +175,9 @@ class _PathReadBudget:
                 # one.
                 "%d live SessionDB handles on %s in this process; each holds "
                 "its own writer connection (read connections are capped at %d "
-                "for the file). A long-lived process should share one handle per path.",
-                handles, db.db_path, _READ_POOL_MAX,
+                "for the file). A long-lived process should share one handle per path. "
+                "Created at: %s",
+                handles, db.db_path, _READ_POOL_MAX, creation_sites,
             )
 
     def acquire(self, requester: "SessionDB") -> bool:

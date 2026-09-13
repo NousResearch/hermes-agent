@@ -166,7 +166,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     """``(kind, code)`` for a reaped worker PID: ``clean_exit`` (rc 0 while
     still ``running`` = protocol violation), ``rate_limited``
     (``KANBAN_RATE_LIMIT_EXIT_CODE``, never counts as a failure),
-    ``nonzero_exit``, ``signaled`` (``code`` is the signal), ``unknown`` (pid
+    ``billing`` (``KANBAN_BILLING_EXIT_CODE``), ``nonzero_exit``,
+    ``signaled`` (``code`` is the signal), ``unknown`` (pid
     not in the reap registry; ``code`` None)."""
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
@@ -179,6 +180,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("clean_exit", 0)
             if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
+            if code == _kb.KANBAN_BILLING_EXIT_CODE:
+                return ("billing", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
@@ -774,6 +777,19 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
             "rate_limited",
             {"pid": pid, "claimer": claimer, "exit_code": code},
             rate_limited=True,
+        )
+    if kind == "billing":
+        # 402/credit exhaustion — a terminal-for-now account state, not a task
+        # defect and not a quota wall. Counts as a NORMAL failure so the
+        # breaker trips quickly and the task parks blocked with an actionable
+        # error (top up / switch route), instead of relaunching forever.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} exited on billing (credits exhausted / payment required) — "
+            "counted as a failure; unblock after resolving the account or pinning "
+            "another route",
+            "crashed",
+            {"pid": pid, "claimer": claimer, "exit_code": code, "billing": True},
         )
     if kind == "nonzero_exit":
         error_text = f"pid {pid} exited with code {code}"

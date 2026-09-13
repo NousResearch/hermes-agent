@@ -4119,8 +4119,14 @@ def _run_quiet_single_query(cli, effective_query):
         _exit_code = 1
         if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
             try:
-                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
-                _exit_code = _RL_CODE
+                from hermes_cli.kanban_db import (
+                    KANBAN_BILLING_EXIT_CODE as _BILLING_CODE,
+                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                )
+                # Billing (402/credit exhaustion) is NOT a quota wall: map it to
+                # its own exit code so the dispatcher can count the failure and
+                # trip the breaker instead of requeueing forever.
+                _exit_code = _BILLING_CODE if result.get("failure_reason") == "billing" else _RL_CODE
             except Exception:
                 _exit_code = 1
     sys.exit(_exit_code)

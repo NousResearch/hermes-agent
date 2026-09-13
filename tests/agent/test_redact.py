@@ -92,6 +92,53 @@ class TestKnownPrefixes:
         assert redact_sensitive_text(text) == text
 
 
+class TestJwtFormatSkKeys:
+    """DashScope/Alibaba JWT-format sk- keys contain '.' (issue #106508).
+
+    The prefix body class must accept '.' so bare tokens and terminal
+    ``grep ~/.hermes/.env`` (code_file=True — grep is not a file-read
+    command) both mask. Synthetic fixture only.
+    """
+
+    JWTISH = "sk-ws-H.EEPXREE.pFau.MEUCIQC6UnD-jj2aABCDEFGHIJKLMNOP"
+
+    def test_jwt_format_sk_key_masked_even_under_code_file_terminal(self):
+        from agent.redact import redact_terminal_output
+
+        bare = redact_sensitive_text(f"leaked {self.JWTISH} here", force=True)
+        assert self.JWTISH not in bare
+        term = redact_terminal_output(
+            f"DASHSCOPE_API_KEY={self.JWTISH}\n",
+            "grep -i DASHSCOPE ~/.hermes/.env",
+            force=True,
+        )
+        assert self.JWTISH not in term
+
+    def test_traditional_sk_still_masked(self):
+        k = "sk-proj-AbCdEf1234567890GhIjKlMnOp"
+        assert k not in redact_sensitive_text(k, force=True)
+        ant = "sk-ant-api03-" + "A" * 24
+        assert ant not in redact_sensitive_text(ant, force=True)
+
+    def test_domain_not_masked(self):
+        s = "visit example.com for docs"
+        assert redact_sensitive_text(s, force=True) == s
+
+    def test_short_sk_fragment_not_masked(self):
+        short = "sk-abc.def"
+        assert redact_sensitive_text(f"text {short} here", force=True) == f"text {short} here"
+
+    def test_disabled_passes_jwtish_through(self, monkeypatch):
+        from agent.redact import redact_terminal_output
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        text = f"leaked {self.JWTISH} here"
+        assert redact_sensitive_text(text) == text
+        term = redact_terminal_output(
+            f"DASHSCOPE_API_KEY={self.JWTISH}\n",
+            "grep -i DASHSCOPE ~/.hermes/.env",
+        )
+        assert self.JWTISH in term
 
 
 class TestEnvAssignments:

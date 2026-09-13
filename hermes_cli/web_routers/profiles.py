@@ -28,7 +28,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_config import _apply_main_model_assignment, _normalize_main_model_assignment
+from hermes_cli.web_server_config import (
+    _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
+)
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
@@ -96,13 +98,14 @@ def _profile_setup_command(name: str) -> str:
 
 
 def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
-    """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped);
-    clears stale ``base_url`` / ``context_length`` like ``POST /api/model/set`` does."""
+    """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped)
+    through the same validated /model shape as ``POST /api/model/set``."""
     from hermes_cli.config import load_config, save_config
     with _hermes_home_scope(profile_dir):
         provider, model = _normalize_main_model_assignment(provider, model)
         cfg = load_config()
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
+        result = _validated_main_model_selection(cfg, provider, model)
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         save_config(cfg)
 
 

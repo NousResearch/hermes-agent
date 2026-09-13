@@ -3285,8 +3285,9 @@ class TestDenormalizeProviderSwitch:
         model = result["model"]
         assert model["provider"] == "openrouter"
         assert model["default"] == "google/gemini-2.5-flash"
-        # The old ollama-local endpoint must not carry over to openrouter.
-        assert not model.get("base_url")
+        # The old ollama-local endpoint must not carry over to openrouter (the switch resolves
+        # the aggregator's own endpoint instead of leaving the field blank or stale).
+        assert model.get("base_url") != "http://localhost:11434/v1"
 
 
     def test_context_length_override_survives_provider_switch(self):

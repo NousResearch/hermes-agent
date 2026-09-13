@@ -229,6 +229,18 @@ class TestProfileScopedMcp:
 
 
 class TestProfileScopedModel:
+    @pytest.fixture(autouse=True)
+    def _accept_any_model(self, monkeypatch):
+        """These tests pin WHICH profile the write lands in, not catalog validation: the main
+        slot now routes through ``switch_model`` (needs credentials + a listed model), so echo the
+        request back as an accepted route."""
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        def _switch(*, raw_input, explicit_provider, **_kw):
+            return ModelSwitchResult(success=True, new_model=raw_input, target_provider=explicit_provider)
+
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+
     def test_model_set_main_scoped(self, client, isolated_profiles):
         resp = client.post(
             "/api/model/set",

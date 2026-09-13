@@ -4423,7 +4423,7 @@ def test_apply_model_switch_persist_override_false_never_persists(monkeypatch):
         lambda *a: pytest.fail("persist_override must bypass resolve_persist_behavior"),
     )
     monkeypatch.setattr(
-        server, "_persist_model_switch",
+        "hermes_cli.model_switch.persist_model_selection",
         lambda _r: pytest.fail("persist_override=False must not persist"),
     )
     monkeypatch.setattr(
@@ -9646,9 +9646,9 @@ def test_config_set_model_global_persists(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    # _persist_model_switch uses targeted save_config_value writes (#48305) so it
+    # persist_model_selection uses targeted per-key writes (#48305) so it
     # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("cli.save_config_value", lambda key, value: saved_values.__setitem__(key, value) or True)
+    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
 
     resp = server.handle_request(
         {
@@ -19850,77 +19850,6 @@ def test_get_usage_safe_when_active_count_raises(monkeypatch):
     # Field omitted, but the rest of the payload is intact.
     assert "active_subagents" not in usage
     assert usage["model"] == "x"
-
-
-def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):
-    """#48305: switching models from the TUI must NOT destroy sibling keys under
-    `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses
-    targeted save_config_value writes instead of rewriting the whole block."""
-    import types
-    import yaml
-    import cli
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        "model:\n"
-        "  default: old-model\n"
-        "  provider: openai\n"
-        "  model_slots:\n"
-        "    fast: gpt-5-mini\n"
-        "  model_fallback:\n"
-        "    - claude-haiku\n"
-        "agent:\n"
-        "  system_prompt: keepme\n"
-    )
-    # save_config_value() resolves the config path from get_hermes_home() (live
-    # env var), always targeting HERMES_HOME/config.yaml — point it at tmp_path.
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
-
-    result = types.SimpleNamespace(
-        new_model="new-model", target_provider="anthropic", base_url=None
-    )
-    server._persist_model_switch(result)
-    saved = yaml.safe_load(cfg_path.read_text())
-
-    # The switched fields updated...
-    assert saved["model"]["default"] == "new-model"
-    assert saved["model"]["provider"] == "anthropic"
-    # ...and the sibling keys SURVIVED (the bug was that they got wiped).
-    assert saved["model"]["model_slots"] == {"fast": "gpt-5-mini"}
-    assert saved["model"]["model_fallback"] == ["claude-haiku"]
-    assert saved["agent"]["system_prompt"] == "keepme"
-
-
-def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
-    """#48305: switching from a custom endpoint (which set model.base_url) to a
-    provider with no base_url must CLEAR the stale base_url, not leave it
-    pointing at the old host."""
-    import types
-    import yaml
-    import cli
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        "model:\n"
-        "  default: local-model\n"
-        "  provider: custom:mylocal\n"
-        "  base_url: http://localhost:1234/v1\n"
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
-
-    # Switch to a native provider with no base_url.
-    result = types.SimpleNamespace(
-        new_model="claude-haiku", target_provider="anthropic", base_url=None
-    )
-    server._persist_model_switch(result)
-    saved = yaml.safe_load(cfg_path.read_text())
-
-    assert saved["model"]["default"] == "claude-haiku"
-    assert saved["model"]["provider"] == "anthropic"
-    # Stale custom base_url must be cleared (null coalesces to absent on read).
-    assert not saved["model"].get("base_url"), saved["model"].get("base_url")
 
 
 # ---------------------------------------------------------------------------

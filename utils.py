@@ -388,6 +388,8 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
 
     Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
     single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
+    ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
+    litters the file and diverges from whole-document writers that drop the key).
     """
     from ruamel.yaml.comments import CommentedMap
     # Honor escaped dots and prefer existing literal dotted keys (model IDs like ``glm-5.3``) over
@@ -406,10 +408,15 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
         remaining = keys[i:]
         seg, consumed = _greedy_literal_match(dict(current), remaining) or (remaining[0], 1)
         if i + consumed == len(keys):
-            current[seg] = value
+            if value is None:
+                current.pop(seg, None)
+            else:
+                current[seg] = value
             break
         next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
+            if value is None:
+                return  # nothing to remove under a missing/scalar parent
             next_value = CommentedMap()
             current[seg] = next_value
         current = next_value

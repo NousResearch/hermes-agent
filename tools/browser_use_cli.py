@@ -179,7 +179,21 @@ def _read_browser_cfg() -> dict:
 
 
 def _use_gateway(browser_cfg: dict) -> bool:
-    return is_truthy_value(browser_cfg.get("use_gateway"), default=False)
+    """True when the browser category runs through the Nous-managed gateway.
+
+    Two config shapes mean the same thing: the picker's ``browser.cloud_provider: nous`` and the
+    legacy ``browser.use_gateway: true``. Reading only the legacy flag stranded every managed user,
+    because (re)selecting the Browser Automation row strips ``use_gateway``
+    (``_write_provider_config``): :func:`_resolve_backend_cdp` then read a managed pick as a DIRECT
+    Browser Use config, exported no CDP, and the harness tried to reach Browser Use cloud natively
+    with no credential of its own -- "daemon default didn't come up" on every call. See #93865.
+    """
+    if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
+        return True
+    # Lazy: tool_backend_helpers pulls the Nous stack that direct-key users never need.
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, normalize_browser_cloud_provider
+
+    return normalize_browser_cloud_provider(browser_cfg.get("cloud_provider")) == NOUS_MANAGED_PROVIDER
 
 
 def get_browser_backend() -> str:

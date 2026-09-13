@@ -1309,7 +1309,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     may still be stale; otherwise clears the marker.
     """
     from hermes_cli.update_cmd import (
-        _finish_dashboard_update_cleanup, _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
+        _finish_dashboard_update_cleanup, _m, _record_update_step, _surviving_pre_update_serve_runtimes,
+        _verify_state_dbs_after_restart, _warn_stale_serve_runtimes,
     )
     with _best_effort('Legacy unit check during update failed: %s'):
         _print_legacy_units_warning()
@@ -1357,9 +1358,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
-        if print_fleet_version_matrix(_fleet_snapshot):
-            restart.incomplete = True
-        elif not _fleet_snapshot and _fleet_rows_expected:
+        if not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).
             print(
@@ -1403,6 +1402,25 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 import hermes_cli.update_receipt as _ur
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+
+    # The pre-restart maintenance check cannot see damage created or surfaced by the
+    # drain→restart handoff. Re-open every profile store only after replacement runtimes have
+    # published their version state, then fold the durable verdict into the same fleet matrix.
+    _state_integrity = _verify_state_dbs_after_restart()
+    _integrity_by_profile = {result["profile"]: result for result in _state_integrity}
+    for row in _fleet_snapshot:
+        result = _integrity_by_profile.get(row.get("profile"))
+        if result is not None:
+            row["state_db_integrity"] = result["status"]
+    if any(result["status"] == "failed" for result in _state_integrity):
+        restart.incomplete = True
+    _record_update_step(
+        "post_restart_state_db_integrity",
+        not any(result["status"] == "failed" for result in _state_integrity),
+        ", ".join(f"{result['profile']}={result['status']}" for result in _state_integrity),
+    )
+    if print_fleet_version_matrix(_fleet_snapshot):
+        restart.incomplete = True
 
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt

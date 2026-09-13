@@ -108,7 +108,7 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
     _run_post_update_maintenance, _run_pre_update_backup, _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
-    _verify_and_restore_state_dbs_post_update)
+    _verify_and_restore_state_dbs_post_update, _verify_state_dbs_after_restart)
 logger = logging.getLogger(__name__)
 
 

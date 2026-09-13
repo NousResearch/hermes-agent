@@ -8,8 +8,10 @@ test patches on ``update_cmd`` stay effective).
 import importlib
 import logging
 from contextlib import suppress
+from datetime import datetime, timezone
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time as _time
@@ -546,6 +548,92 @@ def _verify_and_restore_state_dbs_post_update() -> None:
         from hermes_cli.backup import _sibling_profile_homes
         for name, profile_home in _sibling_profile_homes(home):
             _verify_and_restore_one_state_db(profile_home, label=f"profile {name}")
+
+
+def _persist_post_restart_integrity(home: Path, result: dict) -> None:
+    """Merge an updater-owned integrity verdict into an existing runtime status file.
+
+    The gateway status writer preserves unknown top-level fields, so subsequent heartbeats retain
+    this observation.  Do not create a status file for a stopped profile: container boot treats
+    that file as lifecycle state.
+    """
+    state_path = home / "gateway_state.json"
+    if not state_path.is_file():
+        return
+    from gateway.status import read_runtime_status
+    from utils import atomic_json_write
+
+    payload = read_runtime_status(state_path)
+    if not isinstance(payload, dict):
+        return
+    payload["state_db_integrity"] = {
+        "status": result["status"],
+        "detail": result["detail"],
+        "checked_at": result["checked_at"],
+        "source": "post_update_restart",
+    }
+    atomic_json_write(state_path, payload, indent=None, separators=(",", ":"))
+
+
+def _check_state_db_after_restart(profile: str, home: Path) -> dict:
+    """Run a full integrity walk through a fresh read-only connection after fleet restart."""
+    checked_at = datetime.now(timezone.utc).isoformat()
+    state_path = home / "state.db"
+    if not state_path.exists():
+        result = {"profile": profile, "status": "absent", "detail": "state.db absent", "checked_at": checked_at}
+    else:
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True, timeout=5.0)
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+            problems = [str(row[0]) for row in rows if row and str(row[0]).strip().lower() != "ok"]
+            if problems:
+                result = {
+                    "profile": profile,
+                    "status": "failed",
+                    "detail": "; ".join(problems[:3]),
+                    "checked_at": checked_at,
+                }
+            else:
+                result = {"profile": profile, "status": "ok", "detail": "ok", "checked_at": checked_at}
+        except (OSError, sqlite3.Error) as exc:
+            result = {
+                "profile": profile,
+                "status": "failed",
+                "detail": f"integrity_check failed: {exc}",
+                "checked_at": checked_at,
+            }
+        finally:
+            if conn is not None:
+                conn.close()
+    try:
+        _persist_post_restart_integrity(home, result)
+    except Exception as exc:
+        logger.debug("Could not persist post-restart state.db integrity (%s): %s", profile, exc)
+    return result
+
+
+def _verify_state_dbs_after_restart() -> list[dict]:
+    """Verify root and named-profile stores after the replacement gateways have started.
+
+    A failure is reported, persisted, and left untouched.  The replacement gateway may already
+    hold the database, so moving/restoring it here would risk a checkpoint into the new inode;
+    the fleet verifier instead fails the update and directs the operator to stop the gateway
+    before restoring the pre-update snapshot.
+    """
+    from hermes_cli.update_receipt import _profile_homes, record_state_db_integrity
+
+    results = [_check_state_db_after_restart(profile, home) for profile, home in _profile_homes()]
+    record_state_db_integrity(results)
+    failures = [result for result in results if result["status"] == "failed"]
+    if failures:
+        print()
+        print("⚠ Post-restart state.db integrity verification FAILED:")
+        for result in failures:
+            print(f"  ✗ {result['profile']}: {result['detail']}")
+        print("  Corrupt stores were left untouched to preserve their WAL. Stop the affected")
+        print("  gateway, then inspect or restore with `hermes snapshot list` / `hermes snapshot restore <id>`.")
+    return results
 
 
 def _print_bundled_skills_sync_report() -> None:

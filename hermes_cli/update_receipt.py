@@ -60,7 +60,7 @@ class UpdateReceipt:
             "argv": list(sys.argv), "pid": os.getpid(),
             "outcome": "running",  # running | success | partial | failed
             "pre_update": _code_identity(), "post_update": {},
-            "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
+            "steps": [], "skips": [], "gateway_restart": {}, "fleet": [], "state_db_integrity": [],
         }
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
@@ -68,6 +68,12 @@ class UpdateReceipt:
 
     def skip(self, name: str, reason: str) -> None:
         self.data["skips"].append({"name": name, "reason": reason, "at": _utc_now_iso()})
+
+    def state_db_integrity(self, results: list[dict[str, Any]]) -> None:
+        self.data["state_db_integrity"] = [
+            {key: result.get(key) for key in ("profile", "status", "detail", "checked_at")}
+            for result in results
+        ]
 
     def gateway_restart_result(
         self, *, restarted_services: list | None = None, relaunched_profiles: list | None = None,
@@ -149,6 +155,11 @@ def record_step(name: str, ok: bool, detail: str = "") -> None:
 def record_skip(name: str, reason: str) -> None:
     """Record a skipped step WITH the reason it was skipped."""
     _record("skip", f"update skip {name}", name, reason)
+
+
+def record_state_db_integrity(results: list[dict[str, Any]]) -> None:
+    """Persist post-restart state.db integrity results in the active receipt."""
+    _record("state_db_integrity", "state.db integrity results", results)
 
 
 def record_gateway_restart(**kwargs: Any) -> None:
@@ -362,6 +373,8 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
         print(_FLEET_ROW_LINES.get(entry.get("state"), _FLEET_ROW_UNKNOWN).format(
             profile=entry.get("profile"), pid=entry.get("pid"), short=sha[:8] if isinstance(sha, str) and sha else "?",
         ))
+        if entry.get("state_db_integrity"):
+            print(f"      state.db integrity: {entry['state_db_integrity']}")
     any_stale, any_down = "stale" in states, "down" in states
     if any_stale or any_down:
         print()

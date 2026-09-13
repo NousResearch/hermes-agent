@@ -30,6 +30,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
@@ -265,18 +266,11 @@ class SignalAdapter(BasePlatformAdapter):
             await self.client.aclose()
             self.client = None
 
-    @staticmethod
-    async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-        if task:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
         self._running = False
         for task in (self._sse_task, self._health_monitor_task):
-            await self._cancel_task(task)
+            await cancel_task(task)
         for task in self._typing_tasks.values():
             task.cancel()
         self._typing_tasks.clear()
@@ -914,7 +908,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _stop_typing_indicator(self, chat_id: str) -> None:
         """Stop a typing indicator loop for a chat."""
-        await self._cancel_task(self._typing_tasks.pop(chat_id, None))
+        await cancel_task(self._typing_tasks.pop(chat_id, None))
         # Explicit stop-typing RPC so the recipient drops the indicator now instead of after
         # Signal's ~5s timeout. Best-effort: failures must not prevent the backoff cleanup below.
         with suppress(Exception):

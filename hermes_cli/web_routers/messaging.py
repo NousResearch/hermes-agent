@@ -885,7 +885,22 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             "env_keys=%s cleared_keys=%s",
             platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env),
         )
-        return {"ok": True, "platform": platform_id}
+        # A live multiplexer serving this named profile builds the adapter from the new token now
+        # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.
+        hot_served = await asyncio.to_thread(_notify_multiplexer_hot_serve, target_profile)
+        return {"ok": True, "platform": platform_id, "hot_served": hot_served}
+
+
+def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
+    """True when a live multiplexer serves the written profile and was told to rebuild its adapters.
+    Unscoped (no ``?profile=``) means THIS process's profile: Desktop routes a pooled
+    ``hermes --profile X serve`` without the query (#109088), so X must resolve here too."""
+    from hermes_cli.gateway import _current_profile_name, named_profile_served_by_running_multiplexer
+    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    name = (profile or "").strip() or _current_profile_name()
+    if not name or name == "default" or not named_profile_served_by_running_multiplexer(name):
+        return False
+    return notify_multiplexer_profiles_changed(name) is not None
 
 
 @router.post("/api/messaging/platforms/{platform_id}/test")

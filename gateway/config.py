@@ -249,6 +249,8 @@ PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
 # Port-binders whose /p/<profile>/ surface is a MIRROR served by the default's own adapter; a secondary
 # never gets an instance of these (api_server: /p/<profile>/v1/..., webhook: profile-bound routes).
 SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+# Path a client appends to ``<default listener>/p/<profile>`` to reach each mirror.
+SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
@@ -383,12 +385,22 @@ class PlatformConfig:
             result["channel_overrides"] = {cid: ov.to_dict() for cid, ov in self.channel_overrides.items()}
         return result
 
+    # Keys consumed by typed fields; everything else at the top of a platform block is adapter
+    # config and belongs in ``extra`` (see from_dict).
+    _TYPED_KEYS = frozenset({
+        "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text",
+    })
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
-        # The typing/restart-notification keys may be top-level or bridged into ``extra``; top-level wins.
-        extra = _coerce_dict(data.get("extra", {}))
+        # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
+        # write them where the docs and ``hermes config set platforms.webhook.port`` put them:
+        # directly under the platform block. Promote every non-typed top-level key so neither
+        # spelling is silently dropped (#10206); an explicit ``extra:`` value wins on a clash.
+        extra = {**{k: v for k, v in data.items() if k not in cls._TYPED_KEYS}, **_coerce_dict(data.get("extra", {}))}
 
         def toplevel_or_extra(key: str) -> Any:
             value = data.get(key)

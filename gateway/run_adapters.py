@@ -873,6 +873,7 @@ class GatewayAdapterLifecycleMixin:
             from gateway.status import write_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
+            self._note_served_profiles(profile_homes)
             for name in served:
                 if name and name not in self.pairing_stores:
                     self.pairing_stores[name] = (
@@ -886,7 +887,7 @@ class GatewayAdapterLifecycleMixin:
         default profile owns the single shared listener and a secondary's port-binders are built in
         shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
         from gateway.run import (
-            MultiplexConfigError, _load_gateway_runtime_config,
+            MultiplexConfigError, _load_gateway_config,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
@@ -894,7 +895,7 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_runtime_cfg = _load_gateway_runtime_config()
+            profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
             # This profile's `hooks:` block: start() registered before any profile scope existed.
@@ -955,6 +956,11 @@ class GatewayAdapterLifecycleMixin:
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
+                continue
+            # Runtime re-scan of a served profile (config/.env changed): only platforms that are not
+            # already live or queued for reconnect are built — never a second poller on the same bot.
+            if platform in profile_map or platform in (
+                    (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}):
                 continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
             if multiplex and not _platform_has_bot_credential(platform, platform_config):

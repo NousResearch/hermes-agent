@@ -57,7 +57,7 @@ providers:
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 EOF
   printf 'MOCK_API_KEY=e2e-mock-key\n' >> "$HERMES_HOME/.env"
   ok "provider 'mock' configured in $HERMES_HOME (api $url/v1)"

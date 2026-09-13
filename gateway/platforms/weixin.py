@@ -28,7 +28,8 @@ except ImportError:  # pragma: no cover - dependency gate
 CRYPTO_AVAILABLE = Cipher is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -36,30 +37,12 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
-from agent.secret_scope import UnscopedSecretError, get_secret
-
-
-def _wx_secret(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Scope-aware WEIXIN_* read. Secondary profiles run scoped: a miss returns ``default``
-    (never borrow ``os.environ``). The DEFAULT profile runs *unscoped* under multiplexing,
-    where ``get_secret`` raises; there ``os.environ`` is its own value, so fall back.
-
-    Same pattern as the Slack ``SLACK_APP_TOKEN`` read (#59739) and WhatsApp's ``_get_wsecret``.
-    """
-    try:
-        return get_secret(name, default)
-    except UnscopedSecretError:
-        return os.getenv(name, default)
+from gateway.platforms._shared import extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
 
 
 def _extra_or_secret(extra: Dict[str, Any], key: str, default: str = "") -> str:
-    """``config.extra[key]`` first, else the scoped secret ``WEIXIN_<KEY>``; stripped."""
-    return str(extra.get(key) or _wx_secret(f"WEIXIN_{key.upper()}", default)).strip()
-
-
-def _extra_or_env(extra: Dict[str, Any], key: str, default: str) -> Any:
-    """``config.extra[key]`` first, else plain ``os.getenv("WEIXIN_<KEY>", default)`` (non-secret tunables)."""
-    return extra.get(key) or os.getenv(f"WEIXIN_{key.upper()}", default)
+    """``config.extra[key]`` first, else the scoped ``WEIXIN_<KEY>``; stripped."""
+    return str(_extra_or_env(extra, key, f"WEIXIN_{key.upper()}", default)).strip()
 
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -691,7 +674,8 @@ _OUTBOUND_BY_EXT: Tuple[Tuple[frozenset, str, str], ...] = (
 _DIRECT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
-class WeixinAdapter(BasePlatformAdapter):
+class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
+    ALLOW_ALL_ENV_PREFIX = "WEIXIN"
     supports_code_blocks = True  # Weixin renders fenced code blocks
     splits_long_messages = True  # send() chunks via _split_text()
     MAX_MESSAGE_LENGTH = 2000
@@ -712,13 +696,13 @@ class WeixinAdapter(BasePlatformAdapter):
         self._base_url = _extra_or_secret(extra, "base_url", ILINK_BASE_URL).rstrip("/")
         self._cdn_base_url = _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL).rstrip("/")
         # Tunables: ``extra.<key>`` else env ``WEIXIN_<KEY>`` (e.g. WEIXIN_SEND_CHUNK_RETRIES).
-        self._send_chunk_delay_seconds = float(_extra_or_env(extra, "send_chunk_delay_seconds", "1.5"))
-        self._send_chunk_retries = int(_extra_or_env(extra, "send_chunk_retries", "4"))
-        self._send_chunk_retry_delay_seconds = float(_extra_or_env(extra, "send_chunk_retry_delay_seconds", "1.0"))
+        self._send_chunk_delay_seconds = float(_extra_or_secret(extra, "send_chunk_delay_seconds", "1.5"))
+        self._send_chunk_retries = int(_extra_or_secret(extra, "send_chunk_retries", "4"))
+        self._send_chunk_retry_delay_seconds = float(_extra_or_secret(extra, "send_chunk_retry_delay_seconds", "1.0"))
         self._send_text_gate = asyncio.Lock()
-        self._rate_limit_circuit_threshold = max(1, int(_extra_or_env(extra, "rate_limit_circuit_threshold", "1")))
-        self._rate_limit_circuit_window_seconds = float(_extra_or_env(extra, "rate_limit_circuit_window_seconds", "30.0"))
-        self._rate_limit_circuit_open_seconds = float(_extra_or_env(extra, "rate_limit_circuit_open_seconds", "30.0"))
+        self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "1")))
+        self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
+        self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
@@ -731,8 +715,6 @@ class WeixinAdapter(BasePlatformAdapter):
         # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
         self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
@@ -797,10 +779,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 task.cancel()
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._poll_task
+        await cancel_task(self._poll_task)
         self._poll_task = None
         for attr in ("_poll_session", "_send_session"):
             session = getattr(self, attr)
@@ -895,7 +874,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
-            if self._group_policy in {"disabled", "pairing"} or (self._group_policy == "allowlist" and effective_chat_id not in self._group_allow_from):
+            if not self._is_group_allowed(effective_chat_id):
                 return
         elif not self._is_dm_intake_allowed(sender_id):
             return
@@ -921,44 +900,11 @@ class WeixinAdapter(BasePlatformAdapter):
         else:
             await self.handle_message(event)
 
-    def _open_dm_opted_in(self) -> bool:
-        # Scoped reads: the default profile's allow-all flag must not leak into a multiplexed secondary profile's gate.
-        return any((_wx_secret(name, "") or "").lower() in {"true", "1", "yes"} for name in ("GATEWAY_ALLOW_ALL_USERS", "WEIXIN_ALLOW_ALL_USERS"))
-
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        """Like ``_is_dm_allowed`` but ``pairing`` admits everyone at intake (pairing gate runs later)."""
-        return self._dm_policy == "pairing" or self._is_dm_allowed(sender_id)
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """Weixin gates DM/group access at intake via dm_policy/group_policy."""
-        return True
-
     def _text_batch_key(self, event: MessageEvent) -> str:
         from gateway.session import build_session_key
         return build_session_key(
             event.source, group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False), profile=event.source.profile)
-
-    async def _flush_text_batch(self, key: str) -> None:
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            split = (getattr(pending, "_last_chunk_len", 0) if pending else 0) >= self._SPLIT_THRESHOLD
-            await asyncio.sleep(self._text_batch_split_delay_seconds if split else self._text_batch_delay_seconds)
-            if self._pending_text_batch_tasks.get(key) is not current_task:
-                return
-            event = self._pending_text_batches.pop(key, None)
-            if event:
-                await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))

@@ -8,6 +8,27 @@ from gateway.config import PlatformConfig
 
 class TestMatrixExecApprovalReactions:
 
+    @pytest.mark.asyncio
+    async def test_disconnected_prompt_attests_no_delivery_attempt(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={"homeserver": "https://matrix.example.org"},
+            )
+        )
+
+        result = await adapter.send_exec_approval(
+            chat_id="!room:example.org",
+            command="echo test",
+            session_key="session-1",
+        )
+
+        assert result.success is False
+        assert result.delivery_attempted is False
+
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):

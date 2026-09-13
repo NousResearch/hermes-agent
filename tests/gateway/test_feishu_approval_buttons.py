@@ -88,6 +88,19 @@ class TestFeishuExecApproval:
     """Test send_exec_approval sends an interactive card."""
 
     @pytest.mark.asyncio
+    async def test_disconnected_prompt_attests_no_delivery_attempt(self):
+        adapter = FeishuAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter.send_exec_approval(
+            chat_id="oc_12345",
+            command="echo test",
+            session_key="session-1",
+        )
+
+        assert result.success is False
+        assert result.delivery_attempted is False
+
+    @pytest.mark.asyncio
     async def test_sends_interactive_card(self):
         adapter = _make_adapter()
 

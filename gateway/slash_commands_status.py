@@ -16,6 +16,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
+from hermes_cli.status_report import build_status_fields
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -236,17 +237,21 @@ class GatewayStatusCommandsMixin:
             status_agent, persisted_route, session_row, session_entry
         )
 
-        stamp = "%Y-%m-%d %H:%M"
+        fields = build_status_fields(
+            session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,
+            created=session_entry.created_at, last_activity=session_entry.updated_at,
+            tokens=db_total_tokens, agent_running=is_running,
+        )
         lines = [t("gateway.status.header"), "",
-                 t("gateway.status.session_id", session_id=session_entry.session_id)]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines += [t("gateway.status.created", timestamp=session_entry.created_at.strftime(stamp)),
-                  t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime(stamp))]
-        if model_name and provider_name:
-            lines.append(t("gateway.status.model_provider", model=model_name, provider=provider_name))
-        elif model_name:
-            lines.append(t("gateway.status.model", model=model_name))
+                 t("gateway.status.session_id", session_id=fields["session_id"])]
+        if fields["title"]:
+            lines.append(t("gateway.status.title", title=fields["title"]))
+        lines += [t("gateway.status.created", timestamp=fields["created"]),
+                  t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        if fields["model"] and fields["provider"]:
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+        elif fields["model"]:
+            lines.append(t("gateway.status.model", model=fields["model"]))
         try:
             from hermes_cli.auth import resolve_provider
             from hermes_cli.anon_auth import guest_carries_inference
@@ -266,8 +271,8 @@ class GatewayStatusCommandsMixin:
                            pct=f"{mark}{pct}"))
         elif context_used:
             lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
-        state = t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")
-        lines += [t("gateway.status.tokens", tokens=_fmt(db_total_tokens)),
+        state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
+        lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
                   t("gateway.status.agent_running", state=state)]
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))

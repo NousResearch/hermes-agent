@@ -159,7 +159,10 @@ _PREFIX_PATTERNS = [
     r"pypi-[A-Za-z0-9_-]{10,}",         # PyPI API token
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
-    r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
+    # AgentMail API key: ``am_`` / ``am_org_`` + an opaque alphanumeric body. The body has no ``_``/``-``,
+    # which is what separates it from ``am_example_identifier_123`` (#10983); public docs pin only the
+    # prefix, so the charset stays broad and the length floor does the discriminating.
+    r"am_(?:org_)?[A-Za-z0-9]{20,}",
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
@@ -792,6 +795,28 @@ def is_env_dump_command(command: str | None) -> bool:
         if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
             return True
     return False
+
+
+REDACTION_UNAVAILABLE = "[redaction-unavailable]"
+# The opaque branch needs a 20-char floor (the floor the gateway/A2A sweeps always had): without it the
+# English word "bearer" turns "the bearer of bad news" into "Bearer [redacted] bad news" on every chat
+# reply. The bracket branch folds an already-masked residue ("Bearer [redacted-jwt]") to one marker.
+_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)", re.IGNORECASE)
+
+
+def redact_for_egress(text: str) -> str:
+    """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
+    telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
+    sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
+    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    text = str(text or "")
+    try:
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        return REDACTION_UNAVAILABLE
+    if "earer" in text:
+        text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
+    return text
 
 
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:

@@ -47,24 +47,11 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
 
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
-    """KEY names assigned in a dotenv file (including empty ``KEY=``). A fast line scanner (works in early
-    bootstrap without python-dotenv); decode errors fall back to latin-1 like ``_load_dotenv_with_fallback``."""
-    keys: set[str] = set()
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        try:
-            text = path.read_text(encoding="latin-1", errors="replace")
-        except Exception:
-            return keys
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key = line.removeprefix("export ").split("=", 1)[0].strip()
-        if key:
-            keys.add(key)
-    return keys
+    """KEY names assigned in a dotenv file (including empty ``KEY=``), via the same tokenizer that installs
+    profile scopes — a key the installer sees is a key the dashboard scrub sees (BOM'd first line included)."""
+    from agent.secret_scope import load_env_file
+
+    return set(load_env_file(path))
 
 
 def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
@@ -332,7 +319,10 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    # Process home on purpose (never the per-turn override): a startup .env load must not follow a routed
+    # profile — see the multiplex guard below.
+    from hermes_constants import get_process_hermes_home
+    home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
     # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped

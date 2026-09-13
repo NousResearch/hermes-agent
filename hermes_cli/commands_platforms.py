@@ -32,9 +32,14 @@ def _requires_argument(args_hint: str) -> bool:
 
 
 def _sanitize_telegram_name(raw: str) -> str:
-    """Telegram allows only ``[a-z0-9_]``: lowercase, hyphens -> ``_``, strip the rest,
-    collapse/strip ``_``."""
-    name = _TG_INVALID_CHARS.sub("", raw.lower().replace("-", "_"))
+    """Telegram allows only ``[a-z0-9_]``: lowercase, hyphens -> ``_``, collapse/strip ``_``.
+    A name that would lose letters (``中文helper`` -> ``helper``) is omitted (``""``): the menu
+    entry could not resolve back to the registered ``/中文helper`` and would answer
+    "Unknown command"."""
+    lowered = raw.lower().replace("-", "_")
+    name = _TG_INVALID_CHARS.sub("", lowered)
+    if any(ch.isalnum() for ch in _TG_INVALID_CHARS.findall(lowered)):
+        return ""
     return _TG_MULTI_UNDERSCORE.sub("_", name).strip("_")
 
 

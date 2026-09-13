@@ -1,4 +1,11 @@
-import { type GatewayEvent, isGatewayReauthRequired, isGatewayWebSocketUrl, JsonRpcGatewayError, reconnectBackoffDelayMs, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  type GatewayEvent,
+  isGatewayReauthRequired,
+  isGatewayWebSocketUrl,
+  JsonRpcGatewayError,
+  reconnectBackoffDelayMs,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'

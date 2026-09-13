@@ -171,6 +171,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
     if (hotServed) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+
       return
     }
 

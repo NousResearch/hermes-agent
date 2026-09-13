@@ -228,3 +228,76 @@ def test_safe_pop_relay_scope_tolerates_the_native_not_found_error_when_the_prob
     """An uninspectable stack must not turn a native "not found" back into a raise."""
     relay = _make_relay(_NATIVE_NOT_FOUND, stack_raises=AttributeError("opaque stack"))
     assert relay_runtime.safe_pop_relay_scope(relay, handle="h-x") is None
+
+
+# ---- end-to-end against the pinned native binding -------------------------
+#
+# The message-level cases above model what the binding says; this one drives the binding itself,
+# because modelling it wrongly is exactly how the original helper shipped broken. The fixture
+# mirrors the one in `tests/hermes_cli/test_relay_shared_metrics_runtime.py`.
+
+
+@pytest.fixture
+def real_binding(tmp_path, monkeypatch):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    relay_runtime._reset_for_tests()
+    yield relay
+    relay_runtime._reset_for_tests()
+
+
+def test_safe_pop_relay_scope_tolerates_a_real_already_popped_handle(real_binding):
+    """push -> pop -> safe-pop the same handle must not raise.
+
+    The observed native messages, both reproduced against the pinned binding:
+
+        already popped  -> RuntimeError: not found: scope handle not found
+        live but buried -> RuntimeError: invalid argument: scope handle is not at the top of the stack
+
+    Before the fix the tolerant helper recognised only the second, so it re-raised the first —
+    the very case it exists to tolerate.
+    """
+    runtime = relay_runtime.get_runtime()
+    session = runtime.ensure_session({"session_id": "native-already-popped"})
+    handle = runtime.run_in_session(
+        session,
+        real_binding.scope.push,
+        "native-already-popped",
+        real_binding.ScopeType.Function,
+        handle=session.handle,
+    )
+    runtime.run_in_session(session, real_binding.scope.pop, handle)
+
+    # The strict helper keeps the native error so `_pop_with_drain` still gets its signal.
+    with pytest.raises(RuntimeError, match="scope handle not found"):
+        runtime.run_in_session(session, relay_runtime.pop_relay_scope, real_binding, handle)
+
+    # The tolerant helper treats the native "not found" as a completed pop.
+    assert runtime.run_in_session(
+        session, relay_runtime.safe_pop_relay_scope, real_binding, handle
+    ) is None
+
+
+def test_safe_pop_relay_scope_still_reraises_a_real_buried_handle(real_binding):
+    """A live-but-buried handle must keep failing closed, on the real binding too."""
+    runtime = relay_runtime.get_runtime()
+    session = runtime.ensure_session({"session_id": "native-buried"})
+    buried = runtime.run_in_session(
+        session, real_binding.scope.push, "native-buried",
+        real_binding.ScopeType.Function, handle=session.handle,
+    )
+    above = runtime.run_in_session(
+        session, real_binding.scope.push, "native-nested",
+        real_binding.ScopeType.Function, handle=session.handle,
+    )
+    try:
+        # `not at the top` is generic: it also fires when our handle is still live beneath a
+        # nested scope, so tolerance must not swallow it here.
+        with pytest.raises(RuntimeError, match="not at the top of the stack"):
+            runtime.run_in_session(
+                session, relay_runtime.safe_pop_relay_scope, real_binding, buried
+            )
+    finally:
+        runtime.run_in_session(session, real_binding.scope.pop, above)

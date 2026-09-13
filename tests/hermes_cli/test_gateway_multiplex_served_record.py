@@ -52,6 +52,58 @@ def test_probe_falls_back_to_config_only_without_recorded_key(served_root):
     assert named_profile_served_by_running_multiplexer("coder") is True
 
 
+def test_probe_survives_a_missing_default_pid_file(served_root, monkeypatch):
+    """A launch-service-managed multiplexer can be live with no ``gateway.pid``: a replace/cleanup path
+    unlinks it while the process keeps serving. Keying liveness off that file alone made every surface
+    (``hermes -p X status``, ``cron list``, the dashboard ladder) say "not running" about the gateway
+    that was in fact serving the profile."""
+    import gateway.status as status
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    (served_root / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(served_root), "gateway_state": "running",
+        "served_profiles": ["default", "coder"]}))
+    (served_root / "gateway.pid").unlink()
+    # The PID is this test process, so the record's identity check has to see a gateway command line:
+    # without it the fallback correctly refuses (see the recycled-PID test below).
+    monkeypatch.setattr(
+        status, "_read_process_cmdline", lambda pid: "python -m hermes_cli.main gateway run --replace"
+    )
+    assert live_default_gateway_pid() == os.getpid()
+    assert named_profile_served_by_running_multiplexer("coder") is True
+
+
+@pytest.mark.parametrize(
+    ("gateway_state", "pid_alive"), [("running", False), ("stopped", True), ("startup_failed", True)]
+)
+def test_missing_pid_file_still_never_reports_a_dead_gateway(
+    served_root, monkeypatch, gateway_state, pid_alive
+):
+    """Fail closed: the runtime fallback must not resurrect a dead PID or a stopped/failed record."""
+    import gateway.status as status
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    (served_root / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(served_root), "gateway_state": gateway_state,
+        "served_profiles": ["default", "coder"]}))
+    (served_root / "gateway.pid").unlink()
+    if not pid_alive:
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+    assert live_default_gateway_pid() is None
+
+
+def test_missing_pid_file_ignores_a_recycled_pid(served_root, monkeypatch):
+    """A PID recycled onto a non-gateway process must not lend a stale record an identity: the live
+    command line decides, so the fallback cannot report a foreign process as the multiplexer."""
+    import gateway.status as status
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    (served_root / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(served_root), "gateway_state": "running",
+        "served_profiles": ["default", "coder"]}))
+    (served_root / "gateway.pid").unlink()
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/bin/pytest tests/")
+    assert live_default_gateway_pid() is None
+
+
 @pytest.mark.parametrize("verb", ["start", "install", "restart"])
 def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypatch, verb):
     import hermes_cli.gateway as gw

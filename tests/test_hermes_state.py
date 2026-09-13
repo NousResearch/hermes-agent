@@ -164,6 +164,42 @@ class TestConnectionLifecycle:
         finally:
             session_db.close()
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX fcntl locks")
+    def test_writable_state_db_keeps_locks_across_second_open(self, tmp_path):
+        """Opening a second SessionDB in this process must not unlink live sidecars.
+
+        POSIX locks are owned per (process, inode): closing any descriptor for
+        state.db drops every lock this process holds on it, including the locks
+        of the first SessionDB's connection. A sibling process reading the
+        database after that close takes the shared-memory DMS exclusively on its
+        own close, checkpoints, and unlinks -wal/-shm while the first handle
+        keeps using the deleted inodes.
+        """
+        import subprocess
+        import sys
+
+        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+
+        db_path = tmp_path / "state.db"
+        first = SessionDB(db_path=db_path)
+        second = SessionDB(db_path=db_path)
+        try:
+            assert not iter_deleted_sqlite_sidecar_holders(db_path)
+            subprocess.run(
+                [sys.executable, "-c",
+                 "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); "
+                 "c.execute('SELECT count(*) FROM sessions').fetchone(); c.close()",
+                 str(db_path)],
+                check=True, timeout=30,
+            )
+            assert not iter_deleted_sqlite_sidecar_holders(db_path), (
+                "a second SessionDB open or a sibling reader unlinked the live "
+                "WAL/SHM inodes out from under this process"
+            )
+        finally:
+            second.close()
+            first.close()
+
     def test_failed_writable_open_does_not_leak_tracked_connection(
         self, tmp_path, monkeypatch
     ):

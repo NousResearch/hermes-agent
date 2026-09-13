@@ -15,6 +15,7 @@ import queue
 import random
 import re
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -222,40 +223,57 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     """Create/tighten a writable state database and its sidecars to 0600.
 
     SQLite otherwise creates ``state.db``, ``-wal``, and ``-shm`` according to
-    the process umask (commonly 0644 under 0022). Use file descriptors so a
-    missing main database is private from its first byte and O_NOFOLLOW can
-    refuse a planted symlink. Read-only SessionDB attachments never call this
-    helper and remain observational.
+    the process umask (commonly 0644 under 0022). Read-only SessionDB
+    attachments never call this helper and remain observational.
+
+    Existing files are tightened with ``chmod(2)`` on the path: opening the
+    file and closing that descriptor would drop every POSIX ``fcntl`` lock the
+    process holds on its inode — including the locks of an already-open SQLite
+    connection to the same database. A lock-losing close in one process lets a
+    sibling's connection take the shared-memory DMS exclusively at its own
+    close, checkpoint, and unlink the sidecars while long-lived holders
+    (gateway, desktop ``hermes serve``) keep using the deleted inodes.
     """
     if os.name == "nt":
         return
 
-    for index, path in enumerate(
-        (
-            db_path,
-            db_path.with_name(db_path.name + "-wal"),
-            db_path.with_name(db_path.name + "-shm"),
-        )
-    ):
-        flags = os.O_RDONLY
-        if index == 0 and create_main:
-            flags = os.O_WRONLY | os.O_CREAT
+    main_path = db_path
+    if create_main:
+        flags = os.O_WRONLY | os.O_CREAT
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         if hasattr(os, "O_CLOEXEC"):
             flags |= os.O_CLOEXEC
         try:
-            fd = os.open(path, flags, 0o600)
-        except FileNotFoundError:
-            continue
+            fd = os.open(main_path, flags, 0o600)
         except IsADirectoryError:
             # Not a database file at all; sqlite3.connect() raises the
             # canonical error for this, and a directory leaks no row data.
-            continue
+            return
         try:
             os.fchmod(fd, 0o600)
         finally:
             os.close(fd)
+
+    for path in (
+        main_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        # fchmod on an fd of a pre-existing file cannot be used here: close(fd)
+        # would release this process's POSIX locks on that inode, stripping the
+        # locks of any live SQLite connection to the same database. chmod(2)
+        # never opens the file, so it leaves the lock state untouched.
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            # Refuse a planted symlink exactly like O_NOFOLLOW would.
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        os.chmod(path, 0o600)
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).

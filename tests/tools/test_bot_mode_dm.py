@@ -185,6 +185,41 @@ def test_empty_and_oversized_message_rejected(tmp_path):
     )
 
 
+def test_truncated_message_tail_rejected_before_delivery(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="researcher",
+            message="Please inspect the failing request...[truncated]",
+            agent=agent,
+        )
+    )
+
+    assert "error" in result
+    assert "truncated" in result["error"].lower()
+    assert calls == []
+
+
+def test_truncation_marker_quotation_inside_message_is_delivered(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="researcher",
+            message="The bad sample ended with ...[truncated], but this explanation is complete.",
+            agent=agent,
+        )
+    )
+
+    assert result["status"] == "sent"
+    assert len(calls) == 1
+
+
 def test_unregistered_peer_rejected(tmp_path):
     home = _managed_home(tmp_path, peers=("spark",))
     agent = _FakeAgent(home, title="Bot Chat")

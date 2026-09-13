@@ -52,11 +52,15 @@ class _RecordingHTTPXRequest:
         _RecordingHTTPXRequest.instances.append(self)
 
 
-def _make_adapter() -> TelegramAdapter:
-    return TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
-
-
-def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
+def _drive_connect(
+    monkeypatch,
+    *,
+    proxy_url,
+    fallback_ips=None,
+    extra=None,
+    resolve_calls=None,
+    discovery_calls=None,
+):
     """Run connect() far enough to build the HTTPXRequests, then abort.
 
     Returns the list of recorded _RecordingHTTPXRequest instances.
@@ -65,16 +69,24 @@ def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
 
     # No DoH auto-discovery → exercise the proxy / plain branches, not fallback.
     async def _no_fallback():
+        if discovery_calls is not None:
+            discovery_calls.append(True)
         return list(fallback_ips or [])
 
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", _no_fallback)
-    monkeypatch.setattr(
-        tg_adapter, "resolve_proxy_url", lambda *a, **k: proxy_url
-    )
+
+    def _resolve_proxy(*args, **kwargs):
+        if resolve_calls is not None:
+            resolve_calls.append((args, kwargs))
+        return proxy_url
+
+    monkeypatch.setattr(tg_adapter, "resolve_proxy_url", _resolve_proxy)
     # Replace the real HTTPXRequest with our recorder.
     monkeypatch.setattr(tg_adapter, "HTTPXRequest", _RecordingHTTPXRequest)
 
-    adapter = _make_adapter()
+    adapter = TelegramAdapter(
+        PlatformConfig(enabled=True, token="test-token", extra=extra or {})
+    )
     # Skip the cross-process token lock.
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     # Ensure the adapter reports no statically-configured fallback IPs.
@@ -188,3 +200,32 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())
+
+
+def test_custom_endpoint_skips_telegram_fallback_and_uses_scoped_proxy(monkeypatch):
+    """A Telegram-compatible API has its own DNS identity and proxy policy."""
+    resolve_calls = []
+    discovery_calls = []
+
+    instances = _drive_connect(
+        monkeypatch,
+        proxy_url=None,
+        extra={
+            "base_url": "https://tapi.bale.ai/bot",
+            "base_file_url": "https://tapi.bale.ai/bot",
+            "proxy_env_var": "BALE_PROXY",
+        },
+        resolve_calls=resolve_calls,
+        discovery_calls=discovery_calls,
+    )
+
+    assert instances
+    assert discovery_calls == []
+    assert len(resolve_calls) == 1
+    args, kwargs = resolve_calls[0]
+    assert args[0] == "BALE_PROXY"
+    assert kwargs["target_hosts"] == ["tapi.bale.ai"]
+    assert all(
+        "transport" not in instance.kwargs.get("httpx_kwargs", {})
+        for instance in instances
+    )

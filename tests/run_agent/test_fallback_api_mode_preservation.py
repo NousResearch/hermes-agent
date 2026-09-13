@@ -19,9 +19,9 @@ from run_agent import AIAgent
 
 def _make_agent(fallback_model=None):
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -158,6 +158,22 @@ class TestOriginalUrlDetection:
         mock_rpc = _activate(agent, "https://api.anthropic.com", "claude-opus-4-6")
         assert agent.api_mode == "anthropic_messages"
         assert mock_rpc.call_args.kwargs["api_mode"] == "anthropic_messages"
+
+    def test_kimi_coding_hint_uses_the_messages_wire(self):
+        """api.kimi.com/coding serves Anthropic Messages only; the fallback must not POST
+        /chat/completions there (404, #77256)."""
+        fbs = [{"provider": "kimi-coding", "model": "kimi-for-coding",
+                "base_url": "https://api.kimi.com/coding/v1", "api_key": "k"}]
+        agent = _make_agent(fallback_model=fbs)
+        mock_rpc = _activate(agent, "https://api.kimi.com/coding", "kimi-for-coding")
+        assert agent.api_mode == "anthropic_messages"
+        assert mock_rpc.call_args.kwargs["api_mode"] == "anthropic_messages"
+
+    def test_kimi_lookalike_host_stays_chat_completions(self):
+        lookalike = "https://api.kimi.com.attacker.test/coding/v1"
+        agent = _make_agent(fallback_model=[{"provider": "custom", "model": "m", "base_url": lookalike, "api_key": "k"}])
+        _activate(agent, lookalike, "m")
+        assert agent.api_mode == "chat_completions"
 
 
 class TestPlainFallbackUnchanged:

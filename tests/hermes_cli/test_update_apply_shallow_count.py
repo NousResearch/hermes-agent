@@ -82,10 +82,13 @@ def test_source_matches_exercised_logic():
     """
     import inspect
 
-    src = inspect.getsource(update_cmd._cmd_update_impl)
+    src = inspect.getsource(update_cmd._prepare_checkout_for_update)
     assert "apply_is_shallow" in src
     assert "_github_compare_behind" in src
-    assert "commit count unknown on this shallow checkout" in src
+    # The "count unknown" print stays in _cmd_update_impl, which consumes the plan.
+    assert "commit count unknown on this shallow checkout" in inspect.getsource(
+        update_cmd._cmd_update_impl
+    )
 
 
 def test_full_clone_keeps_exact_count():

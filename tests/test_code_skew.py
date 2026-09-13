@@ -3,7 +3,7 @@
 Companion to ``tests/test_stale_utils_module_import.py``: that test proves the
 crash; these prove the guard that turns it into a clear "restart the gateway"
 message before a model switch can hit it.  The dashboard mirror (#86207) lives
-here too: ``web_server._dashboard_code_skew_guard`` and the
+here too: ``web_server_config._dashboard_code_skew_guard`` and the
 ``/api/model/options`` 503 guard, which protect the Models page from the same
 stale-module ImportError after ``hermes update``.
 """
@@ -14,6 +14,9 @@ import contextlib
 import pytest
 
 from gateway import code_skew
+import hermes_cli.web_routers.models as _rt_models
+import hermes_cli.web_server_config as _web_server_config
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture(autouse=True)
@@ -53,13 +56,13 @@ class TestShort:
 
 class TestModelSwitchSkewGuard:
     def test_guard_returns_none_without_skew(self, monkeypatch):
-        from gateway import slash_commands
+        from gateway import slash_commands_model as slash_commands
 
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
         assert slash_commands._model_switch_skew_guard() is None
 
     def test_guard_message_names_revs_and_restart(self, monkeypatch):
-        from gateway import slash_commands
+        from gateway import slash_commands_model as slash_commands
 
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
         msg = slash_commands._model_switch_skew_guard()
@@ -76,17 +79,31 @@ class TestDashboardCodeSkewGuard:
         from hermes_cli import web_server
 
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
-        assert web_server._dashboard_code_skew_guard() is None
+        assert _web_server_config._dashboard_code_skew_guard() is None
 
     def test_dashboard_guard_message_names_revs_and_restart(self, monkeypatch):
         from hermes_cli import web_server
 
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
-        msg = web_server._dashboard_code_skew_guard()
+        msg = _web_server_config._dashboard_code_skew_guard()
         assert msg is not None
         assert "abc1234567" in msg
         assert "def4567890" in msg
         assert "restart" in msg.lower()
+        # Browser-dashboard path: never hardcode a Linux-only unit (#97046).
+        assert "systemctl" not in msg
+
+    def test_serve_guard_message_points_at_desktop_backend(self, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+        msg = _web_server_config._dashboard_code_skew_guard()
+        assert msg is not None
+        assert "Desktop-owned backend" in msg
+        assert "systemctl" not in msg
+        assert "hermes-dashboard" not in msg
 
 
 class TestModelOptionsSkewGuard:
@@ -112,7 +129,7 @@ class TestModelOptionsSkewGuard:
         )
 
         with pytest.raises(HTTPException) as excinfo:
-            asyncio.run(web_server.get_model_options())
+            asyncio.run(_rt_models.get_model_options())
 
         assert excinfo.value.status_code == 503
         assert "restart" in str(excinfo.value.detail).lower()
@@ -127,9 +144,9 @@ class TestModelOptionsSkewGuard:
         async def _fake_run_in_threadpool(func):
             return func()
 
-        monkeypatch.setattr(web_server, "run_in_threadpool", _fake_run_in_threadpool)
+        monkeypatch.setattr(_rt_models, "run_in_threadpool", _fake_run_in_threadpool)
         monkeypatch.setattr(
-            web_server, "_profile_scope", lambda profile: contextlib.nullcontext()
+            _web_server_profiles, "_profile_scope", lambda profile: contextlib.nullcontext()
         )
         monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: {})
 
@@ -140,7 +157,7 @@ class TestModelOptionsSkewGuard:
             lambda *a, **k: payload_calls.append(1) or expected,
         )
 
-        result = asyncio.run(web_server.get_model_options())
+        result = asyncio.run(_rt_models.get_model_options())
 
         assert result == expected
         assert payload_calls == [1]

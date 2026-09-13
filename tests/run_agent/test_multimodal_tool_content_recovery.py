@@ -196,3 +196,42 @@ class TestRecoveryEndToEndClassification:
         )
         result = classify_api_error(err, provider="alibaba", model="qwen3.5-plus")
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_opencode_go_422_console_go_classifies(self):
+        """Regression test for #104731: Console Go relay HTTP 422 on list-type tool content."""
+        err = _FakeApiError(
+            status_code=422,
+            message=(
+                "Error code: 422 - {'error': {'param': 'messages.67.tool.content.str', "
+                "'type': 'invalid_request_error', 'message': 'Error from provider (Console Go): "
+                "Upstream request failed: [invalid_request_error] Input should be a valid string'}}"
+            ),
+        )
+        result = classify_api_error(err, provider="opencode-go", model="deepseek-v4-flash-vision-exp")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+
+class TestOpenCodeGoProactiveToolResultDowngrade:
+    def _multimodal_result(self, png_b64: str = "iVBORw0KGgoAAAA"):
+        return {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "detected 2 objects"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_b64}"}},
+            ],
+            "text_summary": "detected 2 objects",
+            "meta": {"png_bytes": 1024},
+        }
+
+    def test_returns_text_summary_for_opencode_go_proactively(self, monkeypatch):
+        """OpenCode Go rejects list-type tool content, so _tool_result_content_for_active_model
+        should proactively downgrade to a text summary (#104731)."""
+        agent = _make_agent(provider="opencode-go", model="deepseek-v4-flash-vision-exp")
+        agent._no_list_tool_content_models = set()
+        monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        out = agent._tool_result_content_for_active_model("vision_analyze", self._multimodal_result())
+        assert isinstance(out, str)
+        assert "data:image" not in out
+        assert "image_url" not in out
+

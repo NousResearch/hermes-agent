@@ -7,6 +7,7 @@ import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import type { DesktopMarketplaceSearchItem } from '@/global'
+import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -17,12 +18,20 @@ import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import {
+  $titlebarAppActionsSide,
+  setTitlebarAppActionsSide,
+  type TitlebarAppActionsSide
+} from '@/store/titlebar-app-actions'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
   $translucency,
   beginTranslucencyPeek,
@@ -44,6 +53,7 @@ import {
   TRANSLUCENCY_STEP,
   TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
+import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user-bubble-transparency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -51,12 +61,56 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+
 import { MODE_OPTIONS } from './constants'
+import { setNested } from './helpers'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+
+// display.resume_last_session lives in the backend config record (shared with
+// config.yaml and the cold-start restore in use-desktop-integrations), not a
+// renderer store. Saves write through the shared react-query cache so the
+// restore gate sees the new value on the next launch.
+function ResumeLastSessionSetting() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const configQuery = useHermesConfigRecord()
+  const config = configQuery.data
+  const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
+
+  const update = (on: boolean) => {
+    if (!config) {
+      return
+    }
+
+    const next = setNested(config, 'display.resume_last_session', on)
+    setHermesConfigCache(next)
+    void saveHermesConfig(next)
+      .then(result => {
+        if (!result.ok) {
+          throw new Error(t.settings.config.autosaveFailed)
+        }
+      })
+      .catch(error => {
+        setHermesConfigCache(config)
+        notifyError(error, t.settings.config.autosaveFailed)
+      })
+  }
+
+  return (
+    <ToggleRow
+      checked={checked}
+      description={a.resumeLastSessionDesc}
+      disabled={!config}
+      label={a.resumeLastSessionTitle}
+      onChange={update}
+    />
+  )
+}
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
@@ -348,13 +402,18 @@ export function AppearanceSettings() {
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
+  const userBubbleTransparency = useStore($userBubbleTransparency)
   const reactionsEnabled = useStore($reactionsEnabled)
+  const tipsEnabled = useStore($tipsEnabled)
+  const toursEnabled = useStore($toursEnabled)
+  const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
@@ -432,6 +491,11 @@ export function AppearanceSettings() {
     { id: 'always', label: a.tabStripAlways },
     { id: 'never', label: a.tabStripNever }
   ] as const satisfies readonly { id: TabStripDefault; label: string }[]
+
+  const appActionsOptions = [
+    { id: 'right', label: a.appActionsRight },
+    { id: 'left', label: a.appActionsLeft }
+  ] as const satisfies readonly { id: TitlebarAppActionsSide; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -608,6 +672,22 @@ export function AppearanceSettings() {
             title={a.tabStripTitle}
           />
 
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTitlebarAppActionsSide(id)
+                }}
+                options={appActionsOptions}
+                value={titlebarAppActionsSide}
+              />
+            }
+            description={a.appActionsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
+            title={a.appActionsTitle}
+          />
+
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
               so the row is absent there rather than offering a dead lever. */}
           {TRANSLUCENCY_SUPPORTED && (
@@ -694,6 +774,24 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
+              // Same peek as the window lever: the bubble being tuned sits
+              // behind this overlay, so the overlay ghosts while the hand is
+              // on the slider.
+              <div className="flex items-center gap-3" data-translucency-peek-scope="">
+                <TranslucencySlider
+                  label={a.userBubbleTitle}
+                  onChange={setUserBubbleTransparency}
+                  value={userBubbleTransparency}
+                />
+              </div>
+            }
+            description={a.userBubbleDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
+            title={a.userBubbleTitle}
+          />
+
+          <ListRow
+            action={
               <SegmentedControl
                 onChange={id => {
                   triggerHaptic('selection')
@@ -737,6 +835,8 @@ export function AppearanceSettings() {
             onChange={setComposerPopoutGesturesEnabled}
           />
 
+          <ResumeLastSessionSetting />
+
           <ListRow
             action={
               <SegmentedControl
@@ -753,6 +853,58 @@ export function AppearanceSettings() {
             }
             description={a.reactionsDesc}
             title={a.reactionsTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex flex-col items-end gap-1.5">
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setTipsEnabled(id === 'on')
+                  }}
+                  options={[
+                    { id: 'off', label: t.common.off },
+                    { id: 'on', label: t.common.on }
+                  ]}
+                  value={tipsEnabled ? 'on' : 'off'}
+                />
+                {/* A tip shows once (✕ or timer), so this is the only way to a
+                    second lap. It appears once there is something to bring back. */}
+                {spentTips > 0 && (
+                  <Button
+                    onClick={() => {
+                      triggerHaptic('selection')
+                      resetTips()
+                    }}
+                    size="inline"
+                    variant="text"
+                  >
+                    {a.tipsReset(spentTips)}
+                  </Button>
+                )}
+              </div>
+            }
+            description={a.tipsDesc}
+            title={a.tipsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setToursEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={toursEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.toursDesc}
+            title={a.toursTitle}
           />
 
           <ListRow

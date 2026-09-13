@@ -22,6 +22,14 @@ function writeRouterAsset(distDir, name) {
   )
 }
 
+function writeQueryClientAsset(distDir, name) {
+  fs.writeFileSync(
+    path.join(distDir, 'assets', name),
+    `throw new Error('No QueryClient set, use QueryClientProvider to set one')`,
+    'utf8',
+  )
+}
+
 test('checkDistBuilt passes when index.html + an assets JS bundle exist', () => {
   const { tempRoot, distDir } = makeDist(d => {
     fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html><div id=root></div>', 'utf8')
@@ -118,6 +126,38 @@ test('checkDistBuilt fails when the Router context invariant is in multiple JS a
     assert.match(result.error, /react-router context invariant found in multiple JS assets/)
     assert.match(result.error, /vendor-react-abc123\.js/)
     assert.match(result.error, /command-def456\.js/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('checkDistBuilt passes when the QueryClient context invariant is in one JS asset', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    writeQueryClientAsset(d, 'vendor-react-abc123.js')
+    fs.writeFileSync(path.join(d, 'assets', 'command-def456.js'), 'console.log(1)', 'utf8')
+  })
+  try {
+    assert.deepEqual(checkDistBuilt(distDir), { ok: true })
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('checkDistBuilt fails when the QueryClient context invariant is in multiple JS assets (#95560)', () => {
+  const { tempRoot, distDir } = makeDist(d => {
+    fs.writeFileSync(path.join(d, 'index.html'), '<!doctype html>', 'utf8')
+    fs.mkdirSync(path.join(d, 'assets'))
+    writeQueryClientAsset(d, 'vendor-react-abc123.js')
+    writeQueryClientAsset(d, 'session-list-density-def456.js')
+  })
+  try {
+    const result = checkDistBuilt(distDir)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /@tanstack\/react-query context invariant found in multiple JS assets/)
+    assert.match(result.error, /vendor-react-abc123\.js/)
+    assert.match(result.error, /session-list-density-def456\.js/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

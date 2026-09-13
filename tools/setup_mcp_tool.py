@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """Propose an MCP server to the user as an inline card in the desktop chat.
 
-The card (install / enable / authorize + decline) lives in the desktop
-renderer, so this tool round-trips through the gateway's blocking-prompt
-bridge — the same one ``clarify`` uses: tui_gateway emits
-``mcp.setup.request``, the renderer walks the user through the flow via the
-existing REST endpoints (catalog install, enable, OAuth), and answers with
-``mcp.setup.respond`` once the flow settles. This module is just schema + a
-thin dispatcher over the platform-injected callback.
-
-Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions — on every other surface the agent falls back to
-``hermes mcp install <name>`` in the terminal.
+The card (install / enable / authorize + decline) lives in the desktop renderer, so this
+tool round-trips through the gateway's blocking-prompt bridge (the one ``clarify`` uses):
+tui_gateway emits ``mcp.setup.request``, the renderer walks the user through the existing
+REST flows (catalog install, enable, OAuth) and answers with ``mcp.setup.respond``. Lives in
+the ``desktop_ui`` toolset, which the GUI gateway enables only for desktop-sourced sessions;
+elsewhere the agent falls back to ``hermes mcp install <name>`` in the terminal.
 """
 
 import json
@@ -22,19 +17,19 @@ from tools.registry import registry, tool_error
 _ACTIONS = ("install", "enable", "authorize")
 
 
-def setup_mcp_tool(
-    server: str = "",
-    action: str = "install",
-    reason: str = "",
-    callback: Optional[Callable] = None,
-) -> str:
+def setup_mcp_tool(server: str = "", action: str = "install", reason: str = "", callback: Optional[Callable] = None) -> str:
     """Ask the desktop GUI to run an MCP setup flow; return its JSON outcome."""
     if callback is None:
+        # Still down — the server task is reconnecting, or it has exhausted its retry budget and parked
+        # (e.g. a dead stdio subprocess). Probing here would write into a dead/absent transport and re-arm
+        # the breaker forever (#16788). Instead, ask the (always-present) server task to rebuild the
+        # transport — which respawns a dead stdio subprocess — and return a clean "reconnecting" error so
+        # the model backs off without burning iterations. The breaker resets once the fresh session
+        # initializes (_run_stdio/_run_http call _reset_server_error).
         return tool_error(
             "setup_mcp is only available in the Hermes desktop app. Use the "
             "terminal instead: `hermes mcp install <name>` for catalog entries, "
-            "`hermes mcp login <name>` for OAuth."
-        )
+            "`hermes mcp login <name>` for OAuth.")
 
     name = (server or "").strip()
     if not name:
@@ -50,19 +45,14 @@ def setup_mcp_tool(
         return tool_error(f"MCP setup flow failed: {exc}")
 
     if not raw:
-        # The renderer never answered (timeout / closed window). Distinct from
-        # an explicit decline, which arrives as {"status": "declined"}.
-        return json.dumps(
-            {
-                "status": "unanswered",
-                "server": name,
-                "note": (
-                    "The user did not respond to the setup card. Do not retry "
-                    "immediately; continue without the server or ask in chat."
-                ),
-            },
-            ensure_ascii=False,
-        )
+        # The renderer never answered (timeout / closed window). Distinct from an explicit
+        # decline, which arrives as {"status": "declined"}.
+        return json.dumps({
+            "status": "unanswered",
+            "server": name,
+            "note": ("The user did not respond to the setup card. Do not retry "
+                     "immediately; continue without the server or ask in chat."),
+        }, ensure_ascii=False)
 
     # Desktop answers with a JSON object; pass it through, else wrap the raw text.
     try:
@@ -74,45 +64,29 @@ def setup_mcp_tool(
 SETUP_MCP_SCHEMA = {
     "name": "setup_mcp",
     "description": (
-        "Propose an MCP server to the user as an inline consent card in the "
-        "Hermes desktop chat. The card lets them install a catalog entry, "
-        "re-enable a disabled server, or run an OAuth login — right there, "
-        "without opening the Capabilities tab — and blocks until they act or "
-        "decline. Use when the user asks to add/set up an MCP (e.g. \"add the "
-        "linear mcp\"), or when a task clearly needs one that is missing or "
-        "unauthorized. Never call it twice for the same server after a "
-        "decline. Returns JSON {status: installed|enabled|authorized|declined|"
-        "unanswered|error, server, detail?, tools?}. On declined/unanswered, "
-        "continue without the server. Catalog names: run `hermes mcp catalog` "
-        "in the terminal to list them."
+        "Propose an MCP server as an inline consent card (install a catalog "
+        "entry, re-enable a disabled server, or run OAuth); blocks until the "
+        "user acts. Use when they ask to add an MCP or a task clearly needs "
+        "a missing one. Never hand-edit mcp_servers config for them — always "
+        "use this tool. Never re-ask after a decline — on declined/"
+        "unanswered, continue without it. Catalog names: `hermes mcp "
+        "catalog` in the terminal."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "server": {
                 "type": "string",
-                "description": (
-                    "The server's catalog name (for install) or its name in "
-                    "mcp_servers config (for enable/authorize)."
-                ),
+                "description": "Catalog name (install) or mcp_servers config name (enable/authorize).",
             },
             "action": {
                 "type": "string",
                 "enum": ["install", "enable", "authorize"],
-                "description": (
-                    "install: add a catalog entry (prompts for any required "
-                    "keys). enable: re-enable a disabled configured server. "
-                    "authorize: run the OAuth browser flow for a configured "
-                    "server. Defaults to install."
-                ),
+                "description": "Defaults to install.",
             },
             "reason": {
                 "type": "string",
-                "description": (
-                    "One short sentence shown on the card: why this server "
-                    "helps right now (e.g. \"To read the JIRA ticket you "
-                    "linked\")."
-                ),
+                "description": "One sentence on the card: why this helps right now.",
             },
         },
         "required": ["server"],

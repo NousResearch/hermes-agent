@@ -1,3 +1,5 @@
+import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -9,6 +11,8 @@ export interface ActiveTool {
 export interface TodoItem {
   content: string
   id: string
+  /** Optional id of another item — renders this as a nested subtask. */
+  parent?: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
@@ -18,11 +22,12 @@ export interface ActivityItem {
   tone: 'error' | 'info' | 'warn'
 }
 
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
-
 export interface SubagentProgress {
   apiCalls?: number
   costUsd?: number
+  /** Batch (delegation) id — tags `[n/N]` rows so concurrent/nested fan-outs
+   *  are distinguishable. Absent on older gateways. */
+  delegationId?: string
   depth: number
   durationSeconds?: number
   filesRead?: string[]
@@ -192,6 +197,7 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  running?: boolean
   release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
@@ -203,22 +209,6 @@ export interface SessionInfo {
   version?: string
 }
 
-export interface Usage {
-  active_subagents?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
-
 export interface SudoReq {
   requestId: string
 }
@@ -226,6 +216,13 @@ export interface SudoReq {
 export interface SecretReq {
   envVar: string
   prompt: string
+  requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
   requestId: string
 }
 

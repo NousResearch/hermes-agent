@@ -15,7 +15,7 @@ Weekly reset: commitments, stalled work, next-week plan.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/weekly-review-planning` |
+| Path | `skills/productivity\weekly-review-planning` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |

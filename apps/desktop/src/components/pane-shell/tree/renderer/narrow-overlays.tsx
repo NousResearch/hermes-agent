@@ -18,6 +18,7 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { cn } from '@/lib/utils'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
+import { useWindowControlsOverlap } from '../../geometry'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
@@ -47,6 +48,12 @@ export function NarrowOverlays() {
 
   const collapsiblesRef = useRef(collapsibles)
   collapsiblesRef.current = collapsibles
+
+  // The overlay starts at the viewport's top edge (inset-y-0 below), so its
+  // tab strip sits under the native window controls on macOS. Reserve their
+  // rect the same way a docked zone does (see TreeGroup's wcOverlap).
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const wcOverlap = useWindowControlsOverlap(overlayRef, reveal !== null)
 
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
@@ -158,11 +165,25 @@ export function NarrowOverlays() {
           // panes beneath it — a see-through overlay reads as text bleeding
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
+          data-narrow-overlay={revealed.id}
           onMouseLeave={() => setReveal(current => (current?.pinned ? current : null))}
+          ref={overlayRef}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
-          style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
+          // paddingTop keeps the tab strip below the native window controls
+          // (macOS traffic lights); the spacer above keeps that band draggable.
+          style={{
+            paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined,
+            width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)`
+          }}
         >
+          {wcOverlap && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute z-10 [-webkit-app-region:drag]"
+              style={{ height: wcOverlap.height, left: wcOverlap.x, top: wcOverlap.y, width: wcOverlap.width }}
+            />
+          )}
           {/* Zone-mates share the overlay through the zone's own tab strip
               (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
           {zonePanes.length > 1 && (

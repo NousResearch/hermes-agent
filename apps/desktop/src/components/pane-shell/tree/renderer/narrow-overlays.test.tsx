@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
+import { $connection } from '@/store/session'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
@@ -50,6 +51,9 @@ afterEach(() => {
   cleanup()
   $narrowViewport.set(false)
   $layoutTree.set(null)
+  $connection.set(null)
+  vi.restoreAllMocks()
+  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   disposers.splice(0).forEach(dispose => dispose())
 })
 
@@ -90,5 +94,32 @@ describe('narrow overlay of a stacked zone', () => {
 
     expect(getByTestId('sessions-body')).toBeTruthy()
     expect(overlayTab('sessions')).toBeNull()
+  })
+
+  it('pads the overlay below the native window controls on macOS', () => {
+    // Ground truth for "the SESSIONS tab slides under the traffic lights on
+    // a narrow window". The overlay starts at the viewport's top edge, so
+    // without a reservation its tab strip sits under the native controls.
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
+    $connection.set({ windowButtonPosition: { x: 24, y: 0 } } as never)
+    // jsdom has no layout: the overlay fills the viewport's top-left corner.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 800,
+      height: 800,
+      left: 0,
+      right: 237,
+      toJSON: () => ({}),
+      top: 0,
+      width: 237,
+      x: 0,
+      y: 0
+    } as DOMRect)
+
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+
+    // Controls rect = { x: 0, y: 0, width: 24 + 58, height: 34 }.
+    const overlay = document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
+    expect(overlay?.style.paddingTop).toBe('34px')
   })
 })

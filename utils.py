@@ -68,6 +68,25 @@ def _restore_file_metadata(path: Path, owner: "tuple[int, int] | None", mode: "i
             os.chmod(path, mode)
 
 
+def default_new_file_mode() -> "int | None":
+    """The mode ``open(path, "w")`` gives a file it has to create (``0o666 & ~umask``); ``None``
+    when the umask cannot be read or on non-POSIX hosts (Windows mode bits are synthesized).
+
+    ``mkstemp`` always creates at 0600, so publishing a *new* non-secret file through a temp
+    file would tighten it to owner-only — the Docker/NAS volume-mount hazard
+    :func:`_restore_file_metadata` documents. The transient mask is 0o077: a thread that opens
+    a file in the read window gets a tighter file, never a looser one.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        current = os.umask(0o077)
+        os.umask(current)
+    except OSError:
+        return None
+    return 0o666 & ~current
+
+
 def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
     _restore_file_metadata(path, owner, None)
 
@@ -202,11 +221,16 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     is created by ``mkstemp`` — ``O_CREAT|O_EXCL`` at 0600 regardless of umask — so a secret is
     never readable at process umask, not even between create and chmod. *mode* is fchmod'd onto
     the temp fd BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is
-    Unix-only; the post-replace chmod is the sole path on Windows). *fsync_dir* also fsyncs the
-    parent so the rename itself is durable. The temp file is removed on any failure —
-    ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    Unix-only; the post-replace chmod is the sole path on Windows). With no *mode* a NEW target
+    gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
+    wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
+    volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
+    also fsyncs the parent so the rename itself is durable. The temp file is removed on any
+    failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None and not path.exists():
+        mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:

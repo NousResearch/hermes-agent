@@ -84,3 +84,29 @@ def test_surrogate_escaped_strings_round_trip_through_atomic_json_write(tmp_path
     assert json.loads(target.read_bytes()) == payload
     assert _leftovers(target.parent, target.name) == []
 
+
+@pytest.mark.linux_only
+def test_new_non_secret_file_follows_umask_while_secret_and_existing_modes_hold(tmp_path):
+    """The writers this helper replaced created files at process umask; only ``mode=`` tightens."""
+    import os
+    import stat
+
+    from utils import atomic_json_write
+
+    old_umask = os.umask(0o022)
+    try:
+        fresh = tmp_path / "cache.json"
+        atomic_json_write(fresh, {"a": 1})
+        assert stat.S_IMODE(fresh.stat().st_mode) == 0o644, "new non-secret file must not inherit mkstemp's 0600"
+
+        secret = tmp_path / "creds.json"
+        atomic_json_write(secret, {"token": "x"}, mode=0o600)
+        assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+
+        existing = tmp_path / "state.json"
+        existing.write_text("{}", encoding="utf-8")
+        os.chmod(existing, 0o640)
+        atomic_json_write(existing, {"b": 2})
+        assert stat.S_IMODE(existing.stat().st_mode) == 0o640
+    finally:
+        os.umask(old_umask)

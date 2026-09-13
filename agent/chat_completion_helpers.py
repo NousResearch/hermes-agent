@@ -1697,6 +1697,12 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
     existing_pool = getattr(agent, "_credential_pool", None)
     if existing_pool is not None:
+        # The fallback serves a different model, so re-scope the pool before it selects:
+        # model-pinned rows (``allowed_models``) must follow the new slug, not the primary's.
+        try:
+            existing_pool.model_scope = fb_model
+        except Exception:
+            pass
         pool_provider = (getattr(existing_pool, "provider", "") or "").strip().lower()
         if pool_provider and pool_provider != fb_provider:
             logger.info(
@@ -1708,6 +1714,7 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             from agent.credential_pool import load_pool
             fallback_pool = load_pool(fb_provider)
             if fallback_pool and fallback_pool.has_credentials():
+                fallback_pool.model_scope = fb_model
                 agent._credential_pool = fallback_pool
                 logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)
         except Exception as exc:

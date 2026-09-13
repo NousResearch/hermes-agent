@@ -227,6 +227,10 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
+    # Model slugs this credential may serve (None/empty = every model). Lets one
+    # account be pinned to a cheaper tier so a premium-model call can never spend
+    # its quota; enforced in CredentialPool._entry_allows_model against model_scope.
+    allowed_models: Optional[List[str]] = None
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -916,6 +920,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         # entries" and the caller's 401 retry loop runs unbounded. Reset when a
         # real entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
+        # Target model of the request being served, set by the resolver that knows it
+        # (hermes_cli.runtime_provider._resolve_from_pool, the fallback rebind). Runtime
+        # only — never persisted. None means "unknown", which keeps every entry eligible.
+        self.model_scope: Optional[str] = None
 
     # ---- read accessors ---------------------------------------------------
 
@@ -1794,6 +1802,21 @@ class CredentialPool(CredentialPoolAdminMixin):
             return self._sync_nous_entry_from_auth_store(entry)
         return self._sync_entry_from_auth_store(entry)
 
+    def _entry_allows_model(self, entry: PooledCredential) -> bool:
+        """May *entry* serve ``self.model_scope``?
+
+        ``allowed_models`` on a pool row restricts it to the slugs it names; absent or
+        empty means "any model". An unknown ``model_scope`` (auxiliary paths that never
+        set it) keeps every row eligible — an unprovable scope must not starve the pool.
+        """
+        allowed = entry.allowed_models
+        if not allowed:
+            return True
+        scope = str(self.model_scope or "").strip().lower()
+        if not scope:
+            return True
+        return scope in {str(slug).strip().lower() for slug in allowed if str(slug).strip()}
+
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
@@ -1813,6 +1836,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         pending_refresh: List[PooledCredential] = []
         sole_credential = self._is_sole_credential()
         for entry in self._entries:
+            # Model-pinned credentials drop out for every other model, so a
+            # premium-model call cannot rotate onto a cheap-tier account.
+            if not self._entry_allows_model(entry):
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.
@@ -1882,6 +1909,13 @@ class CredentialPool(CredentialPoolAdminMixin):
         if last is not None and (now - last) < NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS:
             return
         self._last_no_entries_log_at = now
+        scope = str(self.model_scope or "").strip()
+        pinned = any(entry.allowed_models for entry in self._entries)
+        if scope and pinned:
+            logger.info(
+                "credential pool: no available entries for model %s (all exhausted, empty, "
+                "or pinned to other models)", scope)
+            return
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
     def _select_unlocked(

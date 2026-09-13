@@ -1137,6 +1137,10 @@ def restore_primary_runtime(agent) -> bool:
         from agent.credential_pool import load_pool
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
         loaded = load_pool(key) if key else None
+        if loaded is not None and primary_model:
+            # Scope the reset gate to the primary's own model: a row pinned to another
+            # slug is not capacity for restoring THIS model.
+            loaded.model_scope = primary_model
         return loaded if loaded is not None and _matches_primary(loaded) else None
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
@@ -1992,7 +1996,9 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent._credential_pool_entry_id = None
         try:
             from agent.credential_pool import load_pool
-            agent._credential_pool = load_pool(new_provider)
+            reloaded = load_pool(new_provider)
+            reloaded.model_scope = getattr(agent, "model", None)
+            agent._credential_pool = reloaded
         except Exception as _pool_exc:  # noqa: BLE001
             logger.warning(
                 "switch_model: credential pool reload failed for %s (%s); "

@@ -36,6 +36,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -75,6 +76,25 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             promoted = kb.recompute_ready(conn)
             assert promoted == 0, "worker-blocked task must not auto-promote"
             assert kb.get_task(conn, tid).status == "blocked"
+
+        # Even an old gave_up event and exhausted counter must not turn a
+        # deliberate worker/operator block into an automatic retry.
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures=2 WHERE id=?",
+            (tid,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', NULL, ?)",
+            (tid, now - 2),
+        )
+        conn.commit()
+        assert kbd.dispatch_once(
+            conn, max_spawn=0, failure_retry_seconds=1,
+        ).promoted == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.get_task(conn, tid).consecutive_failures == 2
 
 
 

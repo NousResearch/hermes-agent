@@ -218,7 +218,7 @@ hermes kanban create "Deploy to staging (missing creds)" \
     --max-retries 3
 ```
 
-The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Hermes uses `kanban.failure_limit` (default: 2). No more retries until a human unblocks it.
+The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Hermes uses `kanban.failure_limit` (default: 2). A human can unblock it immediately; otherwise the dispatcher gives it one fresh attempt after `kanban.failure_retry_seconds` (default: 24 hours).
 
 Click the blocked task:
 

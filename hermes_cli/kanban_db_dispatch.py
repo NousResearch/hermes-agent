@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
+# A tripped breaker prevents retry storms, but must not abandon the card
+# forever when the underlying infrastructure recovers. Zero disables the
+# periodic probe for operators who require manual recovery only.
+DEFAULT_FAILURE_RETRY_SECONDS = 24 * 60 * 60
+
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
@@ -414,7 +419,12 @@ def heartbeat_worker(
     return True
 
 
-def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+def enforce_max_runtime(
+    conn: sqlite3.Connection,
+    *,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    signal_fn=None,
+) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
@@ -494,6 +504,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 conn, tid,
                 error=error,
                 outcome="timed_out",
+                failure_limit=failure_limit,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
@@ -874,7 +885,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
     return sweep
 
 
-def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]:
+def _account_crashes(
+    conn: sqlite3.Connection,
+    crash_details: list,
+    *,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+) -> list[str]:
     """Count each crash against the breaker; returns the task ids it tripped.
 
     Protocol violations get a BOUNDED violation-only budget independent of
@@ -924,7 +940,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if is_systemic else None,
+                failure_limit=1 if is_systemic else failure_limit,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -934,7 +950,11 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
@@ -946,7 +966,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     sweep = _reclaim_dead_workers(conn)
     # Outside the main txn: account each crash and maybe trip the breaker.
-    auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
+    auto_blocked = (
+        _account_crashes(conn, sweep.crash_details, failure_limit=failure_limit)
+        if sweep.crash_details else []
+    )
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.
@@ -1424,6 +1447,7 @@ def dispatch_once(
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    failure_retry_seconds: int = DEFAULT_FAILURE_RETRY_SECONDS,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
@@ -1447,6 +1471,7 @@ def dispatch_once(
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
             failure_limit=failure_limit,
+            failure_retry_seconds=failure_retry_seconds,
             stale_timeout_seconds=stale_timeout_seconds,
             board=board,
             default_assignee=default_assignee,
@@ -1630,6 +1655,7 @@ def _run_reclaim_phase(
     *,
     stale_timeout_seconds: int,
     failure_limit: int,
+    failure_retry_seconds: int,
     reconcile_orphans: bool,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
@@ -1638,13 +1664,74 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, failure_limit=failure_limit)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, failure_limit=failure_limit)
+    _release_expired_failure_breakers(
+        conn, failure_retry_seconds, failure_limit=failure_limit,
+    )
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+
+
+def _release_expired_failure_breakers(
+    conn: sqlite3.Connection,
+    retry_seconds: int = DEFAULT_FAILURE_RETRY_SECONDS,
+    *,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+) -> int:
+    """Arm aged ``gave_up`` breakers for exactly one retry attempt.
+
+    Explicit worker/operator blocks remain sticky. A failed probe trips the
+    breaker again and waits for another cooldown, keeping retries
+    bounded while ensuring transient infrastructure failures are revisited.
+    """
+    retry_seconds = max(int(retry_seconds or 0), 0)
+    if retry_seconds == 0:
+        return 0
+    cutoff = int(time.time()) - retry_seconds
+    released = 0
+    with _kb.write_txn(conn):
+        rows = conn.execute(
+            "SELECT t.id, t.consecutive_failures, t.max_retries, "
+            "MAX(e.created_at) AS gave_up_at "
+            "FROM tasks t JOIN task_events e ON e.task_id = t.id "
+            "WHERE t.status = 'blocked' AND t.consecutive_failures > 0 "
+            "AND e.kind = 'gave_up' GROUP BY t.id "
+            "HAVING MAX(e.created_at) <= ?",
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            if _kb._has_sticky_block(conn, row["id"]):
+                continue
+            task_override = _kb._row_get(row, "max_retries")
+            effective_limit = int(
+                task_override if task_override is not None else failure_limit
+            )
+            armed_failures = max(effective_limit - 1, 0)
+            cur = conn.execute(
+                "UPDATE tasks SET consecutive_failures = ?, last_failure_error = NULL "
+                "WHERE id = ? AND status = 'blocked'",
+                (armed_failures, row["id"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            _kb._append_event(
+                conn,
+                row["id"],
+                "breaker_retry",
+                {
+                    "previous_failures": int(row["consecutive_failures"]),
+                    "armed_failures": armed_failures,
+                    "effective_limit": effective_limit,
+                    "cooldown_seconds": retry_seconds,
+                    "gave_up_at": int(row["gave_up_at"]),
+                },
+            )
+            released += 1
+    return released
 
 
 def _tick_spawn_budget(
@@ -1756,6 +1843,7 @@ def _dispatch_once_locked(
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    failure_retry_seconds: int = DEFAULT_FAILURE_RETRY_SECONDS,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
@@ -1770,7 +1858,8 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        failure_limit=failure_limit, failure_retry_seconds=failure_retry_seconds,
+        reconcile_orphans=reconcile_orphans,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
@@ -2311,6 +2400,7 @@ def run_daemon(
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    failure_retry_seconds: int = DEFAULT_FAILURE_RETRY_SECONDS,
     stop_event=None,
     on_tick=None,
 ) -> None:
@@ -2350,6 +2440,7 @@ def run_daemon(
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    failure_retry_seconds=failure_retry_seconds,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

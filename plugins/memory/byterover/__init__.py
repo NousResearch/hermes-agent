@@ -8,6 +8,7 @@ $HERMES_HOME/byterover/ (profile-scoped); ``memory.byterover.auto_extract: false
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -76,6 +77,44 @@ def _resolve_brv_path() -> Optional[str]:
         return _cached_brv_path or None
 
 
+def _brv_child_env(brv_path: str) -> Dict[str, str]:
+    """Child env for the brv CLI, scoped to the ACTIVE profile (#108993).
+
+    Under ``gateway.multiplex_profiles`` the process env holds the default profile's
+    ``.env``, so a raw ``os.environ`` copy hands the brv child the default profile's
+    ``BRV_API_KEY`` (cloud identity) and launch ``HERMES_HOME``. Profile isolation is
+    contextvars: the per-turn secret scope and the HERMES_HOME override. The scope is
+    authoritative for ``BRV_API_KEY`` — a scoped miss means the active profile has no
+    key configured, so the child runs keyless (local-first), never with another
+    profile's value. Outside a scope the process env is that profile's own value
+    (single-profile deployments; the default profile's own unscoped turns), so it is
+    passed through unchanged.
+    """
+    from agent.secret_scope import current_secret_scope, get_secret
+
+    env = dict(os.environ)
+    if current_secret_scope() is not None:
+        # Scope is authoritative: the scoped value wins, and a scoped miss means the
+        # active profile has no key configured -> the child runs keyless (local-first),
+        # never with another profile's os.environ value.
+        scoped_key = get_secret("BRV_API_KEY")
+        if scoped_key is not None:
+            env["BRV_API_KEY"] = scoped_key
+        else:
+            env.pop("BRV_API_KEY", None)
+    # No scope installed: single-profile deployments and the default profile's own
+    # unscoped turns under multiplexing — os.environ IS that profile's value, so the
+    # pass-through copy above is already correct (Slack #59739 / buzz pattern).
+    # Bridge the context-local home override (absent outside multiplexed turns).
+    from hermes_constants import get_hermes_home_override
+
+    override = get_hermes_home_override()
+    if override:
+        env["HERMES_HOME"] = override
+    env["PATH"] = str(Path(brv_path).parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
@@ -84,7 +123,7 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) ->
         return {"success": False, "error": "brv CLI not found. Install: npm install -g byterover-cli"}
     effective_cwd = cwd or str(_get_brv_cwd())
     Path(effective_cwd).mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "PATH": str(Path(brv_path).parent) + os.pathsep + os.environ.get("PATH", "")}
+    env = _brv_child_env(brv_path)
     try:
         result = subprocess.run(
             [brv_path] + args, capture_output=True, text=True, encoding='utf-8', errors='replace',
@@ -162,7 +201,13 @@ class ByteRoverMemoryProvider(MemoryProvider):
         return _run_brv(["curate", "--", content], timeout=_CURATE_TIMEOUT, cwd=self._cwd)
 
     def _curate_in_background(self, content: str, *, name: str, what: str, on_done: str = "") -> threading.Thread:
-        """Spawn a daemon thread that curates ``content``; failures are logged at debug, never raised."""
+        """Spawn a daemon thread that curates ``content``; failures are logged at debug, never raised.
+
+        Threads start with an EMPTY Context, but profile isolation IS contextvars (the HERMES_HOME
+        override + the per-turn secret scope). Unbound, a curate worker resolves the brv cwd and
+        BRV_API_KEY against the default profile. Same rule as openviking's ``_spawn_tracked``
+        (#108996), hindsight's ``_context_thread`` (#93028) and ``MemoryManager._ctx_bound``.
+        """
         def _work():
             try:
                 self._curate(content)
@@ -171,7 +216,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("ByteRover %s failed: %s", what, e)
 
-        t = threading.Thread(target=_work, daemon=True, name=name)
+        t = threading.Thread(target=contextvars.copy_context().run, args=(_work,), daemon=True, name=name)
         t.start()
         return t
 

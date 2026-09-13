@@ -88,6 +88,29 @@ class TestMemoryFamily:
 
         assert SupermemoryMemoryProvider().is_available() is False
 
+    def test_byterover_child_env_scoped_key_wins(
+        self, multiplex_scope, monkeypatch
+    ):
+        """#108993: the brv child env resolves BRV_API_KEY through the scope."""
+        monkeypatch.setenv("BRV_API_KEY", "env-default-profile")
+        multiplex_scope({"BRV_API_KEY": "scoped-key"})
+
+        from plugins.memory.byterover import _brv_child_env
+
+        assert _brv_child_env("/usr/local/bin/brv")["BRV_API_KEY"] == "scoped-key"
+
+    def test_byterover_child_env_scoped_miss_runs_keyless(
+        self, multiplex_scope, monkeypatch
+    ):
+        """#108993: profile b has no key configured — no key on the child, never
+        the default profile's os.environ value."""
+        monkeypatch.setenv("BRV_API_KEY", "env-default-profile")
+        multiplex_scope({})
+
+        from plugins.memory.byterover import _brv_child_env
+
+        assert "BRV_API_KEY" not in _brv_child_env("/usr/local/bin/brv")
+
     def test_supermemory_post_setup_no_environ_write_under_multiplex(
         self, multiplex_scope, monkeypatch, tmp_path
     ):

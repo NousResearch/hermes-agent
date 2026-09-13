@@ -806,14 +806,13 @@ def check_vision_requirements() -> bool:
 
     See #31179.
     """
-    try:
-        from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
-        with aux_probe_mode():
-            return any(
-                resolve_vision_provider_client(**kw)[1] is not None for kw in ({}, {"provider": "auto"})
-            )
-    except Exception:
-        return False
+    from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
+    # No blanket except: a resolver crash must reach the registry, which logs it with a
+    # traceback; a swallowed exception reads as "no vision backend configured" (#87950).
+    with aux_probe_mode():
+        return any(
+            resolve_vision_provider_client(**kw)[1] is not None for kw in ({}, {"provider": "auto"})
+        )
 
 
 from tools.registry import registry, tool_error

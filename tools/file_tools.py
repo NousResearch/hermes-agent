@@ -537,8 +537,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     """Read a file with pagination and line numbers.
 
     Guard order: device-path blocklist (no I/O) → stat-based special-file
-    guard (host only) → document extraction → binary-extension guard → Hermes
-    internal denylist → negative-result cache → dedup stub → real read.
+    guard (host only) → Hermes internal denylist → document extraction →
+    binary-extension guard → negative-result cache → dedup stub → real read.
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -563,6 +563,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
 
+        # Hermes internal denylist (prompt injection via catalog metadata,
+        # credential stores). Runs before extraction: a denylisted path must
+        # never reach an extractor. Pass the RESOLVED path: the denylist's own
+        # resolve() uses the process cwd and would miss a relative "auth.json".
+        block_error = get_read_block_error(str(_resolved))
+        if block_error:
+            return tool_error(block_error)
+
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
             return extracted
@@ -573,13 +581,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             return tool_error(
                 f"Cannot read binary file '{path}' ({_resolved.suffix.lower()}). "
                 "Use vision_analyze for images, or terminal to inspect binary files.")
-
-        # Hermes internal denylist (prompt injection via catalog metadata,
-        # credential stores). Pass the RESOLVED path: the denylist's own
-        # resolve() uses the process cwd and would miss a relative "auth.json".
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return tool_error(block_error)
 
         resolved_str = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)

@@ -8,6 +8,13 @@ Do NOT reintroduce an "account capability" classifier keyed on ``Tool choice
 'image_generation' not found in 'tools' parameter``: that 400 is a request-shape
 rejection for every account, fixed by omitting tool_choice (``_build_responses_payload``);
 any remaining HTTP error must surface verbatim.
+
+**Known backend limitation (2026-09-11):** the Codex ``image_generation`` tool's ``size``
+and ``model`` parameters are advisory — the backend returns the same landscape geometry
+(1536x1024) regardless of the requested aspect, and unrecognized model names return an
+image from a default tier. The provider now reports actual delivered geometry via
+``aspect_ratio`` (inferred from ``pixel_size``) and flags a mismatch in the response
+dict's ``geometry_mismatch`` field so callers can detect when the request was not honored.
 """
 
 from __future__ import annotations
@@ -242,6 +249,17 @@ def _png_pixel_size(raw: bytes) -> Optional[str]:
     return f"{width}x{height}"
 
 
+def _infer_aspect_from_pixel_size(pixel_size: str) -> str:
+    """Map delivered pixel geometry back to the nearest aspect bucket (square/portrait/landscape)."""
+    try:
+        w, h = map(int, pixel_size.split("x"))
+        if w == h:
+            return "square"
+        return "portrait" if h > w else "landscape"
+    except Exception:
+        return DEFAULT_ASPECT_RATIO
+
+
 def _iter_sse_json(response: Any):
     """JSON payloads from an SSE response, without SDK parsing (events newer than the SDK still parse)."""
     event_name: Optional[str] = None
@@ -410,16 +428,22 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             }
 
         try:
-            pixel_size = _png_pixel_size(base64.b64decode(b64))
+            raw_png = base64.b64decode(b64)
+            pixel_size = _png_pixel_size(raw_png)
             saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
         except Exception as exc:
             return fail(f"Could not save image to cache: {exc}", "io_error")
+        
+        delivered_aspect = _infer_aspect_from_pixel_size(pixel_size) if pixel_size else aspect
+        geometry_mismatch = delivered_aspect != aspect
+        
         return success_response(
-            image=str(saved_path), model=tier_id, prompt=prompt, aspect_ratio=aspect,
+            image=str(saved_path), model=tier_id, prompt=prompt, aspect_ratio=delivered_aspect,
             provider="openai-codex", modality="image" if input_images else "text",
             extra={
                 "size": size, "quality": meta["quality"], "input_image_count": len(input_images),
                 "image_source": image_source, "requested_size": size, "pixel_size": pixel_size,
+                "requested_aspect_ratio": aspect, "geometry_mismatch": geometry_mismatch,
             })
 
 

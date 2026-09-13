@@ -2624,3 +2624,117 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+def _raise_prestream_transport_error(request):
+    """Raise the #103673 shape: APIConnectionError <- ReadError <- ReadError."""
+    import httpx
+
+    from openai import APIConnectionError
+
+    inner = httpx.ReadError("receive failed", request=request)
+    mid = httpx.ReadError("receive failed", request=request)
+    try:
+        raise mid from inner
+    except httpx.ReadError as chained:
+        raise APIConnectionError(request=request) from chained
+
+
+def _completed_create_stream():
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="Recovered.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    return _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    usage=usage,
+                    id="resp_prestream_retry_1",
+                ),
+            ),
+        ]
+    )
+
+
+def test_run_codex_stream_retries_prestream_apiconnectionerror(monkeypatch):
+    """Regression test for issue #103673.
+
+    A pre-stream ``APIConnectionError`` wrapping an httpx transport error
+    (``ReadError`` before the first SSE event, stream never opened) must retry
+    with a fresh physical request like a raw transport error does, instead of
+    failing the turn on a transient connect/receive failure.
+    """
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    request = httpx.Request(
+        "POST",
+        "https://chatgpt.com/backend-api/codex/responses",
+        content=b'{"model":"gpt-5-codex"}',
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            _raise_prestream_transport_error(request)
+        return _completed_create_stream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    assert response.status == "completed"
+    assert response.id == "resp_prestream_retry_1"
+
+
+def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
+    monkeypatch, caplog
+):
+    """Regression test for issue #103673 (observability half).
+
+    When the pre-stream retry is exhausted, the turn still raises, but the
+    single WARNING must carry the byte count, the stream-open state, the
+    exception chain, and the attempt count -- without prompt content.
+    """
+    import logging
+
+    import httpx
+    from openai import APIConnectionError
+
+    agent = _build_agent(monkeypatch)
+    body = b'{"model":"gpt-5-codex"}'
+    request = httpx.Request(
+        "POST", "https://chatgpt.com/backend-api/codex/responses", content=body
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        _raise_prestream_transport_error(request)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        with pytest.raises(APIConnectionError):
+            agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    failures = [
+        record
+        for record in caplog.records
+        if "Codex Responses request failed" in record.message
+    ]
+    assert len(failures) == 1
+    message = failures[0].message
+    assert f"serialized_request_body_bytes={len(body)}" in message
+    assert "stream_opened=false" in message
+    assert "APIConnectionError <- ReadError <- ReadError" in message
+    assert "attempt=2/2" in message

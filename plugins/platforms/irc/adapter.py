@@ -158,15 +158,8 @@ class IRCAdapter(BasePlatformAdapter):
             logger.error("IRC: server and channel must be configured")
             return self._fail("config_missing", "IRC_SERVER and IRC_CHANNEL must be set", retryable=False)
         # Prevent two profiles from using the same IRC identity
-        try:
-            from gateway.status import acquire_scoped_lock
-            lock_key = f"{self.server}:{self.nickname}"
-            if not acquire_scoped_lock("irc", lock_key):
-                logger.error("IRC: %s@%s already in use by another profile", self.nickname, self.server)
-                return self._fail("lock_conflict", "IRC identity in use by another profile", retryable=False)
-            self._lock_key = lock_key
-        except ImportError:
-            self._lock_key = None  # status module not available (e.g. tests)
+        if not self._acquire_platform_lock("irc", f"{self.server}:{self.nickname}", f"IRC identity {self.nickname}@{self.server}"):
+            return False
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.server, self.port, ssl=_ssl_ctx(self.use_tls)), timeout=30.0)
@@ -195,10 +188,8 @@ class IRCAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Quit and close the connection."""
-        if getattr(self, "_lock_key", None):
-            with contextlib.suppress(Exception):
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("irc", self._lock_key)
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
         self._mark_disconnected()
         if self._writer and not self._writer.is_closing():
             with contextlib.suppress(Exception):

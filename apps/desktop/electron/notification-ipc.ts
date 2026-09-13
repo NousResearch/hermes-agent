@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain, Notification } from 'electron'
 
 import { createEventDeduper } from './event-dedupe'
 import { resolveNotificationAction } from './notification-actions'
+import { createLinuxNotifications } from './notification-linux'
 import { createNotificationRegistry } from './notification-registry'
 import type { HermesNotification } from './notification-types'
 
@@ -11,33 +12,39 @@ interface NotificationHost {
 }
 
 export function registerNativeNotifications({ getMainWindow, focusWindow }: NotificationHost): void {
-  const isDuplicateNotification = createEventDeduper()
+  const dedupeIntervalMs = 1000
+  const isDuplicateNotification = createEventDeduper(dedupeIntervalMs)
+  const deliveries = new Map<string, Promise<boolean>>()
   const notifications = createNotificationRegistry()
+  const linux = process.platform === 'linux' ? createLinuxNotifications() : undefined
 
-  ipcMain.handle('hermes:notify', (event, payload: HermesNotification) => {
+  ipcMain.handle('hermes:notify', async (event, payload: HermesNotification) => {
     // The source renderer owns runtime bindings and plugin callbacks.
     const sourceWindow = BrowserWindow.fromWebContents(event.sender)
     const targetWindow = () => (sourceWindow && !sourceWindow.isDestroyed() ? sourceWindow : getMainWindow())
 
-    if (!Notification.isSupported()) {
+    if (!linux && !Notification.isSupported()) {
       return false
     }
 
     // Peer renderers share one OS notification for the same event.
-    if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
-      return true
+    const key = `${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`
+    if (isDuplicateNotification(key)) {
+      return deliveries.get(key) ?? false
     }
 
     const actions = Array.isArray(payload?.actions) ? payload.actions : []
     const icon = typeof payload?.icon === 'string' && payload.icon.trim() ? payload.icon.trim() : undefined
 
-    const notification = new Notification({
+    const options = {
       title: payload?.title || 'Hermes',
       body: payload?.body || '',
       silent: Boolean(payload?.silent),
       ...(icon ? { icon } : {}),
-      actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
-    })
+      actions: actions.map(action => ({ type: 'button' as const, text: String(action?.text || '') }))
+    }
+
+    const notification = linux ? linux.create(options) : new Notification(options)
 
     notification.on('click', () => {
       const window = targetWindow()
@@ -95,8 +102,16 @@ export function registerNativeNotifications({ getMainWindow, focusWindow }: Noti
       })
     })
     notifications.retain(notification)
-    notification.show()
 
-    return true
+    // Peers share the actual outcome, including pending/failed Linux delivery.
+    const delivery = Promise.resolve(notification.show()).then(result => result !== false)
+    deliveries.set(key, delivery)
+    setTimeout(() => {
+      if (deliveries.get(key) === delivery) {
+        deliveries.delete(key)
+      }
+    }, dedupeIntervalMs).unref()
+
+    return delivery
   })
 }

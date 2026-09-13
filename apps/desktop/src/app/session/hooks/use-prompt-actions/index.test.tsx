@@ -1958,10 +1958,10 @@ describe('usePromptActions submit / queue drain semantics', () => {
       />
     )
 
-    expect(await handle!.submitText('continue remotely')).toBe(true)
+    expect(await handle!.submitText('continue remotely', { desktopWork: { origin: 'desktop_user', root_id: '11111111-1111-4111-8111-111111111111' } })).toBe(true)
     expect(ambientRequest).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: 'runtime-remote', text: 'continue remotely' },
+      { session_id: 'runtime-remote', text: 'continue remotely', desktop_work: { origin: 'desktop_user', root_id: '11111111-1111-4111-8111-111111111111' } },
       1_800_000
     )
     expect(requestGatewayForAgent).not.toHaveBeenCalled()

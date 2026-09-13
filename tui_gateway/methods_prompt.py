@@ -471,7 +471,10 @@ def _persist_session_row_for_submit(rid, session):
     return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, hosted_terminal_callback,
+    turn_author=None, desktop_work=None,
+):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -488,6 +491,8 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             session["running"] = False
             session["last_active"] = time.time()
         _emit("session.info", sid, _session_info(session.get("agent"), session))
+        from tui_gateway.desktop_work import interrupt_before_turn
+        interrupt_before_turn(sid, session, desktop_work, display_kind, _emit)
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
@@ -498,9 +503,16 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")})
+            from tui_gateway.desktop_work import interrupt_before_turn
+            interrupt_before_turn(sid, session, desktop_work, display_kind, _emit)
             return
+    from tui_gateway.desktop_work import admit
+    admitted_work = admit(sid, session, desktop_work, display_kind)
+    if admitted_work is not None:
+        admitted_work.begin_turn()
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
+        desktop_work=desktop_work, admitted_desktop_work=admitted_work,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
@@ -654,7 +666,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, hosted_terminal_callback,
+            turn_author, None if internal_hosted_submit else params.get("desktop_work")),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

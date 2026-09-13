@@ -122,6 +122,105 @@ def test_connect_preserves_wal_and_applies_macos_durability_barriers(
         conn.close()
 
 
+def test_persistence_failure_does_not_strand_desktop_root(monkeypatch):
+    from tui_gateway.desktop_work import DesktopWork, current_work, finish
+
+    work = DesktopWork("root", "sid", "stored", "default", "Title")
+    seen = []
+    publish = lambda *args: seen.append(args[2]["kind"])
+    work.begin_turn()
+    work.emit(publish, "started")
+    monkeypatch.setattr(
+        ad, "_prune_durable_records",
+        lambda: (_ for _ in ()).throw(RuntimeError("disk full")),
+    )
+
+    token = current_work.set(work)
+    try:
+        with pytest.raises(RuntimeError, match="disk full"):
+            ad.dispatch_async_delegation(
+                goal="g", context=None, toolsets=None, role="leaf", model="m",
+                session_key="", runner=lambda: {"status": "completed"},
+            )
+    finally:
+        current_work.reset(token)
+
+    finish(work, publish, {"completed": True})
+    assert seen == ["started", "completed"]
+    assert work.pending == set()
+    assert ad.active_count() == 0
+
+
+def test_failed_delivery_ack_does_not_consume_desktop_root(monkeypatch):
+    from tui_gateway.desktop_work import DesktopWork, current_work
+
+    work = DesktopWork("root", "sid", "stored", "default", "Title")
+    work.retain_async("batch")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "batch",
+        "_desktop_work": work,
+    }
+    monkeypatch.setattr(ad, "complete_completion_delivery", lambda *args: False)
+
+    token = current_work.set(work)
+    try:
+        ad.complete_event_delivery(event, "stale-claim")
+    finally:
+        current_work.reset(token)
+
+    assert work.pending == {"batch"}
+
+
+def test_released_delivery_is_requeued_in_same_process(monkeypatch):
+    from tui_gateway.desktop_work import DesktopWork
+
+    work = DesktopWork("root", "sid", "stored", "default", "Title")
+    work.retain_async("batch")
+    event = {"type": "async_delegation", "delegation_id": "batch", "_desktop_work": work}
+    target = queue.Queue()
+    monkeypatch.setattr(ad, "defer_completion_delivery", lambda *args: True)
+    monkeypatch.setattr(process_registry, "completion_queue", target)
+
+    assert ad.retry_event_delivery(event, "claim", defer=True) is True
+    assert target.get_nowait() is event
+    assert work.pending == {"batch"}
+    assert work.closed is False
+
+
+@pytest.mark.parametrize("failure_stage", ["persist", "enqueue"])
+def test_completion_publication_failure_closes_desktop_root(monkeypatch, failure_stage):
+    from tui_gateway.desktop_work import DesktopWork, finish
+
+    work = DesktopWork("root", "sid", "stored", "default", "Title")
+    seen = []
+    publish = lambda *args: seen.append(args[2]["kind"])
+    work.begin_turn()
+    work.emit(publish, "started")
+    work.retain_async("batch")
+    finish(work, publish, {"completed": True})
+    ad._records["batch"] = {
+        "delegation_id": "batch", "status": "running", "dispatched_at": time.time(),
+        "session_key": "stored", "_desktop_work": work,
+    }
+
+    if failure_stage == "persist":
+        monkeypatch.setattr(ad, "_persist_completion",
+                            lambda *args: (_ for _ in ()).throw(RuntimeError("disk")))
+    else:
+        class FailedQueue(queue.Queue):
+            def put(self, event):
+                raise RuntimeError("queue")
+        monkeypatch.setattr(process_registry, "completion_queue", FailedQueue())
+
+    ad._finalize("batch", {"summary": "done"}, "completed")
+
+    assert ad._records["batch"]["status"] == "failed"
+    assert work.pending == set()
+    assert work.closed is True
+    assert seen[-1] == "interrupted"
+
+
 def test_dispatch_returns_immediately_without_blocking():
     gate = threading.Event()
 

@@ -138,15 +138,21 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
-    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+_NOTIF_DISPATCH_FAILED = object()
+
+
+def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs):
+    """Return admission for a claimed turn; release running on dispatch failure."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
+        if accepted is False:
+            _notif_release_turn(session)
+        return accepted
     except Exception as exc:
         _notif_log_failure(what, exc)
         _notif_release_turn(session)
-        raise
+        return _NOTIF_DISPATCH_FAILED
 
 
 def _notif_loop_status(sid: str, text: str) -> None:
@@ -383,17 +389,40 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, retry_event_delivery
     if (claim := claim_event_delivery(evt, "tui-poller")) is None:
+        _notif_release_turn(session)
         return
     kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})
+    from tui_gateway.desktop_work import current_work
+    work = evt.get("_desktop_work") if evt.get("type") == "async_delegation" else None
+    if work is not None and (work.sid != sid or work.session is not session or work.closed):
+        work = None
+    if work is not None:
+        kwargs["continued_desktop_work"] = work
     try:
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
+        accepted = _notif_submit(
+            f"__notif__{int(time.time() * 1000)}", sid, session, text,
+            "notification poller dispatch failed", **kwargs)
+        if accepted is _NOTIF_DISPATCH_FAILED:
+            retry_event_delivery(evt, claim)
+            time.sleep(0.25)
+            return
+        if accepted is not True:
+            retry_event_delivery(evt, claim, defer=True)
+            time.sleep(0.25)
+            return
+        token = current_work.set(work)
+        try:
+            if not complete_event_delivery(evt, claim):
+                retry_event_delivery(evt, claim)
+        finally:
+            current_work.reset(token)
     except Exception:
-        release_event_delivery(evt, claim)
+        retry_event_delivery(evt, claim)
+        time.sleep(0.25)
         return
-    complete_event_delivery(evt, claim)
 
 
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
@@ -450,7 +479,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
     from tools.process_registry_notifications import ProcessNotificationBatch
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery, retry_event_delivery
 
     if not notifications:
         return
@@ -467,14 +496,26 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         _notif_release_turn(session)
     try:
         if text is not None:
-            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                          "completion batch dispatch failed")
+            accepted = _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+                                     "completion batch dispatch failed")
+            if accepted is _NOTIF_DISPATCH_FAILED:
+                for event, _text, claim in claimed:
+                    retry_event_delivery(event, claim)
+                time.sleep(0.25)
+                return
+            if accepted is not True:
+                for event, _text, claim in claimed:
+                    retry_event_delivery(event, claim, defer=True)
+                time.sleep(0.25)
+                return
     except Exception:
         for event, _text, claim in claimed:
-            release_event_delivery(event, claim)
+            retry_event_delivery(event, claim)
+        time.sleep(0.25)
         return
     for event, _text, claim in claimed:
-        complete_event_delivery(event, claim)
+        if not complete_event_delivery(event, claim):
+            retry_event_delivery(event, claim)
 
 
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):

@@ -2,8 +2,8 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
-import { clearSpokenRepliesForTests, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
+import { clearSpokenRepliesForTests, markAssistantIdSpoken, pendingSpeechReply } from '@/lib/spoken-reply'
 import { playSpeechText, type SpeechStreamSession, startSpeechStream, stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -30,16 +30,7 @@ function assistantMessage(id: string, text: string): ChatMessage {
 function renderAutoSpeech($messages = atom<ChatMessage[]>([])) {
   $autoSpeakReplies.set(true)
 
-  const pendingReply = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-
-    if (!last || resolveSpokenReply(SESSION_ID, messages)?.id === last.id) {
-      return null
-    }
-
-    return { id: last.id, pending: Boolean(last.pending), text: chatMessageText(last) }
-  }
+  const pendingReply = () => pendingSpeechReply(SESSION_ID, $messages.get())
 
   const markSpoken = () => {
     const last = $messages.get().findLast(m => m.role === 'assistant' && !m.hidden)
@@ -217,17 +208,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
 
     // The exact pendingReply/markSpoken contract use-composer-voice.ts wires
     // up for this hook, backed by the real ordinal-anchored dedupe.
-    const pendingReply = () => {
-      const messages = $messages.get()
-      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-      const spoken = resolveSpokenReply(SESSION_ID, messages)
-
-      if (!last || last.id === spoken?.id) {
-        return null
-      }
-
-      return { id: last.id, pending: Boolean(last.pending), text: chatMessageText(last) }
-    }
+    const pendingReply = () => pendingSpeechReply(SESSION_ID, $messages.get())
 
     const markSpoken = () => {
       const messages = $messages.get()

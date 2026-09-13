@@ -4,7 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import {
+  adoptSpokenReplySession,
+  markAssistantIdSpoken,
+  pendingSpeechReply,
+  resolveSpokenReply
+} from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
@@ -94,27 +99,7 @@ export function useComposerVoice({
   })
 
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
-  const pendingResponse = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-    const spoken = resolveSpokenReply(sessionId, messages)
-
-    if (!last || last.id === spoken?.id) {
-      return null
-    }
-
-    const text = chatMessageText(last).trim()
-
-    if (!text) {
-      return null
-    }
-
-    return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      text
-    }
-  }
+  const pendingResponse = () => pendingSpeechReply(sessionId, $messages.get())
 
   /**
    * Voice-conversation selector: every unspoken assistant bubble of the turn,

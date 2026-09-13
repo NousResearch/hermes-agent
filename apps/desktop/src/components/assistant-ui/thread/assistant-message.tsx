@@ -755,8 +755,10 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
     }
 
     try {
-      await playSpeechText(text, { messageId, source: 'read-aloud' })
+      // Claim the reply before playback publishes idle. Auto-speak listens
+      // synchronously to that edge and must not enqueue this manual read again.
       markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
+      await playSpeechText(text, { messageId, source: 'read-aloud' })
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }

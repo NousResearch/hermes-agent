@@ -94,6 +94,15 @@ abandons the remaining speech, including a pending fallback. Each session's
 cancel operation affects only that session, so late completion cannot stop the
 next reply. Voice selection remains per profile.
 
+Text completion closes the text input, not audio that is still being generated
+or played. Display-only whitespace cleanup and history refreshes must not
+interrupt that audio or replay a consumed reply. Desktop tracks the owning
+user turn and the consumed text prefix, so merging narration and the final
+answer into one bubble leaves only the new final text eligible for speech.
+Manual **Read aloud** also claims its reply before playback returns to idle.
+These controls are independent of the selected language model; Stop and genuinely
+new user input still cancel the current speech.
+
 The engine returns a complete WAV for each sentence. The integration pipelines
 sentence synthesis and playback while the LLM continues; it does not stream
 partial acoustic generation inside VOICEVOX. It requests and verifies 24 kHz
@@ -105,7 +114,11 @@ Test with a short acknowledgement and a longer reply, then stop during speech
 and submit again. Server logs report `first_text_ms` and `first_pcm_ms` relative
 to WebSocket startup, plus sentence/byte counts, without recording spoken text.
 These are transport measurements, not user-to-audible-speech latency. No fixed
-speed or improvement over another PR is guaranteed.
+speed or improvement over another PR is guaranteed. Also test a reply with
+Markdown line breaks while history refreshes, then use the manual read-aloud
+button: each reply should finish once, without an automatic restart. After
+updating this source branch, rebuild and restart Desktop; restarting an older
+packaged app alone does not load the changed frontend code.
 
 For published examples using speaker 3, credit **VOICEVOX:ずんだもん** and follow
 the engine and character terms. Engine and voice assets are not bundled.

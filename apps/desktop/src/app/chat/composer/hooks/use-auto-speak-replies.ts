@@ -2,7 +2,15 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { chatMessageText } from '@/lib/chat-messages'
-import { markAssistantIdSpoken } from '@/lib/spoken-reply'
+import {
+  absorbSpokenReplyRewrite,
+  anchorSpeechReply,
+  latestSpeechUser,
+  markSpokenReply,
+  sameSpeechUser,
+  speechSourceDelta,
+  type SpokenReplyAnchor
+} from '@/lib/spoken-reply'
 import { playSpeechText, type SpeechStreamSession, startSpeechStream, stopVoicePlayback } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
@@ -15,6 +23,7 @@ interface AutoSpeakReply {
   id: string
   pending: boolean
   text: string
+  spokenText?: string
 }
 
 interface UseAutoSpeakReplies {
@@ -57,9 +66,9 @@ export function useAutoSpeakReplies({
     latest.current.markSpoken()
 
     interface Attempt {
-      id: string
-      indexFromEnd: number
+      anchor: SpokenReplyAnchor
       text: string
+      submittedText: string
       sequence: number
       starting: boolean
       session: SpeechStreamSession | null
@@ -70,22 +79,30 @@ export function useAutoSpeakReplies({
 
     let active: Attempt | null = null
     let disposed = false
-    let userTurn = $messages.get().findLast(m => m.role === 'user')?.id ?? ''
-    let suppressedTurn: string | null = null
+    let user = latestSpeechUser($messages.get())
+    let suppressedTurn = false
 
-    // Prefer durable identity; hydration may replace a provisional id. Count
-    // from the end for that fallback so prepending history cannot move it.
     const activeMessage = (attempt: Attempt) => {
-      const replies = $messages.get().filter(m => m.role === 'assistant' && !m.hidden)
+      const previous = attempt.anchor
+      attempt.anchor = absorbSpokenReplyRewrite(previous, $messages.get()) ?? previous
 
-      return replies.find(m => m.id === attempt.id) ?? replies.at(-1 - attempt.indexFromEnd)
+      if (previous.text && attempt.anchor.text?.endsWith(previous.text)) {
+        // Hydration can prepend already-consumed narration to this final row.
+        const prefix = attempt.anchor.text.slice(0, attempt.anchor.text.length - previous.text.length)
+
+        if (prefix) {
+          attempt.text = prefix + attempt.text
+        }
+      }
+
+      return $messages.get().find(message => message.id === attempt.anchor.id)
     }
 
     const markAttemptSpoken = (attempt: Attempt) => {
       const message = activeMessage(attempt)
 
       if (message) {
-        markAssistantIdSpoken(sessionId, $messages.get(), message.id)
+        markSpokenReply(sessionId, { ...attempt.anchor, text: attempt.text })
       }
     }
 
@@ -116,9 +133,16 @@ export function useAutoSpeakReplies({
     }
 
     const feed = (attempt: Attempt) => {
+      // Text completion seals input, not playback. A later history refresh
+      // must not cancel PCM which is still being synthesized or drained.
+      if (attempt.finished) {
+        return
+      }
+
       const message = activeMessage(attempt)
 
       if (!message) {
+        suppressedTurn = true
         abandon()
 
         return
@@ -126,17 +150,21 @@ export function useAutoSpeakReplies({
 
       const text = chatMessageText(message).trim()
 
-      // A rewrite is not an append; replaying the revised prefix would stutter.
-      if (!text.startsWith(attempt.text)) {
-        suppressedTurn = userTurn
+      const delta = speechSourceDelta(attempt.text, text)
+
+      // A content rewrite is not an append; display-only whitespace is.
+      if (delta === null) {
+        suppressedTurn = true
         abandon()
 
         return
       }
 
       if (attempt.session && !attempt.finished) {
-        attempt.session.append(text.slice(attempt.text.length))
+        attempt.session.append(delta)
+        attempt.submittedText += delta
         attempt.text = text
+        attempt.anchor = anchorSpeechReply($messages.get(), message.id)
 
         if (!message.pending) {
           attempt.finished = true
@@ -146,9 +174,13 @@ export function useAutoSpeakReplies({
 
       if (attempt.fallback && !message.pending && !attempt.fallbackStarted) {
         attempt.fallbackStarted = true
+        attempt.finished = true
+        attempt.submittedText += delta
+        attempt.text = text
+        attempt.anchor = anchorSpeechReply($messages.get(), message.id)
         markAttemptSpoken(attempt)
         attempt.starting = true // playSpeechText takes ownership synchronously
-        const playback = playSpeechText(text, { messageId: message.id, source: 'read-aloud' })
+        const playback = playSpeechText(attempt.submittedText, { messageId: message.id, source: 'read-aloud' })
         attempt.sequence = $voicePlayback.get().sequence
         attempt.starting = false
         void playback.catch(error => notifyError(error, latest.current.failureLabel)).finally(() => complete(attempt))
@@ -162,15 +194,16 @@ export function useAutoSpeakReplies({
 
       const { conversationActive, pendingReply } = latest.current
       const messages = $messages.get()
-      const nextUserTurn = messages.findLast(m => m.role === 'user')?.id ?? ''
+      const nextUser = latestSpeechUser(messages)
+      const newInput = !sameSpeechUser(user, nextUser, messages)
+      user = nextUser
 
-      if (conversationActive || nextUserTurn !== userTurn) {
-        userTurn = nextUserTurn
-        suppressedTurn = null
+      if (conversationActive || newInput) {
+        suppressedTurn = false
         abandon()
       }
 
-      if (conversationActive || suppressedTurn === userTurn) {
+      if (conversationActive || suppressedTurn) {
         return
       }
 
@@ -180,7 +213,7 @@ export function useAutoSpeakReplies({
         }
 
         if ($voicePlayback.get().sequence !== active.sequence) {
-          suppressedTurn = userTurn
+          suppressedTurn = true
           abandon()
 
           return
@@ -207,11 +240,9 @@ export function useAutoSpeakReplies({
       }
 
       const attempt: Attempt = {
-        id: reply.id,
-        indexFromEnd: messages
-          .slice(messages.findIndex(m => m.id === reply.id) + 1)
-          .filter(m => m.role === 'assistant' && !m.hidden).length,
-        text: '',
+        anchor: anchorSpeechReply(messages, reply.id),
+        text: reply.spokenText ?? '',
+        submittedText: '',
         sequence: $voicePlayback.get().sequence,
         starting: true,
         session: null,
@@ -225,14 +256,16 @@ export function useAutoSpeakReplies({
       // several. Own the attempt before awaiting the claim or config lookup so
       // rapid deltas cannot create competing speech sessions.
       void (async () => {
-        const owns = await ownsAmbientCue(`speak:${reply.id}`)
+        // A merged bubble can gain a new final suffix before the narration's
+        // cross-window claim expires. Each consumed boundary owns its suffix.
+        const owns = await ownsAmbientCue(`speak:${reply.id}:${reply.spokenText?.length ?? 0}`)
 
         if (disposed || active !== attempt) {
           return
         }
 
         if (!owns || $voicePlayback.get().sequence !== attempt.sequence) {
-          suppressedTurn = userTurn
+          suppressedTurn = true
           abandon()
 
           return
@@ -247,7 +280,7 @@ export function useAutoSpeakReplies({
         }
 
         if (!session && $voicePlayback.get().sequence !== attempt.sequence) {
-          suppressedTurn = userTurn
+          suppressedTurn = true
           abandon()
 
           return
@@ -267,10 +300,11 @@ export function useAutoSpeakReplies({
           }
 
           if ($voicePlayback.get().sequence !== attempt.sequence) {
-            suppressedTurn = userTurn
+            suppressedTurn = true
             abandon()
           } else if (outcome === 'fallback') {
             attempt.fallback = true
+            attempt.finished = false
             attempt.session = null
             feed(attempt)
           } else {

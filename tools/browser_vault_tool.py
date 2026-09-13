@@ -56,6 +56,23 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
+def _fence_for_task(task_id: str, fn):
+    """Run ``fn`` under the Bot Desktop lease fence for the task's LOCAL browser session.
+
+    The vault tools drive the page over the CDP supervisor without ever reaching
+    ``_run_browser_command``, so they consult the same fence that guards every other browser
+    path (the agent-browser subprocess and the ``browser_console`` fast path). While a human
+    holds the screen every read AND write against it is refused, and an operation that crossed
+    a takeover loses its result. ``fn`` returns the supervisor's result dict; the fence returns
+    ``{"success": False, "code": "human_has_control", ...}``.
+    """
+    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool_session import run_fenced
+
+    effective = _last_session_key(task_id)
+    return run_fenced(_active_sessions.get(effective) or {}, fn)
+
+
 def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
@@ -69,7 +86,9 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
 
         supervisor = SUPERVISOR_REGISTRY.get(task_id)
         if supervisor is not None:
-            sup = supervisor.evaluate_runtime(expression)
+            sup = _fence_for_task(task_id, lambda: supervisor.evaluate_runtime(expression))
+            if sup.get("code") == "human_has_control":
+                return sup
             if sup.get("ok"):
                 return {"success": True, "result": sup.get("result")}
             err = str(sup.get("error") or "")
@@ -147,7 +166,9 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
             ),
         }
 
-    sup = supervisor.evaluate_runtime(expression)
+    sup = _fence_for_task(task_id, lambda: supervisor.evaluate_runtime(expression))
+    if sup.get("code") == "human_has_control":
+        return sup
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -201,7 +222,9 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+    focused = _fence_for_task(task_id, lambda: supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind)))
+    if isinstance(focused, dict) and focused.get("code") == "human_has_control":
+        return None
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 
@@ -285,6 +308,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     from agent.vault_store import get_vault_store
 
     effective_task_id = task_id or "default"
+    refused = _fence_for_task(effective_task_id, lambda: None)
+    if refused is not None:
+        return json.dumps(refused)
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
     _focus_bound_origin(effective_task_id, "", "login")
@@ -333,6 +359,9 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
+    refused = _fence_for_task(effective_task_id, lambda: None)
+    if refused is not None:
+        return json.dumps(refused)
     _focus_bound_origin(effective_task_id, "", "otp")
     origin = _current_page_origin(effective_task_id)
     if not origin:
@@ -410,6 +439,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
+    refused = _fence_for_task(effective_task_id, lambda: None)
+    if refused is not None:
+        return json.dumps(refused)
     backend = backend_for_handle(handle)
     if backend is not None and backend.needs_unlock and not backend.is_unlocked():
         unlocked = json.loads(browser_vault_unlock(backend.name))

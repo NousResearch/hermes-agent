@@ -1,8 +1,9 @@
 """OpenAI image generation — ChatGPT/Codex OAuth variant.
 
-Same catalog/tiers as the ``openai`` plugin (``gpt-image-2`` low/medium/high), routed
-through the Codex Responses API ``image_generation`` tool, so no ``OPENAI_API_KEY`` is
-needed. Output is PNG; source images travel as Responses ``input_image`` parts.
+Same catalog/tiers as the ``openai`` plugin (GPT Image 2 and GPT Image 2.5
+Flare/Sunburst), routed through the Codex Responses API ``image_generation`` tool, so no
+``OPENAI_API_KEY`` is needed. Output is PNG; source images travel as Responses
+``input_image`` parts.
 
 Do NOT reintroduce an "account capability" classifier keyed on ``Tool choice
 'image_generation' not found in 'tools' parameter``: that 400 is a request-shape
@@ -26,6 +27,27 @@ from plugins.image_gen._common import (
     resolve_static_model, size_for)
 
 logger = logging.getLogger(__name__)
+
+# Mirrors the ``openai`` plugin's catalog so both OpenAI backends offer the same ids and a
+# stored ``image_gen.model`` keeps resolving when users switch auth mode. Each tier carries
+# the API model that serves it; ``_build_responses_payload`` sends that, not a fixed one.
+MODELS: Dict[str, Dict[str, Any]] = {
+    **{key: {**meta, "api_model": API_MODEL} for key, meta in GPT_IMAGE_2_TIERS.items()},
+    **{
+        model if quality == "auto" else f"{model}-{quality}": {
+            "display": f"GPT Image 2.5 {name} ({quality.title()})",
+            "speed": speed,
+            "strengths": strengths,
+            "api_model": model,
+            "quality": quality,
+        }
+        for model, name, speed, strengths in (
+            ("gpt-image-2.5-flare", "Flare", "Fast", "Everyday image generation and editing"),
+            ("gpt-image-2.5-sunburst", "Sunburst", "Slower", "Precision generation and editing"),
+        )
+        for quality in ("auto", "low", "medium", "high", "xhigh", "max")
+    },
+}
 
 # NOTE: do NOT reintroduce an "account capability" classifier keyed on ``Tool choice 'image_generation' not
 # found in 'tools' parameter``. That HTTP 400 is a *request-shape* rejection (the Codex backend resolves
@@ -74,9 +96,13 @@ def _summarize_error_body(body: str) -> str:
     return text[:_MAX_ERROR_BODY_CHARS]
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """``(tier_id, meta)``. ``explicit`` is the per-request ``model`` kwarg that
+    ``image_generation_tool`` already forwards; unknown ids fall through to the configured
+    default, matching ``resolve_static_model``'s documented behavior."""
     return resolve_static_model(
-        GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex",
+        explicit=explicit)
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -174,7 +200,8 @@ def _normalize_input_images(
 
 
 def _build_responses_payload(
-    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    *, prompt: str, size: str, quality: str, api_model: str = API_MODEL,
+    input_images: Optional[List[Dict[str, str]]] = None
 ) -> Dict[str, Any]:
     """Responses body for an image_generation call. No ``tool_choice``: Codex rejects every shape
     for forcing the hosted tool (looks it up as a *function* name), so the host model decides,
@@ -187,7 +214,7 @@ def _build_responses_payload(
         "input": [{"type": "message", "role": "user", "content": content}],
         "tools": [{
             "type": "image_generation",
-            "model": API_MODEL,
+            "model": api_model,
             "size": size,
             "quality": quality,
             "output_format": "png",
@@ -279,7 +306,8 @@ def _iter_sse_json(response: Any):
 
 
 def _collect_image_b64(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    token: str, *, prompt: str, size: str, quality: str, api_model: str = API_MODEL,
+    input_images: Optional[List[Dict[str, str]]] = None
 ) -> Optional[Dict[str, str]]:
     """Stream a Codex Responses image_generation call → ``{"b64", "source": "final"|"partial"}`` or
     ``None``. A partial is kept only when no final arrives; callers must not treat it as success."""
@@ -293,7 +321,7 @@ def _collect_image_b64(
         "Content-Type": "application/json",
     })
     payload = _build_responses_payload(
-        prompt=prompt, size=size, quality=quality, input_images=input_images)
+        prompt=prompt, size=size, quality=quality, api_model=api_model, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     final_b64: Optional[str] = None
@@ -318,11 +346,11 @@ def _collect_image_b64(
 
 
 class OpenAICodexImageGenProvider(StaticImageGenProvider):
-    """gpt-image-2 routed through ChatGPT/Codex OAuth instead of an API key."""
+    """GPT Image 2 / 2.5 routed through ChatGPT/Codex OAuth instead of an API key."""
 
     provider_id = "openai-codex"
     label = "OpenAI (Codex auth)"
-    models = GPT_IMAGE_2_TIERS
+    models = MODELS
     default_model_id = DEFAULT_MODEL
     price = "varies"
 
@@ -333,7 +361,9 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
-            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
+            "tag": (
+                "GPT Image 2 / 2.5 Flare / 2.5 Sunburst via ChatGPT/Codex OAuth — no API key "
+                "required; supports text and image inputs"),
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
@@ -359,7 +389,8 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             return error_factory("openai-codex", aspect)(
                 "httpx Python package not installed (pip install httpx)", "missing_dependency")
 
-        tier_id, meta = _resolve_model()
+        tier_id, meta = _resolve_model(kwargs.get("model"))
+        api_model = meta.get("api_model", API_MODEL)
         size = size_for(aspect)
         fail = error_factory("openai-codex", aspect, model=tier_id, prompt=prompt)
         attempts = _NONFINAL_RETRIES + 1
@@ -373,7 +404,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             for attempt in range(attempts):
                 collected = _collect_image_b64(
                     token, prompt=prompt, size=size, quality=meta["quality"],
-                    input_images=input_images or None)
+                    api_model=api_model, input_images=input_images or None)
                 if collected and collected.get("source") == "final" and collected.get("b64"):
                     break
                 if attempt < _NONFINAL_RETRIES:
@@ -418,7 +449,8 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             image=str(saved_path), model=tier_id, prompt=prompt, aspect_ratio=aspect,
             provider="openai-codex", modality="image" if input_images else "text",
             extra={
-                "size": size, "quality": meta["quality"], "input_image_count": len(input_images),
+                "size": size, "quality": meta["quality"], "api_model_requested": api_model,
+                "input_image_count": len(input_images),
                 "image_source": image_source, "requested_size": size, "pixel_size": pixel_size,
             })
 

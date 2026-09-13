@@ -43,6 +43,9 @@ def _tmp_hermes_home(tmp_path, monkeypatch):
 def provider(monkeypatch):
     # Codex plugin is API-key-independent; clear it to make the test honest.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Catalog selection reads this env var first; a value inherited from the
+    # developer's shell would silently decide which tier every test exercises.
+    monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
     return codex_plugin.OpenAICodexImageGenProvider()
 
 
@@ -59,9 +62,39 @@ class TestMetadata:
     def test_default_model(self, provider):
         assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
+    def test_list_models_covers_gpt_image_2_and_25_tiers(self, provider):
         ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        # Legacy ids keep their position so a stored ``image_gen.model`` still resolves.
+        assert ids[:3] == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        assert ids[3:] == [
+            "gpt-image-2.5-flare",
+            "gpt-image-2.5-flare-low",
+            "gpt-image-2.5-flare-medium",
+            "gpt-image-2.5-flare-high",
+            "gpt-image-2.5-flare-xhigh",
+            "gpt-image-2.5-flare-max",
+            "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-sunburst-low",
+            "gpt-image-2.5-sunburst-medium",
+            "gpt-image-2.5-sunburst-high",
+            "gpt-image-2.5-sunburst-xhigh",
+            "gpt-image-2.5-sunburst-max",
+        ]
+
+    def test_catalog_matches_the_api_key_openai_plugin(self, provider):
+        """Both OpenAI backends must offer the same ids: the picker shows one list, and a
+        user switching between API-key and OAuth auth keeps their selected model."""
+        from plugins.image_gen.openai import MODELS as OPENAI_MODELS
+
+        assert set(m["id"] for m in provider.list_models()) == set(OPENAI_MODELS)
+
+    def test_every_tier_declares_the_api_model_that_serves_it(self, provider):
+        for tier_id, meta in codex_plugin.MODELS.items():
+            assert meta["api_model"] in (
+                "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
+            # A 2.5 tier must never silently route to the gpt-image-2 API model.
+            if "2.5" in tier_id:
+                assert meta["api_model"] != "gpt-image-2"
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
         schema = provider.get_setup_schema()
@@ -127,11 +160,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
+        def _collect(token, *, prompt, size, quality, api_model, input_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                api_model=api_model,
                 input_images=input_images,
             ))
             return {"b64": _b64_png(), "source": "final"}
@@ -161,6 +195,51 @@ class TestGenerate:
         # Progressive previews disabled: partial frames were being saved as
         # finals and presented as smeared/unfinished images.
         assert tool["partial_images"] == 0
+
+    def test_selected_tier_routes_to_its_own_api_model(self, provider, monkeypatch):
+        """Regression: the payload previously hardcoded ``gpt-image-2``, so selecting a
+        2.5 tier would have generated with the old model while reporting the 2.5 id."""
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        seen = {}
+
+        def _collect(token, *, prompt, size, quality, api_model, input_images=None):
+            seen["api_model"] = api_model
+            seen["quality"] = quality
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        for tier, expected_model, expected_quality in (
+            ("gpt-image-2-high", "gpt-image-2", "high"),
+            ("gpt-image-2.5-flare", "gpt-image-2.5-flare", "auto"),
+            ("gpt-image-2.5-sunburst-max", "gpt-image-2.5-sunburst", "max"),
+        ):
+            result = provider.generate("a cat", model=tier)
+            assert result["success"] is True
+            assert result["model"] == tier
+            assert seen["api_model"] == expected_model
+            assert seen["quality"] == expected_quality
+            assert result["api_model_requested"] == expected_model
+
+    def test_env_var_selects_a_25_tier(self, provider, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2.5-sunburst-high")
+        tier_id, meta = codex_plugin._resolve_model()
+        assert tier_id == "gpt-image-2.5-sunburst-high"
+        assert meta["api_model"] == "gpt-image-2.5-sunburst"
+        assert meta["quality"] == "high"
+
+    def test_explicit_model_outranks_env_var(self, provider, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-low")
+        tier_id, meta = codex_plugin._resolve_model("gpt-image-2.5-flare-max")
+        assert tier_id == "gpt-image-2.5-flare-max"
+        assert meta["api_model"] == "gpt-image-2.5-flare"
+
+    def test_default_is_unchanged_for_existing_users(self, provider, monkeypatch):
+        """Adding tiers must not move anyone off their current model."""
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        tier_id, meta = codex_plugin._resolve_model()
+        assert tier_id == "gpt-image-2-medium"
+        assert meta["api_model"] == "gpt-image-2"
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()

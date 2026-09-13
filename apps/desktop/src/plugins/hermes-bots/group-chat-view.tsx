@@ -41,7 +41,7 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, $canonicalGroupNames, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
@@ -1361,7 +1361,9 @@ export function openGroupChat(group: string): void {
   if (typeof host.openWorkspace === 'function') {
     try {
       const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
-        title: group,
+        title: $canonicalGroupBindings.get()[group]
+          ? $canonicalGroupNames.get()[group] || botsText().canonical.loadingGroup
+          : group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,
         onClose: () => {

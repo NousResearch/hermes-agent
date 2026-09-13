@@ -61,6 +61,30 @@ beforeEach(() => {
 })
 
 describe('opening a room', () => {
+  it('uses canonical room names without changing their scoped identities', async () => {
+    const room = await loadRoom()
+    const { registerCanonicalGroup, $canonicalGroupBindings } = await import('./canonical-group-registry')
+    const open = vi.fn((_id: string, _options: { title: string }) => () => undefined)
+    host.openWorkspace = open
+    const firstRoute = { connectionId: 'first-owner', profile: 'team' }
+    const secondRoute = { connectionId: 'second-owner', profile: 'team' }
+    const first = registerCanonicalGroup(firstRoute, { room_id: 'same-room', name: 'Planning', members: [] })
+    const second = registerCanonicalGroup(secondRoute, { room_id: 'same-room', name: 'Review', members: [] })
+    const originalBinding = $canonicalGroupBindings.get()[first]
+
+    room.view.openGroupChat(first)
+    room.view.openGroupChat(second)
+    expect(open.mock.calls.map(call => (call[1] as { title: string }).title)).toEqual(['Planning', 'Review'])
+    expect(room.chat.$groupChatWorkspace.get()).toBe(second)
+    expect(originalBinding).toEqual({ ...firstRoute, roomId: 'same-room' })
+
+    expect(registerCanonicalGroup(firstRoute, { room_id: 'same-room', name: 'Renamed planning', members: [] })).toBe(first)
+    room.view.openGroupChat(first)
+    expect((open.mock.calls.at(-1)?.[1] as { title: string }).title).toBe('Renamed planning')
+    expect($canonicalGroupBindings.get()[first]).toBe(originalBinding)
+    expect(room.chat.$groupChatWorkspace.get()).toBe(first)
+  })
+
   it('follows the main-window tab open and close', async () => {
     const room = await loadRoom()
     let onClose: () => void = () => undefined

@@ -168,3 +168,32 @@ def test_cancellation_keeps_leases_until_real_worker_and_cache_eviction_settle(t
     finally:
         release.set()
         db.close()
+
+
+def test_gateway_passes_append_guard_and_keeps_cache_until_complete_selection(tmp_path):
+    runner, db = _runner(tmp_path)
+    try:
+        child = db.get_messages('child')
+        expected = db.get_message_redaction_snapshot('child', [child[0]['id']])
+        old_cache = dict(runner._agent_cache)
+        unrelated = db.get_messages('unrelated')
+        late = db.append_message('child', 'assistant', 'Late source-dependent answer')
+
+        async def scenario():
+            with pytest.raises(ValueError, match='redaction transcript changed'):
+                await runner.redact_native_message_payloads('route:child', 'child', expected,
+                    expected_message_watermark=child[0]['id'])
+            assert runner._agent_cache == old_cache
+            assert db.get_messages('child')[-1]['content'] == 'Late source-dependent answer'
+            assert db.try_acquire_session_turn_lease('child', 'after-rejected-selection')
+            db.release_session_turn_lease('child', 'after-rejected-selection')
+            fresh = db.get_message_redaction_snapshot('child', [child[0]['id'], late])
+            result = await runner.redact_native_message_payloads('route:child', 'child', fresh,
+                expected_message_watermark=late)
+            assert result['redacted_ids'] == [child[0]['id'], late]
+            assert db.get_messages('unrelated') == unrelated
+            assert set(runner._agent_cache) == {'route:unrelated'}
+
+        asyncio.run(scenario())
+    finally:
+        db.close()

@@ -615,6 +615,19 @@ class SessionMessagesMixin:
         with self._read_ctx() as conn:
             return self._transcript_redaction_revision_on_conn(conn, session_id)
 
+    @staticmethod
+    def message_redaction_snapshot(row, *, mode: str = 'payload') -> Dict[str, Any]:
+        """Pin a complete native row already read in the caller's consistent selection snapshot.
+
+        Providers can validate ownership and discover a turn span on one read transaction
+        without reopening a connection between that validation and hashing its payloads.
+        """
+        if mode not in ('payload', 'api_content'):
+            raise ValueError('unknown native redaction mode')
+        if type(row['id']) is not int or row['id'] <= 0:
+            raise ValueError('select a persisted native message row')
+        return {'id': row['id'], 'sha256': _redaction_digest(row), 'mode': mode}
+
     def get_message_redaction_snapshot(self, session_id: str, message_ids: List[int], *,
         mode: str = 'payload') -> List[Dict[str, Any]]:
         """Pin exact stored payloads, including archived rows, for an authorized selective erase.
@@ -634,15 +647,18 @@ class SessionMessagesMixin:
                 (session_id, *message_ids))}
             if len(rows) != len(message_ids):
                 raise ValueError('redaction source row missing')
-            return [{'id': row_id, 'sha256': _redaction_digest(rows[row_id]), 'mode': mode}
+            return [self.message_redaction_snapshot(rows[row_id], mode=mode)
                     for row_id in message_ids]
 
     def redact_message_payloads(self, session_id: str, expected_rows: List[Dict[str, Any]], *,
-        turn_lease_holder: Optional[str] = None) -> Dict[str, Any]:
+        turn_lease_holder: Optional[str] = None,
+        expected_message_watermark: Optional[int] = None) -> Dict[str, Any]:
         """Erase only selected owned payloads, preserving row IDs and conversation/tool structure.
 
         Current/archived source and derived-answer rows must be explicitly selected by the
         caller. All preimages and native writer leases are checked in the same transaction.
+        Turn-span callers also supply MAX(message.id) from their consistent read snapshot:
+        a late answer appended before writer admission requires a new selection, not success.
         Held leases raise the existing busy errors: the caller retains its erasure event for
         later reconciliation. A digest-only marker makes a completed selection replayable.
         Gateway callers use its serialized/cache-aware door; standalone callers must also
@@ -656,6 +672,9 @@ class SessionMessagesMixin:
                     or set(row['sha256']) - set('0123456789abcdef') for row in expected_rows)
                 or len({row['id'] for row in expected_rows}) != len(expected_rows)):
             raise ValueError('select 1..512 distinct native message preimages')
+        if (expected_message_watermark is not None and
+                (type(expected_message_watermark) is not int or expected_message_watermark < 0)):
+            raise ValueError('invalid native message watermark')
 
         def _do(conn):
             dependents = self._transcript_dependents_on_conn(conn, session_id)
@@ -665,6 +684,11 @@ class SessionMessagesMixin:
                 self._check_transcript_write_guards(conn, dependent, None,
                     turn_lease_holder=turn_lease_holder, reject_active_turn_lease=True,
                     reject_active_compression_lock=True, allow_closed_compression_parent=True)
+            if expected_message_watermark is not None:
+                current = conn.execute('SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?',
+                                       (session_id,)).fetchone()[0]
+                if current != expected_message_watermark:
+                    raise ValueError('redaction transcript changed')
             changed = []
             for expected in expected_rows:
                 row = conn.execute('SELECT * FROM messages WHERE session_id=? AND id=?',

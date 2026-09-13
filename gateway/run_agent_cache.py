@@ -55,7 +55,8 @@ def _clear_cached_transcript(agent: Any) -> None:
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
-    async def redact_native_message_payloads(self, session_key, session_id, expected_rows):
+    async def redact_native_message_payloads(self, session_key, session_id, expected_rows, *,
+                                            expected_message_watermark=None):
         """Owner-authorized internal erasure of exact rows in the routing key's profile.
 
         This is a storage operation, not sender authorization or an erasure queue. Busy
@@ -63,7 +64,8 @@ class GatewayAgentCacheMixin:
         waits for mutation, cache eviction and lease release, including offloaded writes.
         """
         operation = asyncio.create_task(
-            self._redact_native_message_payloads(session_key, session_id, expected_rows)
+            self._redact_native_message_payloads(session_key, session_id, expected_rows,
+                expected_message_watermark=expected_message_watermark)
         )
         cancelled = False
         while not operation.done():
@@ -78,7 +80,8 @@ class GatewayAgentCacheMixin:
             raise asyncio.CancelledError
         return operation.result()
 
-    async def _redact_native_message_payloads(self, session_key, session_id, expected_rows):
+    async def _redact_native_message_payloads(self, session_key, session_id, expected_rows, *,
+                                             expected_message_watermark=None):
         import os
         import uuid
         from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
@@ -145,6 +148,7 @@ class GatewayAgentCacheMixin:
                 result = await asyncio.to_thread(
                     store._redact_message_payloads_serialized, db, session_id, expected_rows,
                     session_ids=dependents, turn_lease_holder=holder,
+                    expected_message_watermark=expected_message_watermark,
                 )
             except (SessionCompressionInProgressError, SessionTurnLeaseLostError):
                 return {**pending, "reason": "active_transcript_writer"}

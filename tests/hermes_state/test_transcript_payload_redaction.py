@@ -139,3 +139,35 @@ def test_recalled_api_payload_is_erased_without_removing_the_human_question(tmp_
         assert db.redact_message_payloads('reader', expected)['redacted_ids'] == []
     finally:
         db.close()
+
+
+@pytest.mark.parametrize('change', ['late_answer', 'edited_anchor'])
+def test_selection_snapshot_rejects_append_and_edit_before_writer_admission(tmp_path, change):
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('reader', source='cli')
+        anchor = db.append_message('reader', 'user', 'source forgettoken')
+        result = db.append_message('reader', 'tool', 'original result', tool_call_id='read-1')
+        db.create_session('other', source='cli')
+        other = db.append_message('other', 'user', 'Keep unrelated work')
+        before = _rows(db)
+        # These are the exact rows the provider validated, not a second read
+        # performed after ownership checking. Another writer may now settle.
+        rows = [before[anchor], before[result]]
+        watermark = result
+        if change == 'late_answer':
+            assert db.try_acquire_session_turn_lease('reader', 'finishing-writer')
+            late = db.append_message('reader', 'assistant', 'Dependent late forgettoken answer')
+            db.release_session_turn_lease('reader', 'finishing-writer')
+        else:
+            db._execute_write(lambda conn: conn.execute('UPDATE messages SET content=? WHERE id=?',
+                                                       ('New unrelated question', anchor)))
+        selected = [db.message_redaction_snapshot(row) for row in rows]
+        changed = _rows(db)
+        with pytest.raises(ValueError, match='transcript changed|preimage changed'):
+            db.redact_message_payloads('reader', selected, expected_message_watermark=watermark)
+        assert _rows(db) == changed and _rows(db)[other] == before[other]
+        if change == 'late_answer':
+            fresh = db.get_message_redaction_snapshot('reader', [anchor, result, late])
+            receipt = db.redact_message_payloads('reader', fresh, expected_message_watermark=late)
+            assert receipt['redacted_ids'] == [anchor, result, late]
+            assert not db.search_messages('forgettoken', include_inactive=True)

@@ -108,7 +108,7 @@ class SessionTranscriptMixin:
         return self._lazy("_transcript_drain_lock", threading.RLock)
 
     def _redact_message_payloads_serialized(self, db, session_id, expected_rows, *,
-                                          session_ids, turn_lease_holder):
+                                          session_ids, turn_lease_holder, expected_message_watermark=None):
         """An exact DB rewrite cannot pass outstanding recovery copies of its lineage.
 
         Leave queues and files untouched: their normal recovery must settle before the
@@ -134,6 +134,7 @@ class SessionTranscriptMixin:
                     return {"status": "pending", "reason": "transcript_spool", "session_id": session_id}
             return db.redact_message_payloads(
                 session_id, expected_rows, turn_lease_holder=turn_lease_holder,
+                expected_message_watermark=expected_message_watermark,
             )
 
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:

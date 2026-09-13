@@ -32,7 +32,7 @@ async def test_settled_execution_stops_stamping_idle_mutations_and_desktop_fixtu
     assert not {'authority_epoch', 'execution_generation', 'admission_id'} & set(idle[0]['params']), \
         'a settled execution kept stamping later idle mutations'
     # The Desktop fence tests replay this exact server output; keep the committed copy honest.
-    committed = json.loads(FIXTURE.read_text())
+    committed = json.loads(FIXTURE.read_text(encoding='utf-8'))
     for label in ('epoch1', 'epoch2'):
         assert _projection(committed[label]['frames']) == _projection(captured[label]['frames'])
     assert _projection(committed['epoch2']['idle_mutation_frames']) == _projection(idle)

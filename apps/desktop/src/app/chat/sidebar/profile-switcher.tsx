@@ -966,7 +966,11 @@ function FleetRestGroup({
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const dividerLabel = group.reachable ? p.fleet.gateway(group.label) : p.fleet.gatewayUnreachable(group.label)
+
+  const dividerLabel = group.reachable
+    ? p.fleet.gateway(group.label)
+    : `${group.needsSignIn ? `${p.fleet.gateway(group.label)} · ${t.settings.toolsets.needsSignIn}` : p.fleet.gatewayUnreachable(group.label)}${group.error ? `\n${group.error}` : ''}`
+
   const defaultKey = fleetRouteKey(group.connectionId, group.defaultAgent.profile)
 
   return (

@@ -1,6 +1,6 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared/gateway-events'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
+import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
 import { useEffect, useMemo, useState } from 'react'
 

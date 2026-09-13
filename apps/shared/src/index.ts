@@ -62,15 +62,6 @@ export {
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export {
-  applyDocumentLocale,
-  type EndonymLocale,
-  isRecord,
-  LOCALE_ENDONYMS,
-  mergeTranslations,
-  RTL_LOCALES,
-  type TranslationOverride
-} from './i18n'
-export {
   type ApprovalRequestPayload,
   BACKEND_EVENT_NAMES,
   type BackendGatewayEventMap,
@@ -113,6 +104,15 @@ export {
   type WakeDetectedPayload
 } from './gateway-events'
 export {
+  applyDocumentLocale,
+  type EndonymLocale,
+  isRecord,
+  LOCALE_ENDONYMS,
+  mergeTranslations,
+  RTL_LOCALES,
+  type TranslationOverride
+} from './i18n'
+export {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
@@ -134,7 +134,6 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
-export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
 export { modelSearchText } from './model-search-text'
 export {
   DEFAULT_REASONING_EFFORT,
@@ -144,6 +143,7 @@ export {
   type ReasoningEffort,
   type ReasoningEffortValue
 } from './reasoning-effort'
+export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

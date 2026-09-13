@@ -6,7 +6,9 @@ import {
   DEFAULT_SKIN_NAME,
   DEFAULT_TYPOGRAPHY,
   EMOJI_FALLBACK,
-  nousAltTheme
+  hepburnTheme,
+  nousAltTheme,
+  nousTheme
 } from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
@@ -48,5 +50,28 @@ describe('nous-alt is the retired Nous, not the default', () => {
     expect(BUILTIN_THEMES.nous).not.toBe(nousAltTheme)
     expect(nousAltTheme.darkColors?.background).toBe('#0D2F86')
     expect(BUILTIN_THEMES.nous.darkColors?.background).not.toBe(nousAltTheme.darkColors?.background)
+  })
+})
+
+describe('Hepburn desktop theme', () => {
+  it('registers the WebUI palette and follows Nous typography', () => {
+    expect(BUILTIN_THEMES.hepburn).toBe(hepburnTheme)
+    expect(hepburnTheme.description).toContain('Hermes WebUI')
+    expect(hepburnTheme.typography).toBe(nousTheme.typography)
+
+    expect(hepburnTheme.colors).toMatchObject({
+      background: '#fff3f7',
+      foreground: '#3d1a28',
+      primary: '#d44a7a',
+      sidebarBackground: '#fbe4ed'
+    })
+
+    expect(hepburnTheme.darkColors).toMatchObject({
+      background: '#110a0f',
+      foreground: '#f2e4ee',
+      card: '#241420',
+      primary: '#f278ad',
+      sidebarBackground: '#1e0f19'
+    })
   })
 })

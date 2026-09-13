@@ -1649,3 +1649,225 @@ class TestGoalToolConstraints:
 
         assert GoalContract(tool_constraints=GoalToolConstraints()).is_empty()
         assert GoalContract(tool_constraints=GoalToolConstraints.from_dict({})).is_empty()
+
+
+class TestGoalJudgeLandingGate:
+    @staticmethod
+    def _landing_contract(*, restart_required=False):
+        from hermes_cli.goals import GoalContract, GoalLanding
+
+        return GoalContract(
+            outcome="land prod",
+            verification="runtime receipt proves landing",
+            landing=GoalLanding(
+                required_state="COMMITTED",
+                targets=["prod"],
+                restart_required=restart_required,
+            ),
+        )
+
+    @staticmethod
+    def _capture_prompt(captured):
+        response = MagicMock(
+            choices=[MagicMock(message=MagicMock(content='{"verdict":"continue","reason":"inspect evidence"}'))]
+        )
+
+        def _fake(**kwargs):
+            captured.update(kwargs)
+            return response
+
+        return _fake
+
+    def test_judge_prompt_contains_structured_landing_and_only_runtime_receipts(self):
+        from hermes_cli import goals
+        from hermes_cli.goals import ChangeReceipt
+
+        captured = {}
+        status = {
+            "fulfilled": False,
+            "required_state": "COMMITTED",
+            "effective_required_state": "COMMITTED",
+            "restart_required": False,
+            "reason": "unfulfilled",
+            "targets": [{
+                "target": "prod", "fulfilled": False, "observed_state": "WRITTEN",
+                "reason": "insufficient-state", "receipt_ids": [],
+            }],
+            "receipt_ids": [],
+        }
+        receipts = [
+            ChangeReceipt(
+                receipt_id="legacy", target="prod", scope="file", source_reference="legacy-source",
+                state="COMMITTED", issued_at=1.0,
+            ),
+            ChangeReceipt(
+                receipt_id="runtime", target="prod", scope="file", source_reference="tool:patch:call-1",
+                state="WRITTEN", issued_at=2.0, mutation_generation=1, runtime_issued=True,
+            ),
+            ChangeReceipt(
+                receipt_id="other-runtime", target="other", scope="file",
+                source_reference="tool:patch:other", state="WRITTEN", issued_at=3.0,
+                mutation_generation=1, runtime_issued=True,
+            ),
+        ]
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=self._capture_prompt(captured)):
+            goals.judge_goal(
+                "land prod", "done", contract=self._landing_contract(),
+                landing_status=status, change_receipts=receipts,
+            )
+
+        user_prompt = next(
+            message["content"] for message in captured["messages"] if message["role"] == "user"
+        )
+        assert "Deterministic Runtime landing status" in user_prompt
+        assert '"fulfilled": false' in user_prompt
+        assert "tool:patch:call-1" in user_prompt
+        assert "legacy-source" not in user_prompt
+        assert "tool:patch:other" not in user_prompt
+
+    def test_judge_receipt_evidence_is_bounded(self):
+        from hermes_cli import goals
+        from hermes_cli.goals import ChangeReceipt, MAX_CHANGE_RECEIPTS
+
+        captured = {}
+        status = {
+            "fulfilled": False, "required_state": "COMMITTED",
+            "effective_required_state": "COMMITTED", "restart_required": False,
+            "reason": "unfulfilled", "targets": [{"target": "prod"}], "receipt_ids": [],
+        }
+        receipts = [
+            ChangeReceipt(
+                receipt_id=f"receipt-{i}", target="prod", scope="file",
+                source_reference=f"source-{i}", state="WRITTEN", issued_at=float(i),
+                mutation_generation=i + 1, runtime_issued=True,
+            )
+            for i in range(MAX_CHANGE_RECEIPTS + 8)
+        ]
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=self._capture_prompt(captured)):
+            goals.judge_goal(
+                "land prod", "done", contract=self._landing_contract(),
+                landing_status=status, change_receipts=receipts,
+            )
+
+        user_prompt = next(
+            message["content"] for message in captured["messages"] if message["role"] == "user"
+        )
+        assert user_prompt.count('"receipt_id"') == MAX_CHANGE_RECEIPTS
+        assert '"source_reference": "source-7"' not in user_prompt
+        assert '"source_reference": "source-8"' in user_prompt
+        assert '"source_reference": "source-39"' in user_prompt
+
+    def test_evaluate_passes_prejudge_landing_snapshot_and_receipts(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-landing-snapshot")
+        mgr.set("land prod", contract=self._landing_contract())
+        receipt = mgr.issue_change_receipt(
+            target="prod", scope="file", source_reference="tool:patch:call-2",
+            state="WRITTEN", mutation=True,
+        )
+        captured = {}
+
+        def _judge(*args, **kwargs):
+            captured.update(kwargs)
+            return "continue", "more work", False, None, False
+
+        with patch.object(goals, "judge_goal", side_effect=_judge):
+            mgr.evaluate_after_turn("working")
+
+        assert captured["landing_status"] == mgr.landing_status()
+        assert captured["change_receipts"] == [receipt]
+
+    def test_unmet_landing_overrides_judge_done(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-landing-unmet")
+        mgr.set("land prod", contract=self._landing_contract())
+
+        with patch.object(goals, "judge_goal", return_value=("done", "assistant says done", False, None, False)):
+            decision = mgr.evaluate_after_turn("all done")
+
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert mgr.state.status == "active"
+        assert "deterministic landing gate not fulfilled" in decision["reason"]
+
+    def test_fulfilled_landing_permits_judge_done(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-landing-fulfilled")
+        mgr.set("land prod", contract=self._landing_contract())
+        mgr.issue_change_receipt(
+            target="prod", scope="git", source_reference="commit:abc",
+            state="COMMITTED", mutation=True,
+        )
+
+        with patch.object(goals, "judge_goal", return_value=("done", "verified", False, None, False)):
+            decision = mgr.evaluate_after_turn("evidence attached")
+
+        assert decision["status"] == "done"
+        assert decision["verdict"] == "done"
+        assert decision["should_continue"] is False
+        assert mgr.state.status == "done"
+
+    def test_goal_without_landing_keeps_legacy_done_semantics(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalContract, GoalManager
+
+        mgr = GoalManager(session_id="judge-no-landing")
+        mgr.set("plain goal", contract=GoalContract(outcome="finish it"))
+
+        with patch.object(goals, "judge_goal", return_value=("done", "verified", False, None, False)) as judge:
+            decision = mgr.evaluate_after_turn("done with evidence")
+
+        assert decision["status"] == "done"
+        assert judge.call_args.kwargs["landing_status"] is None
+        assert judge.call_args.kwargs["change_receipts"] is None
+
+    def test_restart_required_unmet_done_blocks_and_pauses(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-restart-unmet")
+        mgr.set("land and restart prod", contract=self._landing_contract(restart_required=True))
+        mgr.issue_change_receipt(
+            target="prod", scope="git", source_reference="commit:abc",
+            state="COMMITTED", mutation=True,
+        )
+
+        with patch.object(goals, "judge_goal", return_value=("done", "code complete", False, None, False)):
+            decision = mgr.evaluate_after_turn("implementation complete")
+
+        assert decision["status"] == "paused"
+        assert decision["verdict"] == "blocked"
+        assert decision["should_continue"] is False
+        assert decision["continuation_prompt"] is None
+        assert mgr.state.status == "paused"
+        assert "required LOADED" in decision["reason"]
+
+    def test_restart_required_fresh_verified_load_permits_done(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="judge-restart-fulfilled")
+        mgr.set("land and restart prod", contract=self._landing_contract(restart_required=True))
+        mgr.issue_change_receipt(
+            target="prod", scope="load", source_reference="restart:load",
+            state="LOADED", mutation=True,
+        )
+        mgr.issue_change_receipt(
+            target="prod", scope="verify", source_reference="probe:healthy",
+            state="LOADED",
+        )
+
+        with patch.object(goals, "judge_goal", return_value=("done", "loaded and verified", False, None, False)):
+            decision = mgr.evaluate_after_turn("runtime evidence attached")
+
+        assert decision["status"] == "done"
+        assert decision["verdict"] == "done"
+        assert mgr.state.status == "done"

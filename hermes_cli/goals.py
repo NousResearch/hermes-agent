@@ -211,6 +211,7 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Completion contract (the authoritative definition of done):\n"
     "{contract_block}\n\n"
+    "{landing_evidence_block}"
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "Current time: {current_time}\n\n"
@@ -1408,6 +1409,52 @@ def _render_background_block(background_processes: Optional[List[Dict[str, Any]]
     return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
+def _runtime_receipt_references(
+    receipts: Optional[List[ChangeReceipt]], landing_status: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Bounded, prompt-safe references for runtime-issued receipts relevant to landing targets."""
+    target_names = {
+        item.get("target") for item in (landing_status or {}).get("targets", [])
+        if isinstance(item, dict) and isinstance(item.get("target"), str)
+    }
+    if not target_names:
+        return []
+    runtime = [
+        receipt for receipt in (receipts or [])
+        if isinstance(receipt, ChangeReceipt)
+        and receipt.runtime_issued
+        and (not target_names or receipt.target in target_names)
+    ][-MAX_CHANGE_RECEIPTS:]
+    return [
+        {
+            "receipt_id": _truncate(receipt.receipt_id, 80),
+            "target": _truncate(receipt.target, 300),
+            "scope": _truncate(receipt.scope, 100),
+            "source_reference": _truncate(receipt.source_reference, 300),
+            "state": receipt.state,
+            "issued_at": receipt.issued_at,
+            "mutation_generation": receipt.mutation_generation,
+            "verification_generation": receipt.verification_generation,
+        }
+        for receipt in runtime
+    ]
+
+
+def _render_landing_evidence_block(
+    landing_status: Optional[Dict[str, Any]], receipts: Optional[List[ChangeReceipt]],
+) -> str:
+    """Structured Runtime evidence for the judge; empty keeps legacy prompts unchanged."""
+    if not isinstance(landing_status, dict):
+        return ""
+    references = _runtime_receipt_references(receipts, landing_status)
+    return (
+        "Deterministic Runtime landing status (authoritative; Assistant prose cannot override it):\n"
+        f"{json.dumps(landing_status, ensure_ascii=False, sort_keys=True)}\n"
+        "Bounded Runtime-issued change receipt references:\n"
+        f"{json.dumps(references, ensure_ascii=False, sort_keys=True)}\n\n"
+    )
+
+
 def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout: Optional[float]) -> str:
     """Route through call_llm so auxiliary.goal_judge.* config (provider/model, extra_body,
     reasoning_effort, retries) all apply. Returns the raw reply text."""
@@ -1433,6 +1480,8 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    landing_status: Optional[Dict[str, Any]] = None,
+    change_receipts: Optional[List[ChangeReceipt]] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -1461,6 +1510,7 @@ def judge_goal(
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
+        landing_evidence_block=_render_landing_evidence_block(landing_status, change_receipts),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )
     if contract is not None and not contract.is_empty():
@@ -2099,10 +2149,34 @@ class GoalManager:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision
 
+        # Snapshot Runtime-owned landing evidence before the LLM judge runs. Old goals without a
+        # landing contract keep the legacy prompt and verdict path byte-for-byte: their fulfilled
+        # "no-landing" status is not injected and never gates DONE.
+        landing_status = self.landing_status()
+        landing = state.contract.landing if state.contract is not None else None
+        landing_applicable = landing is not None and not landing.is_empty()
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            landing_status=landing_status if landing_applicable else None,
+            change_receipts=state.receipts if landing_applicable else None,
         )
+        landing_gate_blocked = False
+        if verdict == "done" and landing_applicable and not landing_status.get("fulfilled", False):
+            target_reasons = ", ".join(
+                f"{item.get('target')}: {item.get('reason')}"
+                for item in landing_status.get("targets", []) if isinstance(item, dict)
+            ) or str(landing_status.get("reason") or "unfulfilled")
+            required = landing_status.get("effective_required_state") or landing_status.get("required_state")
+            reason = f"deterministic landing gate not fulfilled (required {required}; {target_reasons})"
+            if landing_status.get("restart_required"):
+                # Once the semantic judge considers the work DONE, missing fresh restart/load
+                # evidence needs operator/external-executor action. Pause instead of re-poking the
+                # agent into an infinite CONTINUE loop.
+                verdict = "blocked"
+                landing_gate_blocked = True
+            else:
+                verdict = "continue"
         state.last_verdict = verdict
         state.last_reason = reason
         # Parse failures reset on any usable reply INCLUDING transport errors, so a flaky network
@@ -2119,6 +2193,11 @@ class GoalManager:
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
         if verdict == "blocked":
+            if landing_gate_blocked:
+                return self._pause_decision(
+                    f"deterministic landing blocked: {reason}", "blocked", reason,
+                    f"🚫 Goal landing incomplete — paused: {reason}",
+                )
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,
                 f"🚫 Goal judged unachievable — paused: {reason} Re-scope with /goal set, or override with /goal resume.",

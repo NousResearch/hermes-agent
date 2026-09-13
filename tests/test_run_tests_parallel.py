@@ -20,6 +20,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -250,6 +251,63 @@ def _make_probe_dir(tmp_path: Path) -> Path:
         "def test_beta():\n    assert True\n"
     )
     return probe_dir
+
+
+@pytest.mark.parametrize(
+    "workers, jobs, expected",
+    [
+        (None, [], 3),
+        ("", [], 3),
+        ("2", [], 2),
+        ("4", ["-j", "1"], 1),
+        ("invalid", ["-j", "2"], 2),
+        ("0", ["--jobs", "2"], 2),
+        ("-1", ["--jobs=2"], 2),
+        ("invalid", ["-j2"], 2),
+    ],
+)
+def test_worker_selection(tmp_path, monkeypatch, capsys, workers, jobs, expected):
+    """Defaults stay bounded on large hosts; explicit jobs override the env."""
+    runner = Path(__file__).resolve().parent.parent / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("run_tests_parallel", runner)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod.os, "cpu_count", lambda: 128)
+    monkeypatch.setattr(mod, "_save_durations", lambda *args: None)
+    if workers is None:
+        monkeypatch.delenv("HERMES_TEST_WORKERS", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_TEST_WORKERS", workers)
+    probe_dir = _make_probe_dir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(runner), str(probe_dir), *jobs])
+
+    assert mod.main() == 0
+    output = capsys.readouterr().out
+    assert f"running with -j {expected}" in output
+    assert "2 tests passed" in output
+
+
+@pytest.mark.parametrize("value", ["invalid", "1.5", "0", "-2"])
+@pytest.mark.parametrize("source", ["env", "-j", "--jobs", "--jobs="])
+def test_invalid_workers_are_usage_errors(tmp_path, monkeypatch, value, source):
+    """Bad worker counts fail before discovery without a traceback."""
+    runner = Path(__file__).resolve().parent.parent / "scripts" / "run_tests_parallel.py"
+    monkeypatch.setenv("HERMES_TEST_WORKERS", value if source == "env" else "3")
+    jobs = [] if source == "env" else (
+        [f"--jobs={value}"] if source == "--jobs=" else [source, value]
+    )
+    proc = subprocess.run(
+        [sys.executable, str(runner), "--paths", str(tmp_path), *jobs],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+
+    assert proc.returncode == 2, proc.stdout
+    assert "usage:" in proc.stdout
+    assert "error:" in proc.stdout
+    assert value in proc.stdout
+    assert "Traceback" not in proc.stdout
+    assert "No test files to run" not in proc.stdout
 
 
 def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:

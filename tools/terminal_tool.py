@@ -633,10 +633,18 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
 
+    env_vars = {}
+    if env_type == "local":
+        from hermes_cli.config import validate_terminal_env_vars
+
+        env_vars = validate_terminal_env_vars(
+            _parse_env_var("TERMINAL_ENV_VARS", "{}", json.loads, "valid JSON"))
+
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
     return {
         "env_type": env_type,
+        "env_vars": env_vars,
         "modal_mode": coerce_modal_mode(_tenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": _tenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,

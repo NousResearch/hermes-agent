@@ -77,7 +77,9 @@ def _create_configured_env(
         container_config=(
             _container_config_from_config(config) if _is_container_backend(env_type) else None
         ),
-        local_config=local_config, task_id=task_id, host_cwd=host_cwd,
+        local_config=({**(local_config or {}), "env_vars": config.get("env_vars", {})}
+                      if env_type == "local" else local_config),
+        task_id=task_id, host_cwd=host_cwd,
     )
 
 

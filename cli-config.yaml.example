@@ -368,6 +368,13 @@ terminal:
   # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
   # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180
+  # Literal KEY: VALUE pairs for LOCAL subprocesses and their descendants only.
+  # Unlike env_passthrough (names forwarded from the host environment) and
+  # docker_env (literal pairs for Docker only). Values must be str/int/float/bool.
+  # Use env_vars, not env (TERMINAL_ENV is the backend selector).
+  # Provider/credential names in the Hermes secret blocklist are silently stripped
+  # from env_vars; secrets belong in .env, not here.
+  env_vars: {}  # Example: {HERMES_TEST_WORKERS: 3}
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
   #   real    - force your real OS-user HOME

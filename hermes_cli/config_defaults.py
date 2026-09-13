@@ -288,6 +288,9 @@ DEFAULT_CONFIG = {
         # Env vars passed into sandboxed terminal/execute_code (skill-declared
         # required_environment_variables pass through automatically).
         "env_passthrough": [],
+        # Literal KEY: VALUE pairs for local subprocesses only. env_passthrough lists host
+        # variable names to forward; docker_env supplies literal pairs for Docker only.
+        "env_vars": {},
         # HOME for host tool subprocesses: "auto" = host keeps the real OS-user HOME, containers use
         # HERMES_HOME/home; "real" = force real HOME; "profile" = force HERMES_HOME/home when it
         # exists (strict per-profile isolation).

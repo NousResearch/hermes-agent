@@ -18,7 +18,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home  # noqa: F401 — patched by tests
 
-from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS, SECTION_REGISTRIES, VECTOR_PROVIDERS, validate_oss_config
+from ._oss_providers import EMBEDDER_PROVIDERS, KNOWN_DIMS, LLM_PROVIDERS, SECTION_REGISTRIES, VECTOR_PROVIDERS, validate_oss_config, vector_default_config
 
 _OLLAMA_URL = "http://localhost:11434"
 _PGVECTOR_CONTAINER, _PGVECTOR_IMAGE, _PGVECTOR_PASSWORD = "hermes-pgvector", "pgvector/pgvector:pg17", "hermes"
@@ -123,7 +123,7 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     if dims:
         embedder_config["embedding_dims"] = dims
     vector_id = flags.get("oss_vector", "qdrant")
-    vector_config = dict(VECTOR_PROVIDERS[vector_id]["default_config"])
+    vector_config = vector_default_config(vector_id)
     for key in _VECTOR_FLAG_KEYS.get(vector_id, ()):
         if val := flags.get(f"oss_vector_{key}"):
             vector_config[key] = int(val) if key == "port" else val
@@ -404,7 +404,7 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     env_writes: dict[str, str] = {}
     llm_id, llm_def, llm_model, llm_url = _configure_model_provider("LLM", LLM_PROVIDERS, hermes_home, env_writes)
     embedder_id, _, embedder_model, embedder_url = _configure_model_provider("Embedder", EMBEDDER_PROVIDERS, hermes_home, env_writes, llm=(llm_id, llm_def))
-    vector_items = [(v["label"], _VECTOR_DESCRIPTIONS.get(pid, lambda cfg: pid)(v.get("default_config", {}))) for pid, v in VECTOR_PROVIDERS.items()]
+    vector_items = [(v["label"], _VECTOR_DESCRIPTIONS.get(pid, lambda cfg: pid)(vector_default_config(pid))) for pid, v in VECTOR_PROVIDERS.items()]
     vector_id = list(VECTOR_PROVIDERS)[_curses_select("Vector Store", vector_items, 0)]
     # Auto-setup: ensure Ollama is running and models are pulled; ensure pgvector is reachable (offer Docker if not).
     ollama_models = [m for pid, m in ((llm_id, llm_model), (embedder_id, embedder_model)) if pid == "ollama"]

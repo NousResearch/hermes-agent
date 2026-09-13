@@ -31,6 +31,8 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from tools.ansi_strip import strip_unicode_tags
+
 logger = logging.getLogger(__name__)
 
 
@@ -227,12 +229,17 @@ def browser_vault_list() -> str:
             errors.append({"backend": backend.name, "error": str(exc)[:200]})
             continue
         for meta in metas:
-            entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
-                     "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+            # Same scrub as VaultItemMeta.to_dict(): this listing is what the
+            # model reads, and manager-supplied titles/usernames can carry
+            # invisible TAG payloads. Handle and origin stay exact — fills and
+            # origin checks route by them.
+            entry = {"handle": meta.id, "backend": backend.name, "label": strip_unicode_tags(meta.label),
+                     "kind": meta.kind, "origin": meta.origin,
+                     "available": meta.kind == "login" or bool(meta.origin)}
             if meta.has_otp or backend.needs_unlock:
                 entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
             if meta.identifier:
-                entry["identifier"] = meta.identifier
+                entry["identifier"] = strip_unicode_tags(meta.identifier)
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}

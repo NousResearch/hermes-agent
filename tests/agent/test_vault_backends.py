@@ -20,6 +20,7 @@ import pytest
 
 from agent.vault_backends import unlock as unlock_mod
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
+from agent.vault_store import VaultItemMeta
 
 # A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
 # (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
@@ -168,3 +169,29 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
+
+
+def test_browser_vault_list_scrubs_tag_characters_but_keeps_handle(fake_bw):
+    # Manager titles/usernames are untrusted display text: invisible TAG
+    # characters must be stripped from what the model reads, while the opaque
+    # vendor handle stays byte-exact so fills still route.
+    exe, log = fake_bw
+    from tools.browser_vault_tool import browser_vault_list
+
+    smuggle = "Example\U000E0000\U000E0069\U000E0067\U000E006E\U000E006F\U000E0072\U000E0065"
+    meta = VaultItemMeta(
+        id="bw:tag1", kind="login", label=smuggle, origin="https://example.com",
+        created_at="2026-01-01T00:00:00Z", identifier_type="username",
+        identifier="jane@example.com\U000E0000")
+    backend = BitwardenLoginBackend({"enabled": True, "binary_path": str(exe)})
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]), \
+         patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), \
+         patch.object(BitwardenLoginBackend, "list_items", return_value=[meta]), \
+         patch.object(type(backend), "is_unlocked", return_value=True), \
+         patch.object(type(backend), "needs_unlock", new_callable=lambda: property(lambda self: False)):
+        listed = json.loads(browser_vault_list())
+    entry = listed["items"][0]
+    assert entry["handle"] == "bw:tag1"
+    assert entry["label"] == "Example"
+    assert entry["identifier"] == "jane@example.com"
+    assert "\U000E0000" not in json.dumps(listed)

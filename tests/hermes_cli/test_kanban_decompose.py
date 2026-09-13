@@ -131,7 +131,7 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
         p.start()
     try:
         with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
-            "hermes_cli.kanban_decompose._load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):
             outcome = decomp.decompose_task(tid, author="me")

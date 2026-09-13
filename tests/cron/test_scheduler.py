@@ -1087,7 +1087,8 @@ class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
 
     def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
-        """When config.yaml is malformed, a warning should be logged."""
+        """When config.yaml is malformed, the shared config loader warns loudly (and serves the
+        last known-good copy instead of silently dropping the user's overrides)."""
         bad_yaml = tmp_path / "config.yaml"
         bad_yaml.write_text("invalid: yaml: [[[bad")
 
@@ -1116,11 +1117,11 @@ class TestRunJobConfigLogging:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            with caplog.at_level(logging.WARNING):
                 run_job(job)
 
-        assert any("failed to load config.yaml" in r.message for r in caplog.records), \
-            f"Expected 'failed to load config.yaml' warning in logs, got: {[r.message for r in caplog.records]}"
+        assert any("Failed to parse" in r.message and "config.yaml" in r.message for r in caplog.records), \
+            f"Expected a config.yaml parse warning in logs, got: {[r.message for r in caplog.records]}"
 
 
 class TestRunJobConfigEnvVarExpansion:

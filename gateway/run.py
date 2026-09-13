@@ -2044,19 +2044,10 @@ def _bridge_config_to_env(_cfg: dict) -> None:
 
 
 def _load_bridge_config(config_path: Path) -> dict:
-    """Raw config read for the presence-sensitive env bridge, with the managed overlay applied. Raw (not
-    defaults-merged) so only keys the user wrote are bridged, else all of DEFAULT_CONFIG would be
-    exported; the overlay applies BEFORE bridging so pinned values win in env too."""
-    from hermes_cli.config import _expand_env_vars, read_user_config_raw
-    cfg = _expand_env_vars(read_user_config_raw(config_path))
-    if not isinstance(cfg, dict):
-        cfg = {}
-    try:
-        from hermes_cli import managed_scope
-        cfg = managed_scope.apply_managed_overlay(cfg)
-    except Exception:
-        pass
-    return cfg
+    """Effective USER config (no defaults) for the presence-sensitive env bridge: only keys the user
+    or the managed layer wrote get bridged, else all of DEFAULT_CONFIG would be exported."""
+    from hermes_cli.config_effective import load_user_config_effective
+    return load_user_config_effective(config_path)
 
 
 _config_path = _hermes_home / 'config.yaml'
@@ -2408,8 +2399,7 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        # Canonical loader so managed overlay / ${VAR} expansion reach the fallback chain.
-        cfg = _load_gateway_runtime_config()
+        cfg = _load_gateway_config()
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -2814,51 +2804,18 @@ def _gateway_config_home() -> Path:
 
 
 def _load_gateway_config(config_path: "Path | None" = None) -> dict:
-    """Load and parse a gateway config.yaml, returning {} on any error (fail-open).
-    Defaults to the active gateway home (``_hermes_home`` monkeypatches apply); multiplexers pass a path.
+    """The effective user config.yaml (managed overlay, ``${VAR}`` expansion, model-key canon; no
+    DEFAULT_CONFIG merge) — ``{}`` on any error (fail-open). Defaults to the active gateway home
+    (``_hermes_home`` monkeypatches apply); multiplexers pass a path.
     """
     if config_path is None:
         config_path = _gateway_config_home() / 'config.yaml'
-    raw: dict = {}
-    used_canonical = False
     try:
-        from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path via shared cache when the path is canonical; else direct read (test monkeypatches).
-        if config_path == get_config_path():
-            raw = read_raw_config()
-            used_canonical = True
+        from hermes_cli.config_effective import load_user_config_effective
+        return load_user_config_effective(config_path)
     except Exception:
-        pass
-
-    if not used_canonical:
-        try:
-            if config_path.exists():
-                import yaml
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    raw = yaml.safe_load(f) or {}
-        except Exception:
-            logger.debug("Could not load gateway config from %s", config_path)
-            raw = {}
-
-    # Neither read_raw_config() nor yaml.safe_load carries the managed merge; overlay on both paths.
-    try:
-        from hermes_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
-    if not isinstance(raw, dict):
+        logger.debug("Could not load gateway config from %s", config_path, exc_info=True)
         return {}
-    # Canonicalize model-id aliases (model.name/model.model → model.default) and migrate stale root
-    # provider/base_url: the gateway bypasses load_config(), else ``model: {name: <id>}`` is empty.
-    try:
-        # The gateway bypasses load_config() (it reads raw YAML for speed), so the normalization that
-        # load_config() applies must be replayed here or the gateway would resolve an empty model for
-        # ``model: {name: <id>}`` configs while the CLI resolves it correctly. See issue #34500. Fail-open.
-        from hermes_cli.config import _normalize_root_model_keys
-        raw = _normalize_root_model_keys(raw)
-    except Exception:
-        pass
-    return raw
 
 
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
@@ -2876,18 +2833,6 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
         "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
         "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
-
-
-def _load_gateway_runtime_config() -> dict:
-    """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
-    Expansion failures are deliberately NOT swallowed: an unexpanded dict would mask the bug fixed here.
-    """
-    cfg = _load_gateway_config()
-    if not isinstance(cfg, dict) or not cfg:
-        return {}
-    from hermes_cli.config import _expand_env_vars
-    expanded = _expand_env_vars(cfg)
-    return expanded if isinstance(expanded, dict) else {}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:

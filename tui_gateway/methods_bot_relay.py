@@ -21,8 +21,8 @@ method = _registry.method
 
 def _relay_root() -> Path:
     """Install root shared by every profile (relay state is install-wide)."""
-    home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
-    return home.parent.parent if home.parent.name == "profiles" else home
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
 
 
 def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:

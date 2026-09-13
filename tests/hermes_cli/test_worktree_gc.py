@@ -153,16 +153,22 @@ class TestReclaim:
         )
         assert probe.returncode != 0, "branch should be gone with its tree"
 
-    def test_untracked_files_archived_before_removal(self, repo):
+    def test_untracked_files_archived_under_the_active_profile_home(self, repo, tmp_path, monkeypatch):
+        """The archive follows the active Hermes home (a named profile here), never ~/.hermes."""
+        native_home = tmp_path / "native"
+        profile_home = tmp_path / "root" / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: native_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
         tree, _ = _add_worktree(repo, "hermes-scratch")
         (tree / "NOTES.md").write_text("important scribbles\n")
         records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
         worktree_gc.reclaim_worktrees(str(repo), records=records)
         assert not tree.exists()
-        archive_root = Path.home() / ".hermes" / "archive" / "worktree-prune"
-        archived = list(archive_root.rglob("NOTES.md"))
-        assert archived, "untracked file must be archived, not destroyed"
+        archived = list((profile_home / "archive" / "worktree-prune").rglob("NOTES.md"))
+        assert archived, "untracked file must be archived under the profile home, not destroyed"
         assert archived[0].read_text() == "important scribbles\n"
+        assert not (native_home / ".hermes").exists()
 
     def test_dry_run_changes_nothing(self, repo):
         tree, _ = _add_worktree(repo, "hermes-clean")

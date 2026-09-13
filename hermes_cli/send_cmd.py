@@ -134,58 +134,31 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 def _load_hermes_env() -> None:
     """Populate ``os.environ`` from ``~/.hermes/.env`` AND bridge top-level ``config.yaml`` keys into
     the environment so the gateway config loader sees platform credentials and home channels."""
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        load_dotenv = None  # type: ignore[assignment]
+    import os
     try:
         from hermes_cli.config import get_hermes_home
         home = get_hermes_home()
     except Exception:
         return
     env_path = home / ".env"
-    if load_dotenv and env_path.exists():
+    if env_path.exists():
         try:
-            # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain "utf-8" would keep
-            # U+FEFF on the first key name and silently drop it from os.environ.
-            load_dotenv(str(env_path), override=True, encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            try:  # utf-8-sig can't strip a BOM once we fall back to latin-1.
-                import codecs
-                import io
-                raw = env_path.read_bytes().removeprefix(codecs.BOM_UTF8)
-                load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=True)
-            except Exception:
-                pass
+            from hermes_cli.env_loader import _load_dotenv_with_fallback
+            _load_dotenv_with_fallback(env_path, override=True)
         except Exception:
             pass
 
-    # Bridge top-level config.yaml scalars into the environment (never overriding existing values).
-    import os
+    # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
+    # into the environment, without overriding existing values.
     config_path = home / "config.yaml"
     if not config_path.exists():
         return
     try:
-        # Raw read is deliberate — only keys the user actually wrote get bridged.
-        from hermes_cli.config import read_user_config_raw
-        raw = read_user_config_raw(config_path)
+        from hermes_cli.config_effective import load_user_config_effective
+        cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    try:
-        from hermes_cli.config import _expand_env_vars
-        raw = _expand_env_vars(raw)
-    except Exception:
-        pass
-
-    # Managed scope: administrator-pinned values win here too (fail-open via the helper).
-    try:
-        from hermes_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
-    if not isinstance(raw, dict):
-        return
-    for key, val in raw.items():
+    for key, val in cfg.items():
         if isinstance(val, (str, int, float, bool)) and key not in os.environ:
             os.environ[key] = str(val)
 

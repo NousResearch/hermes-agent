@@ -259,11 +259,16 @@ async def check_hermes_update(force: bool = False):
     """Report whether a Hermes update is available, without applying it.
 
     Returns install_method ('apt'|'git'|'docker'|'nix'|'nixos'|'unknown'),
-    current_version, behind (commits behind, 0 = up to date, -1 = unknown count,
-    null = check could not run), update_available, can_apply (git only — the
-    dashboard button can apply in place), update_command, message (guidance for
-    non-applyable methods) and, for git installs that are behind, commits
-    [{sha, summary, author, at}] (additive; existing consumers ignore it).
+    current_version, behind (commits behind, 0 = up to date, -1 = unknown /
+    uncomputable distance, null = check could not run), update_available,
+    can_apply (git only — the dashboard button can apply in place),
+    update_command, message (guidance for non-applyable methods) and, for git
+    installs that are behind, commits [{sha, summary, author, at}] (additive;
+    existing consumers ignore it).
+
+    ``update_available`` is true only when ``behind > 0``. A negative behind
+    (banner ``UPDATE_AVAILABLE_NO_COUNT``) means distance could not be counted —
+    never proof that an update is waiting — so it stays unknown here.
     """
     if _dashboard_local_update_managed_externally():
         return {
@@ -301,6 +306,11 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = "Couldn't reach the update source — try again later."
     elif behind == 0:
         payload["message"] = "You're on the latest version."
+    elif behind < 0:
+        # Unknown/uncomputable distance (shallow clone, local-only tip, failed
+        # compare). Do not coerce into update-available — that produced false
+        # Desktop "(update)" badges on pinned deployment branches.
+        payload["message"] = "Git distance could not be determined."
     else:
         payload["update_available"] = True
         # "What's changed" for the desktop's remote update overlay; best-effort

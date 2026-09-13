@@ -81,6 +81,10 @@ _CONTROL_WRAPPERS = tuple(
 # Hermes' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.
 _MACHINE_PREFIXES = (
     "[CONTEXT COMPACTION", LEGACY_SUMMARY_PREFIX, "[Runtime note:", "[System note:", "[SYSTEM]",
+    # Gateway reply-context decoration. It is useful in the transcript but is
+    # not the user's request; cover both `[Replying to: ...]` and
+    # `[Replying to your previous message: ...]` from gateway/run_inbound.py.
+    "[Replying to",
     # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX (keep in sync); persisted as role="user" because
     # strict providers reject a non-first system message.
     # Model-switch marker from tui_gateway.server._append_model_switch_marker. It is persisted with

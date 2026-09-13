@@ -90,6 +90,26 @@ describe('singleFlightSessionResume', () => {
     ])
   })
 
+  it('coalesces a scoped foreground resume with an unscoped recovery for the same runtime under a non-default profile', async () => {
+    // use-session-actions passes the owner scope; submit/rewind recovery and
+    // the route resolver pass none. Both dial the same socket, so they must
+    // share ONE flight or a wake-up storm mints two runtimes (#91276).
+    const run = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      return { session_id: 'rt-work' }
+    })
+
+    const [scoped, unscoped] = await Promise.all([
+      singleFlightSessionResume('stored-work', run, { scope: 'work' }),
+      singleFlightSessionResume('stored-work', run)
+    ])
+
+    expect(scoped).toEqual({ session_id: 'rt-work' })
+    expect(unscoped).toEqual({ session_id: 'rt-work' })
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
   it('a rejected flight is not cached: the next caller retries', async () => {
     const run = vi
       .fn<() => Promise<{ session_id: string }>>()

@@ -26,8 +26,6 @@ import {
   setVaultSaveLoginRequest,
   setVaultUnlockRequest
 } from '@/store/prompts'
-import { requestScrollToBottom } from '@/store/thread-scroll'
-
 import type { GatewayEventContext } from './types'
 
 /** The blocking-input family: clarify / MCP setup consent / approval / sudo /
@@ -35,7 +33,7 @@ import type { GatewayEventContext } from './types'
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
-  const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+  const { sessionInterrupted, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on
@@ -48,6 +46,9 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // indefinitely and re-focusing it could never recover (the event is
     // gone). Parking it per-session lets the user answer once they switch
     // over; the inline ClarifyTool reads the active session's entry.
+    // Do not call requestScrollToBottom: yanking the viewport hid the
+    // assistant prose the user was still reading. Native notify + a parked
+    // per-session request is enough; the live card paints in document order.
     if (sessionId && sessionInterrupted(sessionId)) {
       return true
     }
@@ -105,10 +106,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
             needsInput: true
           }
         })
-
-        if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom(sessionId)
-        }
       }
 
       dispatchNativeNotification({
@@ -153,10 +150,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
             needsInput: true
           }
         })
-
-        if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom(sessionId)
-        }
       }
 
       dispatchNativeNotification({

@@ -147,14 +147,19 @@ describe('normalizeChoices', () => {
     expect(normalizeChoices(['a', '', 'b', '   ', 'c'])).toEqual(['a', 'b', 'c'])
   })
 
-  it('drops strings with newlines', () => {
-    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'd'])
+  it('keeps strings with newlines so option reasons can wrap', () => {
+    expect(normalizeChoices(['a', 'b\nreason: x', 'd'])).toEqual(['a', 'b\nreason: x', 'd'])
   })
 
-  it('drops strings over 200 chars', () => {
-    const long = 'x'.repeat(201)
-    const ok = 'y'.repeat(200)
-    expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
+  it('keeps strings well over 200 chars', () => {
+    const long = 'y'.repeat(1500)
+    expect(normalizeChoices(['a', long])).toEqual(['a', long])
+  })
+
+  it('keeps strings at the 8000-char abuse cap and drops longer', () => {
+    const atCap = 'z'.repeat(8000)
+    const over = 'z'.repeat(8001)
+    expect(normalizeChoices([atCap, over])).toEqual([atCap])
   })
 
   it('drops empty items and keeps valid ones', () => {

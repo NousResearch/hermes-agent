@@ -78,12 +78,12 @@ describe('clarify.request stream hydration', () => {
     })
   })
 
-  it('reveals a clarify prompt raised by the active session', () => {
+  it('does not yank the viewport when a clarify prompt is raised by the active session', () => {
     mountStream()
 
     clarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-reveal' })
 
-    expect(scrollToBottom).toHaveBeenCalledOnce()
+    expect(scrollToBottom).not.toHaveBeenCalled()
   })
 
   it('does not move the active thread for a background session clarify', () => {

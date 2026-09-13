@@ -150,7 +150,9 @@ tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a sin
 Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
 --multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
 `update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
-path only. Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
+path only; `gateway_migrate_guards.py` holds the auto-path-only refusals (table `_AUTO_MIGRATION_GUARDS`:
+other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices for the explicit command,
+blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#109954). Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
 "has a `/p/<profile>/` ingress" is the adapter class attribute `serves_profile_prefix` — set it on a
 new HTTP-inbound adapter when it answers the prefix, never extend a list here.
 

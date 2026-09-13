@@ -17,7 +17,7 @@ from tools.mcp_tool_handlers import (
     _make_list_resources_handler, _make_read_resource_handler)
 from tools.mcp_tool_schema import (
     _UTILITY_CAPABILITY_ATTRS, _build_utility_schemas, _normalize_name_filter, matches_name_filter)
-from tools.mcp_tool_scope import _key_name, _resolve_server_key, _server_key
+from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
 
 if TYPE_CHECKING:  # pragma: no cover
     from tools.mcp_tool import MCPServerTask
@@ -403,18 +403,31 @@ def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
     the schema cache survives a token rotation). Two profiles pointing at the same URL with different
-    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
+    headers/env/auth/client certificates are two identities; borrowing across them would call tools
+    as the other user."""
     from tools.mcp_schema_cache import config_fingerprint
 
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
-            (config.get("auth") or "").lower().strip())
+            _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")))
 
 
-def _same_server_route(server: Any, config: dict) -> bool:
-    return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
+def _auth_type(config: dict) -> str:
+    return (config.get("auth") or "").lower().strip()
+
+
+def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
+    """Whether *server* matches *config*, with OAuth connections never reusable across profiles.
+
+    OAuth credentials live in the owning profile's token storage rather than the static config,
+    so identical OAuth configs cannot prove that two profiles authenticate as the same account.
+    """
+    if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
+        return False
+    # Identities match, so both sides carry the same normalised auth type.
+    return not (cross_profile and _auth_type(config) == "oauth")
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -447,8 +460,10 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 continue
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
+            cross_profile = _key_scope(key) != scope
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                    or getattr(server, "session", None) is None
+                    or not _same_server_route(server, config, cross_profile=cross_profile)):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -463,7 +478,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config)]
+                      and _same_server_route(live, config, cross_profile=True)]
         if not shared:
             continue
         key, server = shared[0]

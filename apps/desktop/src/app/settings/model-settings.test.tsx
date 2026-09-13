@@ -410,6 +410,20 @@ describe('ModelSettings', () => {
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
 
+  it('does not warn when an aux slot uses the main alias', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'main', model: 'kimi-k3', base_url: '' }]
+    })
+
+    await renderModelSettings()
+    await screen.findAllByRole('button', { name: 'Set to main' })
+
+    // 'main' is a backend-supported alias that tracks the active main provider
+    // (auxiliary_client._normalize_aux_provider) — it can never be a stale pin. #97310
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
+
   it('does not flag an aux slot pinned to a local/LAN endpoint and shows its base_url', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'ollama-cloud', model: 'glm-5.3-flash' },

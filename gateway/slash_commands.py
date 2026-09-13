@@ -899,7 +899,7 @@ class GatewaySlashCommandsMixin(
         from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
         policy = policy_for_source(self.config, event.source)
         if not policy.is_admin(event.source.user_id):
-            return "Only gateway admins can change session YOLO mode."
+            return EphemeralReply("Only gateway admins can change session YOLO mode.")
         session_key = self._session_key_for_source(event.source)
         if is_session_yolo_enabled(session_key):
             disable_session_yolo(session_key)

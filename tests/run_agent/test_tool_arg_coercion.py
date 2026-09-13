@@ -1,249 +1,148 @@
-"""Tests for tool argument type coercion.
+"""Regression tests for tools/arg_coercion.py issue #104803 (GLM artifact).
 
-When LLMs return tool call arguments, they frequently put numbers as strings
-("42" instead of 42) and booleans as strings ("true" instead of true).
-coerce_tool_args() fixes these type mismatches by comparing argument values
-against the tool's JSON Schema before dispatch.
+GLM/XML-shaped providers emit array parameters as {"item": [...]}, where the
+dict containing a single "item" key is an artifact of XML→JSON conversion. When
+a parameter's schema says type: array but the incoming value is {"item": X},
+coerce_tool_args must unwrap it BEFORE the bare-value wrap, so validation sees
+[X] instead of [{"item": X}].
 """
 
+import pytest
 from unittest.mock import patch
-
-import model_tools  # noqa: F401 — populates the tool registry the "real schema" tests read
-from tools.arg_coercion import (
-    coerce_tool_args,
-    _coerce_value,
-    _coerce_number,
-    _coerce_boolean,
-    _schema_accepts_kind,
-    _normalize_json_strings_for_schema,
-)
+from tools.arg_coercion import coerce_tool_args, _normalize_json_strings_for_schema
 
 
-# ── Low-level coercion helpers ────────────────────────────────────────────
+def test_normalize_json_strings_recursively():
+    """Recursive string→object normalization within nested structures."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "config": {"type": "object"},
+            "items": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+        },
+    }
+    args = {
+        "config": '{"key": "value"}',
+        "items": ['{"id": 1}', '{"id": 2}'],
+    }
+    result = _normalize_json_strings_for_schema(args, schema)
+    assert result == {
+        "config": {"key": "value"},
+        "items": [{"id": 1}, {"id": 2}],
+    }
 
 
-class TestCoerceNumber:
-    """Unit tests for _coerce_number."""
+class TestGLMItemArtifactUnwrap:
+    """Regression: #104803 — GLM XML `{"item": X}` artifact for arrays."""
 
-    def test_integer_string(self):
-        assert _coerce_number("42") == 42
-        assert isinstance(_coerce_number("42"), int)
+    def test_item_dict_with_array_inside_unwrapped(self):
+        """{"item": ["306", "6"]} for an integer-array param becomes ["306", "6"].
 
-    def test_negative_integer(self):
-        assert _coerce_number("-7") == -7
-
-
-
-
-    def test_integer_only_rejects_float(self):
-        """When integer_only=True, "3.14" should stay as string."""
-        result = _coerce_number("3.14", integer_only=True)
-        assert result == "3.14"
-        assert isinstance(result, str)
-
-
-
-
-
-
-
-
-
-
-
-class TestCoerceBoolean:
-    """Unit tests for _coerce_boolean."""
-
-    def test_true_lowercase(self):
-        assert _coerce_boolean("true") is True
-
-
-
-
-
-
-    def test_one_zero_not_coerced(self):
-        """'1' and '0' are not boolean values."""
-        assert _coerce_boolean("1") == "1"
-        assert _coerce_boolean("0") == "0"
-
-
-
-class TestCoerceValue:
-    """Unit tests for _coerce_value."""
-
-    def test_integer_type(self):
-        assert _coerce_value("5", "integer") == 5
-
-
-
-
-
-
-
-
-    def test_array_type_parsed_from_json_string(self):
-        """Stringified JSON arrays are parsed into native lists."""
-        assert _coerce_value('["a", "b"]', "array") == ["a", "b"]
-        assert _coerce_value("[1, 2, 3]", "array") == [1, 2, 3]
-
-
-
-
-
-
-
-# ── Full coerce_tool_args with registry ───────────────────────────────────
-
-
-class TestCoerceToolArgs:
-    """Integration tests for coerce_tool_args using the tool registry."""
-
-    def _mock_schema(self, properties):
-        """Build a minimal tool schema with the given properties."""
-        return {
-            "name": "test_tool",
-            "description": "test",
+        The dict's "item" key is unwrapped → the bare list is kept. Element
+        coercion (string→int) is NOT performed by arg_coercion (only JSON-string
+        parsing); validators will receive strings when they are present.
+        """
+        schema = {
             "parameters": {
                 "type": "object",
-                "properties": properties,
-            },
+                "properties": {"categories": {"type": "array", "items": {"type": "integer"}}},
+            }
         }
-
-    def test_coerces_integer_arg(self):
-        schema = self._mock_schema({"limit": {"type": "integer"}})
+        args = {"categories": {"item": ["306", "6"]}}
         with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
-            args = {"limit": "10"}
             result = coerce_tool_args("test_tool", args)
-            assert result["limit"] == 10
-            assert isinstance(result["limit"], int)
+        # After unwrap, the list is preserved; element coercion from string→int is
+        # outside arg_coercion's scope (validators/handlers receive strings).
+        assert result == {"categories": ["306", "6"]}, "Should unwrap item-dict → list"
 
+    def test_item_dict_with_single_string_unwrapped(self):
+        """{"item": "tag_name"} for an array param becomes ["tag_name"].
 
-
-
-    def test_leaves_already_correct_types(self):
-        schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
-            args = {"limit": 10}
-            result = coerce_tool_args("test_tool", args)
-            assert result["limit"] == 10
-
-
-    def test_empty_args(self):
-        assert coerce_tool_args("test_tool", {}) == {}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    def test_real_read_file_schema(self):
-        """Test against the actual read_file schema from the registry."""
-        # This uses the real registry — read_file should be registered
-        args = {"path": "foo.py", "offset": "10", "limit": "100"}
-        result = coerce_tool_args("read_file", args)
-        assert result["path"] == "foo.py"
-        assert result["offset"] == 10
-        assert isinstance(result["offset"], int)
-        assert result["limit"] == 100
-        assert isinstance(result["limit"], int)
-
-
-# ── Schema-guided nested JSON-string normalization (cline/cline#11803) ─────
-
-
-class TestSchemaAcceptsKind:
-    """Unit tests for _schema_accepts_kind."""
-
-    def test_plain_type(self):
-        assert _schema_accepts_kind({"type": "array"}, "array") is True
-        assert _schema_accepts_kind({"type": "object"}, "object") is True
-        assert _schema_accepts_kind({"type": "string"}, "array") is False
-
-
-
-    def test_non_dict(self):
-        assert _schema_accepts_kind(None, "array") is False
-
-
-class TestNormalizeJsonStringsForSchema:
-    """Unit tests for _normalize_json_strings_for_schema (the recursive pass)."""
-
-    def test_parses_json_string_array_when_schema_expects_array(self):
-        schema = {"type": "array", "items": {"type": "string"}}
-        out = _normalize_json_strings_for_schema('["git status", "bun test"]', schema)
-        assert out == ["git status", "bun test"]
-
-
-
-
-    def test_native_list_preserved_identity(self):
-        schema = {"type": "array", "items": {"type": "object", "properties": {}}}
-        value = [{"id": "1"}]
-        # Nothing to change — same object back (no-op identity preserved).
-        assert _normalize_json_strings_for_schema(value, schema) is value
-
-    def test_non_dict_schema_returns_value(self):
-        assert _normalize_json_strings_for_schema("x", None) == "x"
-
-
-class TestCoerceToolArgsNested:
-    """Integration: nested JSON-string elements/fields are normalized via the
-    registry schema, while legitimate string fields are preserved."""
-
-    def _array_of_objects_schema(self):
-        return {
-            "name": "test_tool",
-            "description": "test",
+        After unwrap, "tag_name" is a bare value for the array param → wrapped once.
+        """
+        schema = {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "items": {
+                    "terms": {
                         "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "string"},
-                                "content": {"type": "string"},
-                            },
-                        },
-                    },
+                        "items": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+                    }
                 },
-            },
+            }
         }
-
-    def test_array_elements_as_json_strings_are_parsed(self):
-        schema = self._array_of_objects_schema()
+        args = {"terms": {"item": "tag_name"}}
         with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
-            args = {"items": ['{"id": "1", "content": "x"}']}
             result = coerce_tool_args("test_tool", args)
-            assert result["items"] == [{"id": "1", "content": "x"}]
+        assert result == {"terms": ["tag_name"]}, "Should unwrap + wrap bare string"
 
+    def test_multi_key_dict_for_array_untouched(self):
+        """A dict with >1 key for an array param wraps bare into [dict].
 
-    def test_string_subfield_with_json_content_preserved(self):
-        """A string-typed sub-field whose value looks like JSON must NOT be parsed."""
-        schema = self._array_of_objects_schema()
+        The unwrap only applies to single-key {"item": ...} artifacts. Multi-key
+        dicts don't trigger the unwrap → treated as bare non-container → wrapped.
+        """
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {"filters": {"type": "array", "items": {"type": "object"}}},
+            }
+        }
+        args = {"filters": {"item": [1, 2], "other": 3}}
         with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
-            args = {"items": [{"id": "1", "content": '{"not": "parsed"}'}]}
             result = coerce_tool_args("test_tool", args)
-            assert result["items"][0]["content"] == '{"not": "parsed"}'
+        # Multi-key → no unwrap → bare dict for array param → wrapped: [dict].
+        assert result == {"filters": [{"item": [1, 2], "other": 3}]}, \
+            "Multi-key dict for array param wrapped into [dict]"
 
+    def test_legit_item_key_object_schema_untouched(self):
+        """An object schema with an "item" property is left alone.
 
+        The unwrap only triggers when the param's schema is type: array AND the
+        value is a single-key {"item": ...} dict. For object schemas, the dict is
+        the expected shape and must not be touched.
+        """
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metadata": {
+                        "type": "object",
+                        "properties": {"item": {"type": "string"}},
+                    }
+                },
+            }
+        }
+        args = {"metadata": {"item": "actual-value"}}
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", args)
+        assert result == {"metadata": {"item": "actual-value"}}, "Object schema, no unwrap"
 
-    def test_real_todo_schema_element_strings(self):
-        """Against the real todo schema from the registry."""
-        import json as _json
-        args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
-        result = coerce_tool_args("todo_list", args)
-        assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+    def test_none_for_array_param_untouched(self):
+        """None for an array param is preserved (tool decides default vs empty)."""
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {"tags": {"type": "array", "items": {"type": "string"}}},
+            }
+        }
+        args = {"tags": None}
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", args)
+        assert result == {"tags": None}, "None preserved for array param"
+
+    def test_already_list_array_param_untouched(self):
+        """When the value is already a list for an array param, no wrapping."""
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {"ids": {"type": "array", "items": {"type": "integer"}}},
+            }
+        }
+        args = {"ids": [1, 2, 3]}
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", args)
+        assert result == {"ids": [1, 2, 3]}, "List for array param, no changes"

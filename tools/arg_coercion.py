@@ -47,6 +47,23 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # "null" becomes None (not ["null"]). None itself is preserved: the tool's
         # own default handling decides between "omit" and "empty list".
         if expected == "array" and value is not None and not is_container:
+            # Unwrap the canonical GLM/XML serialization artifact {"item": X} — where
+            # X belongs to the array. When the schema says array, but the actual value
+            # is a dict whose ONLY key is "item", unwrap it before the bare-wrap to
+            # avoid [{"item": ...}] on the validator path (#104803).
+            if isinstance(value, dict) and set(value) == {"item"}:
+                value = value["item"]
+                is_container = isinstance(value, (list, tuple))
+                if is_container:
+                    # Now a list/tuple → apply recursive element normalization immediately.
+                    value = _normalize_json_strings_for_schema(value, prop_schema)
+                    args[key] = value
+                    continue
+                if value is None:
+                    # None → let tool's default logic decide.
+                    args[key] = value
+                    continue
+                # Now a scalar (string or otherwise) → fall through to bare-wrap logic below.
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:

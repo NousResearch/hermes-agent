@@ -698,8 +698,16 @@ class CLILoopsMixin:
             _active_deleg = count_active_delegations(getattr(self.agent, "session_id", None))
         except Exception:
             _bg_procs = None
+        exit_reason = str(getattr(self, "_last_turn_exit_reason", "") or "")
+        execution_incomplete = (
+            getattr(self, "_last_goal_execution_incomplete_event", False) is True
+            or exit_reason == "budget_exhausted"
+            or exit_reason.startswith("max_iterations_reached")
+        )
+        self._last_goal_execution_incomplete_event = False
         decision = mgr.evaluate_after_turn(
-            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+            last_response, user_initiated=True, background_processes=_bg_procs,
+            active_delegations=_active_deleg, execution_incomplete=execution_incomplete)
         _print_decision_message(decision)
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")

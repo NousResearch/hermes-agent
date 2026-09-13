@@ -32,6 +32,15 @@ class CLIProcessNotificationsMixin:
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
+            try:
+                from hermes_cli.goals import is_stale_goal_event
+                stale_for_goal = is_stale_goal_event(getattr(self, "session_id", "") or "", event)
+            except Exception:
+                stale_for_goal = False
+            if stale_for_goal:
+                print("[Background result from a superseded Goal was not applied to the current Goal.]\n" + text)
+                complete_event_delivery(event, claim)
+                continue
             claimed.append((event, text))
             complete_event_delivery(event, claim)
         for notifications in group_process_notifications(claimed):

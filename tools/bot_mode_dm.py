@@ -251,8 +251,77 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
+    # Prefer same-connection relay when available: this reuses the existing
+    # gateway socket instead of spawning a fresh local `hermes -p <target> chat`
+    # cold start for each DM. Falls back to local subprocess when the relay
+    # roster does not expose this gateway's self-connection marker yet.
+    relayed_local = _try_same_connection_relay_delivery(
+        root,
+        resolved,
+        body,
+        me,
+        _handle(me),
+        task_id=task_id,
+        agent=agent,
+    )
+    if relayed_local is not None:
+        return relayed_local
+
     return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
+
+
+def _try_same_connection_relay_delivery(
+    root: Path,
+    resolved_profile: str,
+    body: str,
+    me: str,
+    sender_handle: str,
+    *,
+    task_id: Optional[str],
+    agent: Any,
+) -> Optional[str]:
+    """Queue same-machine teammate DM through the Desktop relay when available.
+
+    Returns None when the relay roster lacks this gateway's `self_connection_id`
+    marker or does not list the target profile on that same connection.
+    """
+    try:
+        from tools.bot_relay import EnvelopeRefusedError, enqueue_envelope, read_relay_roster, waiter_command
+
+        payload = read_relay_roster(root)
+        self_id = str(payload.get("self_connection_id") or "").strip()
+        rows = payload.get("agents") if isinstance(payload.get("agents"), list) else []
+        if not self_id or not rows:
+            return None
+
+        match = next(
+            (
+                row for row in rows
+                if str(row.get("connection_id") or "") == self_id
+                and str(row.get("profile") or "") == resolved_profile
+            ),
+            None,
+        )
+        if not isinstance(match, dict):
+            return None
+
+        try:
+            envelope = enqueue_envelope(
+                root,
+                target=match,
+                message=f"Message from 🤖 {sender_handle} (@{sender_handle}): {body}",
+                sender_profile=me,
+                sender_handle=sender_handle,
+            )
+        except EnvelopeRefusedError as exc:
+            return json.dumps({"error": str(exc), "reason": exc.reason})
+
+        label = f"@{match['handle']} on {match.get('connection_label') or match['connection_id']}"
+        return _spawn_delivery(waiter_command(root, envelope), label, task_id=task_id, agent=agent)
+    except Exception:
+        logger.debug("same-connection relay delivery attempt failed", exc_info=True)
+        return None
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,

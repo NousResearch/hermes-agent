@@ -38,6 +38,7 @@ def test_roster_sync_persists_and_counts(home):
         srv._methods["bot_relay.roster.sync"](
             1,
             {
+                "self_connection_id": "local-1",
                 "agents": [
                     {"profile": "scout", "handle": "scout", "connection_id": "cloud-1"},
                     {"profile": "", "connection_id": "cloud-1"},  # dropped
@@ -46,6 +47,8 @@ def test_roster_sync_persists_and_counts(home):
         )
     )
     assert out["count"] == 1
+    payload = bot_relay.read_relay_roster(home)
+    assert payload["self_connection_id"] == "local-1"
     assert [r["profile"] for r in bot_relay.read_remote_roster(home)] == ["scout"]
 
 

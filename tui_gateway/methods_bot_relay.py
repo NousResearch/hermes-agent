@@ -38,7 +38,13 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     (``agents`` rows ``{profile, handle, connection_id, ...}``; invalid rows are dropped)."""
     try:
         from tools.bot_relay import write_remote_roster
-        return _ok(rid, {"count": write_remote_roster(_root(), params.get("agents"))})
+        return _ok(rid, {
+            "count": write_remote_roster(
+                _root(),
+                params.get("agents"),
+                self_connection_id=str(params.get("self_connection_id") or ""),
+            )
+        })
     except Exception as e:
         return _err(rid, 5090, str(e))
 

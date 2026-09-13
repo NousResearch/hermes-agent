@@ -138,29 +138,68 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
     return out
 
 
-def write_remote_roster(root: Path | str, rows: Any) -> int:
-    """Atomically persist the Desktop-pushed remote roster. Returns count."""
-    base = _ensure_dirs(root)
+def _clean_roster_rows(rows: Any) -> list[dict]:
+    """Validate/dedupe roster rows from the Desktop payload."""
     by_key: dict[tuple[str, str], dict] = {}
     for norm in filter(None, map(_normalize_roster_row, rows if isinstance(rows, list) else [])):
         by_key.setdefault((norm["connection_id"], norm["profile"]), norm)
-    cleaned = [by_key[k] for k in sorted(by_key)]
-    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned},
-                       prefix=".roster-", sort_keys=True)
+    return [by_key[k] for k in sorted(by_key)]
+
+
+def write_remote_roster(root: Path | str, rows: Any, *, self_connection_id: str | None = None) -> int:
+    """Atomically persist the Desktop-pushed relay roster. Returns count.
+
+    ``self_connection_id`` marks which rows belong to THIS gateway so callers
+    can read either the full union (for same-connection relay) or only OTHER
+    connections (legacy helper).
+    """
+    base = _ensure_dirs(root)
+    cleaned = _clean_roster_rows(rows)
+    self_id = str(self_connection_id or "").strip()
+    if self_id and not _HANDLE_RE.match(self_id):
+        self_id = ""
+    _atomic_write_json(
+        base / ROSTER_FILE,
+        {"updated_at": int(time.time()), "self_connection_id": self_id, "agents": cleaned},
+        prefix=".roster-",
+        sort_keys=True,
+    )
     return len(cleaned)
 
 
-def read_remote_roster(root: Path | str) -> list[dict]:
-    """The current remote roster (possibly empty). Never raises."""
+def read_relay_roster(root: Path | str) -> dict:
+    """Raw relay payload: ``{updated_at, self_connection_id, agents}``.
+
+    Backward compatible with older payloads that persisted a raw list.
+    Never raises.
+    """
+    out = {"updated_at": 0, "self_connection_id": "", "agents": []}
     try:
         data = json.loads((relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8"))
-        agents = data.get("agents") if isinstance(data, dict) else None
-        return [r for r in map(_normalize_roster_row, agents) if r] if isinstance(agents, list) else []
+        if isinstance(data, dict):
+            out["updated_at"] = int(data.get("updated_at") or 0)
+            self_id = str(data.get("self_connection_id") or "").strip()
+            out["self_connection_id"] = self_id if _HANDLE_RE.match(self_id) else ""
+            out["agents"] = _clean_roster_rows(data.get("agents"))
+            return out
+        out["agents"] = _clean_roster_rows(data)
+        return out
     except FileNotFoundError:
-        return []
+        return out
     except Exception:
         logger.debug("bot_relay roster read failed", exc_info=True)
-        return []
+        return out
+
+
+def read_remote_roster(root: Path | str) -> list[dict]:
+    """Rows for OTHER connections only (legacy helper). Never raises."""
+    payload = read_relay_roster(root)
+    raw_rows = payload.get("agents")
+    rows = [r for r in map(_normalize_roster_row, raw_rows if isinstance(raw_rows, list) else []) if r]
+    self_id = str(payload.get("self_connection_id") or "").strip()
+    if not self_id:
+        return rows
+    return [r for r in rows if str(r.get("connection_id") or "") != self_id]
 
 
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
@@ -200,7 +239,8 @@ def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
             age = time.time() - (relay_root(root) / ROSTER_FILE).stat().st_mtime
         except OSError:
             return None
-        roster = read_remote_roster(root) if age <= ROSTER_FRESH_SECONDS else []
+        payload = read_relay_roster(root) if age <= ROSTER_FRESH_SECONDS else {}
+        roster = payload.get("agents") if isinstance(payload.get("agents"), list) else []
         if not roster:
             return None
         key = (str(target.get("connection_id") or ""), str(target.get("profile") or ""))

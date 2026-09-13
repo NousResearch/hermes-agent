@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_mode_dm, bot_mode_probe
+from tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 @pytest.fixture(autouse=True)
@@ -283,6 +283,42 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     content = Path(dm_file).read_text(encoding="utf-8")
     assert content.startswith("Message from 🤖 hermes (@hermes): ")
     assert '$(and this is not shell)' in content
+
+
+def test_same_connection_local_target_prefers_relay_queue(tmp_path, monkeypatch):
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    # Desktop pushes full union + self marker once relay engages.
+    bot_relay.write_remote_roster(
+        home,
+        [
+            {"profile": "default", "handle": "hermes", "connection_id": "local-1"},
+            {
+                "profile": "researcher",
+                "handle": "researcher",
+                "connection_id": "local-1",
+                "connection_label": "Local Gateway",
+            },
+            {"profile": "ops", "handle": "ops", "connection_id": "cloud-1"},
+        ],
+        self_connection_id="local-1",
+    )
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    out = json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))
+    assert out["status"] == "sent"
+    assert out["to"] == "@researcher on Local Gateway"
+
+    # same-connection relay path: no local `--run-delivery query-file`
+    # subprocess command should be spawned.
+    assert len(calls) == 1
+    assert "--run-delivery" not in calls[0]["command"]
+
+    pending = bot_relay.claim_pending_envelopes(home)
+    assert len(pending) == 1
+    assert pending[0]["target_connection"] == "local-1"
+    assert pending[0]["target_profile"] == "researcher"
+    assert pending[0]["id"] in calls[0]["command"]
 
 
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(

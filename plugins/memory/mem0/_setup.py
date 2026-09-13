@@ -52,10 +52,10 @@ def _http_get(url: str, path: str, timeout: int):
 def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
     """Prompt for API key, showing masked existing value if found."""
     existing = os.environ.get(env_var, "")
-    env_path = Path(hermes_home) / ".env"
-    if not existing and env_path.exists():  # utf-8-sig: a Notepad BOM on line 1 would otherwise defeat the key match
-        lines = env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-        existing = next((line.split("=", 1)[1].strip() for line in lines if line.startswith(f"{env_var}=")), "")
+    if not existing:
+        from agent.secret_scope import load_env_file
+
+        existing = load_env_file(Path(hermes_home) / ".env").get(env_var, "")
     hint = f" (current: {_masked(existing)}, blank to keep)" if existing else ""
     return getpass.getpass(f"  {label} API key{hint}: ").strip()
 

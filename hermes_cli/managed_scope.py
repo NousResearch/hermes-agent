@@ -76,8 +76,7 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         if hit is not None and hit[:2] == key:
             return copy.deepcopy(hit[2])
     try:
-        with open(path, encoding="utf-8") as f:
-            parsed = parse(f)
+        parsed = parse(path)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
@@ -99,12 +98,19 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
 
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda f: yaml.safe_load(f) or {})
+    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: yaml.safe_load(p.read_text(encoding="utf-8")) or {})
 
 
 def load_managed_env() -> Dict[str, str]:
     """Parsed managed .env (KEY=VALUE), or {} when absent (fail-open)."""
-    return _load_managed_file(".env", _ENV_CACHE, _parse_env)
+    return _load_managed_file(".env", _ENV_CACHE, _parse_managed_env)
+
+
+def _parse_managed_env(path: Path) -> Dict[str, str]:
+    from agent.secret_scope import load_env_file
+
+    path.read_text(encoding="utf-8-sig")  # load_env_file swallows decode errors; an admin file must fail LOUD
+    return load_env_file(path)
 
 
 def apply_managed_overlay(config: dict) -> dict:
@@ -133,15 +139,6 @@ def apply_managed_overlay(config: dict) -> dict:
     except Exception:  # noqa: BLE001 — overlay must never break a caller
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
         return config
-
-
-def _parse_env(f) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for line in map(str.strip, f):
-        if line and not line.startswith("#") and "=" in line:
-            key, _, value = line.partition("=")
-            out[key.strip()] = value.strip().strip("\"'")
-    return out
 
 
 def _flatten_keys(d: dict, prefix: str = "") -> set:

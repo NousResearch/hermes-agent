@@ -4,18 +4,19 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_state import SessionDB
-from tests.state.raw_maintenance_helpers import ended, ledger, snapshot
+from tests.hermes_state.raw_maintenance_helpers import ended, ledger, snapshot
 
 
 @pytest.mark.parametrize('action', ['delete', 'export', 'prune'])
-def test_cli_reports_protected_history_without_partial_delete(tmp_path, monkeypatch, capsys, action):
+@pytest.mark.parametrize('kind', ['admission-live', 'admission-unknown', 'admission-terminal'])
+def test_cli_reports_protected_history_without_partial_delete(tmp_path, monkeypatch, capsys, action, kind):
     from hermes_cli import sessions_cmd
     from hermes_cli.session_filters import build_prune_filters
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     with SessionDB(tmp_path / 'state.db') as db:
         ended(db, 'protected')
         ended(db, 'legacy')
-        db._execute_write(lambda conn: ledger(conn, 'protected', 'admission-terminal'))
+        db._execute_write(lambda conn: ledger(conn, 'protected', kind))
         before = snapshot(db)
         close = db.close
         monkeypatch.setattr('hermes_state.SessionDB', lambda *args, **kwargs: db)
@@ -39,17 +40,28 @@ def test_cli_reports_protected_history_without_partial_delete(tmp_path, monkeypa
             assert build_prune_filters(args)['source'] == 'tui'
         result = sessions_cmd.cmd_sessions(args)
         output = capsys.readouterr().out
-        if action == 'prune':
+        if kind.endswith('terminal'):
+            assert 'Refused:' not in output
+            assert db.get_session('protected') is None
+            assert db.get_meta('gateway.terminal_admission.v1.a-protected') is not None
+            if action == 'prune':
+                assert 'Pruned 2 session(s).' in output and 'Skipped' not in output
+                assert db.get_session('legacy') is None
+            else:
+                assert db.get_session('legacy') is not None
+        elif action == 'prune':
             assert 'Pruned 1 session(s).' in output and 'Skipped 1 session(s)' in output
             assert db.get_session('protected') is not None and db.get_session('legacy') is None
         else:
-            assert result == 1 and 'Refused:' in output and 'owning gateway' in output
+            reason = 'unknown_execution' if kind.endswith('unknown') else 'session_busy'
+            assert result == 1 and 'Refused:' in output and reason in output and 'nothing was deleted' in output
             assert snapshot(db) == before
         monkeypatch.setattr(db, 'close', close)
 
 
 @pytest.mark.asyncio
-async def test_http_components_report_same_transaction_counts_and_bulk_refusal(tmp_path, monkeypatch):
+@pytest.mark.parametrize('kind', ['worker-live', 'worker-unknown'])
+async def test_http_components_report_same_transaction_counts_and_bulk_refusal(tmp_path, monkeypatch, kind):
     from fastapi import HTTPException
     from hermes_cli import web_server_sessions
     from hermes_cli.web_routers import sessions
@@ -58,7 +70,7 @@ async def test_http_components_report_same_transaction_counts_and_bulk_refusal(t
     with SessionDB(tmp_path / 'state.db') as db:
         for sid in ('protected', 'legacy'):
             ended(db, sid)
-        db._execute_write(lambda conn: ledger(conn, 'protected', 'worker-terminal'))
+        db._execute_write(lambda conn: ledger(conn, 'protected', kind))
         close = db.close
         monkeypatch.setattr(web_server_sessions, '_open_session_db_for_profile', lambda *args, **kwargs: db)
         monkeypatch.setattr(db, 'close', lambda: None)
@@ -66,7 +78,7 @@ async def test_http_components_report_same_transaction_counts_and_bulk_refusal(t
         with pytest.raises(HTTPException) as refused:
             await sessions.bulk_delete_sessions_endpoint(BulkDeleteSessions(ids=['legacy', 'protected']))
         assert refused.value.status_code == 409
-        assert refused.value.detail['code'] == 'runtime_coordination_required'
+        assert refused.value.detail['code'] == ('unknown_execution' if kind.endswith('unknown') else 'session_busy')
         assert snapshot(db) == before
         assert await sessions.count_empty_sessions_endpoint() == {'count': 1, 'skipped_protected': 1}
         dry = sessions._prune_sessions(SessionPrune(older_than_days=1, dry_run=True))
@@ -75,3 +87,29 @@ async def test_http_components_report_same_transaction_counts_and_bulk_refusal(t
         assert result == {'ok': True, 'deleted': 1, 'skipped_protected': 1}
         assert db.get_session('protected') == before['sessions'][0]
         monkeypatch.setattr(db, 'close', close)
+
+
+@pytest.mark.parametrize('surface', ['cli', 'http'])
+@pytest.mark.parametrize('error_kind', ['runtime', 'value', 'sqlite'])
+def test_maintenance_callers_propagate_unrelated_errors_and_close(monkeypatch, surface, error_kind):
+    import sqlite3
+    from hermes_state_runtime import RuntimeStoreError
+    from hermes_cli import sessions_cmd, web_server_sessions
+    from hermes_cli.web_routers import sessions
+    errors = {'runtime': RuntimeStoreError('invalid_params'),
+              'value': ValueError('unrelated'), 'sqlite': sqlite3.DatabaseError('fixture failure')}
+    error = errors[error_kind]
+    closed = []
+    db = SimpleNamespace(close=lambda: closed.append(True))
+    def fail(*args):
+        raise error
+    if surface == 'cli':
+        monkeypatch.setattr('hermes_state.SessionDB', lambda *args, **kwargs: db)
+        monkeypatch.setattr(sessions_cmd, '_DB_HANDLERS', {'delete': fail})
+        call = lambda: sessions_cmd.cmd_sessions(SimpleNamespace(sessions_action='delete'))
+    else:
+        monkeypatch.setattr(web_server_sessions, '_open_session_db_for_profile', lambda *args, **kwargs: db)
+        call = lambda: sessions._with_db(None, fail, read_only=True)
+    with pytest.raises(type(error)) as caught:
+        call()
+    assert caught.value is error and closed == [True]

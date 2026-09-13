@@ -589,17 +589,8 @@ class SlackLifecycleMixin:
             self._set_fatal_error("missing_dependency", "slack-bolt not installed", retryable=False)
             return False
         raw_token = self.config.token
-        # Scoped secret is authoritative; only an UNSCOPED read falls back to
-        # process env, else a secondary profile inherits the default's app.
-        try:
-            # Multiplex: profile secrets live in the secret scope, not process os.environ. When a scope is
-            # installed (secondary-profile connect), it is AUTHORITATIVE — do not fall through to os.getenv,
-            # or a secondary profile missing SLACK_APP_TOKEN silently inherits the default profile's Socket
-            # Mode app (#59739). Only an UNSCOPED read under multiplex (default-profile startup loop,
-            # background reconnect rebuild) falls back to process env, which is that profile's own.
-            app_token = _adapter.get_secret("SLACK_APP_TOKEN")
-        except _adapter.UnscopedSecretError:
-            app_token = _adapter.os.getenv("SLACK_APP_TOKEN")
+        # Scoped read: a secondary profile missing SLACK_APP_TOKEN must not inherit the default's app (#59739).
+        app_token = _adapter._get_scoped_secret("SLACK_APP_TOKEN")
         for env_name, value in (("SLACK_BOT_TOKEN", raw_token), ("SLACK_APP_TOKEN", app_token)):
             if not value:
                 self._fatal_missing_env(env_name)

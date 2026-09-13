@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
+import type { SessionInflightTurn, SessionResumeResponse, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { localCreationOptions } from '../canonicalGateway.js'
@@ -15,14 +16,12 @@ import type {
   SessionCloseResponse,
   SessionCreateResponse,
   SessionDetachResponse,
-  SessionInflightTurn,
-  SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
+import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -165,6 +164,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         canonicalSubscriptions.current.delete(sessionId)
       }
     }).catch(() => undefined)
+
     const previous = canonicalDetachFlights.current.get(sessionId)
     const pending = previous ? previous.then(detach) : detach()
 
@@ -396,6 +396,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchUiState({ status: 'switching session…' })
 
       const pendingDetach = canonicalDetachFlights.current.get(id)
+
       const request = pendingDetach
         ? pendingDetach.then(() => flight === attachmentFlight.current
           ? gw.request<SessionActivateResponse>('session.activate', { session_id: id }) : null)
@@ -474,14 +475,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         }
 
         const pendingDetach = canonicalDetachFlights.current.get(id)
+
         const request = pendingDetach
           ? pendingDetach.then(() => flight === attachmentFlight.current
-            ? gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id }) : null)
-          : gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+            ? gw.request<SessionResumeResponse<SessionInfo>>('session.resume', { cols: colsRef.current, session_id: id }) : null)
+          : gw.request<SessionResumeResponse<SessionInfo>>('session.resume', { cols: colsRef.current, session_id: id })
 
         return request
           .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+            const r = asRpcResult<SessionResumeResponse<SessionInfo>>(raw)
 
             if (flight !== attachmentFlight.current) {
               discardStaleAttachment(r)

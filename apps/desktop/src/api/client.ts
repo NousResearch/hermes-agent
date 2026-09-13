@@ -31,8 +31,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
   private readonly protocol = new CanonicalDesktopProtocol()
 
-  override on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
-    return super.on<P>(type, event => {
+  override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
+    return super.on<K>(type, event => {
       // Named listeners run before wildcard listeners in the shared client.
       // Normalize before either kind sees the prompt, including replay delivery.
       if (this.canonical) { this.protocol.event(event) }

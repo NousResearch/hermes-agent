@@ -115,14 +115,18 @@ class TelegramLifecycleMixin:
         # See #92991.
         self._polling_generation_started_monotonic = _adapter.time.monotonic()
         self._polling_last_progress_monotonic = None
+        # Re-base the backlog per generation. On an in-place updater restart PTB keeps the old
+        # update_queue, so old dispatches can briefly exceed received; the check treats that as no backlog.
+        self._updates_received_total = self._updates_dispatched_total = 0
+        self._ingress_dispatched_seen = self._ingress_stalled_heartbeats = 0
         return self._polling_generation, self._polling_progress_event
 
-    def _record_polling_progress(self, generation: int) -> None:
-        """Record successful getUpdates I/O for the current generation only."""
+    def _record_polling_progress(self, generation: int) -> bool:
+        """Record successful getUpdates I/O for the current generation only; True when accepted."""
         from . import adapter as _adapter
 
         if self._teardown_started or not self._polling_progress_accepting or generation != self._polling_generation:
-            return
+            return False
         if not self._polling_progress_event.is_set():
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
             _adapter.logger.info("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d)", self.name, generation)
@@ -141,6 +145,7 @@ class TelegramLifecycleMixin:
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
         self._send_path_degraded = False
+        return True
 
     def _observe_polling_request_result(self, request, generation, result):
         """Record getUpdates progress from an observed do_request result (purely observational: PTB still
@@ -156,7 +161,8 @@ class TelegramLifecycleMixin:
         except Exception:
             return
         if isinstance(envelope, dict) and envelope.get("ok") is True and "result" in envelope:
-            self._record_polling_progress(generation)
+            if self._record_polling_progress(generation):
+                self._record_updates_received(envelope.get("result"))
 
     def _instrument_polling_request(self, request):
         """Instrument one dedicated PTB getUpdates request with progress tracking.
@@ -600,6 +606,8 @@ class TelegramLifecycleMixin:
                 # so a consumer with no successful round-trip past the stall threshold is dead (#92991).
                 # Pure local-state check — no Bot API call needed.
                 await self._check_polling_stall()
+                # Transport health is not dispatch health (#102260). Pure local-state check.
+                self._check_ingress_dispatch_stall()
             except _adapter.asyncio.CancelledError:
                 return
             except (_adapter.asyncio.TimeoutError, OSError) as probe_err:
@@ -980,6 +988,9 @@ class TelegramLifecycleMixin:
         stable envelope (no raw SDK objects) and an internal auth source. Never raises into PTB."""
         from . import adapter as _adapter
 
+        # Last handler group PTB runs: stamp before any early return so the dispatch counter covers
+        # gateways without the plugin hook (#102260).
+        self._updates_dispatched_total = getattr(self, "_updates_dispatched_total", 0) + 1
         handler: _adapter.Optional[_adapter.Callable[[_adapter.Dict[str, _adapter.Any], _adapter.Any], _adapter.Awaitable[None]]] = getattr(self, "_platform_event_handler", None)
         if handler is None:
             return
@@ -1278,12 +1289,7 @@ class TelegramLifecycleMixin:
         webhook_port = _adapter.env_int("TELEGRAM_WEBHOOK_PORT", 8443)
         # Default "" → tornado listens on IPv4 + IPv6; "0.0.0.0" is unreachable on IPv6-only networks.
         webhook_host = (_adapter.os.getenv("TELEGRAM_WEBHOOK_HOST", "").strip() or str((self.config.extra or {}).get("webhook_host") or "").strip())
-        # Profile-scoped read; only an UNSCOPED read under multiplex falls back to process env.
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            webhook_secret = (get_secret("TELEGRAM_WEBHOOK_SECRET") or "").strip()
-        except UnscopedSecretError:
-            webhook_secret = _adapter.os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        webhook_secret = (_adapter._get_scoped_secret("TELEGRAM_WEBHOOK_SECRET") or "").strip()
         if not webhook_secret:
             raise RuntimeError(
                 "TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is set. Without it, the "
@@ -1341,9 +1347,9 @@ class TelegramLifecycleMixin:
         ``is_reconnect``: False = cold boot (drop the stale Bot API queue); True = watcher reconnect (preserve queued
         updates, else every message sent during the outage is lost). Webhook env: TELEGRAM_WEBHOOK_URL,
         TELEGRAM_WEBHOOK_PORT (8443), TELEGRAM_WEBHOOK_HOST, TELEGRAM_WEBHOOK_SECRET."""
-        # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
         from . import adapter as _adapter
 
+        # Explicit connect() is the only operation allowed to reopen polling after a completed teardown.
         self._polling_teardown_started = False
         self._webhook_mode = False  # re-evaluated on every explicit connection
         if not _adapter.TELEGRAM_AVAILABLE:
@@ -1380,11 +1386,7 @@ class TelegramLifecycleMixin:
             # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
             # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
             # default's listener (and stops polling for it).
-            from agent.secret_scope import UnscopedSecretError, get_secret
-            try:
-                webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
-            except UnscopedSecretError:
-                webhook_url = _adapter.os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            webhook_url = (_adapter._get_scoped_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:
@@ -1622,3 +1624,42 @@ class TelegramLifecycleMixin:
         self._app = None
         self._bot = None
         _adapter.logger.info("[%s] Disconnected from Telegram", self.name)
+
+    def _record_updates_received(self, result) -> None:
+        """Count updates Telegram handed us on the getUpdates wire (#102260). Only reached for the
+        accepted generation, so a late response from a fenced poll cannot inflate the backlog."""
+        from . import adapter as _adapter
+
+        if isinstance(result, list) and result:
+            self._updates_received_total += len(result)
+
+    def _check_ingress_dispatch_stall(self) -> None:
+        """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
+
+        ``received`` and ``dispatched`` count the same population (every fetched update reaches the
+        group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
+        so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
+        is a wedged dispatcher at any traffic rate. Reports once per stall, re-arms on progress.
+        """
+        from . import adapter as _adapter
+
+        if self._webhook_mode or self._teardown_started or self.has_fatal_error:
+            return
+        received = getattr(self, "_updates_received_total", 0)
+        dispatched = getattr(self, "_updates_dispatched_total", 0)
+        if received <= dispatched or dispatched != getattr(self, "_ingress_dispatched_seen", 0):
+            self._ingress_dispatched_seen = dispatched
+            self._ingress_stalled_heartbeats = 0
+            return
+        stalled = getattr(self, "_ingress_stalled_heartbeats", 0)
+        if stalled >= _adapter._INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return  # already reported this stall
+        self._ingress_stalled_heartbeats = stalled + 1
+        if stalled + 1 < _adapter._INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return
+        _adapter.logger.warning(
+            "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "
+            "dispatched to any handler across %d heartbeats (%d received, %d dispatched, generation %d). "
+            "Polling is fine; PTB's dispatcher is not draining its queue.",
+            self.name, received - dispatched, _adapter._INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
+            getattr(self, "_polling_generation", 0))

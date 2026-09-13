@@ -55,6 +55,19 @@ def retire_terminal_receipts(conn, session_ids):
         conn.execute('DELETE FROM session_admissions WHERE target_session_id=?', (sid,))
 
 
+_LIVE_LEDGER_SQL = """SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'
+    UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
+
+
+def retire_prunable(conn, session_ids):
+    """Sweep variant of :func:`retire_terminal_receipts`: retire the idle sessions' terminal rows and
+    return only those ids.  A session with live or unknown work is skipped, so one busy row cannot
+    abort a whole prune/empty-session sweep (explicit deletes still refuse with ``session_busy``)."""
+    quiet = [sid for sid in session_ids if conn.execute(_LIVE_LEDGER_SQL, (sid, sid)).fetchone() is None]
+    retire_terminal_receipts(conn, quiet)
+    return quiet
+
+
 def delete_in_transaction(db, conn, session_id, payload):
     from hermes_state_mutation_guards import require_idle, delete_targets
     targets = delete_targets(conn, session_id)

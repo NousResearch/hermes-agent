@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
+from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
 from hermes_cli.session_recovery import (
     _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
     _placeholder_titles, _quoted_columns, _table_columns,
@@ -22,8 +23,6 @@ from hermes_cli.session_recovery import (
 
 logger = logging.getLogger(__name__)
 
-# Hermes session ids are timestamps (20260812_135332_ab12cd): the strongest sentinel for schema-less rows.
-SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 # Values observed in sessions.source across gateway platforms and tooling.

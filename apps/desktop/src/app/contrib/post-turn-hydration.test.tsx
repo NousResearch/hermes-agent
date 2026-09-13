@@ -1,3 +1,4 @@
+import type { GatewayEventName } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, renderHook } from '@testing-library/react'
@@ -179,7 +180,7 @@ function mount() {
     { initialProps: { drain: false } }
   )
 
-  const event = async (type: string, text = '') => {
+  const event = async (type: GatewayEventName, text = '') => {
     await act(async () => hook.result.current.stream.handleGatewayEvent({ type, session_id: SID, payload: { text } }))
   }
 
@@ -584,7 +585,7 @@ it.each(['live', 'idle'].flatMap(phase => [true, false].map(resumedUser => ({ ph
     await h.event('message.delta', intro)
     await h.event('message.interim', intro)
 
-    for (const type of ['tool.start', 'tool.complete']) {
+    for (const type of ['tool.start', 'tool.complete'] as const) {
       await act(async () =>
         h.hook.result.current.stream.handleGatewayEvent({
           type,

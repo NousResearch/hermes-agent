@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger("cli")
 
@@ -458,21 +459,11 @@ def _load_worktree_merge_cache() -> Dict[str, bool]:
 
 def _save_worktree_merge_cache(verdicts: Dict[str, bool]) -> None:
     """Atomically persist the newest ``_WORKTREE_MERGE_CACHE_MAX`` verdicts. Never raises."""
-    path = _worktree_merge_cache_path()
-    tmp = None
     try:
         items = list(verdicts.items())[-_WORKTREE_MERGE_CACHE_MAX:]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"version": 1, "verdicts": dict(items)}), encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        atomic_json_write(_worktree_merge_cache_path(), {"version": 1, "verdicts": dict(items)}, indent=None)
     except Exception as e:
         logger.debug("Could not persist worktree merge cache: %s", e)
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
 
 
 def _worktree_commits_all_merged_upstream(

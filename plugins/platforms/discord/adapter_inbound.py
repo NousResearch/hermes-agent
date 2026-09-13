@@ -471,31 +471,3 @@ class DiscordInboundMixin:
         else:
             await self.handle_message(event)
         return True
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch; longer delay when the chunk is
-        near Discord's 2000-char split point (continuation almost certain)."""
-        from . import adapter as _adapter
-
-        current_task = _adapter.asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await _adapter.asyncio.sleep(delay)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            _adapter.logger.info("[Discord] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            # Shield the dispatch: _enqueue_text_event cancels the prior flush task on each new chunk;
-            # without the shield CancelledError would abort the in-flight agent turn.
-            await _adapter.asyncio.shield(self.handle_message(event))
-        except _adapter.asyncio.CancelledError:
-            # Cancel landed before the pop; shielded handle_message unaffected.
-            pass
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)

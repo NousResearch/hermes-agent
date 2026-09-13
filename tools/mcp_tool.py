@@ -316,7 +316,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected")
+        "_ever_connected", "_sse_fallback")
 
     def __init__(self, name: str):
         self.name = name
@@ -345,6 +345,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._session_proven: bool = False
         # Never cleared (unlike _ready): separates first-connect from reconnect failures.
         self._ever_connected: bool = False
+        # Latched when the Streamable HTTP -> SSE fallback connects: reconnects reuse SSE directly.
+        self._sse_fallback: bool = False
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True

@@ -636,7 +636,7 @@ def _cmd_prune_or_archive(db, args, action):
     options = {'exclude_ledger_owned': True, 'report': preview} if prune else {}
     candidates = db.list_prune_candidates(**filters, **options)
     if preview.get('skipped_protected'):
-        print(f"Note: {preview['skipped_protected']} session(s) with retained runtime records will be skipped.")
+        print(f"Note: {preview['skipped_protected']} session(s) with busy/unknown runtime work will be skipped.")
     # Archive expands each row to its compression lineage (may include open continuations), so a
     # direct-open count would misdescribe its effect.
     skipped_open = db.count_open_prune_matches(**filters) if prune else 0
@@ -675,7 +675,7 @@ def _cmd_prune_or_archive(db, args, action):
         removed = db.prune_sessions(sessions_dir=_sessions_dir(), report=report, **filters)
         print(f"Pruned {removed} session(s).")
         if report.get('skipped_protected'):
-            print(f"Skipped {report['skipped_protected']} session(s) with retained runtime records.")
+            print(f"Skipped {report['skipped_protected']} session(s) with busy/unknown runtime work.")
     else:
         print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")
@@ -991,11 +991,13 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        from hermes_state_raw_delete import SessionLedgerProtectedError
+        from hermes_state_runtime import RuntimeStoreError
         try:
             return handler(db, args)
-        except SessionLedgerProtectedError as exc:
-            print(f"Refused: {exc}")
+        except RuntimeStoreError as exc:
+            if exc.reason not in {'session_busy', 'unknown_execution'}:
+                raise
+            print(f"Refused: {exc.reason}; nothing was deleted. Resolve the runtime work through the owning gateway.")
             return 1
     finally:
         db.close()

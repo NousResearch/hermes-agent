@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
-from hermes_cli.config import atomic_config_write, clear_model_endpoint_credentials
+from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
@@ -55,46 +55,10 @@ def _model_switch_skew_guard() -> Optional[str]:
 
 
 async def _persist_model_switch_to_config(result, config_path) -> None:
-    """Write-through a resolved /model switch to ``config_path`` (model.default/provider/base_url).
-
-    Raw read: merged defaults must not be persisted back. A scalar/None ``model:`` is coerced to a
-    dict first. Named providers re-resolve base_url/api_mode, so leftovers are cleared; custom
-    providers have no registry entry to re-derive from and need an explicit set-or-clear.
-    """
-    from hermes_cli.config import read_user_config_raw, save_config
-
-    cfg = read_user_config_raw(config_path)
-    raw_model = cfg.get("model")
-    if isinstance(raw_model, dict):
-        model_cfg = raw_model
-    elif isinstance(raw_model, str) and raw_model.strip():
-        model_cfg = cfg["model"] = {"default": raw_model.strip()}
-    else:
-        model_cfg = cfg["model"] = {}
-    try:
-        from hermes_cli.route_identity import should_clear_context_pin_async
-        clear_pin = await should_clear_context_pin_async(
-            model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-            model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider,
-        )
-    except Exception:
-        clear_pin = True
-    if clear_pin:
-        model_cfg.pop("context_length", None)
-    model_cfg["default"] = result.new_model
-    model_cfg["provider"] = result.target_provider
-    is_custom_target = str(result.target_provider or "").strip().lower() == "custom"
-    if result.base_url:
-        model_cfg["base_url"] = result.base_url
-    elif is_custom_target:
-        model_cfg.pop("base_url", None)
-    if not is_custom_target:
-        clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
-    elif result.api_mode:
-        model_cfg["api_mode"] = result.api_mode
-    else:
-        model_cfg.pop("api_mode", None)
-    save_config(cfg)
+    """Write-through a resolved /model switch to the profile config at ``config_path``, off the
+    event loop (the route comparison can do cold-start disk I/O)."""
+    from hermes_cli.model_switch import persist_model_selection
+    await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
 @dataclasses.dataclass

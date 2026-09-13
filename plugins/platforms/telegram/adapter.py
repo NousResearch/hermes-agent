@@ -18,6 +18,7 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -30,21 +31,6 @@ def _redact_telegram_error_text(error: object) -> str:
         return redact_sensitive_text(text, force=True)
     except Exception:
         return "<telegram error redacted>"
-
-
-def _scoped_gate_env(name: str, default: str = "") -> str:
-    """Per-profile TELEGRAM_*/GATEWAY_* gate env read (multiplex env is first-writer-wins).
-
-    Under gateway.multiplex_profiles the process env is first-writer-wins (the YAML→env bridge in
-    ``_apply_yaml_config``), so a raw ``os.getenv`` can return ANOTHER profile's allowlist (issue #72348,
-    Telegram mirror). Reads the active profile's secret scope when installed; falls back to ``os.getenv``
-    outside multiplex — identical single-profile behavior.
-    """
-    try:
-        from gateway.authz_mixin import _platform_gate_env
-        return _platform_gate_env(name, default)
-    except Exception:
-        return (os.getenv(name) or default).strip()
 
 
 def _consume_abandoned_task(task: asyncio.Task) -> None:
@@ -142,7 +128,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, classify_send_error,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
@@ -288,6 +274,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+from gateway.platforms.helpers import cancel_task
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -357,6 +344,10 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
+# Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
+# that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
+# backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
+_INGRESS_DISPATCH_STALL_HEARTBEATS = 2
 # sendVideo transcodes before answering, outlasting the 20s read timeout; also how long a user waits
 # to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0
@@ -467,8 +458,6 @@ class TelegramAdapter(
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", 0.3, min_value=0.08, max_value=2.0)
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).
@@ -489,6 +478,11 @@ class TelegramAdapter(
         # began, and when the last successful getUpdates round-trip completed.
         self._polling_generation_started_monotonic: Optional[float] = None
         self._polling_last_progress_monotonic: Optional[float] = None
+        # Ingress accounting (#102260): received (getUpdates wire) vs dispatched (PTB group-99 catch-all).
+        self._updates_received_total: int = 0
+        self._updates_dispatched_total: int = 0
+        self._ingress_dispatched_seen: int = 0
+        self._ingress_stalled_heartbeats: int = 0
         # Live @username: PTB caches getMe() at initialize() and only rewrites it inside get_me(), so a
         # BotFather rename leaves self._bot.username stale; routing reads _current_bot_username().
         self._bot_username_observed: Optional[str] = None
@@ -670,10 +664,8 @@ class TelegramAdapter(
     async def _redispatch_held_inbound(self, prior: Optional[asyncio.Task] = None) -> None:
         """Drain the hold queue after reconnect or a connected-path hold; ``prior`` (previous
         redispatch task) is cancelled+awaited here so ``_mark_connected`` stays synchronous."""
-        if prior is not None and prior is not asyncio.current_task() and not prior.done():
-            prior.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await prior
+        if prior is not asyncio.current_task():  # a self-redispatch must not cancel itself
+            await cancel_task(prior)
         held = getattr(self, "_held_inbound_events", None)
         if self._is_permanent_fatal():
             if held:

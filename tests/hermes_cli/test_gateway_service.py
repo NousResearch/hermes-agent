@@ -610,7 +610,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_pid_exit",
-            lambda pid, timeout: waited.append((pid, timeout)) or True,
+            lambda pid, timeout, **_: waited.append((pid, timeout)) or True,
         )
 
         run_calls = []

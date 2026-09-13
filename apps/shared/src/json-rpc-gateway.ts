@@ -1,87 +1,17 @@
-export type GatewayEventName =
-  | 'gateway.ready'
-  | 'session.info'
-  | 'session.usage'
-  | 'message.start'
-  | 'message.delta'
-  | 'message.interim'
-  | 'message.complete'
-  | 'thinking.delta'
-  | 'reasoning.delta'
-  | 'reasoning.available'
-  | 'status.update'
-  | 'tool.start'
-  | 'tool.progress'
-  | 'tool.complete'
-  | 'tool.generating'
-  | 'todo.updated'
-  | 'clarify.request'
-  | 'approval.request'
-  | 'sudo.request'
-  | 'secret.request'
-  | 'background.complete'
-  | 'error'
-  | 'skin.changed'
-  /** Synthetic, client-side: a reconnect replay could not cover the gap for
-   * `session_id` (epoch changed / ring truncated); the watermark was dropped
-   * and consumers must re-resume the session for a snapshot. */
-  | 'session.replay_gap'
-  | (string & {})
+import type { GatewayEvent, GatewayEventName } from './gateway-events.js'
+import {
+  DEFAULT_HEARTBEAT_DEADLINE_MS,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  type GatewayRequestId,
+  JsonRpcRequestChannel,
+  type JsonRpcTransport,
+  wireFrameText
+} from './json-rpc-channel.js'
 
-export interface GatewayEvent<P = unknown> {
-  payload?: P
-  /** Owner execution stamp on canonical gateways: the integer runtime epoch and
-   * the claimed generation, spread onto the params beside `type`/`payload`. */
-  authority_epoch?: number
-  execution_generation?: number
-  /** Renderer-side source tag added by the Desktop gateway registry. */
-  profile?: string
-  /** Registry connection whose socket delivered the event (renderer-side tag;
-   * absent for the local/legacy primary path). */
-  connectionId?: string
-  /** Session-scoped replay generation on canonical gateways. */
-  replay_epoch?: string
-  session_id?: string
-  type: GatewayEventName
-}
-
+export type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
-export type GatewayRequestId = number | string
-
-export interface JsonRpcErrorPayload {
-  code?: number
-  data?: unknown
-  message?: string
-}
-
-export interface JsonRpcFrame {
-  error?: JsonRpcErrorPayload
-  id?: GatewayRequestId | null
-  method?: string
-  params?: GatewayEvent
-  result?: unknown
-}
-
-/** JSON-RPC error with optional structured `data` from the gateway. */
-export class JsonRpcGatewayError extends Error {
-  readonly code?: number
-  readonly data?: unknown
-
-  constructor(message: string, options?: { code?: number; data?: unknown }) {
-    super(message)
-    this.name = 'JsonRpcGatewayError'
-    this.code = options?.code
-    this.data = options?.data
-  }
-}
 
 export type WebSocketLike = WebSocket
-
-type PendingCall = {
-  reject: (error: Error) => void
-  resolve: (value: unknown) => void
-  timer?: ReturnType<typeof setTimeout>
-}
 
 export interface GatewayClientOptions {
   closedErrorMessage?: string
@@ -91,7 +21,9 @@ export interface GatewayClientOptions {
   heartbeatDeadlineMs?: number
   heartbeatIntervalMs?: number
   /** Return true to intercept the default closed-state transition. */
-  onSocketClose?: (event: CloseEvent) => boolean | void
+  onSocketClose?: (event: { code: number }) => boolean | void
+  /** Fetch `session.events.since` after a reconnect (default). Off for notification-only feeds whose peer never answers RPCs. */
+  replay?: boolean
   requestIdPrefix?: string
   requestTimeoutMs?: number
   socketFactory?: (url: string) => WebSocketLike
@@ -100,11 +32,11 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+
+const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the
 // guard open; generous enough for a 512-frame ring to drain.
 const REPLAY_REQUEST_TIMEOUT_MS = 10_000
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
-const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 // A reconnect after sleep/wake must not hang forever in 'connecting' (which
 // keeps the composer disabled and stuck on "Starting Hermes..."). If the open
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
@@ -123,14 +55,55 @@ export function isGatewayWebSocketUrl(value: unknown): value is string {
   }
 }
 
+/**
+ * Typed fan-out of gateway `event` notifications: per-type handlers plus a
+ * `*` wildcard. Shared by the WebSocket client below and the Ink TUI's stdio
+ * client so both dispatch the same way.
+ */
+export class GatewayEventHub {
+  private readonly handlers = new Map<string, Set<(event: GatewayEvent) => void>>()
+
+  on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
+    let set = this.handlers.get(type)
+
+    if (!set) {
+      set = new Set()
+      this.handlers.set(type, set)
+    }
+
+    set.add(handler as (event: GatewayEvent) => void)
+
+    return () => set?.delete(handler as (event: GatewayEvent) => void)
+  }
+
+  onAny(handler: (event: GatewayEvent) => void): () => void {
+    // ANY is a client-side wildcard, not a wire name; it never reaches the typed map.
+    return this.on(ANY as GatewayEventName, handler as (event: GatewayEvent<GatewayEventName>) => void)
+  }
+
+  dispatch(event: GatewayEvent): void {
+    for (const handler of this.handlers.get(event.type) ?? []) {
+      handler(event)
+    }
+
+    for (const handler of this.handlers.get(ANY) ?? []) {
+      handler(event)
+    }
+  }
+}
+
+/**
+ * Bring a `JsonRpcRequestChannel` to a raw text sink — a WebSocket here, a
+ * child's stdin in the TUI. Kept separate from the socket so the channel never
+ * holds a reference to a specific socket generation.
+ */
+const socketTransport = (socket: WebSocketLike): JsonRpcTransport => ({ send: text => socket.send(text) })
+
 export class JsonRpcGatewayClient {
-  private nextId = 0
-  private pending = new Map<GatewayRequestId, PendingCall>()
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
-  private heartbeatSequence = 0
-  private lastInboundAt = 0
+  private readonly channel: JsonRpcRequestChannel
+  private readonly events = new GatewayEventHub()
   /** Last observed event seq per session_id — drives lossless reconnect replay. */
   private lastSeenSeq = new Map<string, number>()
   /** Catch-up result for the current socket; failed replay is not readiness. */
@@ -152,7 +125,6 @@ export class JsonRpcGatewayClient {
    */
   private replayEpoch: string | null = null
   private replayEpochBySession = new Map<string, string>()
-  private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
     Pick<GatewayClientOptions, 'socketFactory'>
@@ -167,10 +139,22 @@ export class JsonRpcGatewayClient {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
       onSocketClose: options.onSocketClose ?? (() => false),
+      replay: options.replay ?? true,
       requestIdPrefix: options.requestIdPrefix ?? 'r',
       requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       socketFactory: options.socketFactory
     }
+    this.channel = new JsonRpcRequestChannel({
+      createRequestId: this.options.createRequestId,
+      heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
+      heartbeatIntervalMs: this.options.heartbeatIntervalMs,
+      // Desktop/web have always counted any inbound frame as liveness; the
+      // TUI (stdio/attach owner) keeps its stricter pong-based contract.
+      heartbeatLiveness: 'any-inbound',
+      onEvent: event => this.handleEvent(event),
+      onHeartbeatFailure: error => this.invalidate(error.message),
+      requestTimeoutMs: this.options.requestTimeoutMs
+    })
   }
 
   get connectionState(): ConnectionState {
@@ -190,23 +174,27 @@ export class JsonRpcGatewayClient {
       throw invalidUrl()
     }
 
-    if (this.socket?.readyState === WebSocket.OPEN || this.state === 'connecting') {
+    if ((this.socket && this.socket.readyState === WebSocket.OPEN) || this.state === 'connecting') {
       return
     }
 
     this.setState('connecting')
 
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    const transport = socketTransport(socket)
     this.socket = socket
-    this.stopHeartbeat()
+    this.channel.stopHeartbeat()
 
     socket.addEventListener('message', message => {
       if (this.socket !== socket) {
         return
       }
 
-      this.lastInboundAt = Date.now()
-      this.handleMessage(message.data)
+      const text = wireFrameText(message.data)
+
+      if (text !== null) {
+        this.channel.handleFrame(text)
+      }
     })
 
     socket.addEventListener('close', event => {
@@ -218,10 +206,7 @@ export class JsonRpcGatewayClient {
         return
       }
 
-      this.socket = null
-      this.stopHeartbeat()
-      this.setState('closed')
-      this.rejectAllPending(new Error(this.options.closedErrorMessage))
+      this.dropSocket(new Error(this.options.closedErrorMessage))
     })
 
     await new Promise<void>((resolve, reject) => {
@@ -235,6 +220,7 @@ export class JsonRpcGatewayClient {
 
         socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
+        socket.removeEventListener('close', onClose)
       }
 
       const onOpen = () => {
@@ -244,6 +230,7 @@ export class JsonRpcGatewayClient {
 
         settled = true
         cleanup()
+        this.channel.attach(transport)
         // Establish the barrier before notifying eager open-state consumers.
         // connect() still means transport-open; turn submitters await replay.
         this.replayCompletion = this.fetchReplay(socket)
@@ -262,8 +249,32 @@ export class JsonRpcGatewayClient {
         reject(new Error(this.options.connectErrorMessage))
       }
 
+      // A server that closes during the handshake (auth gate, 4401/4403)
+      // may never fire `error`; without this the caller waits out the
+      // connect timeout for a verdict the socket already delivered. The
+      // permanent close listener above normally already dropped the socket
+      // and moved the generation to 'closed'; the branch below only runs
+      // when `onSocketClose` intercepted that transition and left the
+      // half-open socket bound.
+      const onClose = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+
+        if (this.socket === socket) {
+          this.socket = null
+          this.setState('error')
+        }
+
+        reject(new Error(this.options.connectErrorMessage))
+      }
+
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
+      socket.addEventListener('close', onClose, { once: true })
 
       if (this.options.connectTimeoutMs > 0) {
         timer = setTimeout(() => {
@@ -294,20 +305,7 @@ export class JsonRpcGatewayClient {
   }
 
   close(): void {
-    const socket = this.socket
-
-    if (!socket) {
-      return
-    }
-
-    try {
-      socket.close()
-    } finally {
-      this.socket = null
-      this.stopHeartbeat()
-      this.setState('closed')
-      this.rejectAllPending(new Error(this.options.closedErrorMessage))
-    }
+    this.invalidate()
   }
 
   /**
@@ -321,24 +319,24 @@ export class JsonRpcGatewayClient {
       return
     }
 
-    this.invalidateSocket(socket, new Error(message))
+    // Drop the generation BEFORE closing: a synchronous `close` event from
+    // the socket must hit the identity guard and not run the default
+    // closed-path a second time on top of whatever the owner redialed.
+    this.dropSocket(new Error(message))
+
+    try {
+      socket.close()
+    } catch {
+      // The generation was already invalidated; the reconnect owner can redial.
+    }
   }
 
-  on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
-    let handlers = this.eventHandlers.get(type)
-
-    if (!handlers) {
-      handlers = new Set()
-      this.eventHandlers.set(type, handlers)
-    }
-
-    handlers.add(handler as (event: GatewayEvent) => void)
-
-    return () => handlers?.delete(handler as (event: GatewayEvent) => void)
+  on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
+    return this.events.on(type, handler)
   }
 
   onAny(handler: (event: GatewayEvent) => void): () => void {
-    return this.on(ANY as GatewayEventName, handler)
+    return this.events.onAny(handler)
   }
 
   onEvent(handler: (event: GatewayEvent) => void): () => void {
@@ -358,152 +356,39 @@ export class JsonRpcGatewayClient {
     timeoutMs = this.options.requestTimeoutMs,
     signal?: AbortSignal
   ): Promise<T> {
-    const socket = this.socket
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    if (signal?.aborted) {
-      return Promise.reject(new DOMException('Aborted', 'AbortError'))
-    }
-
-    const id = this.options.createRequestId(++this.nextId)
-
-    return new Promise<T>((resolve, reject) => {
-      let onAbort: (() => void) | undefined
-
-      const detach = () => {
-        if (onAbort && signal) {
-          signal.removeEventListener('abort', onAbort)
-        }
-      }
-
-      const pending: PendingCall = {
-        resolve: value => {
-          detach()
-          resolve(value as T)
-        },
-        reject: error => {
-          detach()
-          reject(error)
-        }
-      }
-
-      if (timeoutMs > 0) {
-        pending.timer = setTimeout(() => {
-          if (this.pending.delete(id)) {
-            detach()
-            // Include the configured timeout so a caller (or a user looking
-            // at an error toast) can tell whether the default 30s window
-            // fired or a per-call override — e.g. /compress opts into 120s.
-            const seconds = Math.round(timeoutMs / 1000)
-            reject(new Error(`request timed out after ${seconds}s: ${method}`))
-          }
-        }, timeoutMs)
-      }
-
-      // Abort drops the pending call immediately (no dangling resolver/timer);
-      // server-side cancellation is a separate cooperative RPC where it matters.
-      if (signal) {
-        onAbort = () => {
-          const call = this.pending.get(id)
-
-          if (call?.timer) {
-            clearTimeout(call.timer)
-          }
-
-          this.pending.delete(id)
-          detach()
-          reject(new DOMException('Aborted', 'AbortError'))
-        }
-
-        signal.addEventListener('abort', onAbort, { once: true })
-      }
-
-      this.pending.set(id, pending)
-
-      try {
-        socket.send(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id,
-            method,
-            params
-          })
-        )
-      } catch (error) {
-        this.clearPending(id)
-        detach()
-        reject(error instanceof Error ? error : new Error(String(error)))
-      }
-    })
+    return this.channel.request<T>(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
   }
 
-  private handleMessage(raw: unknown): void {
-    const text = typeof raw === 'string' ? raw : String(raw)
-    let frame: JsonRpcFrame
+  private handleEvent(event: GatewayEvent): void {
+    if (isGatewayReady(event)) {
+      if (event.payload?.heartbeat === true) {
+        this.channel.startHeartbeat()
+      }
 
-    try {
-      frame = JSON.parse(text) as JsonRpcFrame
-    } catch {
-      return
+      const epoch = event.payload?.replay_epoch
+
+      if (typeof epoch === 'string' && epoch) {
+        this.adoptReplayEpoch(epoch)
+      }
     }
 
-    if (frame.id !== undefined && frame.id !== null) {
-      const call = this.pending.get(frame.id)
+    const sid = event.session_id
+    const seqValue = event.seq
 
-      if (!call) {
-        return
-      }
-
-      this.clearPending(frame.id)
-
-      if (frame.error) {
-        call.reject(
-          new JsonRpcGatewayError(frame.error.message || 'Hermes RPC failed', {
-            code: typeof frame.error.code === 'number' ? frame.error.code : undefined,
-            data: frame.error.data
-          })
-        )
-      } else {
-        call.resolve(frame.result)
-      }
+    if (this.replayHold && sid && typeof seqValue === 'number' && this.replayHold.has(sid)) {
+      // Replay in flight for this session: park the frame; flushReplayHold
+      // dispatches it after the replayed gap, gated on seq.
+      this.replayHold.get(sid)?.push(event)
 
       return
     }
 
-    if (frame.method === 'event' && frame.params?.type) {
-      if (frame.params.type === 'gateway.ready') {
-        if (this.gatewayReadyAdvertisesHeartbeat(frame.params.payload)) {
-          const socket = this.socket
-
-          if (socket) {
-            this.startHeartbeat(socket)
-          }
-        }
-
-        const epoch = (frame.params.payload as { replay_epoch?: unknown } | undefined)?.replay_epoch
-
-        if (typeof epoch === 'string' && epoch) {
-          this.adoptReplayEpoch(epoch)
-        }
-      }
-
-      const sid = frame.params.session_id
-      const seqValue = (frame.params as { seq?: unknown }).seq
-
-      if (this.replayHold && sid && typeof seqValue === 'number' && this.replayHold.has(sid)) {
-        // Replay in flight for this session: park the frame; flushReplayHold
-        // dispatches it after the replayed gap, gated on seq.
-        this.replayHold.get(sid)?.push(frame.params)
-
-        return
-      }
-
-      this.recordSeq(frame.params)
-      this.dispatchEvent(frame.params)
-    }
+    this.recordSeq(event)
+    this.dispatchEvent(event)
   }
 
   /**
@@ -512,7 +397,7 @@ export class JsonRpcGatewayClient {
    */
   private recordSeq(event: GatewayEvent): void {
     const sid = event.session_id
-    const seq = (event as { seq?: unknown }).seq
+    const seq = event.seq
 
     if (sid) { this.adoptSessionReplayEpoch(sid, event.replay_epoch) }
 
@@ -554,7 +439,7 @@ export class JsonRpcGatewayClient {
    * Best-effort: failures are swallowed (the next reconnect retries).
    */
   private async fetchReplay(socket: WebSocketLike): Promise<boolean> {
-    if (this.lastSeenSeq.size === 0) {
+    if (!this.options.replay || this.lastSeenSeq.size === 0) {
       this.replayHold = null
 
       return true
@@ -700,7 +585,7 @@ export class JsonRpcGatewayClient {
    */
   private dispatchIfNewer(event: GatewayEvent): void {
     const sid = event.session_id
-    const seq = (event as { seq?: unknown }).seq
+    const seq = event.seq
 
     // Parked frames reach here only after the replay window has been applied.
     if (sid) { this.adoptSessionReplayEpoch(sid, event.replay_epoch) }
@@ -769,98 +654,15 @@ export class JsonRpcGatewayClient {
     }
   }
 
-  private gatewayReadyAdvertisesHeartbeat(payload: unknown): boolean {
-    return Boolean(payload && typeof payload === 'object' && (payload as { heartbeat?: unknown }).heartbeat === true)
-  }
-
-  private startHeartbeat(socket: WebSocketLike): void {
-    this.stopHeartbeat()
-    this.lastInboundAt = Date.now()
-
-    if (this.options.heartbeatIntervalMs <= 0 || this.options.heartbeatDeadlineMs <= 0) {
-      return
-    }
-
-    this.heartbeatTimer = setInterval(() => {
-      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
-        return
-      }
-
-      if (Date.now() - this.lastInboundAt >= this.options.heartbeatDeadlineMs) {
-        this.invalidateSocket(socket, new Error('WebSocket heartbeat acknowledgement timed out'))
-
-        return
-      }
-
-      try {
-        socket.send(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id: `heartbeat-${++this.heartbeatSequence}`,
-            method: 'gateway.ping',
-            params: {}
-          })
-        )
-      } catch (error) {
-        this.invalidateSocket(socket, error instanceof Error ? error : new Error(String(error)))
-      }
-    }, this.options.heartbeatIntervalMs)
-  }
-
-  private stopHeartbeat(): void {
-    if (this.heartbeatTimer !== null) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
-  }
-
-  private invalidateSocket(socket: WebSocketLike, error: Error): void {
-    if (this.socket !== socket) {
-      return
-    }
-
+  /** Forget the current socket generation, fail its calls, and go 'closed'. */
+  private dropSocket(error: Error): void {
     this.socket = null
-    this.stopHeartbeat()
-
-    try {
-      socket.close()
-    } catch {
-      // The generation was already invalidated; the reconnect owner can redial.
-    }
-
+    this.channel.detach(error)
     this.setState('closed')
-    this.rejectAllPending(error)
-  }
-
-  private clearPending(id: GatewayRequestId): void {
-    const call = this.pending.get(id)
-
-    if (call?.timer) {
-      clearTimeout(call.timer)
-    }
-
-    this.pending.delete(id)
   }
 
   private dispatchEvent(event: GatewayEvent): void {
-    for (const handler of this.eventHandlers.get(event.type) ?? []) {
-      handler(event)
-    }
-
-    for (const handler of this.eventHandlers.get(ANY) ?? []) {
-      handler(event)
-    }
-  }
-
-  private rejectAllPending(error: Error): void {
-    for (const [id, call] of this.pending) {
-      if (call.timer) {
-        clearTimeout(call.timer)
-      }
-
-      call.reject(error)
-      this.pending.delete(id)
-    }
+    this.events.dispatch(event)
   }
 
   private setState(state: ConnectionState): void {

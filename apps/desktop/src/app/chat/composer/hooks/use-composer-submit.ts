@@ -1,7 +1,7 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'

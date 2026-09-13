@@ -1,7 +1,7 @@
 """Slack prompts methods; SDK and mutable dependencies remain on the facade."""
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import ExecApprovalPrompt, SendResult
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_sdk.web.async_client import AsyncWebClient
@@ -70,41 +70,6 @@ class SlackPromptsMixin:
             _adapter.logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return _adapter.SendResult(success=False, error=str(e))
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False) -> SendResult:
-        """Send a Block Kit approval prompt with interactive buttons.
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting agent thread — same
-        mechanism as the text ``/approve`` flow."""
-
-        def _build() -> Tuple[str, list]:
-            # Slack caps a section's text at 3000 chars (overflow → invalid_blocks → no buttons);
-            # execute_code approvals embed the whole script, so budget the preview.
-            header = ":warning: *Command Approval Required*\n"
-            if smart_denied:
-                header += "*Smart DENY:* owner override applies to this one operation only.\n"
-            reason = f"Reason: {description[:500]}"
-            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
-            cmd_preview = command[:budget] + "..." if len(command) > budget else command
-            actions = [
-                self._button("Allow Once", "hermes_approve_once", session_key, style="primary")]
-            if not smart_denied and allow_session:
-                actions.append(self._button("Allow Session", "hermes_approve_session", session_key))
-                if allow_permanent:
-                    actions.append(
-                        self._button("Always Allow", "hermes_approve_always", session_key))
-            actions.append(self._button("Deny", "hermes_deny", session_key, style="danger"))
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"{header}```{cmd_preview}```\n{reason}"}},
-                {"type": "actions", "elements": actions}]
-            return f"⚠️ Command approval required: {cmd_preview[:100]}", blocks
-
-        return await self._send_interactive_prompt(
-            chat_id, metadata, _build, "send_exec_approval",
-            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -639,7 +604,7 @@ class SlackPromptsMixin:
                     normalized_user_id, exc_info=True)
         # Env-only fallback. Per-profile accessor: under multiplex a scoped miss
         # returns "" rather than leaking the DEFAULT profile's os.environ allowlist.
-        from gateway.authz_mixin import _platform_gate_env as _env
+        _env = _adapter._scoped_gate_env
         if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
         allowed_ids = {
@@ -855,3 +820,46 @@ class SlackPromptsMixin:
             await self._update_clarify_message(channel_id, msg_ts, original_text, expired_text)
             _adapter.logger.warning(
                 "[Slack] clarify resolve returned False (id=%s) — expired/reset", clarify_id)
+
+    _EA_HEADER = ":warning: *Command Approval Required*\n"
+
+    _EA_CODE_OPEN = "```"
+
+    _EA_CODE_CLOSE = "```\n"
+
+    _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
+
+    _EA_REASON_BUDGET = 500
+
+    _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
+
+    _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
+                      "always": "hermes_approve_always", "deny": "hermes_deny"}
+
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        # execute_code approvals embed the whole script, so budget the preview against the cap.
+        from . import adapter as _adapter
+
+        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
+        return max(0, self._EA_SECTION_CAP - fixed)
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Block Kit approval prompt; the buttons call ``resolve_gateway_approval()`` to unblock the
+        waiting agent thread — same mechanism as the text ``/approve`` flow."""
+        from . import adapter as _adapter
+
+
+        def _build() -> _adapter.Tuple[str, list]:
+            actions = [
+                self._button(label, self._EA_ACTION_IDS[choice], prompt.session_key, style=style)
+                for label, choice, style in prompt.actions]
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
+                {"type": "actions", "elements": actions}]
+            return f"⚠️ Command approval required: {prompt.command[:100]}", blocks
+
+        return await self._send_interactive_prompt(
+            prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
+            resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)

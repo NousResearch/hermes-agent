@@ -31,6 +31,7 @@ from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
+from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -259,16 +260,20 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
 )
+from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, platform_gate_env as _scoped_gate_env, send_error,
+    yaml_env_setter as _yaml_env_setter
+)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -342,10 +347,7 @@ async def _wait_for_ready_or_bot_exit(
                 raise RuntimeError("Discord bot task exited before ready")
         await ready_task
     finally:
-        if not ready_task.done():
-            ready_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await ready_task
+        await cancel_task(ready_task)
 
 
 def _needs_server_members_intent(
@@ -545,15 +547,6 @@ _GATE_ENV_KEYS = (
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
-
-
-def _scoped_gate_env(name: str, default: str = "") -> str:
-    """Scope-aware gate env read: profile secret scope first under multiplex."""
-    try:
-        from gateway.authz_mixin import _platform_gate_env
-        return _platform_gate_env(name, default)
-    except Exception:
-        return (os.getenv(name) or default).strip()
 
 
 def _multiplex_active() -> bool:
@@ -1046,8 +1039,6 @@ class DiscordAdapter(
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -1270,13 +1261,6 @@ def _derive_forum_thread_name(message: str) -> str:
     return first_line[:100]
 
 
-def _standalone_sanitize_error(text) -> str:
-    """Local copy of tools.send_message_tool._sanitize_error_text (strips bot tokens); avoids hard dep."""
-    s = str(text)
-    import re as _re_san
-    return _re_san.sub(r"(Authorization:\s*Bot\s+)\S+", r"\1***", s, flags=_re_san.IGNORECASE)
-
-
 def _standalone_close_response(resp: Any) -> None:
     close = getattr(resp, "close", None)
     if callable(close):
@@ -1356,7 +1340,7 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        return None, {"error": f"{error_prefix} ({resp.status}): {body}"}
+        return None, send_error(f"{error_prefix} ({resp.status}): {body}")
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 
@@ -1398,14 +1382,14 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     token = (getattr(pconfig, "token", None) or "").strip()
     if not token:
         # Profile-scoped read: under multiplex the env may hold another profile's token.
         from agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
-        return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
+        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -1452,7 +1436,7 @@ async def _standalone_send(
                                 if err:
                                     return err
                         except Exception as e:
-                            return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
+                            return send_error(f"Discord forum thread upload failed: {e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
                         async with session.post(
@@ -1511,20 +1495,18 @@ async def _standalone_send(
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord API error")
                             if err:
-                                warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {err['error']}")
+                                warning = send_error(f"Failed to send media {media_path}: {err['error']}")["error"]
                                 logger.error(warning)
                                 warnings.append(warning)
                                 continue
                             last_data = data
                 except Exception as e:
-                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
+                    warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
                     logger.error(warning)
                     warnings.append(warning)
         if last_data is None:
             error = "No deliverable text or media remained after processing"
-            if warnings:
-                return {"error": error, "warnings": warnings}
-            return {"error": error}
+            return {**send_error(error), **({"warnings": warnings} if warnings else {})}
         result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
         if warnings:
             result["warnings"] = warnings
@@ -1532,7 +1514,7 @@ async def _standalone_send(
     except Exception as e:
         # Include the exception type: str(TimeoutError()) is empty.
         logger.error("Discord standalone send failed", exc_info=True)
-        return {"error": _standalone_sanitize_error(f"Discord send failed: {type(e).__name__}: {e}")}
+        return send_error(f"Discord send failed: {type(e).__name__}: {e}")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────
@@ -1552,12 +1534,45 @@ def _clean_discord_user_ids(raw: str) -> list:
     return cleaned
 
 
+def _discord_token_shape_error(token: str) -> Optional[str]:
+    """Reject a Discord bot token that is really the numeric application ID.
+
+    Users routinely paste the application ID from the Developer Portal's General
+    Information page instead of the bot token (Bot page); the gateway then fails
+    at runtime with an opaque 401. A real bot token is dot-separated base64 and
+    never purely numeric, so this is a safe, narrow shape check (port of
+    openclaw/openclaw#140531).
+    """
+    if token and token.strip().isdigit():
+        return ("That looks like a numeric application ID, not a bot token. "
+                "Paste the bot token from the Discord Developer Portal (Bot page), "
+                "not the application ID (General Information page).")
+    return None
+
+
+def _prompt_discord_bot_token(prompt) -> str:
+    """Prompt for the bot token, re-prompting once when the answer is a numeric app ID."""
+    from hermes_cli.cli_output import print_error
+    token = ""
+    for _attempt in range(2):
+        token = prompt("Discord bot token", password=True)
+        if not token:
+            return ""
+        error = _discord_token_shape_error(token)
+        if error is None:
+            return token
+        print_error(error)
+    # Second consecutive numeric answer: trust the user, keep the value.
+    return token
+
+
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup: token, allowlist, home channel (lazy CLI imports)."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success,
     )
+    from hermes_cli.setup_platforms import declines_reconfigure
     def _info_lines(*lines: str) -> None:
         for line in lines:
             print_info(line)
@@ -1567,22 +1582,19 @@ def interactive_setup() -> None:
         print_success("Discord allowlist configured")
 
     print_header("Discord")
-    existing = get_env_value("DISCORD_BOT_TOKEN")
-    if existing:
-        print_info("Discord: already configured")
-        if not prompt_yes_no("Reconfigure Discord?", False):
-            if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info(
-                    "⚠️  Discord has no user allowlist. With the fail-closed default, "
-                    "messages are denied unless you configure allowed users, roles, "
-                    "or channels, or set DISCORD_ALLOW_ALL_USERS=true."
-                )
-                if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
-                    if allowed_users:
-                        _save_allowlist(allowed_users)
-            return
+    if declines_reconfigure("Discord", "Reconfigure Discord?", "DISCORD_BOT_TOKEN"):
+        if not get_env_value("DISCORD_ALLOWED_USERS"):
+            print_info(
+                "⚠️  Discord has no user allowlist. With the fail-closed default, "
+                "messages are denied unless you configure allowed users, roles, "
+                "or channels, or set DISCORD_ALLOW_ALL_USERS=true."
+            )
+            if prompt_yes_no("Add allowed users now?", True):
+                print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                allowed_users = prompt("Allowed user IDs (comma-separated)")
+                if allowed_users:
+                    _save_allowlist(allowed_users)
+        return
     _info_lines(
         "Create a bot at https://discord.com/developers/applications",
         "On Bot → Privileged Gateway Intents, enable:",
@@ -1591,7 +1603,7 @@ def interactive_setup() -> None:
         "Save Changes in the Developer Portal before starting the gateway.",
         "Docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
     )
-    token = prompt("Discord bot token", password=True)
+    token = _prompt_discord_bot_token(prompt)
     if not token:
         return
     save_env_value("DISCORD_BOT_TOKEN", token)
@@ -1736,16 +1748,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     return seeded_extra or None
 
 
-def _is_connected(config) -> bool:
-    """Connected when DISCORD_BOT_TOKEN is set.
-    Looks up ``hermes_cli.gateway.get_env_value`` at call time so tests can patch it (ambient env)."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("DISCORD_BOT_TOKEN") or "").strip())
+_is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
-
-def _build_adapter(config):
-    """Factory wrapper that constructs DiscordAdapter from a PlatformConfig."""
-    return DiscordAdapter(config)
 
 
 def register(ctx) -> None:
@@ -1753,7 +1757,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="discord",
         label="Discord",
-        adapter_factory=_build_adapter,
+        adapter_factory=DiscordAdapter,
         check_fn=discord_deps_present,
         ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,

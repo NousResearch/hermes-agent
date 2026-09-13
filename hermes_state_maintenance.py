@@ -83,7 +83,7 @@ class SessionMaintenanceMixin:
 
     def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None,
                                    *, report: Optional[dict] = None) -> int:
-        """Remove empty TUI ghosts (>24hr old), skipping runtime ledger owners.
+        """Remove empty TUI ghosts (>24hr old), retiring only terminal ledger rows.
         Optional *report* receives removed/skipped_protected counts after commit."""
         cutoff = time.time() - 86400
         def _do(conn):
@@ -97,9 +97,10 @@ class SessionMaintenanceMixin:
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
-            from hermes_state_raw_delete import protected_session_ids
-            protected = protected_session_ids(conn, ids)
-            ids = [sid for sid in ids if sid not in protected]
+            from hermes_state_mutation_retirement import retire_prunable
+            candidates = set(ids)
+            ids = retire_prunable(conn, ids)
+            protected = candidates - set(ids)
             for chunk in _id_chunks(ids):
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
@@ -292,17 +293,19 @@ class SessionMaintenanceMixin:
         *sessions_dir*, transcript files are removed outside the DB transaction.
         ``exclude_active_write_guards`` (automatic maintenance) skips rows under a live turn lease
         or compression lock while expired/dead holders are reclaimed and fenced. Runtime ledger
-        references always protect a row. *report* receives removed/skipped_protected after commit."""
+        rows with live or unknown work are skipped; eligible terminal rows retain their
+        retry tombstones. *report* receives removed/skipped_protected after commit."""
         where, where_params = self._prune_where(older_than_days, source, filters)
         def _do(conn):
             cursor = conn.execute(f"SELECT s.id FROM sessions s WHERE {where}", where_params)
             session_ids = {row["id"] for row in cursor.fetchall()}
-            from hermes_state_raw_delete import protected_session_ids
-            protected = protected_session_ids(conn, session_ids)
-            session_ids -= protected
             if exclude_active_write_guards:
                 session_ids -= {sid for sid in session_ids
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
+            from hermes_state_mutation_retirement import retire_prunable
+            candidates = set(session_ids)
+            session_ids = retire_prunable(conn, sorted(session_ids))
+            protected = candidates - set(session_ids)
             if not session_ids:
                 return [], len(protected)
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.

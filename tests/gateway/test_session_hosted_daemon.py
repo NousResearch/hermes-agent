@@ -161,7 +161,10 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
 
     async def recovered(desc):
         async with websocket(home, desc) as ws:
-            async with asyncio.timeout(30):
+            # The killed owner's room lease is same-gateway with a fresh process
+            # generation, so the restarted owner cannot steal it and waits out the
+            # 30s TTL (acquire_lease -> LeaseHeldError until expiry). Measured 30.2s.
+            async with asyncio.timeout(90):
                 while True:
                     snapshot = await state(ws)
                     actions = [a for a in snapshot['pending_actions'] if a['kind'] == 'discard']

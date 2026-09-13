@@ -1,7 +1,7 @@
 """Telegram prompts methods; runtime dependencies remain on the adapter facade."""
 
 from typing import Any, Dict, Optional
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import ExecApprovalPrompt, SendResult
 try:
     from telegram import Message, Update, InlineKeyboardButton
     from telegram.ext import ContextTypes
@@ -60,32 +60,6 @@ class TelegramPromptsMixin:
 
         return _adapter._html.escape(text)
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
-        """Send an inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
-        text ``/approve`` flow."""
-        from . import adapter as _adapter
-
-        def build():
-            text = self._format_exec_approval(command, description, smart_denied)
-            # Short monotonic ids in callback_data map back to session_key.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
-            buttons = [_adapter.InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")]
-            if not smart_denied and allow_session:
-                buttons.append(_adapter.InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"))
-                if allow_permanent:
-                    buttons.append(_adapter.InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"))
-            buttons.append(_adapter.InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            return text, _adapter.InlineKeyboardMarkup(
-                self._rows_of_two(buttons)), lambda msg: self._approval_state.__setitem__(approval_id, session_key)
-        return await self._send_prompt(
-            "send_exec_approval", chat_id, metadata, build, parse_mode=_adapter.ParseMode.HTML,
-            thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -786,7 +760,8 @@ class TelegramPromptsMixin:
             await query.answer(text=f"Unknown verb: {verb}")
             return
         script_name, extra_args, success_label, is_state_verb = entry
-        script_path = _adapter._Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
+        from hermes_constants import get_hermes_home
+        script_path = get_hermes_home() / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
             await query.answer(text=f"❌ {script_name} missing")
             _adapter.logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
@@ -820,3 +795,24 @@ class TelegramPromptsMixin:
         # Sticky state verbs keep the keyboard so further actions can stack; one-shots strip it (can't fire twice).
         with _adapter.contextlib.suppress(Exception):
             await query.edit_message_text(text=appended, **({} if is_state_verb else {"reply_markup": None}))
+
+    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
+        text ``/approve`` flow."""
+        from . import adapter as _adapter
+
+        def build():
+            # Short monotonic ids in callback_data map back to session_key.
+            import itertools
+            if not hasattr(self, "_approval_counter"):
+                self._approval_counter = itertools.count(1)
+            approval_id = next(self._approval_counter)
+            buttons = [_adapter.InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
+                       for label, choice, _ in prompt.actions]
+            return prompt.text, _adapter.InlineKeyboardMarkup(self._rows_of_two(buttons)), (
+                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+        return await self._send_prompt(
+            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=_adapter.ParseMode.HTML,
+            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)

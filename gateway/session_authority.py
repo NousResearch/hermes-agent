@@ -53,6 +53,9 @@ class SessionAuthority:
         self.pending_stops = {}
 
     def authorize(self, actor, ref, capability):
+        """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
+        safe: a deleted/evicted live entry surfaces here as ``not_found``, not as a KeyError
+        deeper in the handler."""
         if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
             raise RuntimeStoreError('profile_mismatch')
         if capability not in actor.capabilities:
@@ -474,22 +477,36 @@ class SessionAuthority:
                 logging.getLogger(__name__).exception('Admitted turn %s failed', admission_id)
                 response = 'The admitted turn failed.'
                 outcome = 'failed'
-            with live.event_stream.lock:
-                from gateway.session_results import finish_result
-                settled, response = finish_result(self.db, epoch=self.epoch, row=row,
-                    response=response, outcome=outcome,
-                    result=self.pending_results.pop(admission_id, None))
-                live.controls.snapshot(ref.session_id, None)
-                from gateway.session_ingress_media import release_admission_media
-                release_admission_media(self.db, admission_id)
-                self._publish_pending(ref)
-                live.event_stream.publish(ref.session_id, {
-                    'text': response, 'content': response, 'admission_id': admission_id,
-                    'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+            try:
+                with live.event_stream.lock:
+                    from gateway.session_results import finish_result
+                    settled, response = finish_result(self.db, epoch=self.epoch, row=row,
+                        response=response, outcome=outcome,
+                        result=self.pending_results.pop(admission_id, None))
+                    live.controls.snapshot(ref.session_id, None)
+                    from gateway.session_ingress_media import release_admission_media
+                    release_admission_media(self.db, admission_id)
+                    self._publish_pending(ref)
+                    live.event_stream.publish(ref.session_id, {
+                        'text': response, 'content': response, 'admission_id': admission_id,
+                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+            except Exception as exc:
+                # The settle fence lost (a reset/compression moved runtime_generation under
+                # the turn). The row stays `started` for recovery -> `unknown`; re-settling
+                # it here would forge an outcome the ledger refused. The pump itself must
+                # not die silently: log with the id and fall through to release observers.
+                import logging
+                logging.getLogger(__name__).error(
+                    'Settlement failed; left for recovery: profile=%s session=%s epoch=%s '
+                    'admission=%s error_type=%s', self.profile_id, ref.session_id,
+                    self.epoch, admission_id, type(exc).__name__)
+                response = 'The admitted turn could not be settled.'
+            finally:
                 # The stamp names a claimed, unsettled execution. Left in place, idle
                 # mutations (session.updated) would carry a terminal generation and
                 # a versioned viewer fence would discard them as late frames.
-                live.event_stream.execution = {}
+                with live.event_stream.lock:
+                    live.event_stream.execution = {}
             self.pending_stops.pop(ref.session_id, None)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():

@@ -136,11 +136,14 @@ def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
     def run():
         db = _open_session_db_for_profile(profile, read_only=read_only)
         try:
-            from hermes_state_raw_delete import SessionLedgerProtectedError
+            from hermes_state_runtime import RuntimeStoreError
             try:
                 return fn(db)
-            except SessionLedgerProtectedError as exc:
-                raise HTTPException(status_code=409, detail={'code': exc.reason, 'message': str(exc)}) from exc
+            except RuntimeStoreError as exc:
+                if exc.reason not in {'session_busy', 'unknown_execution'}:
+                    raise
+                raise HTTPException(status_code=409, detail={'code': exc.reason,
+                    'message': f'{exc.reason}; nothing was deleted. Resolve the runtime work through the owning gateway.'}) from exc
         finally:
             db.close()
     if read_only:

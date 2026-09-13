@@ -127,7 +127,8 @@ def probe(tmp_path):
             asyncio.run(unauthorized(desc))
             with ThreadPoolExecutor(2) as pool:
                 assert all('LAUNCH_POLICY_OK' in x for x in pool.map(cli, keys))
-            assert config.read_bytes() == before
+            after = config.read_bytes()
+            assert after == before, (after, sorted(str(x.relative_to(home)) for x in home.rglob('*') if 'config' in x.name))
             cfg['agent'] = {'reasoning_effort': 'none', 'max_turns': 40}
             config.write_text(json.dumps(cfg))
             for side in keys:

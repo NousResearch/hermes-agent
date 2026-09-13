@@ -462,7 +462,8 @@ class HostedRoomAttachmentStore:
                 os.close(descriptor)
             temp.unlink(missing_ok=True)
 
-    def _read_blob(self, *, blob_id: str, size: int, sha256: str) -> bytes:
+    def _open_blob(self, *, blob_id: str, size: int) -> int:
+        """Open the regular blob file and fence its size against the durable row."""
         path = self._blob_path(blob_id)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -473,12 +474,34 @@ class HostedRoomAttachmentStore:
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_size != size:
                 raise AttachmentIntegrityError("canonical attachment blob size changed")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    def _read_blob(self, *, blob_id: str, size: int, sha256: str) -> bytes:
+        descriptor = self._open_blob(blob_id=blob_id, size=size)
+        try:
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
                 data = handle.read(MAX_ATTACHMENT_BYTES + 1)
         finally:
             os.close(descriptor)
         if len(data) != size or hashlib.sha256(data).hexdigest() != sha256:
             raise AttachmentIntegrityError("canonical attachment blob failed SHA-256 validation")
+        return data
+
+    def _read_blob_range(self, *, blob_id: str, size: int, offset: int, length: int) -> bytes:
+        """One slice of the blob; the row's SHA-256 is the caller's whole-file digest and the
+        receiver verifies the reassembled bytes against it, so no slice is hashed here."""
+        descriptor = self._open_blob(blob_id=blob_id, size=size)
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                handle.seek(offset)
+                data = handle.read(length)
+        finally:
+            os.close(descriptor)
+        if len(data) != min(length, size - offset):
+            raise AttachmentIntegrityError("canonical attachment blob size changed")
         return data
 
     @staticmethod
@@ -873,6 +896,58 @@ class HostedRoomAttachmentStore:
                 size=int(row["size"]),
                 sha256=str(row["sha256"]),
             )
+            return AttachmentData(self._metadata(row), data)
+
+    def describe(
+        self,
+        *,
+        room_id: Any,
+        attachment_id: Any,
+        recipient_member_id: Any,
+        event_id: Any,
+    ) -> dict[str, Any]:
+        """``read`` without bytes: the metadata (including the upload-verified SHA-256) of a
+        committed attachment this recipient may read for this event."""
+        room_id = _identifier(room_id, label="room_id")
+        attachment_id = _attachment_id(attachment_id)
+        recipient_member_id = _identifier(recipient_member_id, label="recipient_member_id")
+        normalized_event = _identifier(event_id, label="event_id")
+        with self._transaction() as conn:
+            row = self._read_committed_row(
+                conn, room_id=room_id, attachment_id=attachment_id,
+                recipient_member_id=recipient_member_id,
+                normalized_event=normalized_event, viewer=False, now=float(self.clock()),
+            )
+            return self._metadata(row)
+
+    def read_range(
+        self,
+        *,
+        room_id: Any,
+        attachment_id: Any,
+        recipient_member_id: Any,
+        event_id: Any,
+        offset: int,
+        length: int,
+    ) -> AttachmentData:
+        """``read`` for one slice: same authorization, metadata carries the stored whole-file
+        SHA-256 and the receiver verifies the reassembled bytes against it."""
+        room_id = _identifier(room_id, label="room_id")
+        attachment_id = _attachment_id(attachment_id)
+        recipient_member_id = _identifier(recipient_member_id, label="recipient_member_id")
+        normalized_event = _identifier(event_id, label="event_id")
+        if type(offset) is not int or type(length) is not int or offset < 0 or length <= 0:
+            raise AttachmentError("attachment range must be non-negative integers")
+        with self._transaction() as conn:
+            row = self._read_committed_row(
+                conn, room_id=room_id, attachment_id=attachment_id,
+                recipient_member_id=recipient_member_id,
+                normalized_event=normalized_event, viewer=False, now=float(self.clock()),
+            )
+            if offset >= int(row["size"]):
+                raise AttachmentError("attachment range starts past the end")
+            data = self._read_blob_range(
+                blob_id=str(row["blob_id"]), size=int(row["size"]), offset=offset, length=length)
             return AttachmentData(self._metadata(row), data)
 
     def reconcile_room_events(self) -> int:

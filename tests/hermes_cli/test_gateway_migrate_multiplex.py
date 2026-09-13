@@ -39,25 +39,31 @@ def fleet(tmp_path, monkeypatch):
         services={"coder": ("systemd", False), "ops": ("systemd", False)},
         pids={"coder": 4101, "ops": 4102},
         ops=[],
+        refused_at_start={},
     )
-
-    def _name(home: Path) -> str:
-        return hermes_constants.profile_name_for_home(home) or "default"
 
     def _service_op(kind, system, verb, home):
         name = _name(home)
         state.ops.append((name, verb))
+        if verb == "start" and name != "default":
+            # What the real `hermes -p <name> gateway run` checks first: is a live multiplexer
+            # still recorded as serving me? (exit 78 if so — the unit is then parked for good).
+            from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+            state.refused_at_start[name] = named_profile_served_by_running_multiplexer(name)
         if verb == "uninstall":
             state.services.pop(name, None)
         elif verb == "install":
             state.services[name] = (kind, system)
         elif verb in ("start", "restart") and name == "default":
-            # What the real multiplexer does at startup: record the served set in the default home.
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
-            (root / "gateway_state.json").write_text(json.dumps({
-                "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
-                "served_profiles": ["default", "coder", "ops"],
-            }))
+            runtime_path = root / "gateway_state.json"
+            runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
+            runtime.update({"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running"})
+            # Multiplex startup records ownership; standalone startup historically preserved the
+            # old key, which is the stale-state half of #109473's rollback failure.
+            if _config_flag(root):
+                runtime["served_profiles"] = ["default", "coder", "ops"]
+            runtime_path.write_text(json.dumps(runtime))
 
     monkeypatch.setattr(gm, "_installed_service", lambda home: state.services.get(_name(home)))
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: state.pids.get(_name(home)))
@@ -66,6 +72,10 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "_host_supports_migration", lambda: None)
     state.root = root
     return state
+
+
+def _name(home: Path) -> str:
+    return hermes_constants.profile_name_for_home(home) or "default"
 
 
 def _config_flag(root: Path):
@@ -110,13 +120,107 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     again = gm.build_migration_plan()
     assert again.already_multiplexed and gm.apply_migration(again) is True
 
+    runtime_path = fleet.root / "gateway_state.json"
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["platforms"] = {
+        "telegram": {"state": "connected"},
+        "coder:telegram": {"state": "connected"},
+        "ops:discord": {"state": "connected"},
+    }
+    runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
     fleet.ops.clear()
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False
     assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
+    assert fleet.ops[-1] == ("default", "restart")
+    # Each secondary's own gateway must have been startable at the moment it was started.
+    assert fleet.refused_at_start == {"coder": False, "ops": False}
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert runtime["served_profiles"] == []
+    assert runtime["platforms"] == {"telegram": {"state": "connected"}}
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    assert named_profile_served_by_running_multiplexer("coder") is False
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifest(fleet, monkeypatch):
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
+    fleet.ops.clear()
+    real_op = gm._service_op
+
+    def _flaky(kind, system, verb, home):
+        if verb == "start" and _name(home) == "coder":
+            raise RuntimeError("systemctl start failed")
+        real_op(kind, system, verb, home)
+
+    monkeypatch.setattr(gm, "_service_op", _flaky)
+    assert gm.rollback_migration(fleet.root) is False
+    # The flag is off, so the default must not be left multiplexing; the manifest stays for a re-run.
+    assert _config_flag(fleet.root) is False
+    assert fleet.ops[-1] == ("default", "restart")
+    assert ("ops", "start") in fleet.ops
+    assert (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_rollback_rerun_does_not_respawn_a_running_detached_secondary(fleet, monkeypatch):
+    # Manifest of a fleet with no service manager anywhere (detached gateways only).
+    gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
+        {"profile": n, "home": str(fleet.root / "profiles" / n), "pid": 4100, "service": None} for n in ("coder", "ops")]})
+    fleet.services.clear()
+    fleet.pids = {"coder": 4101}  # coder came back up in an earlier, interrupted rollback; ops did not
+    spawned = []
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: spawned.append(_name(home)) or True)
+    assert gm.rollback_migration(fleet.root) is True
+    assert spawned == ["ops"]
+
+
+def test_malformed_manifest_is_refused_before_any_mutation(fleet, capsys):
+    (fleet.root / gm.MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "flag_was": False, "default": [], "secondaries": [{"home": "x"}]}), encoding="utf-8")
+    assert gm.rollback_migration(fleet.root) is False
+    assert _config_flag(fleet.root) is None and fleet.ops == []
+    assert "fix or delete the manifest" in capsys.readouterr().out
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+    assert "fix or delete the manifest" in capsys.readouterr().out
+
+
+def test_rollback_plan_and_execution_agree_on_a_secondary_with_nothing_recorded(fleet, capsys):
+    gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
+        {"profile": "coder", "home": str(fleet.root / "profiles/coder"), "pid": None, "service": None}]})
+    fleet.services.clear()
+    fleet.pids.clear()
+    plan = "\n".join(gm.format_rollback_plan(fleet.root, gm._read_manifest(fleet.root), dry_run=True))
+    assert gm.rollback_migration(fleet.root) is True
+    out = capsys.readouterr().out
+    # The plan must not promise an action the run never performs: both name the same outcome.
+    plan_line = next(line.split("coder: ", 1)[1] for line in plan.splitlines() if "coder: " in line)
+    assert plan_line in out and "restore" not in plan_line.split(";")[0]
+    assert fleet.ops == []
+
+
+def test_standalone_dry_run_prints_rollback_plan_without_mutation(fleet, capsys):
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
+    capsys.readouterr()
+    fleet.ops.clear()
+    before = {
+        path: path.read_bytes()
+        for path in (
+            fleet.root / "config.yaml",
+            fleet.root / gm.MANIFEST_NAME,
+            fleet.root / "gateway_state.json",
+        )
+    }
+    services_before = dict(fleet.services)
+    pids_before = dict(fleet.pids)
+
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+
+    out = capsys.readouterr().out
+    assert "Rollback plan (dry run" in out and "coder" in out and "ops" in out
+    assert all(path.read_bytes() == contents for path, contents in before.items())
+    assert fleet.services == services_before and fleet.pids == pids_before and fleet.ops == []
 
 
 def test_secondary_port_binder_is_notice_with_ingress_and_blocker_without(fleet, monkeypatch):
@@ -171,3 +275,31 @@ def test_update_hook_never_touches_single_profile_or_already_multiplexed(fleet, 
     fleet.services.clear(); fleet.pids.clear()  # secondaries exist but run no gateway of their own
     gm.maybe_auto_migrate_after_update()
     assert capsys.readouterr().out == "" and _config_flag(fleet.root) is None
+
+
+def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):
+    """The user typed --multiplex: 'nothing to migrate' + flag left off was a no-op the user did not ask
+    for. The update hook keeps its no-op (previous test); the explicit command proceeds."""
+    fleet.services.clear(); fleet.pids.clear()
+
+    def _detached(home):  # no service manager anywhere -> detached start writes the served record
+        fleet.services["default-detached"] = True
+        (fleet.root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(fleet.root)}))
+        (fleet.root / "gateway_state.json").write_text(json.dumps({
+            "pid": os.getpid(), "hermes_home": str(fleet.root), "gateway_state": "running",
+            "served_profiles": ["default", "coder", "ops"]}))
+        return True
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", _detached)
+    assert not gm.build_migration_plan().standalone_secondaries
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=False, yes=True))
+    assert exc.value.code == 0
+    assert fleet.services.pop("default-detached") is True
+    assert _config_flag(fleet.root) is True
+    manifest = json.loads((fleet.root / gm.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["secondaries"] == [] and manifest["flag_was"] is False
+    assert ("default", "install") not in fleet.ops
+    out = capsys.readouterr().out
+    assert "serves 3 profiles" in out
+    # The same manifest rolls it back: flag restored, nothing to reinstall.
+    assert gm.rollback_migration(fleet.root) is True and _config_flag(fleet.root) is False

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type GatewayEvent, JsonRpcGatewayClient } from './json-rpc-gateway'
+import type { GatewayEvent } from './gateway-events'
+import { JsonRpcGatewayClient } from './json-rpc-gateway'
 
 class ReplaySocket extends EventTarget {
   static OPEN = 1

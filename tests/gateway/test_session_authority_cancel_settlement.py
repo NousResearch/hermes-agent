@@ -193,3 +193,40 @@ async def test_stop_before_the_turn_agent_exists_reaches_the_agent_once_it_is_wi
         stopped.set()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
     assert agent.interrupted == 0
+
+
+@pytest.mark.asyncio
+async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path, monkeypatch, caplog):
+    """finish_result can raise (a concurrent reset/compression moved runtime_generation).
+
+    The pump must survive that: the failure is logged with the admission id, the row is
+    left for recovery (owner restart -> unknown) rather than silently re-settled, and the
+    drain task ends without an unretrieved exception so the FIFO can be re-armed.
+    """
+    import logging
+    from gateway import session_finite
+
+    db, authority = _authority(tmp_path, monkeypatch)
+
+    async def execute(authority, ref, row):
+        # Simulate a concurrent lineage move while the turn ran: the settle fence
+        # (settle_session_input) compares sessions.runtime_generation to the claim.
+        authority.db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id='s'"))
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+
+    with db, caplog.at_level(logging.ERROR, logger='gateway.session_authority'):
+        head = await _submit(authority, 'moved-under-us')
+        task = authority.sessions['s'].task
+        await asyncio.wait_for(task, 5)
+        assert task.exception() is None, 'a settlement failure must not escape the drain task'
+        assert any(head.admission_id in rec.getMessage() for rec in caplog.records), \
+            [rec.getMessage() for rec in caplog.records]
+        row, = [r for r in list_session_admissions(db, session_id='s', pending_only=False)
+                if r['admission_id'] == head.admission_id]
+        assert row['status'] == 'started', 'left for recovery, never silently re-settled'
+        assert authority.sessions['s'].event_stream.execution == {}, 'stamp cleared even on failure'
+        failures = [rec for rec in caplog.records if 'left for recovery' in rec.getMessage()]
+        assert len(failures) == 1 and failures[0].exc_info is None
+        assert 'error_type=RuntimeStoreError' in failures[0].getMessage()

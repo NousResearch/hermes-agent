@@ -178,7 +178,10 @@ export const zhHant = defineLocale({
       errorTitle: 'MCP 伺服器無法連線',
       errorMessage: name => `${name} MCP 健康檢查失敗。`,
       signIn: '登入',
-      view: '檢視'
+      view: '檢視',
+      disable: '停用',
+      disabledMessage: name => `已停用 ${name} MCP。可隨時在「功能 → MCP」重新啟用。`,
+      disableFailed: name => `無法停用 ${name} MCP。`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',

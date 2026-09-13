@@ -1,4 +1,8 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import {
+  buildHermesWebSocketUrl,
+  type ModelOptionProvider,
+  type ModelOptionsResponse,
+} from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
@@ -2427,23 +2431,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  is_user_defined?: boolean;
-  source?: string;
-  warning?: string;
-  authenticated?: boolean;
-}
-
-export interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
+export type { ModelOptionProvider, ModelOptionsResponse };
 
 export interface AuxiliaryTaskAssignment {
   task: string;

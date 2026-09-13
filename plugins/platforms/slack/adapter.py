@@ -32,12 +32,17 @@ from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
-from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.retry_utils import parse_retry_after_seconds
+from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env, send_error
+)
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
@@ -248,6 +253,48 @@ class _ThreadContextCache:
     # Kept so context can be re-formatted with a different watermark (``after_ts``) without an extra API
     # call (#23918).
     messages: List[Dict[str, Any]] = field(default_factory=list)
+
+
+_AGENT_SESSIONS_SUPPORTED: Optional[bool] = None
+
+
+def _sdk_supports_agent_sessions() -> bool:
+    """Whether the installed slack-sdk ships the Agent Sessions API.
+
+    Slack is deprecating the Assistant messaging experience in February 2027:
+    ``assistant.threads.setStatus`` / ``assistant.threads.setTitle`` are
+    replaced by ``agents.sessions.setStatus`` / ``agents.sessions.rename``
+    (typed methods landed in slack-sdk 3.44.0). Checked on the SDK class —
+    never on a client instance, where mock auto-attributes would lie.
+    """
+    global _AGENT_SESSIONS_SUPPORTED
+    if _AGENT_SESSIONS_SUPPORTED is None:
+        try:
+            from slack_sdk.web.async_client import AsyncWebClient
+            _AGENT_SESSIONS_SUPPORTED = callable(
+                getattr(AsyncWebClient, "agents_sessions_setStatus", None)
+            )
+        except Exception:
+            _AGENT_SESSIONS_SUPPORTED = False
+    return _AGENT_SESSIONS_SUPPORTED
+
+
+def _session_status_method(client: Any):
+    """Return the status setter: Agent Sessions API when available, else legacy."""
+    if _sdk_supports_agent_sessions():
+        method = getattr(client, "agents_sessions_setStatus", None)
+        if method is not None:
+            return method
+    return client.assistant_threads_setStatus
+
+
+def _session_title_method(client: Any):
+    """Return the title setter: ``agents.sessions.rename`` when available, else legacy."""
+    if _sdk_supports_agent_sessions():
+        method = getattr(client, "agents_sessions_rename", None)
+        if method is not None:
+            return method
+    return client.assistant_threads_setTitle
 
 
 def slack_deps_present() -> bool:
@@ -1088,7 +1135,7 @@ class SlackAdapter(
         "ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
 
 # ── Plugin entry point + hooks (register, _standalone_send, interactive_setup,
-# _apply_yaml_config, _is_connected, _build_adapter) ──────────────────────────
+# _apply_yaml_config, _is_connected) ──────────────────────────
 
 
 # Standalone-send cache: user ID -> DM conversation ID, keyed "{token}:{user_id}" (multi-workspace).
@@ -1096,7 +1143,7 @@ class SlackAdapter(
 # #3823) Everything below this line was added when the Slack adapter moved from
 # ``gateway/platforms/slack.py`` into this bundled plugin. It mirrors the Discord migration (PR #24356)
 # exactly: a ``register(ctx)`` entry point plus the hook implementations (``_standalone_send``,
-# ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``, ``_build_adapter``) that replace the
+# ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
 # per-platform core touchpoints (the ``Platform.SLACK`` elif in ``gateway/run.py``, the ``slack_cfg``
 # YAML→env block in ``gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
 # in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
@@ -1226,7 +1273,7 @@ async def _standalone_upload_file(
     result = await client.files_upload_v2(**kwargs)
     payload = _slack_response_payload(result)
     if payload.get("ok") is False:
-        return {"error": f"Slack API error: {payload.get('error', 'unknown')}"}
+        return send_error(f"Slack API error: {payload.get('error', 'unknown')}")
     # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
     message_id = None
     if payload:
@@ -1269,10 +1316,10 @@ async def _standalone_send_media(
             post_payload = await _standalone_post_text(
                 client, chat_id, text_to_send, unfurl_kwargs, thread_id)
             if not post_payload.get("ok", True):
-                return {"error": f"Slack API error: {post_payload.get('error', 'unknown')}"}
+                return send_error(f"Slack API error: {post_payload.get('error', 'unknown')}")
             last_message_id = post_payload.get("ts")
         except Exception as e:
-            return {"error": f"Slack send failed: {e}"}
+            return send_error(f"Slack send failed: {e}")
     caption_pending = caption_as_upload_comment
     uploaded_any = False
     for media_path, _is_voice in media_files:
@@ -1340,7 +1387,7 @@ async def _standalone_send(
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
     tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
-        return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
+        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
     token = tokens[0]
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
@@ -1373,7 +1420,7 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         _sess_kw, _req_kw = _standalone_proxy_kwargs()
         last_error = "unknown"
@@ -1389,9 +1436,9 @@ async def _standalone_send(
                 last_error = data.get("error", "unknown")
                 if last_error not in _WRONG_WORKSPACE_TOKEN_ERRORS:
                     break
-        return {"error": f"Slack API error: {last_error}"}
+        return send_error(f"Slack API error: {last_error}")
     except Exception as e:
-        return {"error": f"Slack send failed: {e}"}
+        return send_error(f"Slack send failed: {e}")
 
 
 _SETUP_STEPS = (
@@ -1437,20 +1484,19 @@ def _write_slack_manifest_and_instruct() -> None:
 def interactive_setup() -> None:
     """Guide the user through Slack bot setup (manifest, tokens, allowlist, home channel).
     CLI helpers are lazy-imported to keep the plugin's import surface small."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success, print_warning)
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Slack")
-    if get_env_value("SLACK_BOT_TOKEN"):
-        print_info("Slack: already configured")
-        if not prompt_yes_no("Reconfigure Slack?", False):
-            # Still offer a manifest refresh so new commands get registered.
-            if prompt_yes_no(
-                "Regenerate the Slack app manifest with the latest command "
-                "list? (recommended after `hermes update`)", True):
-                _write_slack_manifest_and_instruct()
-            return
+    if declines_reconfigure("Slack", "Reconfigure Slack?", "SLACK_BOT_TOKEN"):
+        # Still offer a manifest refresh so new commands get registered.
+        if prompt_yes_no(
+            "Regenerate the Slack app manifest with the latest command "
+            "list? (recommended after `hermes update`)", True):
+            _write_slack_manifest_and_instruct()
+        return
     for line in _SETUP_STEPS:
         print_info(line)
     print()
@@ -1492,55 +1538,27 @@ def interactive_setup() -> None:
         print_info("Home channel cleared.")
 
 
-_YAML_BOOL_KEYS = (
-    ("require_mention", "SLACK_REQUIRE_MENTION"), ("strict_mention", "SLACK_STRICT_MENTION"),
-    ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS"),
-    ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION"), ("allow_bots", "SLACK_ALLOW_BOTS"),
-    ("reactions", "SLACK_REACTIONS"), ("disable_dms", "SLACK_DISABLE_DMS"))
-# (yaml key, env var, list-ish types joined with ","); str(value) when not a list.
-_YAML_LIST_KEYS = (
-    ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", list),
-    ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", list),
-    ("reaction_triggers", "SLACK_REACTION_TRIGGERS", (list, tuple, set)),
-    ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", ()),
-    ("allowed_channels", "SLACK_ALLOWED_CHANNELS", list),
-    ("ignored_channels", "SLACK_IGNORED_CHANNELS", list))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
+    ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
+    ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
+    ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
+    ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
+    ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
+    ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),
+    ("allowed_channels", "SLACK_ALLOWED_CHANNELS", "csv"), ("ignored_channels", "SLACK_IGNORED_CHANNELS", "csv"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (explicit env wins) and
-    ``PlatformConfig.extra`` (extra-first readers; the env write is skipped under a multiplexed
-    secondary profile's scope so its policy never becomes the default profile's).
-
-    Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
-    used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
-    """
-    _set_env = _yaml_env_setter()
-    seeded: dict = {}
-    for key, env in _YAML_BOOL_KEYS:
-        if key in slack_cfg:
-            seeded[key] = slack_cfg[key]  # original type: the shared-key loop already seeded bools as bools
-            _set_env(env, str(slack_cfg[key]).lower())
-    for key, env, list_types in _YAML_LIST_KEYS:
-        val = slack_cfg.get(key)
-        if val is not None:
-            seeded[key] = val
-            if list_types and isinstance(val, list_types):
-                val = ",".join(str(v) for v in val)
-            _set_env(env, str(val))
-    return seeded or None
+    """``apply_yaml_config_fn`` (#24849): ``slack:`` YAML keys → ``SLACK_*`` env (explicit env wins; skipped
+    under a multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(slack_cfg, _YAML_BRIDGE)
 
 
-def _is_connected(config) -> bool:
-    """Connected when SLACK_BOT_TOKEN is set. Resolved through ``gateway_mod`` at call
-    time (not a bound import) so tests patching ``get_env_value`` take effect."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
 
+_is_connected = _env_is_connected("SLACK_BOT_TOKEN")
 
-def _build_adapter(config):
-    """Factory wrapper that constructs SlackAdapter from a PlatformConfig."""
-    return SlackAdapter(config)
 
 
 def register(ctx) -> None:
@@ -1548,7 +1566,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="slack",
         label="Slack",
-        adapter_factory=_build_adapter,
+        adapter_factory=SlackAdapter,
         check_fn=slack_deps_present,
         ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,

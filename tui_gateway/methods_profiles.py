@@ -323,6 +323,10 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
     # .env: only over the seeded comment-only stub (never a clone's secrets).
     mirrored["env"] = _try(lambda: _mirror_secret(path, launch_home, ".env", lambda src, dst: (
         _env_has_content(src) and not _try(lambda: _env_has_content(dst), False))), False)
+    if mirrored["env"] and not is_truthy_value(params.get("clone_channels", False)):
+        # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
+        # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
+        _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
     if not share_auth:  # a copy forks token state: the first refresh in either store strands the other
         mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
                                                        lambda src, dst: not dst.exists()), False)
@@ -337,7 +341,8 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
 @method("profiles.create")
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
-    ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``no_skills``, ``soul``,
+    ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
+    source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
     ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
     name = str(params.get("name") or "").strip()
@@ -351,7 +356,8 @@ def _(rid, params: dict) -> dict:
             name=name, clone_from=clone_from, clone_all=clone_all,
             clone_config=bool(clone_from) and not clone_all,
             no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None)
+            description=str(params.get("description") or "").strip() or None,
+            clone_channels=is_truthy_value(params.get("clone_channels", False)))
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         return _err(rid, 4062, str(e))
     except Exception as e:

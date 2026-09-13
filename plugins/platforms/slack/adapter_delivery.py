@@ -458,15 +458,10 @@ class SlackDeliveryMixin:
 
     @staticmethod
     def _retry_after_from_exc(e: BaseException) -> Optional[float]:
-        """``Retry-After`` header (seconds) from an SDK error response, else None."""
-        _resp = getattr(e, "response", None)
-        if _resp is None:
-            return None
-        try:
-            _ra = getattr(_resp, "headers", {}).get("Retry-After")
-            return float(_ra) if _ra is not None else None
-        except (TypeError, ValueError, AttributeError):
-            return None
+        """``Retry-After`` (seconds or HTTP-date) from an SDK error response, else None."""
+        from . import adapter as _adapter
+
+        return _adapter.parse_retry_after_seconds(getattr(getattr(e, "response", None), "headers", None))
 
     async def _send_slash_reply(
         self, chat_id: str, slash_ctx: Dict[str, Any], content: str,
@@ -821,8 +816,8 @@ class SlackDeliveryMixin:
         from . import adapter as _adapter
 
         try:
-            await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
-                channel_id=chat_id, thread_ts=thread_ts, status=status)
+            _set_status = _adapter._session_status_method(self._get_client(chat_id, team_id=team_id))
+            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
             _adapter.logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 

@@ -1,28 +1,16 @@
-"""Raw history maintenance cannot retire canonical runtime records."""
+"""Read-only sweep eligibility and committed history-maintenance reporting."""
 import logging
 import sqlite3
 
-from hermes_state_common import _id_chunks, _placeholders
-
-
-class SessionLedgerProtectedError(ValueError):
-    reason = 'runtime_coordination_required'
-
-    def __init__(self):
-        super().__init__('Session history has retained runtime records. '
-                         'Delete it through the owning gateway; nothing was deleted.')
-
-
-LEDGER_REFERENCES_SQL = '''(
-    {session_id} IN (SELECT target_session_id FROM session_admissions)
-    OR {session_id} IN (SELECT session_id FROM worker_executions)
-)'''
-
 
 def preview_ledger_references(conn, *, read_only):
-    """Only an explicitly absent legacy table is omitted from read-only previews."""
+    """Preview the busy/unknown rows skipped by retire_prunable, without retirement.
+
+    Only an explicitly absent legacy table is omitted from read-only previews.
+    """
     if not read_only:
-        return LEDGER_REFERENCES_SQL
+        return '''({session_id} IN (SELECT target_session_id FROM session_admissions WHERE status!='terminal')
+            OR {session_id} IN (SELECT session_id FROM worker_executions WHERE status!='terminal'))'''
     # Unlike the boolean table-exists probe, keep non-table name collisions and
     # case-insensitive SQLite names visible; neither means an absent old ledger.
     objects = {row[0].casefold(): row[1] for row in conn.execute(
@@ -34,23 +22,8 @@ def preview_ledger_references(conn, *, read_only):
             continue
         if objects[table] != 'table':
             raise sqlite3.DatabaseError('Runtime ledger name is not a table')
-        clauses.append('{session_id} IN (SELECT ledger.' + column + ' FROM ' + table + ' ledger)')
+        clauses.append('{session_id} IN (SELECT ledger.' + column + ' FROM ' + table + " ledger WHERE status!='terminal')")
     return '(' + ' OR '.join(clauses) + ')' if clauses else '0'
-
-
-def protected_session_ids(conn, session_ids):
-    """Same-transaction FK owners, irrespective of live or terminal status."""
-    protected = set()
-    for chunk in _id_chunks(set(session_ids)):
-        protected.update(row[0] for row in conn.execute(
-            f'SELECT s.id FROM sessions s WHERE s.id IN ({_placeholders(chunk)}) AND '
-            + LEDGER_REFERENCES_SQL.format(session_id='s.id'), chunk))
-    return protected
-
-
-def require_unowned_delete(conn, session_ids):
-    if protected_session_ids(conn, session_ids):
-        raise SessionLedgerProtectedError()
 
 
 def report_maintenance(report, *, skipped_protected, removed=None):
@@ -61,5 +34,5 @@ def report_maintenance(report, *, skipped_protected, removed=None):
             report['removed'] = removed
     if removed is not None and skipped_protected:
         logging.getLogger('hermes_state').info(
-            'Raw history cleanup removed %d sessions; skipped %d with retained runtime records',
+            'Raw history cleanup removed %d sessions; skipped %d with busy/unknown runtime work',
             removed, skipped_protected)

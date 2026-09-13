@@ -1366,6 +1366,13 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                    )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -3490,8 +3497,29 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+    """Archive a task; a *running* task's host-local worker is terminated.
+
+    Clearing ``worker_pid`` in the DB alone left the OS process running past its
+    own archive — it kept executing (and pushing work) against a task nothing
+    tracked anymore (#76196). Snapshot pid+claim inside the archive txn so the
+    kill is contingent on THIS caller winning the archive transition (a losing
+    concurrent archiver must never signal the pid); the kill itself runs after
+    commit — ``_poll_worker_exit`` can wait ~5 s and must not hold the write
+    lock. Post-release kill is safe here because ``archived`` is terminal: no
+    dispatcher can spawn a duplicate worker off the released claim. The
+    termination outcome lands as its own ``archive_worker_termination`` event so
+    the ``archived`` event stays atomic with the status flip.
+    """
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return False
+        was_running = row["status"] == "running"
+        prev_pid, prev_lock = row["worker_pid"], row["claim_lock"]
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -3505,6 +3533,10 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+    if was_running:
+        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn)
+        with write_txn(conn):
+            _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).

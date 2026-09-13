@@ -228,7 +228,8 @@ class MatrixDeliveryMixin:
 
         converted_path: _adapter.Optional[str] = None
         if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
-            converted_path = await _adapter.asyncio.to_thread(_adapter._matrix_transcode_voice_to_ogg, audio_path)
+            # 48k (not the 32k default): Element renders voice bubbles at a higher quality tier.
+            converted_path = await _adapter.asyncio.to_thread(_adapter.transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
         try:
             return await self._send_local_file(
                 chat_id, converted_path or audio_path, "m.audio", caption, reply_to,

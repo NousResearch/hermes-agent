@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 // Repro for "when I steer it often sends out of order — a user bubble way
 // above" (#73793 / #83151 class). Drives the REAL stream reducer
 // (useMessageStream.handleGatewayEvent) and the REAL steer entry point
@@ -26,7 +27,6 @@ import type { ClientSessionState } from '@/app/types'
 import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setSessionTileDelegate } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
 
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -34,7 +34,7 @@ import { useMessageStream } from './index'
 
 const SID = 'steer-order-session'
 
-let handleEvent: ((event: RpcEvent) => void) | null = null
+let handleEvent: ((event: GatewayEvent) => void) | null = null
 let redirect: ((text: string) => Promise<boolean>) | null = null
 let states: Map<string, ClientSessionState>
 
@@ -136,7 +136,7 @@ const flushDeltas = async () => {
   })
 }
 
-const emit = (event: RpcEvent) => act(() => handleEvent?.(event))
+const emit = (event: GatewayEvent) => act(() => handleEvent?.(event))
 
 /** A real steer: redirectPrompt's optimistic insert + the gateway round-trip. */
 const steer = async (text: string) => {

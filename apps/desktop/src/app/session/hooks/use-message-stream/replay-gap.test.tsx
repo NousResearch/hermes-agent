@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,19 +15,18 @@ import {
   sessionTileDelegate,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
 
 import { renderMessageStream } from './test-harness'
 
 const replayGap = (
   sessionId: string,
   owner: { connectionId?: string; profile?: string }
-): RpcEvent => ({
+): GatewayEvent => ({
   ...owner,
   payload: { latest_seq: 41, replay_epoch: 'epoch-next' },
   session_id: sessionId,
   type: 'session.replay_gap'
-}) as RpcEvent
+}) as GatewayEvent
 
 const inertDelegate = () => ({
   archiveSession: vi.fn(async () => undefined),

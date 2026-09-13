@@ -194,7 +194,10 @@ export const ru = defineLocale({
       errorTitle: 'Сервер MCP недоступен',
       errorMessage: name => `MCP ${name} не прошёл проверку работоспособности.`,
       signIn: 'Войти',
-      view: 'Просмотр'
+      view: 'Просмотр',
+      disable: 'Отключить',
+      disabledMessage: name => `${name} MCP отключён. Включить снова можно в любой момент в разделе Возможности → MCP.`,
+      disableFailed: name => `Не удалось отключить ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'Для STT ElevenLabs нужен ELEVENLABS_API_KEY.',

@@ -24,13 +24,16 @@ is the facade with the method/event catalog; methods live in `methods_*.py` sibl
 `event_publisher.py` / `event_replay.py`. Desktop reaches the same server over WebSocket via
 `apps/shared` (`JsonRpcGatewayClient`). New RPC = a new `methods_<topic>.py` or an entry in an
 existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
+New event = a new key in `apps/shared/src/gateway-events.ts::GatewayEventMap` + `BACKEND_EVENT_NAMES`
+AND `apps/shared/src/gateway-events.json`; `tests/tui_gateway/test_gateway_event_contract.py` (emitter
+side) and `apps/shared/src/gateway-events.test.ts` (type side) both fail when either drifts.
 
 ## Key surfaces
 
 | Surface | Ink component | Gateway method / event |
 |---|---|---|
 | Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta` / `message.complete` |
-| Tool activity | `thinking.tsx` | `tool.start` / `tool.progress` / `tool.complete` |
+| Tool activity | `thinking.tsx` | `tool.start` / `tool.generating` / `tool.complete` |
 | Approvals | `prompts.tsx` | `approval.request` → `approval.respond` |
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify.respond`, `sudo.respond`, `secret.respond` |
 | Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |

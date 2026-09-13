@@ -1,3 +1,4 @@
+import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
@@ -8,7 +9,7 @@ afterEach(cleanup)
 it('rejects stale snapshots and terminal frames across generations and owner epochs', () => {
   const stream = renderMessageStream('authority-session')
 
-  const send = (type: string, authority_epoch: number | undefined, execution_generation: number | undefined, running?: boolean) =>
+  const send = (type: GatewayEventName, authority_epoch: number | undefined, execution_generation: number | undefined, running?: boolean) =>
     act(() => stream.handleEvent({ type, session_id: 'authority-session', authority_epoch, execution_generation, payload: { running } }))
 
   send('message.start', 1, 9)

@@ -440,10 +440,10 @@ class SlackContextMixin:
             return
         title = title[:77].rstrip() + "..." if len(title) > 80 else title
         try:
-            await self._get_client(channel_id, team_id=team_id).assistant_threads_setTitle(
-                channel_id=channel_id, thread_ts=thread_ts, title=title)
+            _set_title = _adapter._session_title_method(self._get_client(channel_id, team_id=team_id))
+            await _set_title(channel_id=channel_id, thread_ts=thread_ts, title=title)
         except Exception as e:
-            _adapter.logger.debug("[Slack] assistant.threads.setTitle failed: %s", e)
+            _adapter.logger.debug("[Slack] session title set failed: %s", e)
             return
         self._titled_assistant_threads.add(key)
         # Evict oldest thread_ts first so recently titled threads keep their guard.

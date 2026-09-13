@@ -1,6 +1,8 @@
 """Owner-authorized room byte RPCs and committed task input materialization."""
 import base64
 import binascii
+import json
+from pathlib import Path
 
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
 from hermes_state_runtime import RuntimeStoreError
@@ -76,3 +78,59 @@ def submission_payload(rpc, prompt, attachments=None, *, admission=None):
 def committed_submission_payload(rpc, prompt, attachments=None, *, admission):
     from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
     return reconstruct_accepted_payload(rpc, prompt, attachments, admission)
+
+
+def attested_submission_payload(prompt, attachments, digests, *, db, admission):
+    """Reconstruct the accepted layout from source digests, without another transfer.
+
+    v3 documents use the admission's exact custody references, not native-cache paths.
+    This read-only preflight neither prepares input nor repairs missing local bytes.
+    """
+    from gateway.hosted_room_driver import validate_bound_task_manifest
+    from gateway.hosted_room_attachments import _SHA256_RE
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES, _media_root
+    from gateway.hosted_room_input_reclamation import copy_path, verified_identity
+    from gateway.session_admission import admission_fingerprint
+    from hermes_state_input_custody import admission_input_refs
+    manifest = validate_bound_task_manifest(attachments) if attachments else []
+    if (not isinstance(digests, list) or len(digests) != len(manifest)
+            or any(not isinstance(d, str) or _SHA256_RE.fullmatch(d) is None for d in digests)):
+        raise RuntimeStoreError('permission_denied')
+    with db._read_ctx() as conn:
+        raw = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?',
+                           (admission['admission_id'],)).fetchone()
+        if raw is None or any(raw[k] != admission[k] for k in
+                              ('principal_id', 'target_session_id', 'request_id')):
+            raise RuntimeStoreError('permission_denied')
+        has_refs = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_refs'").fetchone()
+        refs = admission_input_refs(conn, raw) if has_refs else None
+    document_count = sum(item['mime'] not in _ATTACHMENT_MIMES for item in manifest)
+    if refs and len(refs) != document_count:
+        raise RuntimeStoreError('storage_unavailable')
+    root = _media_root()
+    documents, media, media_types = [], [], []
+    for item, digest in zip(manifest, digests):
+        if item['mime'] in _ATTACHMENT_MIMES:
+            path = root / digest / (digest + Path(item['name']).suffix)
+            media.append({'path': str(path),
+                          'sha256': digest, 'size': item['size']})
+            media_types.append(item['mime'])
+        else:
+            if refs:
+                copy = refs[len(documents)]
+                if (copy['name'], copy['digest'], copy['size']) != (item['name'], digest, item['size']):
+                    raise RuntimeStoreError('admission_conflict')
+                path = copy_path(db, copy)
+            else:
+                path = root / digest / item['name']
+            documents.append(str(path))
+        verified_identity(path, digest, item['size'])
+    text = prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in documents)
+    payload = {'text': text, **({'attachments_v1': {'media': media, 'media_types': media_types}} if media else {})}
+    stored = json.loads(raw['payload_json'])
+    if 'local_operator_v1' in stored:
+        payload['local_operator_v1'] = stored['local_operator_v1']
+    if admission_fingerprint(canonical_target=raw['target_session_id'],
+            payload={'input': payload, 'intent': raw['intent']}) != raw['payload_digest']:
+        raise RuntimeStoreError('admission_conflict')
+    return payload

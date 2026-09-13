@@ -452,14 +452,15 @@ class TestAllowlistConcurrency:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         tmp_paths_seen: list = []
-        real_mkstemp = shell_hooks.tempfile.mkstemp
+        import utils
+        real_mkstemp = utils.tempfile.mkstemp
 
         def spying_mkstemp(*args, **kwargs):
             fd, path = real_mkstemp(*args, **kwargs)
             tmp_paths_seen.append(path)
             return fd, path
 
-        monkeypatch.setattr(shell_hooks.tempfile, "mkstemp", spying_mkstemp)
+        monkeypatch.setattr(utils.tempfile, "mkstemp", spying_mkstemp)
 
         shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})
         shell_hooks.save_allowlist({"approvals": [{"event": "b", "command": "y"}]})

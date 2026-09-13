@@ -11,9 +11,9 @@ import contextlib
 import os
 import shutil
 import sys
-import uuid
 
 from hermes_constants import get_hermes_home
+from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -245,26 +245,18 @@ class CLISessionMixin:
 
     def _show_session_status(self):
         """Show gateway-style status for the current CLI session."""
-        from hermes_constants import display_hermes_home
+        from hermes_cli.status_report import build_status_fields, status_lines
         session_meta = {}
         if self._session_db:
             with contextlib.suppress(Exception):
                 session_meta = self._session_db.get_session(self.session_id) or {}
 
-        title = (session_meta.get("title") or "").strip()
-        created_at = _timestamp_or(session_meta.get("started_at"), self.session_start)
-        updated_at = created_at
-        for field in ("updated_at", "last_updated_at", "last_activity_at"):
-            candidate = _timestamp_or(session_meta.get(field), None)
-            if candidate is not None:
-                updated_at = candidate
-                break
-
         agent = getattr(self, "agent", None)
-        total_tokens = getattr(agent, "session_total_tokens", 0) or 0
-        provider = getattr(self, "provider", None) or "unknown"
-        model = getattr(self, "model", None) or "(unknown)"
-        is_running = bool(getattr(self, "_agent_running", False))
+        fields = build_status_fields(
+            self.session_id, agent, session_meta,
+            model=getattr(self, "model", None), provider=getattr(self, "provider", None),
+            created_fallback=self.session_start, agent_running=bool(getattr(self, "_agent_running", False)),
+        )
 
         reasoning_label = None
         rc = getattr(agent, "reasoning_config", None) or getattr(self, "reasoning_config", None)
@@ -301,12 +293,7 @@ class CLISessionMixin:
         except Exception:
             ctx_label = None
 
-        lines = [
-            "Hermes CLI Status", "", f"Session ID: {self.session_id}", f"Path: {display_hermes_home()}",
-        ]
-        if title:
-            lines.append(f"Title: {title}")
-        lines.append(f"Model: {model} ({provider})")
+        lines = ["Hermes CLI Status", "", *status_lines(fields, "session_id", "path", "title", "model")]
         try:
             from agent.i18n import t
             from hermes_cli.auth import resolve_provider
@@ -320,11 +307,7 @@ class CLISessionMixin:
         for label, value in optional:
             if value:
                 lines.append(f"{label}: {value}")
-        lines.extend([
-            f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"Tokens: {total_tokens:,}",
-            f"Agent Running: {'Yes' if is_running else 'No'}"])
+        lines.extend(status_lines(fields, "created", "last_activity", "tokens", "agent_running"))
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -536,7 +519,7 @@ class CLISessionMixin:
             self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
-        self.session_id = f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.session_id = new_session_id(self.session_start)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
@@ -709,87 +692,6 @@ class CLISessionMixin:
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
 
-    def _rewind_persisted_user_turn(
-        self,
-        *,
-        warm_history: List[Dict[str, Any]],
-        user_ordinal: int,
-        warm_live_view: Dict[str, Any],
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
-        """Bind one warm user ordinal to a durable row and rewind it atomically."""
-        if self._session_db is None or not self.session_id:
-            raise RuntimeError("session database is unavailable")
-
-        from agent.context_compressor import (
-            history_before_user_originated_turn,
-            split_user_originated_turn,
-            user_originated_turn_view)
-        from agent.memory_manager import sanitize_context
-        from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
-        from agent.session_persistence import _is_ephemeral_scaffolding
-
-        def _persistence_content(content: Any) -> Any:
-            """Project warm content exactly as the session DB flush does."""
-            if _is_multimodal_tool_result(content):
-                return _multimodal_text_summary(content)
-            if isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append(str(part.get("text", "")))
-                    elif isinstance(part, dict) and part.get("type") in {
-                        "image", "image_url", "input_image"}:
-                        text_parts.append("[screenshot]")
-                return "\n".join(text_parts) if text_parts else None
-            return content
-
-        def _comparison_content(message: Dict[str, Any]) -> Any:
-            content = _persistence_content(message.get("content"))
-            if message.get("role") in {"user", "assistant"} and isinstance(content, str):
-                return sanitize_context(content).strip()
-            return content
-
-        def _user_indices(messages):
-            return [i for i, m in enumerate(messages) if user_originated_turn_view(m) is not None]
-
-        changed = RuntimeError("session history changed before the rewind could be persisted")
-        expected_active_ids = self._session_db.get_active_message_ids(self.session_id)
-        durable = self._session_db.get_messages_as_conversation(
-            self.session_id, include_row_ids=True)
-        warm_persistence_history = [m for m in warm_history if not _is_ephemeral_scaffolding(m)]
-        warm_user_indices = _user_indices(warm_persistence_history)
-        durable_user_indices = _user_indices(durable)
-        if len(durable_user_indices) != len(warm_user_indices):
-            raise changed
-        if user_ordinal < 0 or user_ordinal >= len(durable_user_indices):
-            raise RuntimeError("persisted rewind target is no longer available")
-
-        warm_prefix, _ = history_before_user_originated_turn(
-            warm_persistence_history, warm_user_indices[user_ordinal])
-        durable_target_index = durable_user_indices[user_ordinal]
-        durable_target = durable[durable_target_index]
-        durable_prefix, durable_live_view = history_before_user_originated_turn(
-            durable, durable_target_index)
-        if _comparison_content(durable_live_view) != _comparison_content(warm_live_view):
-            raise changed
-        target_row_id = durable_target.get("_row_id")
-        if not isinstance(target_row_id, int):
-            raise RuntimeError("persisted rewind target has no row identity")
-        scaffold, _ = split_user_originated_turn(durable_target)
-        result = self._session_db.rewind_to_message(
-            self.session_id, target_row_id,
-            preserve_compaction_handoff=scaffold is not None,
-            expected_active_ids=expected_active_ids,
-            expected_target_content=durable_live_view.get("content"))
-        if scaffold is not None:
-            replacement_id = result.get("replacement_message_id")
-            if not isinstance(replacement_id, int) or not durable_prefix:
-                raise RuntimeError("rewind did not retain its compaction handoff")
-            durable_prefix[-1]["_row_id"] = replacement_id
-            durable_prefix[-1]["_db_persisted"] = True
-            warm_prefix[-1] = durable_prefix[-1]
-        return warm_prefix, durable_live_view, result
-
     def _publish_truncated_history(self, truncated: list, *, invalidate_prompt: bool) -> None:
         """Install a rewound history and mirror it onto the agent (flush index reset so the
         next turn re-flushes from the truncated head)."""
@@ -844,10 +746,8 @@ class CLISessionMixin:
         # physical carrier split so archived original + retained scaffold commit atomically.
         if self._session_db is not None and self.session_id:
             try:
-                truncated, _, _ = self._rewind_persisted_user_turn(
-                    warm_history=warm_history,
-                    user_ordinal=len(user_indices) - 1,
-                    warm_live_view=live_view)
+                truncated = self._session_db.rewind_user_turn(
+                    self.session_id, -1, warm_history=warm_history, require_retryable=True).prefix
             except Exception as exc:
                 print(f"(x_x) Retry rewind failed; history was not changed: {exc}")
                 return None
@@ -889,15 +789,12 @@ class CLISessionMixin:
         rewound_rows = 0
         if self._session_db is not None and self.session_id:
             try:
-                truncated, durable_live_view, result = self._rewind_persisted_user_turn(
-                    warm_history=warm_history,
-                    user_ordinal=target_ordinal,
-                    warm_live_view=live_view)
+                outcome = self._session_db.rewind_user_turn(
+                    self.session_id, target_ordinal, warm_history=warm_history)
+                truncated = outcome.prefix
                 # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
-                durable_text = self._undo_content_to_text(durable_live_view.get("content"))
-                if durable_text:
-                    removed_text = durable_text
-                rewound_rows = result.get("rewound_count", 0)
+                removed_text = outcome.live_text or removed_text
+                rewound_rows = outcome.rewound_count
             except Exception as e:
                 logger.debug("undo: durable rewind failed: %s", e)
                 print(f"(x_x) Undo failed; history was not changed: {e}")
@@ -1034,103 +931,47 @@ class CLISessionMixin:
           the summariser what to preserve while discarding the rest more aggressively.
         * ``/compress here [N]`` — boundary-aware: summarize everything except the most recent
           ``N`` exchanges (default 2), kept verbatim.
+        * ``--preview`` reports what would happen and changes nothing.
         No ``compression_enabled`` gate: that flag disables *automatic* compaction only, and
         the context-overflow error path directs users here when it is off.
         """
-        if len(self.conversation_history or ()) < 4:
-            print("(._.) Not enough conversation to compress (need at least 4 messages).")
+        from agent.conversation_compression import finalize_context_engine_compression_notification
+        from agent.conversation_compression_manual import (
+            AGGRESSIVE_UNSUPPORTED, MIN_MESSAGES, compress_now, parse_compress_args, render_compress_result)
+
+        if len(self.conversation_history or ()) < MIN_MESSAGES:
+            print(f"(._.) Not enough conversation to compress (need at least {MIN_MESSAGES} messages).")
             return
         if not self.agent:
             print("(._.) No active agent -- send a message first.")
             return
-
-        from hermes_cli.partial_compress import (
-            extract_compress_flags, parse_partial_compress_args, rejoin_compressed_head_and_tail,
-            split_history_for_partial_compress, summarize_compress_preview)
-        from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.model_metadata import estimate_request_tokens_rough
-
         _parts = (cmd_original or "").strip().split(None, 1)
-        raw_args = _parts[1].strip() if len(_parts) > 1 else ""
-        # Strip --preview/--dry-run/--aggressive before positional parsing.
-        raw_args, preview, aggressive = extract_compress_flags(raw_args)
-        partial, keep_last, focus_topic = parse_partial_compress_args(raw_args)
-        focus_topic = focus_topic or ""
-
-        if aggressive:
-            # LLM-free hard truncation would need its own persistence path outside the
-            # guarded _compress_context rotation; surface that instead of mis-parsing.
-            print("(._.) --aggressive is not supported; use '/compress here [N]' "
-                  "to keep only recent exchanges, or /undo to drop turns.")
-            if not preview:
+        request = parse_compress_args(_parts[1] if len(_parts) > 1 else "")
+        if request.aggressive:
+            print(f"(._.) {AGGRESSIVE_UNSUPPORTED}")
+            if not request.preview:
                 return
-
-        # Include system prompt + tool schemas in estimates — a transcript-only number
-        # understates real request pressure and can even appear to grow after compression.
-        _estimate_kw = {
-            "system_prompt": getattr(self.agent, "_cached_system_prompt", "") or "",
-            "tools": getattr(self.agent, "tools", None) or None}
-        if preview:
-            approx_tokens = estimate_request_tokens_rough(self.conversation_history, **_estimate_kw)
-            report = summarize_compress_preview(
-                self.conversation_history, partial, keep_last, focus_topic or None, approx_tokens)
-            for line in report["lines"]:
+        if request.preview:
+            for line in render_compress_result(compress_now(self.agent, self.conversation_history, request)):
                 print(f"🗜️  {line}")
             return
 
         original_count = len(self.conversation_history)
         with self._busy_command("Compressing context...", blocks_input=False):
             try:
-                from agent.manual_compression_feedback import summarize_manual_compression
-                original_history = list(self.conversation_history)
-
-                # Boundary-aware split: only the head is summarized. A degenerate split
-                # (nothing to keep / no head) falls back to full compression.
-                tail: list = []
-                head = original_history
-                if partial:
-                    head, tail = split_history_for_partial_compress(original_history, keep_last)
-                    if not tail:
-                        partial = False
-                        head = original_history
-
-                approx_tokens = estimate_request_tokens_rough(original_history, **_estimate_kw)
-                if partial:
-                    print(f"🗜️  Summarizing up to here: compressing {len(head)} of "
-                          f"{original_count} messages (~{approx_tokens:,} tokens), "
-                          f"keeping last {keep_last} exchange(s) verbatim...")
-                elif focus_topic:
-                    print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
-                          f"focus: \"{focus_topic}\"...")
+                if request.partial:
+                    print(f"🗜️  Summarizing up to here: {original_count} messages, "
+                          f"keeping last {request.keep_last} exchange(s) verbatim...")
+                elif request.focus_topic:
+                    print(f"🗜️  Compressing {original_count} messages, focus: \"{request.focus_topic}\"...")
                 else:
-                    print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
-
-                # system_message=None so _compress_context rebuilds the prompt from scratch;
-                # passing _cached_system_prompt duplicated the identity block.
-                # Passing _cached_system_prompt caused duplication because _build_system_prompt appends
-                # system_message to prompt_parts which already contain the agent identity — resulting in the
-                # identity block appearing twice (issue #15281).
-                compressed, _ = self.agent._compress_context(
-                    head, None, approx_tokens=approx_tokens, focus_topic=focus_topic or None,
-                    force=True, defer_context_engine_notification=True)
-
-                # Unchanged because a concurrent compression lock is held: say so instead of
-                # the misleading "No changes" no-op text. Type-pinned check (is True / str) —
-                # a bare truthiness test is fooled by MagicMock auto-attributes on test doubles.
-                _lock_skip_signal = getattr(self.agent, "_compression_skipped_due_to_lock", None)
-                if _lock_skip_signal is True or isinstance(_lock_skip_signal, str):
-                    from agent.manual_compression_feedback import describe_compression_lock_skip
-                    print(
-                        "  " + describe_compression_lock_skip(self.agent._compression_skipped_due_to_lock)
-                    )
-                    self.agent._compression_skipped_due_to_lock = None
-                    # No boundary committed → discard the deferred notification (exactly-once).
-                    finalize_context_engine_compression_notification(self.agent, committed=False)
+                    print(f"🗜️  Compressing {original_count} messages...")
+                result = compress_now(self.agent, self.conversation_history, request)
+                if result.status != "compressed":
+                    for line in render_compress_result(result):
+                        print(f"  {line}")
                     return
-
-                if partial and tail:
-                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
-                self.conversation_history = compressed
+                self.conversation_history = result.after_messages
                 # _compress_context ends the old session and creates a child session on the
                 # agent. Sync the CLI's session_id so /status, /resume, exit summary and title
                 # generation point at the live continuation, not the ended parent.
@@ -1142,15 +983,8 @@ class CLISessionMixin:
                     # Persist the new handoff from offset 0 so resume can recover it after exit.
                     self.agent._flush_messages_to_session_db(self.conversation_history, None)
                 finalize_context_engine_compression_notification(self.agent, committed=True)
-                new_tokens = estimate_request_tokens_rough(
-                    self.conversation_history, **_estimate_kw)
-                summary = summarize_manual_compression(
-                    original_history, self.conversation_history, approx_tokens, new_tokens,
-                    compression_state=getattr(self.agent, "context_compressor", None))
-                if (
-                    summary.get("aborted")
-                    or summary.get("fallback_used")
-                    or summary.get("refused_would_grow")):
+                summary = result.summary
+                if summary.get("aborted") or summary.get("fallback_used") or summary.get("refused_would_grow"):
                     icon = "⚠️"
                 else:
                     icon = "🗜️" if summary["noop"] else "✅"

@@ -373,24 +373,6 @@ class MatrixInboundMixin:
         # Join off the sync path; a declared DM is recorded in m.direct once the join lands.
         self._schedule_invite_join(room_id, is_direct=is_direct and bool(inviter), inviter=inviter)
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        from . import adapter as _adapter
-
-        current_task = _adapter.asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            near_split = last_len >= self._split_threshold
-            await _adapter.asyncio.sleep(self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            _adapter.logger.info("[Matrix] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 

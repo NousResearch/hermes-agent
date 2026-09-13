@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import ExecApprovalPrompt, SendResult
 try:
     import discord
     from discord import Message as DiscordMessage
@@ -71,59 +71,6 @@ class DiscordPromptsMixin:
         """Trim to Discord's 4096-char embed description limit (conservatively)."""
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        """Button-based exec approval prompt; buttons call ``resolve_gateway_approval()`` (not /approve)."""
-        from . import adapter as _adapter
-
-        def _build(_channel):
-            # Payload in plain content: embeds can be invisible/detached on web/mobile.
-            reason_budget = 300
-            reason_display = str(description or "dangerous command")
-            if len(reason_display) > reason_budget:
-                reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
-            prompt_prefix = (
-                "⚠️ **Command Approval Required**\n\n"
-                "Do you want Hermes to run this command?\n\n"
-                "**Requested command:**\n```bash\n"
-            )
-            if smart_denied:
-                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
-            mention_content = self._approval_mention_content()
-            if mention_content:
-                prompt_prefix = f"{mention_content}\n{prompt_prefix}"
-            prompt_tail = f"\n```\n**Reason:** {reason_display}"
-            truncated_suffix = "\n... [truncated]"
-            command_budget = max(0, self.MAX_MESSAGE_LENGTH - len(prompt_prefix) - len(prompt_tail))
-            content_cmd_display = str(command or "")
-            if len(content_cmd_display) > command_budget:
-                content_cmd_display = content_cmd_display[: max(0, command_budget - len(truncated_suffix))] + truncated_suffix
-            content = f"{prompt_prefix}{content_cmd_display}{prompt_tail}"
-            embed = _adapter.discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{self._embed_body(str(command or ''))}\n```",
-                color=_adapter.discord.Color.orange(),
-            )
-            embed.add_field(name="Reason", value=reason_display, inline=False)
-            require_admin, admin_user_ids = _adapter._resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
-            view = _adapter.ExecApprovalView(
-                session_key=session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent=allow_permanent,
-                allow_session=allow_session, smart_denied=smart_denied,
-            )
-            send_kwargs: _adapter.Dict[str, _adapter.Any] = {"content": content, "embed": embed, "view": view}
-            if mention_content:
-                allowed_mentions_cls = getattr(_adapter.discord, "AllowedMentions", None)
-                if allowed_mentions_cls is not None:
-                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
-                        users=True, roles=False, everyone=False, replied_user=False,
-                    )
-            return send_kwargs, view
-        return await self._send_prompt(chat_id, metadata, _build)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -285,3 +232,60 @@ class DiscordPromptsMixin:
             view_class=getattr(_adapter, "ChoicePickerView", None),
             logger=_adapter.logger,
         )
+
+    _EA_HEADER = ("⚠️ **Command Approval Required**\n\n"
+                  "Do you want Hermes to run this command?\n\n"
+                  "**Requested command:**\n")
+
+    _EA_CODE_OPEN = "```bash\n"
+
+    _EA_CODE_CLOSE = "\n```\n"
+
+    _EA_REASON_LABEL = "**Reason:** "
+
+    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+
+    _EA_REASON_BUDGET = 300
+
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        # Mentions ride in front of the content and count against the 2000-char message cap too.
+        from . import adapter as _adapter
+
+        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
+                 + len(self._approval_mention_content() or "") + 1)
+        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Button view + embed mirror; buttons call ``resolve_gateway_approval()`` (not /approve)."""
+        from . import adapter as _adapter
+
+        def _build(_channel):
+            content = prompt.text
+            mention_content = self._approval_mention_content()
+            if mention_content:
+                content = f"{mention_content}\n{content}"
+            embed = _adapter.discord.Embed(
+                title="⚠️ Command Approval Required",
+                description=f"```\n{self._embed_body(prompt.command)}\n```",
+                color=_adapter.discord.Color.orange(),
+            )
+            embed.add_field(name="Reason", value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
+            require_admin, admin_user_ids = _adapter._resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+            choices = set(prompt.choices)
+            view = _adapter.ExecApprovalView(
+                session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
+                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
+                allow_session="session" in choices, smart_denied=prompt.smart_denied,
+            )
+            send_kwargs: _adapter.Dict[str, _adapter.Any] = {"content": content, "embed": embed, "view": view}
+            if mention_content:
+                allowed_mentions_cls = getattr(_adapter.discord, "AllowedMentions", None)
+                if allowed_mentions_cls is not None:
+                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                        users=True, roles=False, everyone=False, replied_user=False,
+                    )
+            return send_kwargs, view
+        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)

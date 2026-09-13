@@ -28,26 +28,14 @@ class DiscordLifecycleMixin:
     def _finite_positive_config_float(
         self, key: str, default: float, *, env_key: Optional[str] = None
     ) -> float:
-        """Resolve a finite positive liveness duration; invalid values disable it."""
         from . import adapter as _adapter
 
-        try:
-            value = float(self._config_value(key, default, env_key=env_key))
-        except (TypeError, ValueError):
-            return 0.0
-        return value if _adapter.math.isfinite(value) and value > 0 else 0.0
+        return self._liveness_knob(key, default, float, env_key=env_key)
 
     def _config_int(self, key: str, default: int, *, env_key: Optional[str] = None) -> int:
-        """Resolve a positive liveness count; invalid values disable it."""
         from . import adapter as _adapter
 
-        value = self._config_value(key, default, env_key=env_key)
-        if isinstance(value, bool):
-            return 0
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
+        return self._liveness_knob(key, default, int, env_key=env_key)
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits as a retryable fatal so GatewayRunner
@@ -890,27 +878,25 @@ class DiscordLifecycleMixin:
 
     @staticmethod
     def _extract_discord_retry_after(exc: BaseException) -> Optional[float]:
+        """Seconds to wait after a 429: discord.py's ``retry_after`` attribute, else the response's
+        ``Retry-After`` (numeric or HTTP-date) or Discord-specific ``X-RateLimit-Reset-After``
+        header; floored at 1s so a sub-second hint does not hot-loop."""
+        from . import adapter as _adapter
+
         value = getattr(exc, "retry_after", None)
         if value is not None:
+            parsed = _adapter.parse_retry_after_seconds(value)
+            return None if parsed is None else max(1.0, parsed)
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+        if not headers:
+            return None
+        parsed = _adapter.parse_retry_after_seconds(headers)
+        if parsed is None:
             try:
-                return max(1.0, float(value))
-            except (TypeError, ValueError):
-                return None
-        response = getattr(exc, "response", None)
-        headers = getattr(response, "headers", None)
-        if headers:
-            for key in ("Retry-After", "X-RateLimit-Reset-After"):
-                try:
-                    raw = headers.get(key)
-                except Exception:
-                    raw = None
-                if raw is None:
-                    continue
-                try:
-                    return max(1.0, float(raw))
-                except (TypeError, ValueError):
-                    continue
-        return None
+                parsed = _adapter.parse_retry_after_seconds(headers.get("X-RateLimit-Reset-After"))
+            except Exception:
+                parsed = None
+        return None if parsed is None else max(1.0, parsed)
 
     @staticmethod
     def _is_discord_rate_limit(exc: BaseException) -> bool:
@@ -1037,3 +1023,37 @@ class DiscordLifecycleMixin:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
             _adapter.logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+
+    def _warn_liveness_config_disabled(self, key: str, raw: Any) -> None:
+        """Warn when a liveness knob value is unusable (#109521).
+
+        Unparsable config (`"15s"`, `nan`, `true`) silently mapped to 0 and turned the whole
+        watchdog off with no log line — indistinguishable from "the watchdog missed it".
+        An explicit ``0`` is an intentional opt-out and stays silent.
+        """
+        from . import adapter as _adapter
+
+        _adapter.logger.warning(
+            "[%s] Discord liveness knob %s=%r is not a usable positive number; "
+            "the websocket liveness probe is disabled by this value",
+            self.name, key, raw,
+        )
+
+    def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):
+        """Resolve a liveness knob: usable iff finite, >= 0 and exact for ``cast``; else warn and return 0.
+
+        ``0`` is the documented opt-out and stays silent. Bools, unparsable strings, nan/inf,
+        negatives and (for int knobs) fractional values all disable the probe WITH a warning.
+        """
+        from . import adapter as _adapter
+
+        raw = self._config_value(key, default, env_key=env_key)
+        try:
+            value = None if isinstance(raw, bool) else float(raw)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and _adapter.math.isfinite(value) and value >= 0 and cast(value) == value:
+            return cast(value)
+        if value != 0:
+            self._warn_liveness_config_disabled(key, raw)
+        return cast(0)

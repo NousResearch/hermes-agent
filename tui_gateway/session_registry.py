@@ -317,6 +317,7 @@ def _init_session(
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
             "transport": current_transport() or _stdio_transport,
+            "auth_user_id": _transport_auth_user_id(current_transport()),
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
@@ -328,7 +329,7 @@ def _init_session(
 
 
 def _new_session_key() -> str:
-    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return new_session_id()
 
 
 def _with_checkpoints(session, fn):
@@ -381,6 +382,7 @@ def _deferred_session_record(
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,
+        "auth_user_id": _transport_auth_user_id(current_transport()),
     }
 
 
@@ -491,10 +493,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
             db.reopen_session(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(db, stored_id)
-            # Display keeps the full transcript; the model-fed history drops a dangling/interrupted
-            # tool-call tail so a session killed mid-loop does not replay the unanswered call forever
-            # (#29086).
-            history = sanitize_replay_history(raw_history)
+            # Display keeps the full transcript; the model-fed history uses the
+            # same canonicalization as gateway resume and the send path.
+            history = canonicalize_replay_history(raw_history)
             if _sessions.get(sid) is not session:
                 return
             with session["history_lock"]:

@@ -1,4 +1,5 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
+import type { GatewayEvent, GatewayEventName } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -30,7 +31,6 @@ import {
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
-import type { RpcEvent } from '@/types/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useMessageStream } from '../use-message-stream'
@@ -101,7 +101,7 @@ async function actRender(ui: React.ReactElement) {
 }
 
 interface HarnessHandle {
-  handleEvent: (event: RpcEvent) => void
+  handleEvent: (event: GatewayEvent) => void
   state: () => ClientSessionState
   activeSessionIdRef: MutableRefObject<string | null>
   cancelRun: () => Promise<void>
@@ -514,7 +514,7 @@ describe('Stop and shared-owner execution', () => {
     await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
     await handle!.submitText('first turn')
 
-    const send = (type: string, authority_epoch = 1, execution_generation = 4, extra = {}) =>
+    const send = (type: GatewayEventName, authority_epoch = 1, execution_generation = 4, extra = {}) =>
       handle!.handleEvent({ type, session_id: RUNTIME_SESSION_ID, authority_epoch, execution_generation, payload: extra })
 
     send('message.start')

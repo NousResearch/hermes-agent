@@ -677,8 +677,9 @@ routing is the only thing the repair changes. Back up first
 
 Started a conversation in another agent CLI? You can pull it into Hermes and
 continue it here. Hermes reads Claude Code's session logs
-(`~/.claude/projects/`) and Codex CLI's rollouts (`~/.codex/sessions/`) —
-the foreign files are only read, never modified.
+(`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when Claude Code's
+config dir is relocated) and Codex CLI's rollouts (`~/.codex/sessions/`, or
+`$CODEX_HOME/sessions/`) — the foreign files are only read, never modified.
 
 ```bash
 # Interactive picker across both tools, newest first
@@ -844,6 +845,32 @@ rebinds *that* window or chat route to it. The other viewers stay on the origina
 session, its history is untouched, and a turn already running there keeps running.
 Ending or clearing the shared conversation is a separate, explicit action (Stop, then
 `/new`; or a delete, which is refused while a turn is live).
+
+### Session hygiene: why you should still run `/new`
+
+Because gateway conversations never expire on their own, it is easy to run one
+session for weeks. That works, but it quietly defeats the learning loop and
+inflates costs:
+
+- **Memory only pays off at boundaries.** `MEMORY.md` / `USER.md` are injected
+  at session start, and `session_search` exists to recall what fell out of
+  context. In a never-ending session everything is still *in* context, so the
+  agent has no reason to consult memory — the "self-learning" machinery barely
+  runs. Memory distillation (the save before reset) also only happens when a
+  session actually ends.
+- **Cost grows with history.** Compression keeps a long session functional,
+  but every turn still carries a large (compacted) prefix. A fresh session
+  with distilled memory is almost always cheaper than a month-old thread.
+
+Practical rule: end a session when you finish a task or topic. Run `/new`
+(optionally named, e.g. `/new payments-refactor`) at natural stopping points —
+daily or per-project both work. Before the reset, ask the agent to "remember
+anything worth keeping" if the work surfaced durable preferences or
+procedures; it saves memories and skills from the expiring session
+automatically, but an explicit nudge helps. Restarting the machine or the
+gateway is **not** a boundary — the same session resumes.
+
+See [Memory](features/memory.md) for what gets carried across boundaries.
 
 
 ### Continuity After Crashes and Restarts

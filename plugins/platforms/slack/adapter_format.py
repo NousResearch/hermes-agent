@@ -253,9 +253,7 @@ class SlackFormatMixin:
         """Opt-in boolean: ``config.extra[key]`` wins, else ``env_var`` (default false)."""
         from . import adapter as _adapter
 
-        configured = self.config.extra.get(key)
-        if configured is None:
-            configured = _adapter._get_scoped_secret(env_var, "false")
+        configured = _adapter._extra_or_secret(self.config.extra, key, env_var, "false", blank_is_unset=False)
         if isinstance(configured, str):
             if strip:
                 configured = configured.strip()
@@ -284,9 +282,7 @@ class SlackFormatMixin:
         ``coerce_scalar`` accepts non-str scalars (a bare numeric YAML value loads as int)."""
         from . import adapter as _adapter
 
-        raw = self.config.extra.get(key)
-        if raw is None:
-            raw = _adapter._get_scoped_secret(env_var, "")
+        raw = _adapter._extra_or_secret(self.config.extra, key, env_var, "", blank_is_unset=False)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if coerce_scalar:
@@ -335,3 +331,10 @@ class SlackFormatMixin:
     def _slack_message_matches_mention_patterns(self, text: str) -> bool:
         """Return True when ``text`` matches a configured wake-word pattern."""
         return bool(text) and any(p.search(text) for p in self._slack_mention_patterns())
+
+    def format_tool_preview(self, preview) -> str:
+        """Keep compact tool arguments out of mrkdwn emphasis conversion."""
+        from . import adapter as _adapter
+
+        # Substitute embedded delimiters in the display text only.
+        return f"`{preview.text.replace('`', 'ˋ')}`"

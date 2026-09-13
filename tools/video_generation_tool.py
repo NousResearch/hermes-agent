@@ -104,11 +104,8 @@ def _discovered_registry():
 
 def check_video_generation_requirements() -> bool:
     """True when at least one registered provider reports available."""
-    try:
-        registry_mod, _ = _discovered_registry()
-        return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
-    except Exception:
-        return False
+    registry_mod, _ = _discovered_registry()
+    return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
 
 
 def _resolve_active_provider():

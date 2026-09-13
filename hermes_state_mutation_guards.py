@@ -3,6 +3,20 @@ from hermes_state_common import _ENDED_ROW_SQL, _ended_by_compression
 from hermes_state_runtime import RuntimeStoreError
 
 
+def require_not_executing(conn, session_ids):
+    """Refuse while a turn is running (or its outcome is unknown) on any of ``session_ids``.
+    Queued admissions are allowed: a follower waits on the logical owner and simply runs
+    against whatever physical target the mutation publishes."""
+    for sid in session_ids:
+        admissions = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (sid,)).fetchall()
+        workers = conn.execute("SELECT status FROM worker_executions WHERE session_id=? AND status IN ('started','unknown')", (sid,)).fetchall()
+        states = {row[0] for row in [*admissions, *workers]}
+        if 'unknown' in states:
+            raise RuntimeStoreError('unknown_execution')
+        if states:
+            raise RuntimeStoreError('session_busy')
+
+
 def require_idle(db, conn, session_ids):
     for sid in session_ids:
         admissions = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'", (sid,)).fetchall()

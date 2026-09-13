@@ -62,6 +62,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
+from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -111,29 +112,6 @@ def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
         except Exception:
             logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
     return metadata
-
-def _matrix_transcode_voice_to_ogg(path: str) -> Optional[str]:
-    """Transcode to a NEW temp .ogg (caller owns cleanup); None if ffmpeg is missing/fails.
-    Blocking subprocess work — call via ``asyncio.to_thread`` from async code."""
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        return None
-    import tempfile
-    fd, ogg_path = tempfile.mkstemp(prefix="matrix_voice_", suffix=".ogg")
-    os.close(fd)
-    try:
-        result = _run_media_tool(
-            [ffmpeg, "-v", "error", "-y", "-i", str(path), "-acodec", "libopus", "-ac", "1", "-b:a", "48k",
-             "-vbr", "on", "-application", "voip", "-compression_level", "10", ogg_path],
-            timeout=30)
-        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
-            return ogg_path
-    except Exception:
-        logger.debug("Matrix: voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    with suppress(OSError):
-        os.unlink(ogg_path)
-    return None
-
 
 _MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
 
@@ -1578,7 +1556,8 @@ class MatrixAdapter(BasePlatformAdapter):
         format (e.g. TTS output), so transcode here — best-effort: without ffmpeg the original is sent."""
         converted_path: Optional[str] = None
         if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
-            converted_path = await asyncio.to_thread(_matrix_transcode_voice_to_ogg, audio_path)
+            # 48k (not the 32k default): Element renders voice bubbles at a higher quality tier.
+            converted_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
         try:
             return await self._send_local_file(
                 chat_id, converted_path or audio_path, "m.audio", caption, reply_to,

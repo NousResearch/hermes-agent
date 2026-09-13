@@ -39,7 +39,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
@@ -604,8 +604,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return await self._send_media_from_path_or_link(chat_id, audio_path, "audio", caption=caption, reply_to=reply_to, mime_type=mime_type)
 
     async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """MP3 → ``audio/ogg; codecs=opus``; None if ffmpeg is missing or fails. ``-application voip``
-        tunes for speech; ``-b:a 32k -vbr on`` matches WhatsApp's native voice-note bitrate."""
+        """MP3 → ``audio/ogg; codecs=opus`` sibling file; None if ffmpeg is missing or fails. The
+        missing-ffmpeg warning fires once per adapter: it is an install hint, not a per-message error."""
         if not _FFMPEG_PATH:
             if not self._warned_no_ffmpeg:
                 self._warned_no_ffmpeg = True
@@ -615,23 +615,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux package manager."
                 )
             return None
-        out_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                _FFMPEG_PATH, "-y", "-i", mp3_path, "-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-application", "voip",
-                out_path, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-        except Exception:
-            logger.exception("[whatsapp_cloud] ffmpeg subprocess raised")
-            return None
-        if proc.returncode == 0 and Path(out_path).exists():
-            return out_path
-        logger.error(
-            "[whatsapp_cloud] ffmpeg opus conversion failed (returncode=%s): %s",
-            proc.returncode, (stderr or b"").decode("utf-8", errors="replace")[:500],
-        )
-        return None
+        return await asyncio.to_thread(transcode_to_ogg_opus, mp3_path, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
     # ------------------------------------------------------------------ inbound media
     async def _graph_get(self, url: str, headers: Dict[str, str], what: str, media_id: str) -> Any:

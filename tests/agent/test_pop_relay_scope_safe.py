@@ -168,3 +168,24 @@ def test_safe_pop_relay_scope_propagates_keyerror():
     relay = _make_relay(KeyError("nope"), stack=[])
     with pytest.raises(KeyError):
         relay_runtime.safe_pop_relay_scope(relay, handle="h-x")
+
+
+# ---- the finish-task wiring itself ---------------------------------------
+
+
+def test_finish_task_call_site_uses_the_safe_helper():
+    """The wiring is part of the contract, so a silent swap must fail a test.
+
+    `_finish_task` finalizes a task whose scope was created elsewhere; routing it back through the
+    strict helper would reintroduce the observability-loss it was changed to avoid. A fixture-driven
+    integration test through `finish_task_run` needs the direct-runtime harness, so this pins the
+    call site directly in the meantime — it is the cheap half of the same guarantee.
+    """
+    import inspect
+
+    from hermes_cli.observability import relay_shared_metrics
+
+    src = inspect.getsource(relay_shared_metrics)
+    assert "relay_runtime.safe_pop_relay_scope" in src
+    # A bare strict call here would be the regression.
+    assert "relay_runtime.pop_relay_scope(" not in src

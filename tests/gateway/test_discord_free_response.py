@@ -1,6 +1,7 @@
 """Tests for Discord free-response defaults and mention gating."""
 
 from datetime import datetime, timezone
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import sys
@@ -109,6 +110,7 @@ def adapter(monkeypatch):
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_FORCE_THREAD_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
@@ -278,7 +280,7 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 @pytest.mark.asyncio
 async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels should reply inline, never spawn a new thread.
+    """Free-response channels should reply inline by default.
 
     Without this, every message in a free-response channel would auto-create
     a fresh thread (since the channel bypasses the @mention gate, every
@@ -305,6 +307,69 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_force_thread_channel_threads_free_response(adapter, monkeypatch):
+    """Selected mention-free intake channels can opt back into auto-threading."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(
+        channel_id=555,
+        name="auto-thread",
+        parent=FakeTextChannel(channel_id=789),
+    )
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="threaded intake without mention",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "555"
+    assert event.source.thread_id == "555"
+    assert event.source.parent_chat_id == "789"
+
+
+@pytest.mark.asyncio
+async def test_discord_no_thread_overrides_force_thread_channel(adapter, monkeypatch):
+    """The explicit inline-reply opt-out wins when both lists contain a channel."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_FORCE_THREAD_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+
+    adapter._auto_create_thread = AsyncMock()
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="forced but explicitly inline",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
+
+
+def test_discord_force_thread_channels_yaml_bridge(monkeypatch):
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+
+    extras = discord_platform._apply_yaml_config(
+        {"discord": {"force_thread_channels": [1491973769726791812, "#intake"]}},
+        {"force_thread_channels": [1491973769726791812, "#intake"]},
+    )
+
+    assert extras["force_thread_channels"] == "1491973769726791812,#intake"
+    assert os.environ["DISCORD_FORCE_THREAD_CHANNELS"] == "1491973769726791812,#intake"
 
 
 @pytest.mark.asyncio

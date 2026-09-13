@@ -2085,6 +2085,17 @@ class GatewayTurnMixin:
         disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
         return enabled, disabled
 
+    @staticmethod
+    def _background_result_is_deliverable(result: Any) -> bool:
+        """Require explicit success fields and a positive canonical-persistence receipt."""
+        return (
+            isinstance(result, dict)
+            and result.get("persistence_confirmed") is True
+            and result.get("completed") is True
+            and result.get("failed") is False
+            and result.get("interrupted") is False
+        )
+
     async def _run_background_task_inner(
         self, prompt: str, source: "SessionSource", task_id: str,
         event_message_id: Optional[str] = None, media_urls: Optional[List[str]] = None,
@@ -2172,9 +2183,25 @@ class GatewayTurnMixin:
 
             result = await self._run_in_executor_with_context(run_sync)
 
+            if not self._background_result_is_deliverable(result):
+                logger.warning(
+                    "Suppressing background task %s answer: canonical persistence not confirmed",
+                    task_id,
+                )
+                with suppress(Exception):
+                    await adapter.send(
+                        chat_id=source.chat_id,
+                        content=(
+                            f"❌ Background task {task_id} could not be delivered because "
+                            "canonical session persistence was not confirmed."
+                        ),
+                        metadata=_thread_metadata,
+                    )
+                return
+
             response = result.get("final_response", "") if result else ""
-            if not response and result and result.get("error"):
-                response = f"Error: {result['error']}"
+            # Do not promote result["error"] into user-visible answer content: even a receipt-qualified
+            # result can be internally inconsistent, and provider/error payloads are not safe delivery text.
             # Fresh conversation, so history_offset=0: every message in the run belongs to this turn.
             if response:
                 response = repair_explicit_computer_use_media_paths(response, result.get("messages", []))
@@ -2221,7 +2248,10 @@ class GatewayTurnMixin:
             logger.exception("Background task %s failed", task_id)
             with suppress(Exception):
                 await adapter.send(
-                    chat_id=source.chat_id, content=f"❌ Background task {task_id} failed: {e}",
+                    chat_id=source.chat_id,
+                    content=(
+                        f"❌ Background task {task_id} failed before a safe answer could be delivered."
+                    ),
                     metadata=_thread_metadata,
                 )
 

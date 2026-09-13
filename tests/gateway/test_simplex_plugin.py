@@ -326,6 +326,17 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_contact_accept_does_not_block_event_listener_for_response():
+    adapter = _adapter_with_ws()
+    adapter.auto_accept = True
+    adapter._send_fire_and_forget = AsyncMock()
+
+    await adapter._on_contact_request({"contactRequest": {"contactRequestId": 7}})
+
+    adapter._send_fire_and_forget.assert_awaited_once_with("/accept 7")
+
+
+@pytest.mark.asyncio
 async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
@@ -333,6 +344,7 @@ async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
     adapter._running = True
     adapter._last_ws_activity = 0
     adapter._ws = AsyncMock()
+    adapter._run_health_check = AsyncMock(return_value=True)
 
     monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
     monkeypatch.setattr(_simplex, "HEALTH_CHECK_STALE_THRESHOLD", 0.01)
@@ -342,7 +354,657 @@ async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
     adapter._running = False
     await asyncio.wait_for(task, timeout=1)
 
+    adapter._run_health_check.assert_awaited()
     adapter._ws.close.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_health_monitor_reconnects_when_daemon_probe_fails(monkeypatch):
+    adapter = _adapter_with_ws()
+    adapter._running = True
+    adapter._run_health_check = AsyncMock(return_value=False)
+
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
+
+    task = asyncio.create_task(adapter._health_monitor())
+    await asyncio.sleep(0.03)
+    adapter._running = False
+    await asyncio.wait_for(task, timeout=1)
+
+    adapter._run_health_check.assert_awaited()
+    adapter._ws.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_health_probe_does_not_close_reconnected_socket(monkeypatch):
+    adapter = _adapter_with_ws()
+    adapter._running = True
+    old_ws = adapter._ws
+    new_ws = AsyncMock()
+
+    async def stale_probe():
+        adapter._ws = new_ws
+        adapter._running = False
+        return False
+
+    adapter._run_health_check = stale_probe
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
+
+    await adapter._health_monitor()
+
+    old_ws.close.assert_not_awaited()
+    new_ws.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_health_check_replays_inbound_item_missing_from_live_ws():
+    adapter = _adapter_with_ws()
+    replayed_item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": "missed"},
+            },
+        },
+    }
+    commands = []
+
+    async def fake_send_command(command, timeout=30.0):
+        commands.append(command)
+        return {"type": "chatItems", "chatItems": [replayed_item]}
+
+    adapter._send_command = fake_send_command
+    adapter._health_item_highwater = 10
+    adapter._handle_chat_item = AsyncMock()
+
+    healthy = await adapter._run_health_check()
+
+    assert healthy is True
+    adapter._handle_chat_item.assert_awaited_once_with(replayed_item, replay=True)
+    assert adapter._health_item_highwater == 11
+    assert commands == ["/_get items after=10 count=100"]
+
+
+@pytest.mark.asyncio
+async def test_health_cursor_is_primed_before_live_listener_starts():
+    adapter = _adapter_with_ws()
+    adapter._send_command = AsyncMock(
+        return_value={
+            "type": "chatItems",
+            "chatItems": [{"chatItem": {"meta": {"itemId": 41}}}],
+        }
+    )
+
+    assert await adapter._prime_health_cursor() is True
+    assert adapter._health_item_highwater == 41
+    adapter._send_command.assert_awaited_once_with(
+        "/_get items count=1", timeout=10.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_cursor_rejects_malformed_chat_items():
+    adapter = _adapter_with_ws()
+    adapter._send_command = AsyncMock(
+        return_value={"type": "chatItems", "chatItems": None}
+    )
+
+    assert await adapter._prime_health_cursor() is False
+    assert adapter._health_item_highwater is None
+    adapter._ws.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_health_cursor_stays_before_item_that_failed_during_priming():
+    adapter = _adapter_with_ws()
+    adapter._retry_chat_items.add(41)
+    adapter._send_command = AsyncMock(
+        return_value={
+            "type": "chatItems",
+            "chatItems": [{"chatItem": {"meta": {"itemId": 41}}}],
+        }
+    )
+
+    assert await adapter._prime_health_cursor() is True
+    assert adapter._health_item_highwater == 40
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"chatItem": {"meta": {"itemId": True}}},
+        {"chatItem": []},
+        {"chatItem": {"meta": []}},
+    ],
+)
+@pytest.mark.asyncio
+async def test_health_page_rejects_malformed_item_before_advancing_cursor(malformed):
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 10
+    adapter._handle_chat_item = AsyncMock()
+    adapter._send_command = AsyncMock(
+        return_value={
+            "type": "chatItems",
+            "chatItems": [
+                {"chatItem": {"meta": {"itemId": 11}}},
+                malformed,
+                {"chatItem": {"meta": {"itemId": 12}}},
+            ],
+        }
+    )
+
+    assert await adapter._run_health_check() is False
+    assert adapter._health_item_highwater == 10
+    adapter._handle_chat_item.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_health_page_does_not_advance_past_missing_retry_item():
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 9
+    adapter._retry_chat_items.add(10)
+    adapter._handle_chat_item = AsyncMock()
+    adapter._send_command = AsyncMock(
+        return_value={
+            "type": "chatItems",
+            "chatItems": [{"chatItem": {"meta": {"itemId": 11}}}],
+        }
+    )
+
+    assert await adapter._run_health_check() is False
+    assert adapter._health_item_highwater == 9
+    adapter._handle_chat_item.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_retry_rewind_is_not_overwritten_by_replay_success():
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 10
+    item = {"chatItem": {"meta": {"itemId": 11}}}
+    adapter._send_command = AsyncMock(
+        return_value={"type": "chatItems", "chatItems": [item]}
+    )
+
+    async def deliver_while_older_item_fails(chat_item, replay=False):
+        adapter._retry_chat_items.add(10)
+        adapter._rewind_health_cursor(10)
+        return True
+
+    adapter._handle_chat_item = AsyncMock(side_effect=deliver_while_older_item_fails)
+
+    assert await adapter._run_health_check() is True
+    assert adapter._health_item_highwater == 9
+    assert adapter._retry_chat_items == {10}
+
+
+def test_seen_items_above_stalled_cursor_are_not_evicted():
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 0
+
+    for item_id in range(1, 2003):
+        adapter._mark_chat_item_delivered(item_id)
+
+    assert 1 in adapter._seen_chat_items
+    assert 2002 in adapter._seen_chat_items
+
+    adapter._max_recent_reconciled_seen_items = 2
+    adapter._health_item_highwater = 1000
+    adapter._prune_reconciled_seen_items()
+    assert 1 not in adapter._seen_chat_items
+    assert 998 not in adapter._seen_chat_items
+    assert 999 in adapter._seen_chat_items
+    assert 1000 in adapter._seen_chat_items
+    assert 1001 in adapter._seen_chat_items
+
+
+@pytest.mark.asyncio
+async def test_live_delivery_is_deferred_when_unreconciled_state_is_full():
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = None
+    adapter._max_unreconciled_seen_items = 2
+    adapter._seen_chat_items.update({1, 2})
+    adapter.handle_message = AsyncMock()
+    item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 3},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": "later"},
+            },
+        },
+    }
+
+    assert await adapter._handle_chat_item(item) is False
+    adapter.handle_message.assert_not_awaited()
+    assert adapter._seen_chat_items == {1, 2}
+    assert adapter._preprime_deferred_item == 3
+
+    adapter._send_command = AsyncMock(
+        return_value={"type": "chatItems", "chatItems": [item]}
+    )
+    assert await adapter._prime_health_cursor() is True
+    assert adapter._health_item_highwater == 2
+    assert adapter._preprime_deferred_item is None
+
+
+@pytest.mark.parametrize("invalid_id", [None, True, 0, -1])
+@pytest.mark.asyncio
+async def test_live_delivery_rejects_invalid_item_id(invalid_id):
+    adapter = _adapter_with_ws()
+    adapter.handle_message = AsyncMock()
+    item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": invalid_id},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": "invalid"},
+            },
+        },
+    }
+
+    assert await adapter._handle_chat_item(item) is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_health_check_paginates_without_skipping_large_gap():
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 10
+    adapter._handle_chat_item = AsyncMock()
+
+    def item(item_id):
+        return {"chatItem": {"meta": {"itemId": item_id}}}
+
+    responses = iter(
+        [
+            {"type": "chatItems", "chatItems": [item(i) for i in range(11, 111)]},
+            {"type": "chatItems", "chatItems": [item(111)]},
+        ]
+    )
+    commands = []
+
+    async def fake_send_command(command, timeout=30.0):
+        commands.append(command)
+        return next(responses)
+
+    adapter._send_command = fake_send_command
+
+    assert await adapter._run_health_check() is True
+    assert adapter._handle_chat_item.await_count == 101
+    assert adapter._health_item_highwater == 111
+    assert commands == [
+        "/_get items after=10 count=100",
+        "/_get items after=110 count=100",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_health_replay_does_not_duplicate_item_seen_live():
+    adapter = _adapter_with_ws()
+    adapter._text_batch_delay = 0.01
+    adapter.handle_message = AsyncMock()
+    item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11, "itemTs": "2026-09-10T08:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": "missed"},
+            },
+        },
+    }
+
+    await adapter._handle_chat_item(item)
+    await adapter._handle_chat_item(item)
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args is not None
+    assert adapter.handle_message.await_args.args[0].text == "missed"
+
+
+@pytest.mark.asyncio
+async def test_delayed_live_event_does_not_duplicate_replayed_item():
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 10
+    adapter.handle_message = AsyncMock()
+    item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": "replayed"},
+            },
+        },
+    }
+    adapter._send_command = AsyncMock(
+        return_value={"type": "chatItems", "chatItems": [item]}
+    )
+
+    assert await adapter._run_health_check() is True
+    assert adapter._health_item_highwater == 11
+    assert 11 in adapter._seen_chat_items
+
+    assert await adapter._handle_chat_item(item) is True
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_text_flush_does_not_mark_undelivered_item_seen():
+    adapter = _adapter_with_ws()
+    adapter._text_batch_delay = 0
+    first_started = asyncio.Event()
+
+    async def deliver(event):
+        if event.text == "first":
+            first_started.set()
+            await asyncio.Event().wait()
+
+    adapter.handle_message = AsyncMock(side_effect=deliver)
+
+    def text_item(item_id, text):
+        return {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "tester"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": item_id},
+                "content": {
+                    "type": "rcvMsgContent",
+                    "msgContent": {"type": "text", "text": text},
+                },
+            },
+        }
+
+    await adapter._handle_chat_item(text_item(11, "first"))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    await adapter._handle_chat_item(text_item(12, "second"))
+    await asyncio.sleep(0.03)
+
+    assert 11 not in adapter._seen_chat_items
+    assert 11 in adapter._retry_chat_items
+    assert 12 in adapter._seen_chat_items
+
+
+@pytest.mark.asyncio
+async def test_health_cursor_waits_for_pending_live_text_batch():
+    adapter = _adapter_with_ws()
+    adapter._text_batch_delay = 0.01
+    adapter.handle_message = AsyncMock()
+    item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11, "itemTs": "2026-09-10T08:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "text", "text": "pending"},
+            },
+        },
+    }
+    adapter._health_item_highwater = 10
+    adapter._send_command = AsyncMock(
+        return_value={"type": "chatItems", "chatItems": [item]}
+    )
+
+    assert await adapter._handle_chat_item(item) is False
+    assert await adapter._run_health_check() is True
+    assert adapter._health_item_highwater == 10
+
+    await asyncio.sleep(0.03)
+    assert 11 in adapter._seen_chat_items
+    assert await adapter._run_health_check() is True
+    assert adapter._health_item_highwater == 11
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deferred_voice_item_is_not_deduplicated_before_delivery(tmp_path):
+    adapter = _adapter_with_ws()
+    adapter.handle_message = AsyncMock()
+    adapter._send_fire_and_forget = AsyncMock()
+    pending = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11, "itemTs": "2026-09-10T08:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "voice", "text": ""},
+            },
+            "file": {"fileId": 7, "fileName": "voice.ogg"},
+        },
+    }
+
+    await adapter._handle_chat_item(pending)
+    assert 11 not in adapter._seen_chat_items
+    adapter._send_fire_and_forget.reset_mock()
+    assert await adapter._handle_chat_item(pending, replay=True) is False
+    adapter._send_fire_and_forget.assert_awaited_once_with("/freceive 7")
+
+    voice_path = tmp_path / "voice.ogg"
+    voice_path.write_bytes(b"voice")
+    completed = {
+        "chatItem": {
+            "chatItem": {
+                "file": {
+                    "fileId": 7,
+                    "fileSource": {"filePath": str(voice_path)},
+                }
+            }
+        }
+    }
+    await adapter._on_rcv_file_complete(completed)
+
+    adapter.handle_message.assert_awaited_once()
+    assert 11 in adapter._seen_chat_items
+
+
+@pytest.mark.asyncio
+async def test_health_replay_finishes_voice_when_completion_event_was_missed(tmp_path):
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 10
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def deliver(_event):
+        delivery_started.set()
+        await release_delivery.wait()
+
+    adapter.handle_message = AsyncMock(side_effect=deliver)
+    pending = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11, "itemTs": "2026-09-10T08:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "voice", "text": ""},
+            },
+            "file": {"fileId": 7, "fileName": "voice.ogg"},
+        },
+    }
+    assert await adapter._handle_chat_item(pending) is False
+
+    voice_path = tmp_path / "voice.ogg"
+    voice_path.write_bytes(b"voice")
+    ready = {
+        **pending,
+        "chatItem": {
+            **pending["chatItem"],
+            "file": {
+                "fileId": 7,
+                "fileName": "voice.ogg",
+                "fileSource": {"filePath": str(voice_path)},
+            },
+        },
+    }
+    adapter._send_command = AsyncMock(
+        return_value={"type": "chatItems", "chatItems": [ready]}
+    )
+
+    health_task = asyncio.create_task(adapter._run_health_check())
+    await asyncio.wait_for(delivery_started.wait(), timeout=1)
+    assert 7 not in adapter._pending_file_transfers
+
+    completed = {
+        "chatItem": {
+            "chatItem": {
+                "file": {
+                    "fileId": 7,
+                    "fileSource": {"filePath": str(voice_path)},
+                }
+            }
+        }
+    }
+    await adapter._on_rcv_file_complete(completed)
+    adapter.handle_message.assert_awaited_once()
+
+    release_delivery.set()
+    assert await asyncio.wait_for(health_task, timeout=1) is True
+    assert adapter._health_item_highwater == 11
+    adapter.handle_message.assert_awaited_once()
+    assert 11 not in adapter._pending_chat_items
+
+    await adapter._on_rcv_file_complete(completed)
+    adapter.handle_message.assert_awaited_once()
+    assert 11 not in adapter._retry_chat_items
+
+
+@pytest.mark.asyncio
+async def test_voice_completion_owns_delivery_before_ready_health_replay(tmp_path):
+    adapter = _adapter_with_ws()
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+
+    async def deliver(_event):
+        delivery_started.set()
+        await release_delivery.wait()
+
+    adapter.handle_message = AsyncMock(side_effect=deliver)
+    pending = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 11},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "voice", "text": ""},
+            },
+            "file": {"fileId": 7, "fileName": "voice.ogg"},
+        },
+    }
+    assert await adapter._handle_chat_item(pending) is False
+
+    voice_path = tmp_path / "voice.ogg"
+    voice_path.write_bytes(b"voice")
+    completed = {
+        "chatItem": {
+            "chatItem": {
+                "file": {
+                    "fileId": 7,
+                    "fileSource": {"filePath": str(voice_path)},
+                }
+            }
+        }
+    }
+    completion_task = asyncio.create_task(adapter._on_rcv_file_complete(completed))
+    await asyncio.wait_for(delivery_started.wait(), timeout=1)
+
+    ready = {
+        **pending,
+        "chatItem": {
+            **pending["chatItem"],
+            "file": {
+                "fileId": 7,
+                "fileName": "voice.ogg",
+                "fileSource": {"filePath": str(voice_path)},
+            },
+        },
+    }
+    assert await adapter._handle_chat_item(ready, replay=True) is False
+    adapter.handle_message.assert_awaited_once()
+
+    release_delivery.set()
+    await asyncio.wait_for(completion_task, timeout=1)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_nontext_delivery_is_retryable(tmp_path):
+    adapter = _adapter_with_ws()
+    adapter._health_item_highwater = 12
+    adapter.handle_message = AsyncMock(side_effect=[RuntimeError("temporary"), None])
+    voice_path = tmp_path / "voice.ogg"
+    voice_path.write_bytes(b"voice")
+    item = {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 4, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemId": 12, "itemTs": "2026-09-10T08:00:01Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "voice", "text": ""},
+            },
+            "file": {
+                "fileId": 8,
+                "fileName": "voice.ogg",
+                "fileSource": {"filePath": str(voice_path)},
+            },
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="temporary"):
+        await adapter._handle_chat_item(item)
+    assert 12 not in adapter._seen_chat_items
+    assert 12 in adapter._retry_chat_items
+    assert adapter._health_item_highwater == 11
+
+    await adapter._handle_chat_item(item)
+    assert adapter.handle_message.await_count == 2
+    assert 12 in adapter._seen_chat_items
 
 
 

@@ -1,9 +1,6 @@
 """Owner-authorized room byte RPCs and committed task input materialization."""
 import base64
 import binascii
-import os
-from pathlib import Path
-import tempfile
 
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
 from hermes_state_runtime import RuntimeStoreError
@@ -67,75 +64,15 @@ def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch)
         raise
 
 
-def submission_payload(rpc, prompt, attachments=None):
-    """Resolve only event-bound, member-authorized bytes, never a caller path."""
-    if not attachments:
-        return {'text': prompt}
-    from gateway.hosted_room_driver import validate_bound_task_manifest
-    from gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
-    manifest = validate_bound_task_manifest(attachments)
-    # Each bound file is captured on its own, so the admission-wide cap is enforced here,
-    # before any member is materialized.
-    validate_media_batch_size(item['size'] for item in manifest)
-    store = HostedRoomAttachmentStore(rpc.authority.db.db_path)
-    references = []
-    transferred = getattr(rpc, 'hosted_attachment_data', None)
-    if transferred is not None and [item for item, data in transferred] != manifest:
-        raise RuntimeStoreError('permission_denied')
-    for index, item in enumerate(manifest):
-        if transferred is None:
-            saved = store.read(room_id=rpc.room_id, attachment_id=item['attachment_id'],
-                               event_id=item['event_id'], recipient_member_id=rpc.member_id)
-            if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
-                raise RuntimeStoreError('permission_denied')
-            data = saved.data
-        else:
-            data = transferred[index][1]
-        if len(data) != item['size']:
-            raise RuntimeStoreError('permission_denied')
-        # Retained native-inputs are excluded from age-only document cleanup. The
-        # content-addressed destination is stable on retry and refuses corruption.
-        with tempfile.TemporaryDirectory(prefix='hermes-room-input-') as directory:
-            path = Path(directory) / item['name']
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, 'wb') as output:
-                output.write(data)
-            reference = capture_native_media([path])[0]
-        references.append(reference)
-    paths = restore_native_media(references)
-    from gateway.session_ingress_media import _ATTACHMENT_MIMES
-    from gateway.platforms.base import get_image_cache_dir
-    import hashlib
-    images, documents = [], []
-    for path, item in zip(paths, manifest):
-        if item['mime'] not in _ATTACHMENT_MIMES:
-            documents.append(path)
-            continue
-        # Public admission accepts only owner-local staging paths. Retained
-        # room bytes are copied under a deterministic name for exact retries.
-        data = Path(path).read_bytes()
-        staging = get_image_cache_dir().resolve()
-        staging.mkdir(parents=True, exist_ok=True)
-        target = staging / (hashlib.sha256(data).hexdigest() + Path(item['name']).suffix)
-        if target.exists():
-            if target.is_symlink() or target.read_bytes() != data:
-                raise RuntimeStoreError('storage_unavailable')
-        else:
-            fd, temporary = tempfile.mkstemp(dir=staging)
-            try:
-                with os.fdopen(fd, 'wb') as output:
-                    output.write(data)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, target)
-            finally:
-                Path(temporary).unlink(missing_ok=True)
-        images.append({'path': str(target), 'mime': item['mime']})
-    text = prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in documents)
-    return {'text': text, **({'attachments': images} if images else {})}
+def submission_payload(rpc, prompt, attachments=None, *, admission=None):
+    """Accepted-input reconstruction only; new inputs require a durable preparation."""
+    if admission is None:
+        if not attachments:
+            return {'text': prompt}
+        raise RuntimeStoreError('input_preparation_required')
+    return committed_submission_payload(rpc, prompt, attachments, admission=admission)
 
 
-def committed_submission_payload(rpc, prompt, attachments=None):
-    from gateway.session_ingress_media import admit_attachments
-    payload = submission_payload(rpc, prompt, attachments)
-    return {'text': payload['text'], **admit_attachments(payload.get('attachments'))}
+def committed_submission_payload(rpc, prompt, attachments=None, *, admission):
+    from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
+    return reconstruct_accepted_payload(rpc, prompt, attachments, admission)

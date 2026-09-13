@@ -2867,7 +2867,7 @@ export const en: Translations = {
     queueSend: 'Send',
     queueDelete: 'Delete',
     queueLostNote: 'Turn lost during restart',
-    restoreImageDraft: 'Restore image draft',
+    restoreImageDraft: 'Restore draft',
     queueLostDiscard: 'Discard',
     queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',

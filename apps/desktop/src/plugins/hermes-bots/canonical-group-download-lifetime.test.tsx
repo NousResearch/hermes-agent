@@ -9,6 +9,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
 
   return { host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+    ...await import('@/components/ui/textarea'),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

@@ -4389,6 +4389,9 @@ def _start_gateway_housekeeping(
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
         chores.append((1, "Cron durable delivery queue drain",
                        lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
+    if runner is not None:
+        from gateway.run_input_reclamation import collect_gateway_input_copies
+        chores.append((5, "Working-copy collection", lambda: collect_gateway_input_copies(runner)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", _housekeeping_media_caches),

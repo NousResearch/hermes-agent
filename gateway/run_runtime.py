@@ -57,6 +57,8 @@ async def initialize_gateway_runtime(runner):
             authority = await initialize_session_authority(
                 runner, profile_id=str(home), instance_id=instance_id, db=db,
                 register=index == 0)
+            from gateway.run_input_reclamation import collect_legacy_copies_before_ingress
+            await asyncio.to_thread(collect_legacy_copies_before_ingress, runner, authority)
         registry.replace(home, authority)
     descriptor['authority_epoch'] = registry.launch.epoch
     descriptor['served_profiles'] = registry.served_profiles()

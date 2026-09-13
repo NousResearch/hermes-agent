@@ -189,7 +189,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             rpc = self._resolve_member_transport(HostedRoomBinding(identity.room_id,
                 room['authority_gateway_id'], room['authority_epoch']), task)
             if (getattr(rpc, 'ref', None) != ref or task['status'] != 'running'
-                    or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'))
+                    or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'), admission=row)
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')
             return task

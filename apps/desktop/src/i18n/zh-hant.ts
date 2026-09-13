@@ -2346,7 +2346,7 @@ export const zhHant = defineLocale({
     queueSend: '傳送',
     queueDelete: '刪除',
     queueLostNote: '重新啟動期間該回合已遺失',
-    restoreImageDraft: '還原圖片草稿',
+    restoreImageDraft: '還原草稿',
     queueLostDiscard: '捨棄',
     queueLostDiscardTip: '閘道在該回合進行中重新啟動，無法完成。捨棄後其後的排隊回合將繼續執行。',
     queueResume: '繼續',

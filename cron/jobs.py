@@ -762,8 +762,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
 
     # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
+        date_only = bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}', schedule))
         try:
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
+
             # Naive timestamps become aware in the CONFIGURED Hermes timezone (not server-local):
             # the due-check compares against hermes_time.now().
             # Make naive timestamps timezone-aware at parse time so the stored value doesn't depend on the
@@ -776,7 +778,8 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
-                "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}"
+                "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}",
+                **({"fire_window_days": 1} if date_only else {}),
             }
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
@@ -848,7 +851,14 @@ def _recoverable_oneshot_run_at(
         return None
     run_at = schedule.get("run_at")
     run_at_dt = _parse_aware(run_at) if run_at else None
-    if run_at_dt is not None and run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
+    if run_at_dt is None:
+        return None
+    if schedule.get("fire_window_days"):
+        window_end = run_at_dt + timedelta(days=schedule["fire_window_days"])
+        if run_at_dt <= now < window_end:
+            return run_at
+        return None
+    if run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
         return run_at
     return None
 

@@ -15,6 +15,7 @@
 //      stays where it is (it runs in that profile's gateway); the desktop half
 //      is COPIED out as `<root>/<name>/` with a `.hermes-package.json` marker
 //      so the UI can pair it back to the agent row and re-copy on update.
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -27,8 +28,10 @@ export interface DesktopHalfMarker {
   package: string
   /** Where the half was copied from — refreshed whenever that source changes. */
   source: string
-  /** mtimeMs of the source `plugin.js` at copy time; a newer source re-copies. */
-  sourceMtimeMs: number
+  /** Revision of every file in the source `desktop/` tree at copy time. */
+  sourceRevision?: string
+  /** Legacy marker field; retained so older materialized copies remain readable. */
+  sourceMtimeMs?: number
   /** Where the PACKAGE came from, so "Install here" can install its agent half
    *  into another profile: the catalog sidecar's repo/sha, else the git remote. */
   repo?: string
@@ -146,6 +149,36 @@ async function readMarker(dir: string): Promise<DesktopHalfMarker | null> {
   }
 }
 
+async function desktopTreeRevision(dir: string): Promise<string> {
+  const hash = crypto.createHash('sha256')
+
+  async function visit(current: string, relative: string): Promise<void> {
+    let entries: fs.Dirent[]
+
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name
+      const child = path.join(current, entry.name)
+
+      if (entry.isDirectory()) {
+        await visit(child, childRelative)
+      } else if (entry.isFile()) {
+        hash.update(childRelative)
+        hash.update(await fs.promises.readFile(child))
+      }
+    }
+  }
+
+  await visit(dir, '')
+
+  return hash.digest('hex')
+}
+
 /** Copy one unified package's `desktop/` half into the app root as
  *  `<appRoot>/<packageName>/`, stamping the marker. Skips when the root copy is
  *  already current for this source; replaces it when the source is newer. A
@@ -172,6 +205,8 @@ export async function materializeDesktopHalf(
     return null
   }
 
+  const sourceRevision = await desktopTreeRevision(sourceDir)
+
   const target = path.join(appRoot, packageName)
   const existing = await readMarker(target)
 
@@ -180,7 +215,10 @@ export async function materializeDesktopHalf(
       return null
     }
 
-    if (existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
+    if (existing.source === sourceDir && (
+      existing.sourceRevision === sourceRevision ||
+      (!existing.sourceRevision && existing.sourceMtimeMs !== undefined && existing.sourceMtimeMs >= stat.mtimeMs)
+    )) {
       return null
     }
 
@@ -193,6 +231,7 @@ export async function materializeDesktopHalf(
   const marker: DesktopHalfMarker = {
     package: packageName,
     source: sourceDir,
+    sourceRevision,
     sourceMtimeMs: stat.mtimeMs,
     ...(await packageOrigin(packageDir))
   }

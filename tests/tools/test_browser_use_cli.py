@@ -949,6 +949,7 @@ class TestBrowserExec:
         assert result["exit_code"] == 3
         assert "boom" in result["stderr"]
 
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -1380,6 +1381,7 @@ class TestTimeoutProcessGroupKill:
     "now" in the sidebar indefinitely."""
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
         """A grandchild that outlives the direct child and holds the inherited stdout
         pipe must not keep browser_exec blocked past the timeout (it wedged permanently

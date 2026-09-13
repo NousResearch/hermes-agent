@@ -1203,6 +1203,13 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     """Screenshot the current page for visual inspection. Native-vision models get the image
     attached to the conversation; otherwise the auxiliary vision model returns a text
     analysis. The file is kept and its path returned (MEDIA:<path>)."""
+    effective_task_id = _last_session_key(task_id or "default")
+    from tools.browser_vault_tool import vault_visual_capture_blocked
+    if vault_visual_capture_blocked(effective_task_id):
+        return _dumps(_err(
+            "Visual capture is blocked because this browser session contains values filled from the "
+            "credential vault. Start a fresh browser session before using browser_vision."
+        ))
     if _is_camofox_mode():
         return _camofox("camofox_vision", question, annotate, task_id)
 
@@ -1210,7 +1217,6 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     from hermes_constants import get_hermes_dir
     screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
-    effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_content(effective_task_id)
     if blocked is not None:
         return blocked

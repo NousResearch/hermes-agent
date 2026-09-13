@@ -101,6 +101,20 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
   })
 
+  it('re-copies when a non-entry desktop asset changes', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const desktop = path.join(home, 'plugins', 'media', 'desktop')
+    write(path.join(desktop, 'plugin.js'), 'entry')
+    write(path.join(desktop, 'theme.css'), 'v1')
+
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    write(path.join(desktop, 'theme.css'), 'v2')
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'theme.css'), 'utf8')).toBe('v2')
+  })
+
   it('stamps the package origin (catalog sidecar, else git remote) so "Install here" can reinstall the agent half', async () => {
     const home = makeHome()
     const appRoot = path.join(home, 'desktop-plugins')

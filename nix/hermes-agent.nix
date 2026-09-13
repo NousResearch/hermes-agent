@@ -94,6 +94,10 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  # Curated plugin approvals and the offline removal list. This is a bare data
+  # directory, so it must be exposed explicitly in the sealed Nix runtime.
+  bundledPluginCatalog = lib.cleanSource ../plugin-catalog;
+
   runtimeDeps = [
     hermesNpmLib.nodejs
     ripgrep
@@ -178,6 +182,7 @@ stdenv.mkDerivation (finalAttrs: {
     ln -s ${bundledPlugins} $out/share/hermes-agent/plugins
     ln -s ${bundledLocales} $out/share/hermes-agent/locales
     ln -s ${bundledOptionalMcps} $out/share/hermes-agent/optional-mcps
+    ln -s ${bundledPluginCatalog} $out/share/hermes-agent/plugin-catalog
     ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
     ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
 
@@ -190,6 +195,7 @@ stdenv.mkDerivation (finalAttrs: {
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_OPTIONAL_MCPS $out/share/hermes-agent/optional-mcps \
+          --set HERMES_PLUGIN_CATALOG $out/share/hermes-agent/plugin-catalog \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set-default HERMES_BIN $out/bin/hermes \

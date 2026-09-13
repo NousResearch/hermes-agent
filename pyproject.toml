@@ -584,6 +584,9 @@ gateway = ["assets/**/*"]
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
 plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# The curated catalog is bare YAML data, not a Python package. Keep it in
+# sealed installs so plugin removal entries remain enforceable offline.
+"plugin-catalog" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,8 +87,18 @@ class PluginCatalogEntry:
 
 
 def get_catalog_dir() -> Path:
-    """The ``plugin-catalog/`` directory shipped with this checkout."""
-    return Path(__file__).resolve().parent.parent / "plugin-catalog"
+    """Locate the shipped catalog in source checkouts and sealed installs.
+
+    Nix keeps bare catalog data beside the application assets rather than relying on
+    the Python package finder.  The explicit override is set by that wrapper; the
+    other candidates keep wheel-like installs and editable checkouts working.
+    """
+    override = os.environ.get("HERMES_PLUGIN_CATALOG")
+    if override:
+        return Path(override)
+    module_dir = Path(__file__).resolve().parent
+    candidates = (module_dir.parent / "plugin-catalog", module_dir / "plugin-catalog", Path(sys.prefix) / "plugin-catalog")
+    return next((candidate for candidate in candidates if candidate.is_dir()), candidates[0])
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────

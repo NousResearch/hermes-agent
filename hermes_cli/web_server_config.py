@@ -494,6 +494,16 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
     else:
         config["model_context_length"] = 0
+    # GPT-Live accepts a legacy config-file key for local compatibility, but
+    # the dashboard response is a credential-bearing boundary. Do not return
+    # the key to a browser, proxy, or copied settings payload.
+    voice = config.get("voice")
+    if isinstance(voice, dict) and isinstance(voice.get("gpt_live"), dict):
+        voice = dict(voice)
+        live = dict(voice["gpt_live"])
+        live.pop("api_key", None)
+        voice["gpt_live"] = live
+        config["voice"] = voice
     return config
 
 

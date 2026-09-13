@@ -1,5 +1,11 @@
 import { fmtClock, fmtDayTime } from '@/lib/time'
 
+const fmtMessageClock = new Intl.DateTimeFormat(undefined, {
+  hour: 'numeric',
+  hour12: true,
+  minute: '2-digit'
+})
+
 const fmtTimelineClock = new Intl.DateTimeFormat(undefined, {
   fractionalSecondDigits: 3,
   hour: 'numeric',
@@ -22,6 +28,18 @@ export function formatTimelineTimestamp(seconds: number | undefined): string {
   const date = timelineDate(seconds)
 
   return date ? fmtTimelineClock.format(date) : ''
+}
+
+/**
+ * Minute-precision wall clock (e.g. `4:30 PM`) for message bubbles. Chat rows
+ * answer "when was this sent / when did it land", not "how long did it run",
+ * so they deliberately drop the seconds and milliseconds that tool activity
+ * boundaries still need.
+ */
+export function formatClockTimestamp(seconds: number | undefined): string {
+  const date = timelineDate(seconds)
+
+  return date ? fmtMessageClock.format(date) : ''
 }
 
 export function formatTimelineRange(start: number | undefined, end: number | undefined): string {

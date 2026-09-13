@@ -1,6 +1,7 @@
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
+import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
@@ -87,7 +88,9 @@ const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
 /** "Messaged X" (+ "Message from X" once the reply lands) for a delivery
  *  command run via the terminal tool. Returns null when the command is not
  *  a delivery — caller falls through to the normal terminal row. */
-export const AgentDeliveryNotice: FC<ToolCallMessagePartProps> = props => {
+type TimelineToolCallMessagePartProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
+
+export const AgentDeliveryNotice: FC<TimelineToolCallMessagePartProps> = props => {
   const command = typeof props.args?.command === 'string' ? props.args.command : ''
   const target = deliveryTargetFromCommand(command)
 
@@ -103,6 +106,7 @@ export const AgentDeliveryNotice: FC<ToolCallMessagePartProps> = props => {
   return (
     <div className="flex w-full min-w-0 flex-col items-stretch gap-0.5">
       <div className={NOTICE_CLASS} data-slot="aui_agent-delivery-notice">
+        <TimelineTimestamp className="self-center" precision="clock" timestamp={props.timestamp} />
         <span className="flex items-center justify-center gap-1.5">
           <AgentGlyph handle={target} />
           <span className="wrap-anywhere">
@@ -113,6 +117,11 @@ export const AgentDeliveryNotice: FC<ToolCallMessagePartProps> = props => {
       </div>
       {!pending && replyBody && (
         <div className={NOTICE_CLASS} data-slot="aui_agent-reply-notice">
+          <TimelineTimestamp
+            className="self-center"
+            precision="clock"
+            timestamp={props.completedAt ?? props.timestamp}
+          />
           <span className="flex items-center justify-center gap-1.5">
             <AgentGlyph handle={target} />
             <span className="wrap-anywhere">Message from {target}</span>

@@ -133,3 +133,69 @@ def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
         platform="",
     )
     assert results == []
+
+
+def test_original_user_message_reaches_kwargs_callbacks(tmp_path, monkeypatch):
+    """The additive ``original_user_message`` field reaches ``**kwargs`` callbacks.
+
+    Transform plugins need the turn's request to honor contracts invisible in
+    the response text alone (e.g. skip exact-output requests). The finalizer
+    passes the same value post_llm_call already receives as ``user_message``.
+    """
+    hermes_home = tmp_path / "hermes_test"
+    hermes_home.mkdir(exist_ok=True)
+    _make_enabled_plugin(
+        hermes_home, "request_aware_hook",
+        register_body=(
+            'ctx.register_hook("transform_llm_output", '
+            'lambda **kw: kw.get("original_user_message"))'
+        ),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mgr = PluginManager()
+    mgr.discover_and_load()
+
+    results = mgr.invoke_hook(
+        "transform_llm_output",
+        response_text="answer",
+        session_id="s1",
+        model="m",
+        platform="cli",
+        original_user_message="Return ONLY valid JSON, no prose.",
+    )
+    assert results == ["Return ONLY valid JSON, no prose."]
+
+
+def test_narrow_signature_callbacks_do_not_receive_original_user_message(tmp_path, monkeypatch):
+    """Additive payload fields are withheld from narrow legacy signatures.
+
+    A callback that declares only the original four parameters must keep
+    working unchanged when the payload grows — PluginDispatchMixin filters
+    additive fields for callbacks without ``**kwargs``.
+    """
+    hermes_home = tmp_path / "hermes_test"
+    hermes_home.mkdir(exist_ok=True)
+    _make_enabled_plugin(
+        hermes_home, "narrow_hook",
+        register_body=(
+            'def _narrow(response_text, session_id, model, platform):\n'
+            '        return response_text.upper()\n'
+            '    ctx.register_hook("transform_llm_output", _narrow)'
+        ),
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mgr = PluginManager()
+    mgr.discover_and_load()
+
+    results = mgr.invoke_hook(
+        "transform_llm_output",
+        response_text="hello",
+        session_id="s1",
+        model="m",
+        platform="cli",
+        original_user_message="ignored by narrow signature",
+    )
+    assert results == ["HELLO"]
+

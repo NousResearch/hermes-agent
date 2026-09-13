@@ -1268,6 +1268,121 @@ class TestKillProcess:
         finally:
             registry._running.pop(s.id, None)
 
+    @pytest.mark.windows_only
+    def test_windows_pty_kill_verifies_tree_before_finishing(self, registry, monkeypatch):
+        s = _make_session(sid="proc_windows_pty", command="nested hermes")
+        s.pid = 424242
+        s.host_start_time = 99
+        s._pty = MagicMock()
+        registry._running[s.id] = s
+        calls = []
+
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda pid, expected_start, *, verify=False: calls.append(
+                (pid, expected_start, verify)
+            ),
+        )
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert calls == [(424242, 99, True)]
+        s._pty.terminate.assert_called_once_with(force=True)
+
+    @pytest.mark.windows_only
+    def test_windows_pty_partial_tree_kill_retains_session(self, registry, monkeypatch):
+        s = _make_session(sid="proc_windows_pty", command="nested hermes")
+        s.pid = 424242
+        s.host_start_time = 99
+        s._pty = MagicMock()
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("live owned pids: 100, 101")
+            ),
+        )
+
+        result = registry.kill_process(s.id)
+
+        assert result == {"status": "error", "error": "live owned pids: 100, 101"}
+        assert registry._running[s.id] is s
+        assert s.id not in registry._finished
+        assert s.exited is False
+        s._pty.terminate.assert_not_called()
+
+    @pytest.mark.windows_only
+    def test_windows_pty_identity_rejection_retains_session(self, registry, monkeypatch):
+        s = _make_session(sid="proc_windows_pty_identity", command="nested hermes")
+        s.pid = 424242
+        s.host_start_time = 99
+        s._pty = MagicMock()
+        registry._running[s.id] = s
+        monkeypatch.setattr(ProcessRegistry, "_host_pid_is_ours", lambda *_args: False)
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "error"
+        assert "root process is gone or its start time no longer matches" in result["error"]
+        assert registry._running[s.id] is s
+        assert s.id not in registry._finished
+        assert s.exited is False
+        s._pty.terminate.assert_not_called()
+
+    @pytest.mark.windows_only
+    def test_windows_pty_access_denied_retains_session(self, registry, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        s = _make_session(sid="proc_windows_pty_denied", command="nested hermes")
+        s.pid = 424242
+        s.host_start_time = 99
+        s._pty = MagicMock()
+        registry._running[s.id] = s
+
+        class _InaccessibleProcess:
+            pid = 424242
+
+            def children(self, recursive=False):
+                assert recursive is True
+                return []
+
+            def is_running(self):
+                return True
+
+            def status(self):
+                raise psutil.AccessDenied(self.pid)
+
+        monkeypatch.setattr(ProcessRegistry, "_host_pid_is_ours", lambda *_args: True)
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds", lambda: 0.0)
+        monkeypatch.setattr(psutil, "Process", lambda _pid: _InaccessibleProcess())
+        monkeypatch.setattr(
+            pr.subprocess,
+            "run",
+            lambda *_args, **_kwargs: MagicMock(
+                returncode=5, stdout="", stderr="Access is denied."
+            ),
+        )
+        monotonic = iter((0.0, 1.0))
+        monkeypatch.setattr(pr.time, "monotonic", lambda: next(monotonic))
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "error"
+        assert (
+            "liveness could not be verified for owned pids: 424242 (AccessDenied"
+            in result["error"]
+        )
+        assert "taskkill exited 5: Access is denied." in result["error"]
+        assert registry._running[s.id] is s
+        assert s.id not in registry._finished
+        assert s.exited is False
+        s._pty.terminate.assert_not_called()
+
 
 # =========================================================================
 # Tool handler

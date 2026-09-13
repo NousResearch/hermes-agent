@@ -364,6 +364,25 @@ class FlowStatus:
 _status = FlowStatus()
 _status_lock = threading.Lock()
 _flow_thread: threading.Thread | None = None
+# Status + thread per (config_path, host): the flow writes ONE host block of ONE honcho.json, so two
+# profiles connecting in the same process must not share (or refuse each other on) one status slot.
+# The module slots above serve the unscoped single-profile path (and its tests).
+_flows_by_target: dict[tuple[str, str], tuple[FlowStatus, threading.Thread | None]] = {}
+
+
+def _flow_target() -> tuple[str, str] | None:
+    """(config_path, host) of the active profile override, or None when unscoped."""
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override() is None:
+        return None
+    return str(resolve_config_path()), resolve_active_host()
+
+
+def _flow_state(target: tuple[str, str] | None) -> tuple[FlowStatus, threading.Thread | None]:
+    if target is None:
+        return _status, _flow_thread
+    return _flows_by_target.setdefault(target, (FlowStatus(), None))
 
 def _detect_connection() -> tuple[bool, str | None]:
     """Report whether a credential is already stored: 'oauth', 'apikey', or none."""
@@ -376,14 +395,15 @@ def _detect_connection() -> tuple[bool, str | None]:
     return auth is not None, auth
 
 def get_flow_status() -> dict[str, object]:
+    status, _thread = _flow_state(_flow_target())
     with _status_lock:
-        state, detail = _status.state, _status.detail
+        state, detail = status.state, status.detail
     connected, auth = _detect_connection()
     return {"state": state, "detail": detail, "connected": connected, "auth": auth}
 
-def _set_status(state: str, detail: str = "") -> None:
+def _set_status(status: FlowStatus, state: str, detail: str = "") -> None:
     with _status_lock:
-        _status.state, _status.detail = state, detail
+        status.state, status.detail = state, detail
 
 def start_loopback_flow_background(
     *, config_path: Path | None = None, host: str | None = None, source: str = "hermes-desktop",
@@ -393,21 +413,27 @@ def start_loopback_flow_background(
     Idempotent while pending, so a double-click can't open two tabs / bind :8765 twice."""
     global _flow_thread
     # Resolve under the caller's profile scope NOW — a context-local HERMES_HOME override can't reach the worker.
-    config_path = config_path or resolve_config_path()
-    host = host or resolve_active_host()
+    target = _flow_target()
+    config_path = config_path or (Path(target[0]) if target else resolve_config_path())
+    host = host or (target[1] if target else resolve_active_host())
+    status, thread = _flow_state(target)
     with _status_lock:
-        if _status.state == "pending" and _flow_thread and _flow_thread.is_alive():
-            return {"state": _status.state, "detail": _status.detail}
-        _status.state, _status.detail = "pending", "waiting for browser consent"
+        if status.state == "pending" and thread and thread.is_alive():
+            return {"state": status.state, "detail": status.detail}
+        status.state, status.detail = "pending", "waiting for browser consent"
 
     def _run() -> None:
         try:
             authorize_via_loopback(config_path=config_path, host=host, source=source, timeout=timeout)
-            _set_status("connected", "Honcho connected")
+            _set_status(status, "connected", "Honcho connected")
         except Exception as exc:
             logger.warning("Honcho OAuth loopback flow failed: %s", exc)
-            _set_status("error", str(exc))
+            _set_status(status, "error", str(exc))
 
-    _flow_thread = threading.Thread(target=_run, name="honcho-oauth-loopback", daemon=True)
-    _flow_thread.start()
+    thread = threading.Thread(target=_run, name="honcho-oauth-loopback", daemon=True)
+    if target is None:
+        _flow_thread = thread
+    else:
+        _flows_by_target[target] = (status, thread)
+    thread.start()
     return get_flow_status()

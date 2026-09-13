@@ -1,15 +1,45 @@
 export type ReleaseLocalBackendSlot = () => void
 
+export type LocalBackendSpawnPriority = 'foreground' | 'background'
+
 export type LocalBackendSpawnRequest = {
   acquired: Promise<ReleaseLocalBackendSlot>
   cancel: () => boolean
+  promote: (priority: LocalBackendSpawnPriority) => boolean
+  /** False when the slot was granted without waiting behind the queue. */
+  queued: boolean
 }
 
 type Waiter = {
   key: string
+  priority: LocalBackendSpawnPriority
   resolve: (release: ReleaseLocalBackendSlot) => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout> | null
+}
+
+const SLOT_WAIT_TIMEOUT_MESSAGE = (key: string) =>
+  `Local backend start for "${key}" timed out while waiting for a free slot.`
+
+/**
+ * Slot-wait timeout. Background hydrations set `silent` so call sites can fail
+ * quiet instead of toasting a user-visible backend-start failure.
+ */
+export class LocalBackendSlotWaitTimeoutError extends Error {
+  readonly priority: LocalBackendSpawnPriority
+  readonly silent: boolean
+
+  constructor(key: string, priority: LocalBackendSpawnPriority) {
+    const suffix = priority === 'background' ? ' (background)' : ''
+    super(`${SLOT_WAIT_TIMEOUT_MESSAGE(key)}${suffix}`)
+    this.name = 'LocalBackendSlotWaitTimeoutError'
+    this.priority = priority
+    this.silent = priority === 'background'
+  }
+}
+
+export function isBackgroundSlotWaitTimeout(error: unknown): boolean {
+  return error instanceof LocalBackendSlotWaitTimeoutError && error.silent
 }
 
 export async function releaseLocalBackendSlotAfterExit(
@@ -25,10 +55,15 @@ export async function releaseLocalBackendSlotAfterExit(
  *
  * A lease is acquired immediately before local start work and is held until
  * the child exits or the start fails. Remote descriptors never call request().
+ *
+ * When the cap is at least 2, one slot is reserved for foreground (user-open)
+ * requests so background roster hydration cannot occupy the whole pool.
+ * Untagged acquire() is foreground, so existing cap tests still fill `limit`.
  */
 export class LocalBackendSpawnCoordinator {
   #limit: number
-  #active = 0
+  #activeForeground = 0
+  #activeBackground = 0
   #queue: Waiter[] = []
 
   constructor(limit: number) {
@@ -40,7 +75,7 @@ export class LocalBackendSpawnCoordinator {
   }
 
   get activeCount(): number {
-    return this.#active
+    return this.#activeForeground + this.#activeBackground
   }
 
   get limit(): number {
@@ -66,44 +101,91 @@ export class LocalBackendSpawnCoordinator {
     return this.#queue.length
   }
 
-  request(key: string, options: { timeoutMs?: number } = {}): LocalBackendSpawnRequest {
+  request(
+    key: string,
+    options: { timeoutMs?: number; priority?: LocalBackendSpawnPriority } = {}
+  ): LocalBackendSpawnRequest {
     if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1)) {
       throw new RangeError('Local backend spawn timeout must be a positive number.')
     }
 
-    if (this.#active < this.#limit) {
+    const priority: LocalBackendSpawnPriority = options.priority === 'background' ? 'background' : 'foreground'
+
+    if (this.#queue.length === 0 && this.#canGrant(priority)) {
       return {
-        acquired: Promise.resolve(this.#grant()),
-        cancel: () => false
+        acquired: Promise.resolve(this.#grant(priority)),
+        cancel: () => false,
+        promote: () => false,
+        queued: false
       }
     }
 
     let waiter!: Waiter
 
     const acquired = new Promise<ReleaseLocalBackendSlot>((resolve, reject) => {
-      waiter = { key, resolve, reject, timer: null }
+      waiter = { key, priority, resolve, reject, timer: null }
       this.#queue.push(waiter)
 
       if (options.timeoutMs !== undefined) {
         waiter.timer = setTimeout(() => {
-          this.#rejectWaiter(
-            waiter,
-            new Error(`Local backend start for "${key}" timed out while waiting for a free slot.`)
-          )
+          this.#rejectWaiter(waiter, this.#timeoutError(waiter))
         }, options.timeoutMs)
         waiter.timer.unref?.()
       }
     })
 
+    this.#drain()
+
     return {
       acquired,
       cancel: () =>
-        this.#rejectWaiter(waiter, new Error(`Local backend start for "${key}" was cancelled while queued.`))
+        this.#rejectWaiter(waiter, new Error(`Local backend start for "${key}" was cancelled while queued.`)),
+      promote: (nextPriority: LocalBackendSpawnPriority) => this.#promoteWaiter(waiter, nextPriority),
+      queued: this.#queue.includes(waiter)
     }
   }
 
   acquire(key: string): Promise<ReleaseLocalBackendSlot> {
     return this.request(key).acquired
+  }
+
+  #timeoutError(waiter: Waiter): Error {
+    if (waiter.priority === 'background') {
+      return new LocalBackendSlotWaitTimeoutError(waiter.key, 'background')
+    }
+
+    return new Error(SLOT_WAIT_TIMEOUT_MESSAGE(waiter.key))
+  }
+
+  #backgroundLimit(): number {
+    return this.#limit >= 2 ? this.#limit - 1 : this.#limit
+  }
+
+  #canGrant(priority: LocalBackendSpawnPriority): boolean {
+    if (this.activeCount >= this.#limit) {
+      return false
+    }
+
+    if (priority === 'background' && this.#activeBackground >= this.#backgroundLimit()) {
+      return false
+    }
+
+    return true
+  }
+
+  #promoteWaiter(waiter: Waiter, priority: LocalBackendSpawnPriority): boolean {
+    if (!this.#queue.includes(waiter)) {
+      return false
+    }
+
+    if (waiter.priority === priority) {
+      return false
+    }
+
+    waiter.priority = priority
+    this.#drain()
+
+    return true
   }
 
   #rejectWaiter(waiter: Waiter, error: Error): boolean {
@@ -127,8 +209,13 @@ export class LocalBackendSpawnCoordinator {
     }
   }
 
-  #grant(): ReleaseLocalBackendSlot {
-    this.#active += 1
+  #grant(priority: LocalBackendSpawnPriority): ReleaseLocalBackendSlot {
+    if (priority === 'background') {
+      this.#activeBackground += 1
+    } else {
+      this.#activeForeground += 1
+    }
+
     let released = false
 
     return () => {
@@ -137,17 +224,49 @@ export class LocalBackendSpawnCoordinator {
       }
 
       released = true
-      this.#active -= 1
+
+      if (priority === 'background') {
+        this.#activeBackground -= 1
+      } else {
+        this.#activeForeground -= 1
+      }
+
       this.#drain()
     }
   }
 
-  /** Hand free slots to queued waiters while under the (possibly lowered) cap. */
+  #takeWaiter(priority: LocalBackendSpawnPriority): Waiter | undefined {
+    const index = this.#queue.findIndex(waiter => waiter.priority === priority)
+
+    if (index === -1) {
+      return undefined
+    }
+
+    return this.#queue.splice(index, 1)[0]
+  }
+
+  /** Hand free slots to queued waiters. Foreground waiters always go first. */
   #drain(): void {
-    while (this.#active < this.#limit && this.#queue.length > 0) {
-      const next = this.#queue.shift()!
+    while (this.#canGrant('foreground')) {
+      const next = this.#takeWaiter('foreground')
+
+      if (!next) {
+        break
+      }
+
       this.#clearTimer(next)
-      next.resolve(this.#grant())
+      next.resolve(this.#grant('foreground'))
+    }
+
+    while (this.#canGrant('background')) {
+      const next = this.#takeWaiter('background')
+
+      if (!next) {
+        break
+      }
+
+      this.#clearTimer(next)
+      next.resolve(this.#grant('background'))
     }
   }
 }

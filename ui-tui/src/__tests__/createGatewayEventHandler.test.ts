@@ -67,6 +67,31 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
+    patchUiState({ sid: 'focused' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+    onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
+    onEvent({
+      session_id: 'focused',
+      payload: { request_id: 'approval', command: 'test' },
+      type: 'approval.request'
+    } as any)
+    const busyOverlay = getOverlayState().approval
+    expect(getUiState().busy).toBe(true)
+    expect(busyOverlay).not.toBeNull()
+    const snapshot = { model: 'test', skills: {}, tools: {} }
+    onEvent({ session_id: 'other', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: snapshot, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: true }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(true)
+    expect(getOverlayState().approval).toEqual(busyOverlay)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().status).toBe('ready')
+    expect(getOverlayState().approval).toBeNull()
+    expect(getTurnState().tools).toEqual([])
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 
@@ -320,10 +345,6 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.start'
     } as any)
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
-    onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
     } as any)
@@ -335,7 +356,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
     expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.tools?.[0]).toContain('home page')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
@@ -377,10 +398,6 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
     onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
@@ -1485,7 +1502,6 @@ describe('createGatewayEventHandler', () => {
       const trailBefore = getTurnState().turnTrail.length
       onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
       expect(getTurnState().turnTrail.length).toBe(trailBefore)
-      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
       onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
       onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
 

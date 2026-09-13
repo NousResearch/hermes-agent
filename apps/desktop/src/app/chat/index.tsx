@@ -1,4 +1,5 @@
 import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
+import type { ModelOptionsResponse } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
@@ -23,7 +24,7 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
@@ -51,7 +52,6 @@ import {
 import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
-import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -85,6 +85,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   modelOptionsOwnerConnectionId?: string
   modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
+  reasoningMenuContent?: React.ReactNode
   requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
@@ -96,12 +97,14 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
   onAttachPrCommentUrl?: (url: string) => boolean
+  onAttachPastedText?: (text: string) => Promise<boolean> | boolean
   onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
+  onSteerHidden?: (text: string) => Promise<boolean> | boolean
   onSubmit: (text: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
@@ -379,6 +382,7 @@ const ChatViewContent = memo(function ChatViewContent({
   modelOptionsOwnerConnectionId,
   modelOptionsProfile,
   modelMenuContent,
+  reasoningMenuContent,
   requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
@@ -388,6 +392,7 @@ const ChatViewContent = memo(function ChatViewContent({
   onAttachImageBlob,
   onAttachDroppedItems,
   onAttachPrCommentUrl,
+  onAttachPastedText,
   onBranchInNewChat,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
@@ -396,6 +401,7 @@ const ChatViewContent = memo(function ChatViewContent({
   onPickImages,
   onRemoveAttachment,
   onSteer,
+  onSteerHidden,
   onSubmit,
   onThreadMessagesChange,
   onEdit,
@@ -579,6 +585,8 @@ const ChatViewContent = memo(function ChatViewContent({
     [currentModel, currentProvider, modelOptionsQuery.data]
   )
 
+  const supportsReasoning = currentModelCapabilities(modelOptionsQuery.data, currentProvider, currentModel)?.reasoning
+
   const chatBarState = useMemo<ChatBarState>(
     () => ({
       model: {
@@ -587,7 +595,9 @@ const ChatViewContent = memo(function ChatViewContent({
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
         modelMenuContent,
-        quickModels
+        quickModels,
+        reasoningMenuContent,
+        supportsReasoning
       },
       tools: {
         enabled: true,
@@ -599,7 +609,16 @@ const ChatViewContent = memo(function ChatViewContent({
         active: false
       }
     }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent, quickModels]
+    [
+      contextSuggestions,
+      currentModel,
+      currentProvider,
+      gatewayOpen,
+      modelMenuContent,
+      quickModels,
+      reasoningMenuContent,
+      supportsReasoning
+    ]
   )
 
   // Drop files anywhere in the conversation area, not just on the composer
@@ -755,6 +774,7 @@ const ChatViewContent = memo(function ChatViewContent({
               onAddUrl={onAddUrl}
               onAttachDroppedItems={onAttachDroppedItems}
               onAttachImageBlob={onAttachImageBlob}
+              onAttachPastedText={onAttachPastedText}
               onAttachPrCommentUrl={onAttachPrCommentUrl}
               onCancel={onCancel}
               onPasteClipboardImage={onPasteClipboardImage}
@@ -763,6 +783,7 @@ const ChatViewContent = memo(function ChatViewContent({
               onPickImages={onPickImages}
               onRemoveAttachment={onRemoveAttachment}
               onSteer={onSteer}
+              onSteerHidden={onSteerHidden}
               onSubmit={onSubmit}
               onTranscribeAudio={onTranscribeAudio}
               queueSessionKey={queueSessionKey}

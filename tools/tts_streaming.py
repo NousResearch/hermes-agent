@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
-from tools.tts_tool import _get_provider, _load_tts_config, get_env_value
+from tools.tts_tool import _get_provider, _load_tts_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ def _resolve_key(env_var: str, provider_id: str) -> str:
         from tools.tts_tool import _resolve_provider_key
         return _resolve_provider_key(env_var, provider_id) or ""
     except Exception:
+        from hermes_cli.config import get_env_value
         return get_env_value(env_var) or ""
 
 
@@ -210,6 +211,7 @@ class OpenAIStreamer(StreamingTTSProvider):
 
     def stream(self, text: str) -> Iterator[bytes]:
         from openai import OpenAI
+        from hermes_cli.config import get_env_value
         client = OpenAI(
             api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
             base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
@@ -238,6 +240,7 @@ class GeminiStreamer(StreamingTTSProvider):
         import requests
         from tools.tts_tool_providers import (
             DEFAULT_GEMINI_TTS_BASE_URL, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE)
+        from hermes_cli.config import get_env_value
         api_key = _gemini_key()
         model = str(self.section.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
         voice = str(self.section.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE

@@ -107,7 +107,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
-| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the `assistant.threads.setStatus` call fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
+| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the status call (`agents.sessions.setStatus` on slack-sdk 3.44+, `assistant.threads.setStatus` on older SDKs) fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
 
 ---
 
@@ -498,7 +498,7 @@ platforms:
 | `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
 
 :::note Where the status renders
-The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — `assistant.threads.setStatus` does not control those, and both can appear at the same time.
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — the status API (`agents.sessions.setStatus` / `assistant.threads.setStatus`) does not control those, and both can appear at the same time.
 :::
 
 The same key customizes Google Chat's visible working-state marker message
@@ -1024,7 +1024,7 @@ slack:
 
 Notes:
 - The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
-- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 
 ## Troubleshooting

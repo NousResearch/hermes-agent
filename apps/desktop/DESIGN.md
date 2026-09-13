@@ -383,6 +383,10 @@ The detailed state contract lives in the scoped
 
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
+- Themed document scrollbars use an 8px track with a 45% thumb, rising to 70%
+  on hover. `.scrollbar-fade` keeps sidebar chrome hidden until the list is
+  hovered; compact portal scrollbars stay 4px, and `.scrollbar-overlay` keeps
+  native overlay behavior for surfaces such as code blocks.
 - Global focus-ring reset; titlebar actions have no active-background state.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".

@@ -1390,7 +1390,7 @@ class TurnRunner:
         ctx = self._ctx
         # Transcript rows ({role, content, timestamp}) lose timestamps; interrupt-path agent messages
         # (tool_calls/tool_call_id/reasoning) pass through intact so the API sees valid assistant→tool
-        # sequences. Telegram observed=True rows are withheld from replayable history and attached to
+        # sequences. Observed group rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
         agent_history, observed_group_context = _build_gateway_agent_history(
             ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),

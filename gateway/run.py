@@ -1137,17 +1137,23 @@ def _build_replay_entry(
     return entry
 
 
-_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_OBSERVED_CONTEXT_PROMPT_MARKERS = (
+    "observed Telegram group context",
+    "observed WhatsApp group context",
+)
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
-def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
+def _uses_observed_group_context(channel_prompt: Optional[str]) -> bool:
+    """Return True for adapter turns that may include observed group chatter.
 
     Observed rows must not replay as ordinary user turns, or a weak wake word makes old chatter look like work.
     """
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+    return bool(
+        channel_prompt
+        and any(marker in channel_prompt for marker in _OBSERVED_CONTEXT_PROMPT_MARKERS)
+    )
 
 
 def _csv_or_list_to_set(raw: Any) -> set[str]:
@@ -1221,7 +1227,7 @@ def _build_gateway_agent_history(
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+    separate_observed_context = _uses_observed_group_context(channel_prompt)
 
     for msg in history or []:
         role = msg.get("role")
@@ -1230,10 +1236,11 @@ def _build_gateway_agent_history(
             continue
 
         content = msg.get("content")
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
-            if inject_timestamps and isinstance(content, str):
-                content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-            observed_group_context.append(str(content).strip())
+        if msg.get("observed") and role == "user":
+            if separate_observed_context and content:
+                if inject_timestamps and isinstance(content, str):
+                    content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
+                observed_group_context.append(str(content).strip())
             continue
 
         # Rich tool_calls/tool-result rows pass through intact so the API sees valid assistant→tool sequences.
@@ -1315,7 +1322,7 @@ def _select_cached_agent_history(
 
 
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
+    """Prepend observed group context to the API-only current user turn."""
     if not observed_context:
         return message
 
@@ -2122,7 +2129,9 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    resolve_runner_session_isolation,
+)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -3861,6 +3870,12 @@ class GatewayRunner(
     exit_reason = property(lambda self: self._exit_reason)
     exit_code = property(lambda self: self._exit_code)
 
+    def _resolve_session_isolation_for_source(
+        self, source: SessionSource
+    ) -> tuple[bool, bool]:
+        """Resolve the store's effective scope, with a bare-runner config fallback."""
+        return resolve_runner_session_isolation(self, source)
+
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
         if hasattr(self, "session_store") and self.session_store is not None:
@@ -3883,10 +3898,13 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        group_per_user, thread_per_user = self._resolve_session_isolation_for_source(source)
         return build_session_key(
-            source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile)
+            source,
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
+            profile=_profile,
+        )
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

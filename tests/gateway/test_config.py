@@ -245,6 +245,31 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    @pytest.mark.parametrize("with_bridged_key", [False, True])
+    def test_top_level_platform_nested_extra_survives_loading(
+        self, tmp_path, monkeypatch, with_bridged_key
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        policy = "  group_policy: open\n" if with_bridged_key else ""
+        (hermes_home / "config.yaml").write_text(
+            "whatsapp:\n"
+            "  extra:\n"
+            "    group_sessions_per_user: false\n"
+            "    bridge_port: 3000\n"
+            "    group_policy: allowlist\n"
+            f"{policy}",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        extra = load_gateway_config().platforms[Platform.WHATSAPP].extra
+
+        assert extra["group_sessions_per_user"] is False
+        assert extra["bridge_port"] == 3000
+        if with_bridged_key:
+            assert extra["group_policy"] == "open"
+
     def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             platforms={Platform.EMAIL: PlatformConfig(enabled=True)},

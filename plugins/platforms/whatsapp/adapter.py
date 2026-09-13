@@ -9,6 +9,7 @@ import platform
 import re
 import signal
 import subprocess
+from datetime import datetime, timezone
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -256,6 +257,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     bridge_port (3000) / session_path, dm_policy / group_policy (open|allowlist|disabled|pairing), allow_from / group_allow_from, send_read_receipts."""
 
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
+    _supports_group_observation = True
     splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
@@ -706,10 +708,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                                await self._dispatch_or_observe_inbound_event(event)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -823,7 +822,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            should_process = self._should_process_message(data)
+            should_observe = self._should_observe_unmentioned_group_message(data)
+            if not should_process and not should_observe:
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
@@ -849,12 +850,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
             ) if v}
+            mentioned_ids = [
+                mention_id
+                for candidate in (data.get("mentionedIds") or [])
+                if (mention_id := self._normalize_whatsapp_id(candidate))
+            ]
+            if mentioned_ids:
+                metadata["whatsapp_mentioned_ids"] = mentioned_ids
+            metadata["whatsapp_bot_mentioned"] = self._message_has_native_bot_mention(data)
+            if should_observe:
+                metadata["_whatsapp_observed_only"] = True
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.
             if data.get("fromOwner"):
                 metadata["whatsapp_from_owner"] = True
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
+            channel_prompt = None
+            if (
+                should_process
+                and data.get("isGroup")
+                and self._whatsapp_observe_unmentioned_group_messages()
+            ):
+                channel_prompt = self._whatsapp_group_observe_channel_prompt()
             return MessageEvent(
                 text=body, message_type=msg_type, source=source, raw_message=data, message_id=data.get("messageId"),
                 media_urls=cached_urls, media_types=media_types, metadata=metadata,
@@ -862,10 +880,52 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
+                channel_prompt=channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    async def _dispatch_or_observe_inbound_event(self, event: MessageEvent) -> None:
+        """Route an accepted event to exactly one deterministic inbound path."""
+        if event.metadata.pop("_whatsapp_observed_only", False):
+            await asyncio.to_thread(self._observe_unmentioned_group_event, event)
+        elif event.message_type == MessageType.TEXT:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
+    def _observe_unmentioned_group_event(self, event: MessageEvent) -> None:
+        """Persist an authorized group event without invoking the agent."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            from gateway.session import neutralize_untrusted_inline_text
+
+            session_entry = store.get_or_create_session(event.source)
+            sender = neutralize_untrusted_inline_text(
+                event.source.user_name or event.source.user_id or "unknown"
+            )
+            body = neutralize_untrusted_inline_text(event.text or "", max_chars=0)
+            content_parts = [f"[{sender}] {body}".rstrip()]
+            for index, path in enumerate(event.media_urls or []):
+                mime = event.media_types[index] if index < len(event.media_types) else ""
+                kind = mime.split("/", 1)[0] if "/" in mime else "file"
+                content_parts.append(f"[{kind} saved at: {path}]")
+            entry = {
+                "role": "user",
+                "content": "\n".join(content_parts),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = str(event.message_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to observe WhatsApp group message: %s", self.name, exc
+            )
 
 
 # ── Plugin glue: register(ctx) plus the hooks for gateway/run.py, gateway/config.py, hermes_cli/gateway.py, send_message_tool.py.
@@ -959,8 +1019,18 @@ def interactive_setup() -> None:
 
 
 # config.yaml whatsapp: key → env var. Env vars take precedence over YAML.
-_YAML_LOWERCASE_KEYS = (("require_mention", "WHATSAPP_REQUIRE_MENTION"), ("dm_policy", "WHATSAPP_DM_POLICY"), ("group_policy", "WHATSAPP_GROUP_POLICY"))
-_YAML_LIST_KEYS = (("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"), ("allow_from", "WHATSAPP_ALLOWED_USERS"), ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS"))
+_YAML_LOWERCASE_KEYS = (
+    ("require_mention", "WHATSAPP_REQUIRE_MENTION"),
+    ("observe_unmentioned_group_messages", "WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"),
+    ("dm_policy", "WHATSAPP_DM_POLICY"),
+    ("group_policy", "WHATSAPP_GROUP_POLICY"),
+)
+_YAML_LIST_KEYS = (
+    ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"),
+    ("allow_from", "WHATSAPP_ALLOWED_USERS"),
+    ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS"),
+    ("observe_group_allow_from", "WHATSAPP_OBSERVE_GROUP_ALLOW_FROM"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:

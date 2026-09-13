@@ -611,6 +611,52 @@ def build_channel_continuity_note(entry: "SessionEntry", source: SessionSource) 
     )
 
 
+def effective_session_thread_id(source: SessionSource) -> Optional[str]:
+    """Return the thread identity used by session routing."""
+    if source.thread_id:
+        return source.thread_id
+    if source.platform == Platform.DISCORD and source.chat_type != "dm":
+        return source.prospective_thread_id
+    return None
+
+
+def effective_session_chat_type(source: SessionSource) -> str:
+    """Return the chat type represented by the routed session key."""
+    if effective_session_thread_id(source) and not source.thread_id:
+        return "thread"
+    return source.chat_type
+
+
+def resolve_session_isolation(
+    config: Any, source: SessionSource
+) -> tuple[bool, bool]:
+    """Resolve global session-isolation defaults plus platform overrides."""
+    group_per_user = getattr(config, "group_sessions_per_user", True)
+    thread_per_user = getattr(config, "thread_sessions_per_user", False)
+    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
+    extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+    if isinstance(extra, dict):
+        group_per_user = extra.get("group_sessions_per_user", group_per_user)
+        thread_per_user = extra.get("thread_sessions_per_user", thread_per_user)
+    return group_per_user, thread_per_user
+
+
+def resolve_runner_session_isolation(
+    runner: Any, source: SessionSource
+) -> tuple[bool, bool]:
+    """Resolve through a runner's real store, with a config fallback for bare callers."""
+    store = getattr(runner, "session_store", None)
+    resolver = getattr(store, "_resolve_session_isolation", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(source)
+            if isinstance(resolved, tuple) and len(resolved) == 2:
+                return bool(resolved[0]), bool(resolved[1])
+        except Exception:
+            pass
+    return resolve_session_isolation(getattr(runner, "config", None), source)
+
+
 def is_shared_multi_user_session(
     source: SessionSource, *, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
@@ -619,7 +665,11 @@ def is_shared_multi_user_session(
     isolation rules in :func:`build_session_key`)."""
     if source.chat_type == "dm":
         return False
-    return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
+    return not (
+        thread_sessions_per_user
+        if effective_session_thread_id(source)
+        else group_sessions_per_user
+    )
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:
@@ -657,8 +707,8 @@ def build_session_key(
     # Discord auto-thread continuity: key a channel-initiating message on the thread it WILL be
     # delivered into (prospective_thread_id), and normalize the chat_type slot to "thread" so
     # in-thread follow-ups byte-match. A real thread_id always wins. DMs use thread_id only.
-    thread_id = source.thread_id or (None if is_dm else source.prospective_thread_id)
-    chat_type_slot = "thread" if thread_id and not source.thread_id else source.chat_type
+    thread_id = effective_session_thread_id(source)
+    chat_type_slot = effective_session_chat_type(source)
     if is_dm:
         # No chat_id: fall back to the sender id before the bare per-platform sink, or every
         # chat_id-less DM shares one agent.
@@ -1180,9 +1230,11 @@ def build_session_context(
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
+    group_per_user, thread_per_user = resolve_session_isolation(config, source)
     shared = is_shared_multi_user_session(
-        source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-        thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+        source,
+        group_sessions_per_user=group_per_user,
+        thread_sessions_per_user=thread_per_user,
     )
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,

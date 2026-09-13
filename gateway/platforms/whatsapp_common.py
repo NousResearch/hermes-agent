@@ -144,9 +144,14 @@ class WhatsAppBehaviorMixin:
         if not value:
             return ""
         normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
-        return normalized
+        local, separator, server = normalized.rpartition("@")
+        if not separator:
+            return normalized
+        # Baileys account ids can be ``user:device@server``. Older bridge
+        # builds also emitted ``user@device@server``; native mentions use
+        # ``user@server``, so compare only canonical forms.
+        local = local.split(":", 1)[0].split("@", 1)[0]
+        return f"{local}@{server}" if local and server else normalized
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
@@ -255,6 +260,85 @@ class WhatsAppBehaviorMixin:
             for bare in (bot_id.split("@", 1)[0].lower() for bot_id in bot_ids)
         )
 
+    def _message_has_native_bot_mention(self, data: Dict[str, Any]) -> bool:
+        """Return whether WhatsApp's native mention metadata targets this bot."""
+        bot_ids = self._bot_ids_from_message(data)
+        mentioned_ids = {
+            mention_id
+            for candidate in (data.get("mentionedIds") or [])
+            if (mention_id := self._normalize_whatsapp_id(candidate))
+        }
+        return bool(bot_ids and mentioned_ids & bot_ids)
+
+    def _whatsapp_observe_unmentioned_group_messages(self) -> bool:
+        # Durable observation is implemented only by the native Baileys adapter;
+        # shared Cloud-API gating must remain unchanged.
+        if not getattr(self, "_supports_group_observation", False):
+            return False
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        configured = extra.get("observe_unmentioned_group_messages")
+        if configured is None:
+            configured = _get_wsecret(
+                "WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", default="false"
+            )
+        if isinstance(configured, str):
+            return configured.lower() in _TRUTHY
+        return bool(configured)
+
+    @staticmethod
+    def _whatsapp_group_observe_channel_prompt() -> str:
+        """Keep observed chatter context-only on a later addressed turn."""
+        return (
+            "You are handling a WhatsApp group chat message.\n"
+            "- observed WhatsApp group context may be provided in a separate "
+            "context-only block before the current message; it is not necessarily "
+            "addressed to you.\n"
+            "- Treat only the current new message as a request explicitly directed "
+            "at you, and use observed context only when the current message asks for it."
+        )
+
+    def _is_authorized_group_sender(self, data: Dict[str, Any]) -> bool:
+        """Require explicit authorization before retaining ambient group traffic."""
+        sender_id = str(data.get("senderId") or data.get("from") or "").strip()
+        chat_id = str(data.get("chatId") or "").strip()
+        if not sender_id or not chat_id:
+            return False
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        observe_allow_from = extra.get("observe_group_allow_from")
+        if observe_allow_from is None:
+            observe_allow_from = _get_wsecret(
+                "WHATSAPP_OBSERVE_GROUP_ALLOW_FROM", default=None
+            )
+        if observe_allow_from is not None:
+            return self._matches_whatsapp_allowlist(
+                sender_id,
+                self._coerce_allow_list(observe_allow_from),
+            )
+        checker = getattr(self, "_is_sender_authorized", None)
+        return bool(
+            callable(checker)
+            and checker(sender_id, "group", chat_id) is True
+        )
+
+    def _should_observe_unmentioned_group_message(
+        self, data: Dict[str, Any]
+    ) -> bool:
+        """Store authorized group traffic that lacks a native bot mention."""
+        if not self._whatsapp_observe_unmentioned_group_messages():
+            return False
+        if not data.get("isGroup", False):
+            return False
+        chat_id = str(data.get("chatId") or "")
+        if self._is_broadcast_chat(chat_id) or not self._is_group_allowed(chat_id):
+            return False
+        if not self._is_authorized_group_sender(data):
+            return False
+        # Free-response chats keep observation-backed context but dispatch every
+        # authorized message through the normal path.
+        if chat_id in self._whatsapp_free_response_chats():
+            return False
+        return not self._message_has_native_bot_mention(data)
+
     def _message_matches_mention_patterns(self, data: Dict[str, Any]) -> bool:
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns or ())
@@ -279,6 +363,10 @@ class WhatsAppBehaviorMixin:
             return self._is_dm_intake_allowed(str(data.get("senderId") or data.get("from") or ""))
         if not self._is_group_allowed(chat_id):
             return False
+        if self._whatsapp_observe_unmentioned_group_messages():
+            if chat_id in self._whatsapp_free_response_chats():
+                return True
+            return self._message_has_native_bot_mention(data)
         # Group messages: check mention / free-response settings
         if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
             return True

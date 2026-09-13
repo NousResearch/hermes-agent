@@ -476,6 +476,7 @@ class TestTeamsMessageHandling:
         tenant_id="tenant-789",
         activity_id="activity-001",
         attachments=None,
+        value=None,
     ):
         activity = MagicMock()
         activity.text = text
@@ -490,6 +491,7 @@ class TestTeamsMessageHandling:
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = tenant_id
         activity.attachments = attachments or []
+        activity.value = value
         return activity
 
     def _make_ctx(self, activity):
@@ -527,6 +529,89 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "wrapper", ["direct", "data", "Action.Submit", "Action.Execute", "sdk", "data-field", "action-field"],
+    )
+    @pytest.mark.parametrize("text", ["", "<at>Hermes</at> ", "manual override"])
+    async def test_card_submit_preserves_fields_unless_typed_text_takes_precedence(self, wrapper, text):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        data = {"prompt": "run the report", "options": {"locale": "中文"}, "_internal": "hidden"}
+        value = {
+            "direct": data,
+            "data": {"data": data},
+            "sdk": SimpleNamespace(action=SimpleNamespace(data=data)),
+            "data-field": {**data, "data": {}},
+            "action-field": {**data, "action": {"data": {}}},
+        }.get(wrapper, {"action": {"type": wrapper, "data": data}})
+        activity = self._make_activity(text=text, value=value)
+        await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        if text == "manual override":
+            assert event.text == text
+        else:
+            assert f"prompt: {data['prompt']}" in event.text
+            assert f"options: {json.dumps(data['options'], ensure_ascii=False, sort_keys=True)}" in event.text
+            assert data["_internal"] not in event.text
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("action_type", ["Action.Submit", "Action.Execute"])
+    @pytest.mark.parametrize("state", ["allowed", "bystander", "unconfigured", "expired", "unknown"])
+    async def test_card_submit_approval_is_authorized_and_never_dispatched(self, monkeypatch, action_type, state):
+        from agent import secret_scope
+        from tools import approval
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        # The default profile's allow-all must not authorize a scoped sender.
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        allowed = "other-user" if state == "bystander" else "aad-456"
+        scope = {} if state == "unconfigured" else {"TEAMS_ALLOWED_USERS": allowed}
+        token = secret_scope.set_secret_scope(scope)
+        session_key = "agent:main:teams:dm:19:abc"
+        entry = _ApprovalEntry({"request_id": "card-request"})
+        queue = [] if state == "expired" else [entry]
+        monkeypatch.setattr(approval, "_gateway_queues", {session_key: queue})
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="",
+            from_id="user-id",
+            from_aad_id="aad-456",
+            value={
+                "action": {
+                    "type": action_type,
+                    "data": {
+                        "session_key": session_key,
+                        "hermes_action": "unknown" if state == "unknown" else "approve_once",
+                        "cmd": "echo card-test",
+                        "desc": "approval test",
+                    },
+                },
+            },
+        )
+        try:
+            await adapter._on_message(self._make_ctx(activity))
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        adapter.handle_message.assert_not_awaited()
+        assert entry.event.is_set() is (state == "allowed")
+        assert entry.result == ("once" if state == "allowed" else None)
+        assert approval.has_blocking_approval(session_key) is (state not in {"allowed", "expired"})
 
 
 class TestTeamsAttachmentClassification:
@@ -1107,5 +1192,3 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", str(doc))
         assert result.success
         adapter._app.send.assert_awaited_once()
-
-

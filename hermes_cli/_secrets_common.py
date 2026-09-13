@@ -18,7 +18,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from hermes_cli.config import load_config, save_config
-from hermes_cli.secret_prompt import masked_secret_prompt
+from agent.secret_sources.base import build_minimal_provider_env, is_valid_env_name, sanitize_provider_version
+from hermes_cli.secret_prompt import (
+    cli_secret_arg_warning, get_pre_dotenv_rotation_input, masked_secret_prompt,
+)
 
 
 def yn(b: bool) -> str:
@@ -27,7 +30,15 @@ def yn(b: bool) -> str:
 
 def section_cfg(cfg: dict, section: str) -> dict:
     """``cfg["secrets"][section]`` or ``{}``."""
-    return (cfg.get("secrets") or {}).get(section) or {}
+    secrets = cfg.get("secrets")
+    value = secrets.get(section) if isinstance(secrets, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def token_env_name(value: object, default: str) -> str:
+    """Use only a valid configured bootstrap name; malformed configuration uses the default."""
+    name = value.strip() if isinstance(value, str) else ""
+    return name if is_valid_env_name(name) else default
 
 
 def cfg_str(cfg: dict, key: str) -> str:
@@ -92,28 +103,16 @@ def print_table(console: Console, columns: Sequence, rows: Iterable,
 
 
 def cli_version(binary: Path) -> str:
-    """Return the first line of ``<binary> --version`` or ``"version unknown"``."""
+    """Run a credential-free version probe and return only the version number."""
     try:
-        res = subprocess.run([str(binary), "--version"], capture_output=True, text=True, encoding='utf-8',
+        res = subprocess.run([str(binary), "--version"], env=build_minimal_provider_env(),
+                             capture_output=True, text=True, encoding='utf-8',
                              errors='replace', timeout=5)
         if res.returncode == 0:
-            return (res.stdout or res.stderr).strip().splitlines()[0]
+            return sanitize_provider_version(res.stdout or res.stderr)
     except (OSError, subprocess.TimeoutExpired):
         pass
     return "version unknown"
-
-
-def secret_cli_env() -> dict:
-    """Env for a secret-manager CLI child (``bws`` / ``op``).
-
-    Intentionally receives tokens — no scrub, no HOME rewrite (both CLIs store state under the
-    real user home).
-    """
-    from tools.environments.local import build_subprocess_env
-
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env.setdefault("NO_COLOR", "1")
-    return env
 
 
 def rotate_token(
@@ -132,10 +131,16 @@ def rotate_token(
     makes the next startup fetch fresh with the new credential.
     """
     token = (given or "").strip()
-    if not token:
-        if not sys.stdin.isatty():
-            console.print(f"[red]No TTY — pass the token with {flag}.[/red]")
+    if token:
+        console.print(f"[yellow]⚠ {cli_secret_arg_warning(flag, token_env)}[/yellow]")
+    if not token and not sys.stdin.isatty():
+        token = (get_pre_dotenv_rotation_input(token_env) or os.environ.get(token_env, "")).strip()
+        if not token:
+            console.print(f"[red]No TTY — set {token_env} through your secret provider "
+                          "or pass the token explicitly. "
+                          f"{cli_secret_arg_warning(flag, token_env)}[/red]")
             return 1
+    if not token:
         console.print(intro)
         token = masked_secret_prompt(prompt).strip()
     if not token:

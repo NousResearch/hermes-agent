@@ -17,12 +17,13 @@ import shutil
 import subprocess  # noqa: F401 — tests monkeypatch ``op.subprocess.run``
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
     get_source_environment, is_valid_env_name, run_cli,
+    build_minimal_provider_env, normalize_provider_output, redact_provider_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,19 +123,30 @@ def find_op(binary_path: str = "") -> Optional[Path]:
 
 def _scrub(text: str) -> str:
     """Full ECMA-48 ANSI strip (so a control sequence can't hide text after a redaction marker) + trim."""
-    from tools.ansi_strip import strip_ansi
-
-    return strip_ansi(text).replace("\x1b", "").strip()
+    return normalize_provider_output(text).strip()
 
 
 def _op_child_env(token_value: str) -> Dict[str, str]:
     source_env = get_source_environment()
-    env = {k: source_env[k] for k in _OP_ENV_ALLOWLIST if k in source_env}
+    env = build_minimal_provider_env(source_env, allow_env=_OP_ENV_ALLOWLIST)
     env.update((k, v) for k, v in source_env.items() if k.startswith("OP_SESSION_"))
     if token_value:
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
     env["NO_COLOR"] = "1"
     return env
+
+
+def _op_auth_values(env: Mapping[str, str]) -> Tuple[str, ...]:
+    """Return only authentication values present in an ``op`` child env."""
+    values = []
+    for key, value in env.items():
+        if (
+            key in {"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN"}
+            or key.startswith("OP_SESSION_")
+        ) and value:
+            values.append(value)
+    return tuple(values)
+
 
 
 def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "") -> str:
@@ -145,11 +157,12 @@ def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: st
         cmd += ["--account", account]
     cmd += ["--", reference]  # `--` so a reference can never parse as an op flag
 
-    proc = run_cli(cmd, env=_op_child_env(token_value), timeout=_OP_RUN_TIMEOUT, label="op",
+    child_env = _op_child_env(token_value)
+    proc = run_cli(cmd, env=child_env, timeout=_OP_RUN_TIMEOUT, label="op",
                    timeout_message=f"op read timed out after {_OP_RUN_TIMEOUT}s for {reference!r}", stdin=None)
 
     if proc.returncode != 0:
-        err = _scrub(proc.stderr or "")[:200]
+        err = redact_provider_output(proc.stderr or proc.stdout or "", _op_auth_values(child_env))[:200]
         if err:
             raise RuntimeError(f"op read failed for {reference!r}: {err}")
         raise RuntimeError(f"op read exited {proc.returncode} for {reference!r}")

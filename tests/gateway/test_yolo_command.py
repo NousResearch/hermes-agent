@@ -139,3 +139,12 @@ def test_session_yolo_scope_distinguishes_paired_and_broadcast_dms():
 
     assert is_session_principal_isolated(paired) is True
     assert is_session_principal_isolated(broadcast) is False
+
+
+def test_session_yolo_scope_matches_nonstandard_direct_session_keys():
+    chatless_dm = _make_event("", user_id="admin").source
+    private = _make_event("private-chat", user_id="admin", chat_type="private").source
+
+    assert is_session_principal_isolated(chatless_dm) is True
+    assert is_session_principal_isolated(private, group_sessions_per_user=True) is True
+    assert is_session_principal_isolated(private, group_sessions_per_user=False) is False

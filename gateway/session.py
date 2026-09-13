@@ -640,10 +640,10 @@ def is_session_principal_isolated(
     thread_sessions_per_user: bool = False,
 ) -> bool:
     """Whether one sender's security state can safely key on this session."""
-    if is_paired_direct_session(source):
-        return True
-    if source.chat_type in {"dm", "private"}:
-        return False
+    if source.chat_type == "dm":
+        if source.chat_id:
+            return is_paired_direct_session(source)
+        return bool(_canonical_participant(source))
     if not _canonical_participant(source):
         return False
     thread_id = source.thread_id or source.prospective_thread_id

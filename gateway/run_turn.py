@@ -412,7 +412,9 @@ class GatewayTurnMixin:
             })
         return _was_auto_reset, _is_new_session
 
-    async def _hmwa_deliver_auto_reset_notice(self, session_entry, source, turn_sidecar_notes):
+    async def _hmwa_deliver_auto_reset_notice(
+        self, session_entry, source, turn_sidecar_notes, user_config,
+    ):
         """Stage the auto-reset sidecar note for the agent and notify the user (policy-gated)."""
         from gateway.run import _AUTO_RESET_CONTEXT_NOTES
         reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'suspended'
@@ -431,7 +433,7 @@ class GatewayTurnMixin:
         try:
             should_notify = reset_reason == "suspended"
             adapter = self._adapter_for_source(source) if should_notify else None
-            if adapter:
+            if should_notify:
                 notice = (
                     "◐ Session reset after being stopped. "
                     f"Conversation history cleared.\n"
@@ -441,7 +443,12 @@ class GatewayTurnMixin:
                     session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
                     if session_info:
                         notice = f"{notice}\n\n{session_info}"
-                await adapter.send(source.chat_id, notice, metadata=self._thread_metadata_for_source(source))
+                from gateway.operator_notices import deliver_operator_notice
+                await deliver_operator_notice(
+                    adapter=adapter, source=source, kind="session_reset", content=notice,
+                    user_config=user_config,
+                    chat_metadata=self._thread_metadata_for_source(source),
+                )
         except Exception as e:
             logger.debug("Auto-reset notification failed (non-fatal): %s", e)
 
@@ -1362,14 +1369,16 @@ class GatewayTurnMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        user_config,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
         from gateway.run import (
-            _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
-            _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
+            _is_gateway_hidden_reasoning_incomplete_turn, _is_gateway_provider_error_notice,
+            _normalize_empty_agent_response, _sanitize_gateway_final_response,
+            _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
@@ -1404,7 +1413,21 @@ class GatewayTurnMixin:
         # Fix for #18765.
         if not _intentional_silence:
             response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
+            _is_provider_error = _is_gateway_provider_error_notice(response)
             response = _sanitize_gateway_final_response(source.platform, response)
+            if _is_provider_error and response:
+                from gateway.operator_notices import (
+                    deliver_operator_notice, resolve_operator_notice_mode,
+                )
+                mode = resolve_operator_notice_mode(user_config, "provider_error")
+                if mode != "chat":
+                    adapter = self._adapter_for_source(source)
+                    await deliver_operator_notice(
+                        adapter=adapter, source=source, kind="provider_error", content=response,
+                        user_config=user_config,
+                        chat_metadata=self._thread_metadata_for_source(source),
+                    )
+                    response = ""
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.
@@ -1876,13 +1899,19 @@ class GatewayTurnMixin:
         persist_user_display_kind: Optional[str]
         persistence_session_id: Optional[str] = None
         persistence_owner: Optional[str] = None
+        user_config: Any = None
+
+    def _hmwa_user_config_for_source(self, source):
+        """Load effective config under the routed profile, including before the agent-run scope."""
+        from gateway.run import _load_gateway_config
+        with self._profile_scope_for_source(source):
+            return _load_gateway_config()
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
         context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
-        from gateway.run import _load_gateway_config
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
@@ -1890,9 +1919,12 @@ class GatewayTurnMixin:
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
         persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        # Notice policy is profile-owned.  This phase runs before `_run_agent()` installs its
+        # profile scope, so resolve the routed source explicitly for multiplexed gateways.
+        user_config = self._hmwa_user_config_for_source(source)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
-            _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+            _redact_pii = bool((user_config.get("privacy") or {}).get("redact_pii", False))
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
@@ -1902,7 +1934,9 @@ class GatewayTurnMixin:
         # (appending to the ephemeral system prompt forced a full agent rebuild).
         turn_sidecar_notes: List[str] = []
         if _was_auto_reset:
-            await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
+            await self._hmwa_deliver_auto_reset_notice(
+                session_entry, source, turn_sidecar_notes, user_config,
+            )
 
         # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
         _auto = getattr(event, "auto_skill", None)
@@ -1966,7 +2000,7 @@ class GatewayTurnMixin:
                  if event.message_id else str(uuid.uuid4()))
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind, session_entry.session_id, owner,
+            persist_user_display_kind, session_entry.session_id, owner, user_config,
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -2046,6 +2080,7 @@ class GatewayTurnMixin:
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+                prepared.user_config,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)

@@ -48,6 +48,26 @@ from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_direct_operator_notice_resolves_user_without_touching_channel_send():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    user = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=777)))
+    adapter._client = SimpleNamespace(
+        get_user=MagicMock(return_value=user),
+        fetch_user=AsyncMock(),
+        get_channel=MagicMock(),
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_direct_notice("123", "operator notice")
+
+    assert result.success is True
+    assert result.message_id == "777"
+    adapter._client.get_user.assert_called_once_with(123)
+    adapter._client.get_channel.assert_not_called()
+    user.send.assert_awaited_once_with(content="operator notice")
+
+
+@pytest.mark.asyncio
 async def test_send_rejects_whitespace_and_records_failed_final_reply(
     caplog, monkeypatch, tmp_path
 ):
@@ -416,5 +436,4 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     thread_kwargs = forum_channel.create_thread.await_args.kwargs
     assert thread_kwargs.get("file") is None
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
-
 

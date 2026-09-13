@@ -26,11 +26,18 @@ strips safe instead of leaking the sibling's. The handler then binds its own
 session a few steps later.
 """
 import asyncio
+import json
+import os
+import subprocess
+import sys
 from contextvars import copy_context
 
 import pytest
 
 import gateway.session_context as sc
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.session import SessionSource
 from gateway.session_context import (
     _SESSION_ASYNC_DELIVERY,
     _UNSET,
@@ -39,7 +46,7 @@ from gateway.session_context import (
     reset_session_vars,
     set_session_vars,
 )
-from tools.environments.local import _make_run_env
+from tools.environments.local import _make_run_env, _sanitize_subprocess_env, hermes_subprocess_env
 
 SESSION_VARS = list(_VAR_MAP.keys())
 
@@ -200,3 +207,96 @@ def test_reset_session_vars_closes_async_delivery_leak():
     )
 
 
+class _ConcurrentIngressAdapter(BasePlatformAdapter):
+    def __init__(self, platform, spawn_env):
+        super().__init__(PlatformConfig(enabled=True, typing_indicator=False), platform)
+        self.spawn_env = spawn_env
+        self.observed = {}
+        self._topic_recovery_fn = object()  # exercise Telegram's pre-background executor hop
+        self.set_message_handler(self._handle_turn)
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+    def _child_identity(self):
+        result = subprocess.run(
+            [sys.executable, "-c", "import json, os; print(json.dumps({"
+             "k: os.environ.get(k) for k in "
+             "('HERMES_SESSION_CHAT_ID', 'HERMES_SESSION_THREAD_ID', 'HERMES_SESSION_KEY')}))"],
+            env=self.spawn_env(), capture_output=True, text=True, check=True, timeout=10,
+        )
+        return json.loads(result.stdout)
+
+    def _apply_topic_recovery(self, event):
+        if event.source.chat_id == FOREIGN["chat_id"]:
+            self.observed["topic"] = self._child_identity()
+
+    async def _run_processing_hook(self, hook, event, *args, **kwargs):
+        if hook == "on_processing_start" and event.source.chat_id == FOREIGN["chat_id"]:
+            self.observed["prebind"] = await asyncio.to_thread(self._child_identity)
+            self.observed["prebind_async"] = async_delivery_supported()
+
+    async def _handle_turn(self, event):
+        if event.source.chat_id == MINE["chat_id"]:
+            set_session_vars(**MINE, async_delivery=False)
+            self.observed["a_before"] = await asyncio.to_thread(self._child_identity)
+            # A is still active when B snapshots its already-bound context.
+            await asyncio.create_task(self.handle_message(self.foreign_event))
+            await self._session_tasks[self._event_session_key(self.foreign_event)]
+            self.observed["a_after"] = await asyncio.to_thread(self._child_identity)
+            self.observed["a_async"] = async_delivery_supported()
+        else:
+            set_session_vars(**FOREIGN)
+            self.observed["b_bound"] = await asyncio.to_thread(self._child_identity)
+
+
+@pytest.mark.parametrize("platform", [Platform.FEISHU, Platform.TELEGRAM])
+@pytest.mark.parametrize("spawn_surface", ["foreground", "background", "sibling"])
+def test_concurrent_adapter_ingress_isolates_real_subprocesses(monkeypatch, platform, spawn_surface):
+    # A foreign process-global mirror must not reappear after ingress resets ContextVars.
+    for key in ("HERMES_SESSION_CHAT_ID", "HERMES_SESSION_THREAD_ID", "HERMES_SESSION_KEY"):
+        monkeypatch.setenv(key, "stale-global")
+    builders = {
+        "foreground": lambda: _make_run_env({}),
+        "background": lambda: _sanitize_subprocess_env(os.environ),
+        "sibling": hermes_subprocess_env,
+    }
+    adapter = _ConcurrentIngressAdapter(platform, builders[spawn_surface])
+
+    def event(identity):
+        return MessageEvent(
+            text="hello", message_id=identity["message_id"],
+            source=SessionSource(platform=platform, chat_id=identity["chat_id"],
+                                 chat_type="dm", user_id=identity["user_id"]),
+        )
+
+    adapter.foreign_event = event(FOREIGN)
+    mine_event = event(MINE)
+
+    async def run():
+        await adapter.handle_message(mine_event)
+        await adapter._session_tasks[adapter._event_session_key(mine_event)]
+
+    asyncio.run(asyncio.wait_for(run(), timeout=30))
+    blank = {key: None for key in adapter.observed["prebind"]}
+    assert adapter.observed["prebind"] == blank
+    if platform == Platform.TELEGRAM:
+        assert adapter.observed["topic"] == blank
+    assert adapter.observed["prebind_async"] is True
+    for phase, identity in [("a_before", MINE), ("a_after", MINE), ("b_bound", FOREIGN)]:
+        assert adapter.observed[phase] == {
+            "HERMES_SESSION_CHAT_ID": identity["chat_id"],
+            "HERMES_SESSION_THREAD_ID": identity["thread_id"],
+            "HERMES_SESSION_KEY": identity["session_key"],
+        }
+    assert adapter.observed["a_async"] is False
+    assert not adapter._active_sessions

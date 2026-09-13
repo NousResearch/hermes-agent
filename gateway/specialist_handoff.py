@@ -125,6 +125,9 @@ def _candidate_fallback(
             signature,
             source_key=source_key,
             envelope=SanitizedTaskEnvelope(evidence_refs=(_candidate_source_ref(source_key),)),
+            profile_id=(
+                decision.profile if decision.profile in SPECIALIST_PROFILES else None
+            ),
             connection=connection,
         )
     except Exception:
@@ -214,25 +217,22 @@ def create_specialist_handoff(
                     # terminal candidate; otherwise the task keeps the old
                     # candidate in its body while the new ledger row is orphaned.
                     return HandoffResult(True, task_id=row["id"], created=False)
-            # Validate the known fallback owner before opening any candidate
-            # record; a missing profile must not leave an inert orphan behind.
-            if signature is not None and not profile_exists("task-orchestrator"):
-                return HandoffResult(False, reason="profile_unavailable")
-            effective_decision, candidate_result = _candidate_fallback(
-                decision=effective_decision,
-                signature=signature,
-                resolution=effective_resolution,
-                source_key=key or "",
-                db_path=db_path,
-                candidate_requests=candidate_requests,
-                connection=conn,
-            )
-            # Preserve the established handoff contract for fixed routes while
-            # requiring the new registry-backed path to target a real profile.
-            if signature is not None and not profile_exists(effective_decision.profile):
-                return HandoffResult(False, reason="profile_unavailable")
-
             with kb.write_txn(conn):
+                effective_decision, candidate_result = _candidate_fallback(
+                    decision=effective_decision,
+                    signature=signature,
+                    resolution=effective_resolution,
+                    source_key=key or "",
+                    db_path=db_path,
+                    candidate_requests=candidate_requests,
+                    connection=conn,
+                )
+                # Preserve the established handoff contract for fixed routes while
+                # requiring the new registry-backed path to target a real profile.
+                # The orchestrator is checked only after candidate resolution has
+                # actually selected it as the fallback owner.
+                if signature is not None and not profile_exists(effective_decision.profile):
+                    return HandoffResult(False, reason="profile_unavailable")
                 task_id = kb.create_task(
                     conn, title=effective_decision.title,
                     body=_body(

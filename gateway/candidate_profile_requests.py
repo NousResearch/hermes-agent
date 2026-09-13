@@ -178,6 +178,7 @@ class CandidateProfileRequests:
         resolution: RegistryResolution | None = None,
         envelope: SanitizedTaskEnvelope | None = None,
         policy_digest: str = DEFAULT_POLICY_DIGEST,
+        profile_id: str | None = None,
         connection: object | None = None,
     ) -> CandidateProfileRequest:
         """Create or reuse a request only after a concrete local no-match lookup.
@@ -193,7 +194,7 @@ class CandidateProfileRequests:
             raise ValueError("source_key must be a bounded non-empty string")
         local_resolution = CapabilityRegistry(
             db_path=self._db_path, board=self._board
-        ).resolve(signature)
+        ).resolve(signature, profile_id=profile_id)
         if local_resolution.status not in {"no_match", "ambiguous"}:
             return CandidateProfileRequest(
                 request_id="",
@@ -219,6 +220,7 @@ class CandidateProfileRequests:
                     "evidence_class": signature.evidence_class,
                     "requested_permissions": signature.requested_permissions,
                 },
+                "profile_id": profile_id,
                 "source_key": source_key,
             }
         )

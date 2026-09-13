@@ -5020,8 +5020,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             registry = CapabilityRegistry(
                 board=settings["board"], configured_profiles=declarations,
             )
-            for profile in declarations:
-                registry.register_configured_profile(profile)
             return registry
         except (KeyError, TypeError, ValueError):
             return CapabilityRegistry(board=settings["board"], configured_profiles={})

@@ -3015,12 +3015,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
-        try:
-            from tools.computer_use_tool import set_approval_callback as _set_cu_cb
-
-            _set_cu_cb(self._computer_use_approval_callback)
-        except ImportError:
-            pass
         self._tool_callbacks_installed = True
 
     def _ensure_tirith_security(self) -> None:

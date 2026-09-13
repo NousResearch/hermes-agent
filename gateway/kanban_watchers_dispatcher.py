@@ -263,8 +263,13 @@ class _KanbanDispatcher:
                 for tid in triage_ids:
                     if attempted >= auto_decompose_per_tick:
                         break
+                    result = self._decompose_one(_decomp, slug, tid)
+                    if result is None:
+                        # Cooling down: no aux call was attempted, so do not
+                        # spend this tick's limited attempt budget.
+                        continue
                     attempted += 1
-                    successes += self._decompose_one(_decomp, slug, tid)
+                    successes += result
             finally:
                 if prev_env is None:
                     os.environ.pop("HERMES_KANBAN_BOARD", None)
@@ -273,14 +278,22 @@ class _KanbanDispatcher:
         return successes
 
     @staticmethod
-    def _decompose_one(_decomp: Any, slug: str, tid: str) -> int:
-        """Decompose one triage task; returns 1 on success, 0 otherwise."""
+    def _decompose_one(_decomp: Any, slug: str, tid: str) -> Optional[int]:
+        """Decompose one triage task.
+
+        Returns 1 on success, 0 on an attempted failure, and None when the
+        task is cooling down before any aux call (so the per-tick budget is
+        preserved for other triage tasks).
+        """
         try:
-            outcome = _decomp.decompose_task(tid, author="auto-decomposer")
+            outcome = _decomp.auto_decompose_task(tid, author="auto-decomposer", board=slug)
         except Exception:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
             return 0
         if not outcome.ok:
+            if "cooling down" in (outcome.reason or ""):
+                logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
+                return None
             # Common no-op reasons (no aux client) must not spam logs every tick.
             logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
             return 0

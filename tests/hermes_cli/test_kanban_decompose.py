@@ -162,3 +162,86 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_already_decomposed_triage_task_skips_aux_call(kanban_home):
+    """A parked, already-fanned-out triage task must not spend another aux call."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="already fanned out", triage=True)
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "decomposed", {"child_ids": []})
+
+    call_llm = MagicMock(return_value=_fake_aux_response(jsonlib.dumps({
+        "fanout": False,
+        "title": "Should not be used",
+        "body": "The aux client must not be called.",
+    })))
+
+    with patch("agent.auxiliary_client.call_llm", call_llm):
+        outcome = decomp.decompose_task(tid, author="me")
+
+    assert outcome.ok is False
+    assert "already decomposed" in outcome.reason
+    call_llm.assert_not_called()
+
+
+def test_auto_decompose_cools_down_after_repeated_llm_failures(kanban_home, monkeypatch, caplog):
+    """Auto-decompose opens a per-task breaker instead of retrying every tick."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="expensive loop", triage=True)
+
+    tracker = decomp._AutoDecomposeFailureTracker(limit=2, cooldown_seconds=3600)
+    monkeypatch.setattr(decomp, "_auto_decompose_failures", tracker)
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    call_llm = MagicMock(side_effect=RuntimeError("402 insufficient balance"))
+    try:
+        with patch("agent.auxiliary_client.call_llm", call_llm), caplog.at_level(
+            "WARNING", logger="hermes_cli.kanban_decompose"
+        ):
+            first = decomp.auto_decompose_task(tid, author="auto-decomposer")
+            second = decomp.auto_decompose_task(tid, author="auto-decomposer")
+            third = decomp.auto_decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert first.ok is False
+    assert second.ok is False
+    assert third.ok is False
+    assert "cooling down" in third.reason
+    assert call_llm.call_count == 2
+    assert any("cooling down" in rec.message for rec in caplog.records)
+
+
+def test_auto_decompose_success_clears_failure_streak(kanban_home, monkeypatch):
+    """A later successful auto-decompose resets the per-task failure breaker."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="recoverable", triage=True)
+
+    tracker = decomp._AutoDecomposeFailureTracker(limit=2, cooldown_seconds=3600)
+    tracker.record_failure("default", tid, "transient")
+    monkeypatch.setattr(decomp, "_auto_decompose_failures", tracker)
+
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Recovered task",
+        "body": "Ready to run.",
+    })
+    try:
+        with _patch_aux_client(llm_payload):
+            outcome = decomp.auto_decompose_task(tid, author="auto-decomposer")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert tracker.cooldown_remaining("default", tid) == 0
+    tracker.record_failure("default", tid, "new failure after success")
+    assert tracker.cooldown_remaining("default", tid) == 0
+
+

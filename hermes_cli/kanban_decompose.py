@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,6 +33,9 @@ from hermes_cli.kanban_specify import (
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 
 logger = logging.getLogger(__name__)
+
+_AUTO_DECOMPOSE_FAIL_LIMIT = 5
+_AUTO_DECOMPOSE_COOLDOWN_SECONDS = 6 * 60 * 60
 
 
 _SYSTEM_PROMPT = """You are the Kanban decomposer for the Hermes Agent board.
@@ -121,9 +125,90 @@ class DecomposeOutcome:
     new_title: Optional[str] = None
 
 
+class _AutoDecomposeFailureTracker:
+    """Process-local breaker for auto-decompose retries.
+
+    Manual ``hermes kanban decompose`` remains immediately retryable; the
+    gateway's unattended auto path uses this tracker so a persistent aux/API
+    failure cannot bill once per dispatcher tick forever.
+    """
+
+    def __init__(
+        self,
+        *,
+        limit: int = _AUTO_DECOMPOSE_FAIL_LIMIT,
+        cooldown_seconds: int = _AUTO_DECOMPOSE_COOLDOWN_SECONDS,
+    ) -> None:
+        self.limit = max(1, int(limit))
+        self.cooldown_seconds = max(1, int(cooldown_seconds))
+        self._state: dict[tuple[str, str], tuple[int, float]] = {}
+
+    def _key(self, board: str, task_id: str) -> tuple[str, str]:
+        return (board or "default", task_id)
+
+    def cooldown_remaining(self, board: str, task_id: str) -> float:
+        key = self._key(board, task_id)
+        state = self._state.get(key)
+        if state is None:
+            return 0.0
+        _count, cooldown_until = state
+        if cooldown_until <= 0:
+            return 0.0
+        remaining = cooldown_until - time.monotonic()
+        if remaining <= 0:
+            self._state.pop(key, None)
+            return 0.0
+        return remaining
+
+    def record_success(self, board: str, task_id: str) -> None:
+        self._state.pop(self._key(board, task_id), None)
+
+    def record_failure(self, board: str, task_id: str, reason: str) -> None:
+        key = self._key(board, task_id)
+        if self.cooldown_remaining(board, task_id) > 0:
+            return
+        count = self._state.get(key, (0, 0.0))[0] + 1
+        if count < self.limit:
+            self._state[key] = (count, 0.0)
+            return
+        self._state[key] = (count, time.monotonic() + self.cooldown_seconds)
+        logger.warning(
+            "kanban auto-decompose [%s]: %s failed %d consecutive times; "
+            "cooling down for %ds. Last reason: %s",
+            key[0],
+            task_id,
+            count,
+            self.cooldown_seconds,
+            (reason or "unknown")[:300],
+        )
+
+
+_auto_decompose_failures = _AutoDecomposeFailureTracker()
+
+
 def _profile_author() -> str:
     """Mirror of ``hermes_cli.kanban._profile_author``."""
     return _specify_author("decomposer")
+
+
+def _already_decomposed(task_id: str) -> bool:
+    """True when the root already has a durable decomposition event.
+
+    ``kanban_db_graph.decompose_triage_task`` also checks this inside the
+    write transaction, but by then the auxiliary LLM call has already been
+    made. This cheap read is the pre-billing guard for triage tasks parked
+    back into the human review lane after an earlier fan-out.
+    """
+    try:
+        with kbc.connect_closing() as conn:
+            return conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
+                (task_id,),
+            ).fetchone() is not None
+    except Exception as exc:
+        logger.debug("decompose: already-decomposed check failed for %s: %s", task_id, exc)
+        return False
 
 
 def _load_config() -> dict:
@@ -308,6 +393,8 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    if _already_decomposed(task_id):
+        return DecomposeOutcome(task_id, False, "task already decomposed")
 
     routing = _load_routing()
     raw, reason = _call_aux(
@@ -330,6 +417,41 @@ def decompose_task(
     if not parsed.get("fanout"):
         return _apply_single(task, parsed, routing, audit_author)
     return _apply_fanout(task_id, parsed, routing, audit_author)
+
+
+def auto_decompose_task(
+    task_id: str,
+    *,
+    author: Optional[str] = None,
+    timeout: Optional[int] = None,
+    board: Optional[str] = None,
+) -> DecomposeOutcome:
+    """Auto-decompose wrapper with a per-task failure breaker.
+
+    The interactive/manual command should remain immediately retryable. The
+    gateway dispatcher calls this wrapper so persistent failures (including
+    aux-provider billing errors) back off instead of spending every tick.
+    """
+    board_key = board or getattr(kb, "DEFAULT_BOARD", "default")
+    remaining = _auto_decompose_failures.cooldown_remaining(board_key, task_id)
+    if remaining > 0:
+        return DecomposeOutcome(
+            task_id,
+            False,
+            f"auto-decompose cooling down after repeated failures ({int(remaining)}s remaining)",
+        )
+    try:
+        outcome = decompose_task(task_id, author=author, timeout=timeout)
+    except Exception as exc:
+        _auto_decompose_failures.record_failure(
+            board_key, task_id, f"crashed: {type(exc).__name__}",
+        )
+        raise
+    if outcome.ok:
+        _auto_decompose_failures.record_success(board_key, task_id)
+    else:
+        _auto_decompose_failures.record_failure(board_key, task_id, outcome.reason)
+    return outcome
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

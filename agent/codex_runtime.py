@@ -1003,6 +1003,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     metadata={"api_mode": "codex_responses", "call_role": call_role, "retry_count": attempt,
                               "api_request_id": getattr(agent, "_current_api_request_id", None)},
                     defer_logical_completion=True,
+                    cancelled=lambda: bool(agent._interrupt_requested),
                 )
                 final = _consume_codex_event_stream(
                     event_stream, model=model, on_text_delta=_fenced(_on_text_delta),

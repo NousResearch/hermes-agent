@@ -284,7 +284,79 @@ adapter is always the secondary's (see
 [Token-conflict safety](#token-conflict-safety) — the rule is unchanged, it's
 just enforced inside the one process now).
 
-#### 4. Session keys are namespaced by profile
+#### 4. MCP OAuth identity is per profile
+
+MCP servers connected over HTTP/SSE with `auth: oauth` keep their token files
+in each profile's **own** home — `~/.hermes/mcp-tokens/<server>.json` for the
+default profile, `~/.hermes/profiles/<name>/mcp-tokens/<server>.json` for a
+named one (0o600; client registration and issuer metadata sit next to it as
+`<server>.client.json` / `<server>.meta.json`). Under multiplexing, two
+profiles on the same server route share one live connection only when they
+present the **same** OAuth identity:
+
+- **Same route, same account** — e.g. you logged every profile into the same
+  Portal org — share one connection. That is the efficient path: one
+  handshake, one token refresh, and an owner's `/reload-mcp` re-registers the
+  tools for the sharing profiles without them reloading.
+- **Same route, different accounts** (profile A signed in as user A, profile B
+  signed in as user B) each keep their own connection, and every tool call
+  under B's turn runs on B's OAuth account — never on A's.
+
+:::warning Previous behavior: cross-profile identity adoption (fixed)
+Before the fix shipped for [issue #109422](https://github.com/NousResearch/hermes-agent/issues/109422),
+the route-reuse check compared only the *static* configuration (URL,
+transport, headers, auth method) and deliberately ignored on-disk credentials —
+that design kept the schema cache alive across token rotation, but it meant
+two profiles with an **identical** `mcp_servers` block silently shared one
+live connection regardless of who had logged in on each side. Whichever
+profile ran discovery first won: the second profile's calls rode the first
+profile's Bearer token, so tool calls under profile B were executed **as A's
+OAuth account**, with no error and no config change to stop it. After the fix,
+a profile with its own token file for that route is treated as a distinct
+identity and opens its own connection; a profile with *no* token file yet
+(still mid-login) and non-OAuth routes still share as before, so
+single-profile behavior is byte-for-byte unchanged.
+:::
+
+Example — two profiles, one server route, two accounts:
+
+```yaml
+# ~/.hermes/config.yaml — default profile, user alice's org login
+mcp_servers:
+  team_api:
+    url: "https://mcp.team.example.com/mcp"
+    auth: oauth
+
+# ~/.hermes/profiles/coder/config.yaml — same server, bob's org login
+mcp_servers:
+  team_api:
+    url: "https://mcp.team.example.com/mcp"
+    auth: oauth
+```
+
+Each profile keeps its own login under its own `mcp-tokens/` directory and its
+turns authenticate as that profile's account. If both profiles log into the
+*same* OAuth account instead, they present one identity and share a single
+live connection as described above.
+
+:::info Caveats
+- Isolation follows the on-disk token state. Re-login a profile's
+  `mcp-tokens/<server>.json` with a different account and the route is
+  re-evaluated on the next connection — no restart is required, but an
+  already-established connection keeps its current identity until reloaded
+  (or the process restarts).
+- When neither profile has a token file yet (both first-time), the legacy
+  shareable route still applies: one profile can finish the browser login and
+  the sibling can adopt the resulting connection. This is the pending-flow
+  case, not a leak of an existing account.
+- This only affects multiplexed gateways (`gateway.multiplex_profiles: true`)
+  and other single-process, multi-profile setups. One gateway per profile —
+  the default — already isolates connections process-by-process.
+- Static-credential routes (custom `headers`, `identity_header`, mTLS) were
+  never shared across differing configs and are unaffected.
+:::
+
+#### 5. Session keys are namespaced by profile
 
 Each profile's sessions live under an `agent:<profile>:…` namespace so two
 profiles on the same platform/chat never collide in the shared session store.
@@ -303,7 +375,7 @@ The Desktop/TUI backend's own store is likewise pinned to the home it launched
 under, and a Bot Chat's side agents (`prompt.background`) persist next to their
 parent conversation.
 
-#### 5. One PID/lock and one status surface
+#### 6. One PID/lock and one status surface
 
 There is a single process-level PID and lock (the multiplexer, under the default
 home). `hermes status` on the default profile reports the multiplexer and lists

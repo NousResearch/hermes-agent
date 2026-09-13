@@ -369,6 +369,40 @@ class TestHermesConfigWriteProtection:
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
+    def test_profile_config_write_idioms_and_exact_path_shape(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        profile_config = hermes_home / "profiles" / "orchestrator" / "config.yaml"
+
+        for command in (
+            "echo 'approvals:' > ~/.hermes/profiles/orchestrator/config.yaml",
+            "echo x | tee $HERMES_HOME/profiles/orchestrator/config.yaml",
+            f"cp /tmp/evil.yaml {profile_config}",
+            "mv /tmp/evil.yaml ~/.hermes/profiles/orchestrator/config.yaml",
+            "install -m 600 /tmp/evil.yaml ~/.hermes/profiles/orchestrator/config.yaml",
+            "sed -i 's/a/b/' ~/.hermes/profiles/orchestrator/config.yaml",
+            f"sed --in-place 's/a/b/' {profile_config}",
+            "perl -pi -e 's/a/b/' ~/.hermes/profiles/orchestrator/config.yaml",
+            "ruby -i -pe 'gsub(/a/, \"b\")' $HERMES_HOME/profiles/orchestrator/config.yaml",
+        ):
+            dangerous, key, _ = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+        for path in (
+            "~/.hermes/profiles/orchestrator/notes.yaml",
+            "~/.hermes/profiles/orchestrator/nested/config.yaml",
+            "~/.hermes/profiles/config.yaml",
+            "~/.hermes/profiles/./config.yaml",
+            "~/.hermes/profiles/orchestrator/config.yaml.bak",
+            "/srv/app/profiles/orchestrator/config.yaml",
+        ):
+            command = f"sed -i 's/a/b/' {path}"
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is False, command
+            assert key is None, command
+            assert desc is None, command
+
 
 class TestFindExecFullPathRm:
     """Detect find -exec with full-path rm bypasses."""

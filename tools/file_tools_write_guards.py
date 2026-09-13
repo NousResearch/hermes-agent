@@ -106,9 +106,29 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
+def _is_hermes_profile_config(candidate: str, hermes_config: str) -> bool:
+    """Match ``<Hermes root>/profiles/<one name>/config.yaml`` lexically."""
+    try:
+        config_parent = os.path.dirname(os.path.normpath(hermes_config))
+        if os.path.basename(os.path.dirname(config_parent)) == "profiles":
+            hermes_root = os.path.dirname(os.path.dirname(config_parent))
+        else:
+            hermes_root = config_parent
+        relative = os.path.relpath(
+            os.path.normpath(candidate), os.path.join(hermes_root, "profiles"))
+    except (OSError, ValueError):
+        return False
+    parts = relative.split(os.sep)
+    return len(parts) == 2 and parts[0] not in ("", ".", "..") and parts[1] == "config.yaml"
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
-    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = None
+    candidates = (resolved or filepath, os.path.normpath(_expand_tilde(filepath)))
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
@@ -116,7 +136,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and hermes_config in candidates:
+    if hermes_config and (
+            hermes_config in candidates
+            or (resolved is not None and _is_hermes_profile_config(resolved, hermes_config))):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "

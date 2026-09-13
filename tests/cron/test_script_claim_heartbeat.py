@@ -560,7 +560,12 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
 
 
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
-    """A replacement owner cannot leave the stale ledger recorded as success."""
+    """A replacement owner cannot leave the stale ledger recorded as success.
+
+    The terminal CAS was refused, so this attempt's outcome was not applied: the ledger records
+    ``superseded`` rather than a plain failure (a delivered run recorded failed is exactly the
+    phantom-row shape of 2026-09-13).
+    """
     import cron.scheduler as scheduler
     from cron import scheduler_script as sched_script
 
@@ -597,5 +602,6 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     finish.assert_called_once_with(
         "execution-cas",
         success=False,
+        superseded=True,
         error="Fire claim ownership lost before terminal completion.",
     )

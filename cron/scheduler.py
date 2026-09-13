@@ -468,6 +468,9 @@ from cron.jobs import (
 from cron.executions import (
     _TERMINAL_STATES, create_execution, finish_execution, get_execution,
     mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
+from cron.attempt_outcome import (
+    COMPLETED, INTERRUPTED, INTERRUPTED_ERROR, attempt_owns_job_record, attempt_overtaken,
+    create_attempt, job_status_write_blocked, record_post_delivery_outcome)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2456,9 +2459,11 @@ def run_one_job(
     # API fires) crosses this seam.  Ensure the detached worker has a durable
     # attempt to adopt before any launch can occur.
     if not job.get("execution_id"):
-        execution = create_execution(
-            job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))
-        job["execution_id"] = execution["id"]
+        execution_id = create_attempt(job, source="direct", create=create_execution)
+        if execution_id is None:
+            # Duplicate occurrence: nothing ran and no attempt was recorded for this fire.
+            return True
+        job["execution_id"] = execution_id
 
     execution_id = str(job["execution_id"])
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
@@ -2516,22 +2521,6 @@ def run_one_job(
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(job["id"], None)
-
-
-_OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
-
-
-def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
-    """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
-    not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
-    if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
-        mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
-        finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
-    else:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost; stale result was discarded.")
 
 
 def _classify_delivery_outcome(
@@ -2640,6 +2629,54 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    silence_suppressed: bool = False
+
+
+def _attempt_reached_terminal_delivery(d: _RunDelivery) -> bool:
+    """True when the run reached its intended terminal outcome.
+
+    A notice that left the process counts; so does an intentional ``[SILENT]`` suppression of a
+    SUCCESSFUL run — nothing was lost, the run's own contract was "no message". Without this a
+    silenced success was classified INTERRUPTED under a post-hoc latch and written to the job record
+    as ``error`` (WH-CREATED-23D2B8E1FBE6, gap 2).
+    """
+    if d.delivery_attempted and not d.delivery_error:
+        return True
+    return bool(d.success and d.silence_suppressed)
+
+
+def _finish_overtaken_run(
+    d: _RunDelivery, fire_owner: Optional[str], execution_id: str, *, delivered: bool,
+) -> bool:
+    """Terminal bookkeeping for a run whose fire claim moved under it (or whose latch fired post hoc).
+
+    Everything here is decided from the ATTEMPT's ledger row — never from the volatile
+    ``fire_claim.by`` — so a delivered result is never demoted to "Interrupted by shutdown before
+    terminal completion." (the fleet-wide phantom ``failed`` rows of 2026-09-13, each written one
+    second after the run had delivered). A delivered attempt that is still the newest is completed;
+    one that a later fire has overtaken, or whose occurrence already completed, records
+    ``superseded`` and leaves the job record to the attempt that owns it.
+    """
+    job = d.job
+    owns = attempt_owns_job_record(job["id"], execution_id, fire_owner)
+    outcome = record_post_delivery_outcome(
+        job["id"], execution_id, delivered=delivered, owns_job_record=owns, error=d.error,
+        finish=finish_execution)
+    if outcome == COMPLETED:
+        return _finish_completed_run(d, fire_owner, execution_id)
+    if outcome == INTERRUPTED:
+        # owns_job_record was True by construction here: nothing delivered and this attempt still
+        # describes the job, so the interruption reaches the job record as before instead of
+        # leaving last_status/fire_claim stale.
+        if fire_owner is not None:
+            mark_job_run(job["id"], False, INTERRUPTED_ERROR, expected_fire_owner=fire_owner)
+        else:
+            mark_job_run(job["id"], False, INTERRUPTED_ERROR)
+        return True
+    logger.warning(
+        "Job '%s': attempt %s recorded %s after the fire claim moved; the job record was left to "
+        "the attempt that owns it", job["id"], execution_id, outcome)
+    return True
 
 
 def _save_compose_deliver(
@@ -2690,6 +2727,7 @@ def _save_compose_deliver(
         # and wrongly swallowed a real report that merely quoted "[SILENT]" mid-sentence (#51438, #46917).
         logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
         d.should_deliver = False
+        d.silence_suppressed = True
 
     if d.should_deliver and fence.lost():
         d.should_deliver = False
@@ -2722,9 +2760,17 @@ def _save_compose_deliver(
         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
 
-def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Optional[str]) -> None:
+def _finish_interrupted_run(
+    job: dict, execution_id: str, delivery_error: Optional[str], *, delivered: bool = False,
+) -> None:
     """Shutdown already wrote last_status, so mark_job_run is skipped (a second call would skip a
-    fire or auto-delete the job); an unsent notice is recorded via update_job instead."""
+    fire or auto-delete the job); an unsent notice is recorded via update_job instead.
+
+    ``delivered`` — the run's notice already left the process before the shutdown flag was consumed.
+    A shutdown latch that fires after the side effect is not a lost run, so this attempt's OWN
+    ledger row decides the outcome (WH-CREATED-23D2B8E1FBE6) instead of writing the shutdown
+    narrative for a run that completed its delivery one line earlier.
+    """
     if delivery_error:
         try:
             # The gateway shutdown already wrote last_status for this run, so mark_job_run is skipped below
@@ -2737,6 +2783,16 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
         except Exception as _rec_err:
             logger.debug(
                 "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)
+    if delivered and not delivery_error:
+        # The notice left the process before the latch was consumed: classify from this attempt's own
+        # ledger row exactly like the post-delivery loss path, so a run that delivered is never
+        # recorded as "Interrupted by gateway shutdown before terminal completion."
+        outcome = record_post_delivery_outcome(
+            job["id"], execution_id, delivered=True, finish=finish_execution)
+        logger.info(
+            "Job '%s': attempt %s already delivered before the shutdown flag; recorded %s",
+            job["id"], execution_id, outcome)
+        return
     finish_execution(
         execution_id, success=False,
         error="Interrupted by gateway shutdown before terminal completion.")
@@ -2745,6 +2801,18 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
 def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
+    delivered = _attempt_reached_terminal_delivery(d)
+    if attempt_overtaken(job["id"], execution_id):
+        # The job record describes the NEWEST attempt of the occurrence. This attempt keeps its own
+        # ledger outcome and must not overwrite a later fire's status.
+        record_post_delivery_outcome(
+            job["id"], execution_id, delivered=delivered, owns_job_record=False,
+            error="A newer attempt for this job already owns its status.",
+            finish=finish_execution)
+        logger.warning(
+            "Job '%s': attempt %s is not the newest attempt; its outcome was recorded on the "
+            "attempt and the job record was left alone", job["id"], execution_id)
+        return True
     if not d.should_deliver and job.get("last_delivery_queued"):
         from cron.jobs import update_job
         update_job(job["id"], {"last_delivery_queued": None})
@@ -2762,9 +2830,13 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["status"] = "blocked_config"
     marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
     if fire_owner is not None and not marked:
-        finish_execution(
-            execution_id, success=False,
-            error="Fire claim ownership lost before terminal completion.")
+        # The fire claim moved: another fire owns the job record now, so this attempt's outcome was
+        # not applied. The attempt keeps its OWN result (a delivered run is inconclusive, never an
+        # interrupted failure) — the phantom-row shape of 2026-09-13.
+        record_post_delivery_outcome(
+            job["id"], execution_id, delivered=delivered, owns_job_record=False,
+            error="Fire claim ownership lost before terminal completion.",
+            finish=finish_execution)
         return True
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=d.delivery_error,
@@ -2834,8 +2906,9 @@ def _run_one_job_body(
 
     execution_id = job.get("execution_id")
     if not execution_id:
-        execution_id = create_execution(
-            job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
+        execution_id = create_attempt(job, source="direct", create=create_execution)
+        if execution_id is None:
+            return True
     delivery_attempted = False
     delivery_error = None
     from agent.secret_scope import (
@@ -2923,8 +2996,9 @@ def _run_one_job_body(
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
-            return True
+            return _finish_overtaken_run(
+                _RunDelivery(job=job, success=success, error=error), fire_owner, execution_id,
+                delivered=False)
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
@@ -2941,8 +3015,9 @@ def _run_one_job_body(
             _teardown_deferred()
 
         if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
-            return True
+            return _finish_overtaken_run(
+                d, fire_owner, execution_id,
+                delivered=_attempt_reached_terminal_delivery(d))
 
         # Empty final_response is a soft failure so last_status is not "ok".
         if d.success and not final_response.strip():
@@ -2950,7 +3025,9 @@ def _run_one_job_body(
             d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if _consume_interrupted_flag(job["id"], execution_token):
-            _finish_interrupted_run(job, execution_id, delivery_error)
+            _finish_interrupted_run(
+                job, execution_id, delivery_error,
+                delivered=_attempt_reached_terminal_delivery(d))
             return True
 
         return _finish_completed_run(d, fire_owner, execution_id)
@@ -2986,12 +3063,23 @@ def _run_one_job_body(
                 job, _err_text, adapters=adapters, loop=loop)
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
-                mark_kwargs = {}
-                if fire_owner is not None:
-                    mark_kwargs["expected_fire_owner"] = fire_owner
-                if isinstance(e, Exception):
-                    mark_kwargs["delivery_error"] = delivery_error
-                mark_job_run(job["id"], False, _err_text, **mark_kwargs)
+                blocked = job_status_write_blocked(job["id"], execution_id)
+                if blocked is not None:
+                    # The job record describes another attempt (a newer fire, or one that already
+                    # completed this occurrence): this failure is recorded on the attempt only.
+                    record_post_delivery_outcome(
+                        job["id"], execution_id, delivered=False, owns_job_record=False,
+                        error=f"{_err_text} — superseded: {blocked}", finish=finish_execution)
+                    logger.warning(
+                        "Job '%s': attempt %s recorded superseded instead of failed (%s)",
+                        job["id"], execution_id, blocked)
+                else:
+                    mark_kwargs = {}
+                    if fire_owner is not None:
+                        mark_kwargs["expected_fire_owner"] = fire_owner
+                    if isinstance(e, Exception):
+                        mark_kwargs["delivery_error"] = delivery_error
+                    mark_job_run(job["id"], False, _err_text, **mark_kwargs)
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.
             logger.error("Failed to record interrupted run for job %s: %s", job["id"], record_err)
@@ -3667,9 +3755,14 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
-        execution = create_execution(
-            job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
-        dispatched_job = dict(job, execution_id=execution["id"])
+        execution_id = create_attempt(job, source="builtin", create=create_execution)
+        if execution_id is None:
+            # Duplicate occurrence: release the in-flight guard so the next tick re-evaluates this
+            # job instead of leaving it wedged as "already running".
+            release_running_job(job_id)
+            _clear_run_claim_best_effort()
+            return None
+        dispatched_job = dict(job, execution_id=execution_id)
         _ctx = contextvars.copy_context()
     except Exception as execution_err:
         # Release the claim so the next tick retries instead of wedging "already running".
@@ -3691,7 +3784,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         release_running_job(job_id)
         _clear_run_claim_best_effort()
         finish_execution(
-            execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
+            execution_id, success=False, error=f"Executor dispatch failed: {submit_err}")
         if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(submit_err):
             _not_dispatched_shutdown()
         else:

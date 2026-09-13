@@ -218,12 +218,29 @@ def cmd_send(args: argparse.Namespace) -> None:
     if subject:
         message = f"{subject}\n\n{message.lstrip()}"
 
+    raw_mentions = getattr(args, "mentions", None) or []
+    mentions = None
+    if raw_mentions:
+        platform_name, separator, target_ref = target.partition(":")
+        if platform_name.strip().lower() != "whatsapp":
+            _fail("hermes send: --mention is only supported for WhatsApp group targets", _USAGE_EXIT)
+        if not separator or not target_ref.strip().lower().endswith("@g.us"):
+            _fail("hermes send: --mention requires a WhatsApp group target ending in @g.us", _USAGE_EXIT)
+        try:
+            from gateway.whatsapp_identity import normalize_whatsapp_mentions
+            mentions = normalize_whatsapp_mentions(raw_mentions)
+        except ValueError as exc:
+            _fail(f"hermes send: {exc}", _USAGE_EXIT)
+
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
     from tools.send_message_tool import send_message_tool
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
-    result = send_message_tool({"action": "send", "target": target, "message": message})
+    payload = {"action": "send", "target": target, "message": message}
+    if mentions:
+        payload["mentions"] = mentions
+    result = send_message_tool(payload)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 
@@ -239,6 +256,9 @@ _SEND_ARGUMENTS = (
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
     (("-s", "--subject"), dict(metavar="LINE", default=None, help="Prepend a subject/header line before the message body.")),
+    (("--mention",), dict(dest="mentions", action="append", metavar="PHONE_OR_JID", default=None, help=(
+        "Mention a WhatsApp group participant. Repeat the option or use comma-separated values; "
+        "accepts numeric phones and numeric @s.whatsapp.net/@lid user JIDs."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),

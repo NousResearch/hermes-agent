@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Set
+from typing import Iterable, Set
 
 from hermes_constants import get_hermes_dir
 
@@ -24,6 +24,13 @@ _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
 # "Just a phone number": optional ``+`` then digits and human separators.
 # Anything carrying ``@`` is already a JID (``@g.us``, ``@lid``, ``status@broadcast``).
 _BARE_PHONE_RE = re.compile(r"^\+?[\d\s().\-]+$")
+
+# Native mention targets are user JIDs only. Group/broadcast JIDs and names are
+# deliberately excluded: Baileys' mentionedJid expects concrete user identities.
+_MENTION_USER_JID_RE = re.compile(
+    r"^\+?(?P<user>[0-9]+)(?::[0-9]+)?@(?P<domain>s\.whatsapp\.net|lid)$"
+)
+_MENTION_PHONE_RE = re.compile(r"^\+?(?P<user>[0-9]+)$")
 
 
 def normalize_whatsapp_identifier(value: str) -> str:
@@ -49,6 +56,31 @@ def to_whatsapp_jid(value: str) -> str:
         digits = re.sub(r"\D+", "", normalized)
         if digits:
             return f"{digits}@s.whatsapp.net"
+    return normalized
+
+
+def normalize_whatsapp_mentions(values: Iterable[str]) -> list[str]:
+    """Expand comma-separated mention values and return bridge-safe user JIDs.
+
+    Bare numeric phones become ``@s.whatsapp.net`` JIDs; numeric phone/LID
+    user JIDs keep their domain while device suffixes are removed. Empty CSV
+    fields and non-user identifiers are rejected instead of reaching Baileys.
+    """
+    normalized: list[str] = []
+    for value in values:
+        for item in str(value).split(","):
+            mention = item.strip()
+            if not mention:
+                raise ValueError("empty WhatsApp mention")
+            match = _MENTION_PHONE_RE.fullmatch(mention)
+            if match:
+                normalized.append(f"{match.group('user')}@s.whatsapp.net")
+                continue
+            match = _MENTION_USER_JID_RE.fullmatch(mention)
+            if match:
+                normalized.append(f"{match.group('user')}@{match.group('domain')}")
+                continue
+            raise ValueError(f"invalid WhatsApp mention: {mention}")
     return normalized
 
 

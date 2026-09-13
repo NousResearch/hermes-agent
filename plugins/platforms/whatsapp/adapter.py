@@ -580,6 +580,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 payload: Dict[str, Any] = {"chatId": chat_id, "message": chunk}
                 if reply_to and idx == 0:
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
+                mentions = (metadata or {}).get("mentions")
+                if mentions:
+                    payload["mentions"] = mentions
                 result = await self._post_bridge_message("send", payload, timeout=30)
                 if not result.success:
                     return SendResult(success=False, error=result.error)
@@ -882,7 +885,8 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document" if force_document else "audio" if is_voice else _WA_EXT_MEDIA_TYPE.get(os.path.splitext(file_path)[1].lower(), "document")
 
 
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, caption=None):
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None,
+                           force_document=False, caption=None, mentions=None):
     """Out-of-process delivery via the bridge HTTP API (standalone_sender_fn: cron apart from the gateway); ``caption`` rides on the media bubble."""
     try:
         import aiohttp
@@ -905,7 +909,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     return None, {} if error_label is None else {"error": f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}"}
             # 1) Text first (skipped when media-only or when the text rides as the caption).
             if (message or "").strip() and not media_caption:
-                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
+                payload = {"chatId": normalized_chat_id, "message": message}
+                if mentions:
+                    payload["mentions"] = mentions
+                last_message_id, err = await _post("send", payload, 30, "bridge")
                 if err:
                     return err
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).

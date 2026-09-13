@@ -206,6 +206,20 @@ def _handle_send(args):
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
+    raw_mentions = args.get("mentions")
+    mentions = None
+    if raw_mentions is not None:
+        if platform_name != "whatsapp":
+            return tool_error("WhatsApp mentions are only supported for WhatsApp group targets")
+        if not isinstance(raw_mentions, list) or not raw_mentions:
+            return tool_error("'mentions' must be a non-empty list of WhatsApp user phones or JIDs")
+        try:
+            from gateway.whatsapp_identity import normalize_whatsapp_mentions
+            mentions = normalize_whatsapp_mentions(raw_mentions)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        if chat_id and not str(chat_id).strip().lower().endswith("@g.us"):
+            return tool_error("WhatsApp mentions require a WhatsApp group target ending in @g.us")
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -228,6 +242,8 @@ def _handle_send(args):
         chat_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
+    if mentions and not str(chat_id).strip().lower().endswith("@g.us"):
+        return tool_error("WhatsApp mentions require a WhatsApp group target ending in @g.us")
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
@@ -256,6 +272,8 @@ def _handle_send(args):
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        if mentions:
+            handler_args["mentions"] = mentions
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -447,7 +465,7 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,
-                            force_document=False):
+                            force_document=False, mentions=None):
     """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
     else an error naming both; media uses the adapter's native media APIs under the same rules."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
@@ -455,7 +473,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
     if adapter is not None:
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
-                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
+                        **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {}),
+                        **({"mentions": mentions} if mentions else {})} or None
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(  # noqa: E731
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
@@ -483,8 +502,11 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
                           f"connected? For out-of-process delivery (e.g. cron in a separate process), the platform "
                           f"plugin must register a standalone_sender_fn on its PlatformEntry.")}
     try:
-        result = await sender(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files,
-                              force_document=force_document)
+        sender_kwargs = {"thread_id": thread_id, "media_files": media_files,
+                         "force_document": force_document}
+        if mentions:
+            sender_kwargs["mentions"] = mentions
+        result = await sender(pconfig, chat_id, chunk, **sender_kwargs)
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -537,7 +559,7 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document):
+                                  max_len, force_document, mentions=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption."""
     label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
@@ -545,7 +567,9 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
     if err:
         return err
     extra = {"force_document": force_document} if pass_force else {}
-    if captionable:
+    if mentions:
+        extra["mentions"] = mentions
+    if captionable and not mentions:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
         if caption is not None:
@@ -555,8 +579,10 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
 
 
-def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
-    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd)
+def _via_adapter_route(p, pc, cid, chunk, media, tid, fd, mentions=None):
+    return _send_via_adapter(
+        p, pc, cid, chunk, thread_id=tid, media_files=media,
+        force_document=fd, mentions=mentions)
 
 
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
@@ -587,7 +613,8 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
+                            force_document=False, args=None, mentions=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -606,7 +633,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
     if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
-                                             thread_id=thread_id, max_len=max_len, force_document=force_document)
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             mentions=mentions)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -622,7 +650,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         warning = (f"MEDIA attachments were omitted for {platform_name}; "
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     text_sender = _TEXT_SENDERS.get(platform_name)
-    if text_sender is not None:
+    if platform_name == "whatsapp" and mentions:
+        send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
+            platform, pconfig, chat_id, chunk, [], thread_id, force_document, mentions)
+    elif text_sender is not None:
         send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
     else:
         from gateway.platform_registry import platform_registry
@@ -677,6 +708,11 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "mentions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "WhatsApp group participants to mention, as numeric phones or numeric @s.whatsapp.net/@lid user JIDs. WhatsApp @g.us targets only."
             },
             "emoji": {
                 "type": "string",

@@ -212,9 +212,24 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
+function normalizeMentionJid(value) {
+  const mention = String(value ?? '').trim();
+  const phone = mention.match(/^\+?([0-9]+)$/);
+  if (phone) return `${phone[1]}@s.whatsapp.net`;
+  const jid = mention.match(/^\+?([0-9]+)(?::[0-9]+)?@(s\.whatsapp\.net|lid)$/);
+  if (jid) return `${jid[1]}@${jid[2]}`;
+  throw new Error(`Invalid WhatsApp mention: ${mention || '(empty)'}`);
+}
+
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
   const content = { text };
   const options = {};
+  if (mentions !== undefined) {
+    if (!Array.isArray(mentions) || mentions.length === 0) {
+      throw new Error('WhatsApp mentions must be a non-empty array');
+    }
+    content.contextInfo = { mentionedJid: mentions.map(normalizeMentionJid) };
+  }
   const quoted = messageStore?.get(replyTo);
   if (quoted?.key && quoted?.message) {
     // Baileys expects quoted messages as sendMessage options, not inside the

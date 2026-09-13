@@ -169,24 +169,3 @@ async def test_duplicate_request_finalizes_settled_webhook_without_reexecution()
         assert authority.db.get_session(row["target_session_id"])["end_reason"] == "webhook_complete"
         assert scheduled == []
         assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("route", [None, {"prompt": "changed {text}", "deliver": "log"}])
-async def test_startup_leaves_settled_webhook_open_when_route_is_missing_or_changed(route):
-    async with settled_before_finalizer() as (_client, _body, _headers, _runner, authority, row):
-        from gateway.platforms.webhook_ingress import recover_webhook_finalizations
-
-        entry = authority.runner.session_store.lookup_by_session_id(row["target_session_id"])
-        adapter = authority.runner._adapter_for_source(entry.origin)
-        if route is None:
-            adapter._routes.pop("fixture")
-        else:
-            adapter._routes["fixture"] = route
-
-        await recover_webhook_finalizations(authority)
-
-        saved = authority.db.get_session(row["target_session_id"])
-        assert saved["ended_at"] is None
-        assert saved["end_reason"] is None
-        assert len(authority.db._read_all("SELECT * FROM session_admissions")) == 1

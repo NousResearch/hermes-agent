@@ -5,7 +5,11 @@ import type { DisplayStatus } from './screen-connection'
 import type * as ScreenConnection from './screen-connection'
 import type { RosterRow } from './types'
 
-const sockets = vi.hoisted(() => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void }>)
+const sockets = vi.hoisted(
+  () => [] as Array<{ closeCodes: number[]; closed: boolean; close: (code?: number) => void; serverClose: (code: number) => void }>
+)
+
+const rfbs = vi.hoisted(() => [] as Array<{ emit: (type: string, detail?: unknown) => void }>)
 const retention = vi.hoisted(() => ({ held: 0 }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -40,6 +44,7 @@ vi.mock('./i18n', () => ({
   useBots: () => ({
     screen: {
       title: 'Screen',
+      controlTaken: 'Another viewer took control',
       youControl: 'You control',
       handBack: 'Hand back',
       takeOver: 'Take over',
@@ -57,13 +62,23 @@ vi.mock('./screen-connection', async importActual => ({
 }))
 vi.mock('@novnc/novnc', () => ({
   default: class {
+    private listeners = new Map<string, Array<(event: { detail?: unknown }) => void>>()
     constructor(
       _target: HTMLElement,
       private socket: { close: () => void }
-    ) {}
-    addEventListener(type: string, callback: () => void) {
+    ) {
+      rfbs.push(this)
+    }
+    emit(type: string, detail?: unknown) {
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener({ detail })
+      }
+    }
+    addEventListener(type: string, callback: (event: { detail?: unknown }) => void) {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback])
+
       if (type === 'connect') {
-        queueMicrotask(callback)
+        queueMicrotask(() => callback({}))
       }
     }
     // noVNC 1.7 disconnects its WebSocket without a close code.
@@ -98,6 +113,7 @@ const status: DisplayStatus = {
 beforeEach(() => {
   $screenState.set({})
   sockets.length = 0
+  rfbs.length = 0
   retention.held = 0
   vi.mocked(displayRequest)
     .mockReset()
@@ -107,8 +123,23 @@ beforeEach(() => {
     class {
       closeCodes: number[] = []
       closed = false
+      private onClose: Array<(event: { code: number }) => void> = []
       constructor() {
         sockets.push(this)
+      }
+      addEventListener(type: string, listener: (event: { code: number }) => void) {
+        if (type === 'close') {
+          this.onClose.push(listener)
+        }
+      }
+      // The bridge closing us: the raw close frame reaches our listener, then noVNC
+      // reports a statusless `disconnect` — the code is only on the socket event.
+      serverClose(code: number) {
+        this.closed = true
+
+        for (const listener of this.onClose) {
+          listener({ code })
+        }
       }
       close(code?: number) {
         // Subsequent close calls cannot replace the frame already sent to the server.
@@ -153,5 +184,18 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   await waitFor(() => expect(sockets).toHaveLength(2))
   expect(sockets[0].closeCodes).toEqual([1005])
   expect(sockets[1].closed).toBe(false)
+  view.unmount()
+})
+
+it('shows the control-taken overlay from the bridge close code, which noVNC does not forward', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(sockets).toHaveLength(1))
+  await act(async () => {})
+
+  act(() => {
+    sockets[0].serverClose(4000)
+    rfbs[0].emit('disconnect', { clean: true })
+  })
+  expect(view.getByText('Another viewer took control')).toBeTruthy()
   view.unmount()
 })

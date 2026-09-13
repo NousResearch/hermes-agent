@@ -34,6 +34,9 @@ type RfbLike = {
 
 type ConnState = 'idle' | 'attaching' | 'live' | 'control-taken' | 'error'
 
+/** Bridge close code when another viewer took the lease (mirrors tui_gateway display bridge). */
+const CLOSE_CONTROL_TAKEN = 4000
+
 async function loadRfb(): Promise<new (target: HTMLElement, socket: WebSocket, options?: Record<string, unknown>) => RfbLike> {
   const mod = (await import('@novnc/novnc')) as unknown as { default: new (...args: never[]) => RfbLike }
 
@@ -137,6 +140,13 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       const ws = new WebSocket(url)
       ws.binaryType = 'arraybuffer'
       socket.current = ws
+      // noVNC 1.7's `disconnect` detail carries only {clean}; the bridge's verdict lives in
+      // the raw close frame (4000 = control-taken). Listen here, before RFB installs its
+      // own `onclose`, so the code is known by the time the disconnect event fires.
+      let closeCode = 0
+      ws.addEventListener('close', event => {
+        closeCode = event.code
+      })
       const client = new Rfb(canvasHost.current, ws, { shared: true })
       client.scaleViewport = true
       client.resizeSession = false
@@ -162,7 +172,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
         const reason = event.detail?.reason ?? ''
 
-        if (reason.includes('control-taken')) {
+        if (closeCode === CLOSE_CONTROL_TAKEN || reason.includes('control-taken')) {
           setConn('control-taken')
         } else if (event.detail?.clean) {
           setConn('idle')

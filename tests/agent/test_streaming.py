@@ -1099,17 +1099,7 @@ class TestAnthropicStreamCallbacks:
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
-        class _BadStream:
-            response = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __iter__(self):
-                raise ValueError("expected ident at line 1 column 149")
+        bad_stream = _AnthropicEventStream([], ValueError("expected ident at line 1 column 149"))
 
         final_message = SimpleNamespace(content=[], stop_reason="end_turn")
         good_stream = MagicMock()
@@ -1120,7 +1110,7 @@ class TestAnthropicStreamCallbacks:
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.side_effect = [
-            _BadStream(),
+            bad_stream,
             good_stream,
         ]
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
@@ -1153,25 +1143,15 @@ class TestAnthropicStreamCallbacks:
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
 
-        class _MalformedToolStream:
-            response = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __iter__(self):
-                # Text already reached the user, so only the mid-tool-call retry path may re-open
-                # the stream; a tool_use that never registers as in flight is stubbed instead.
-                yield SimpleNamespace(
-                    type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Checking the tool."))
-                yield SimpleNamespace(
-                    type="content_block_start",
-                    content_block=SimpleNamespace(type="tool_use", name="cronjob_manage"),
-                )
-                raise ValueError("expected value at line 1 column 11")
+        # Text already reached the user, so only the mid-tool-call retry path may re-open the
+        # stream; a tool_use that never registers as in flight is stubbed instead.
+        malformed = _AnthropicEventStream(
+            [
+                SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Checking the tool.")),
+                SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="tool_use", name="cronjob_manage")),
+            ],
+            ValueError("expected value at line 1 column 11"),
+        )
 
         repaired_message = SimpleNamespace(
             content=[SimpleNamespace(type="tool_use", name="cronjob_manage", input={"names": "cronjob_manage"})],
@@ -1187,7 +1167,7 @@ class TestAnthropicStreamCallbacks:
 
         def _stream(**kwargs):
             seen_tools.append([dict(t) for t in kwargs["tools"]])
-            return _MalformedToolStream() if len(seen_tools) == 1 else good_stream
+            return malformed if len(seen_tools) == 1 else good_stream
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.side_effect = _stream
@@ -1219,27 +1199,11 @@ class TestAnthropicStreamCallbacks:
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
 
-        class _Stream:
-            response = None
-
-            def __init__(self, events, error):
-                self._events, self._error = events, error
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __iter__(self):
-                yield from self._events
-                raise self._error
-
         attempts = [
-            _Stream([SimpleNamespace(type="content_block_start",
+            _AnthropicEventStream([SimpleNamespace(type="content_block_start",
                                      content_block=SimpleNamespace(type="tool_use", name="old_tool"))],
                     ValueError("expected value at line 1 column 11")),
-            _Stream([SimpleNamespace(type="content_block_delta",
+            _AnthropicEventStream([SimpleNamespace(type="content_block_delta",
                                      delta=SimpleNamespace(type="text_delta", text="Plain answer."))],
                     ConnectionError("connection dropped")),
         ]
@@ -1898,6 +1862,25 @@ class TestBedrockIamStreamingFallback:
         assert response.choices[0].message.content == "hi"
         assert getattr(agent, "_disable_streaming", False) is True
 
+
+
+class _AnthropicEventStream:
+    """``messages.stream()`` context manager that yields *events* then raises *error* mid-stream."""
+
+    response = None
+
+    def __init__(self, events, error):
+        self._events, self._error = events, error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def __iter__(self):
+        yield from self._events
+        raise self._error
 
 
 class _BlockingEventStream:

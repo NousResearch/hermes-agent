@@ -3106,7 +3106,7 @@ class _StreamingCall(StreamingWaitMonitor):
             error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
         if self.agent._is_provider_stream_parse_error(e):
             from agent.anthropic_adapter import buffer_anthropic_tool_input
-            buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None) or self.agent.base_url)
+            buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
 

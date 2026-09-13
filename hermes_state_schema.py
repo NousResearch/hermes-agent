@@ -876,6 +876,43 @@ class SessionSchemaMixin:
         finally:
             cursor.execute("PRAGMA foreign_keys=ON")
 
+    def _heal_polluted_gateway_delegate_markers(self, cursor: sqlite3.Cursor) -> None:
+        """Strip ``_delegate_from`` from gateway main rows (``session_key`` set).
+
+        A main gateway session must never carry the delegate marker — the
+        marker excludes the row from every picker (``list_sessions_rich``,
+        ``list_recent_sessions_bounded``) while the gateway keeps routing
+        into it by ``session_key``. The polluted state is the opposite of
+        #103789 (children leaking into the sidebar); here the main chat
+        vanishes while messages keep flowing (#109073). The pollution
+        survives via historic upsert/merge paths that copied a delegate
+        child's ``model_config`` onto the main row. Idempotent and safe to
+        run on every open (no version gate).
+        """
+        try:
+            # Probe first: the UPDATE takes the write lock even when it
+            # matches no rows and would block every open behind a sibling's
+            # transaction.
+            if cursor.execute(
+                "SELECT 1 FROM sessions WHERE session_key IS NOT NULL AND session_key != '' "
+                "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NOT NULL LIMIT 1"
+            ).fetchone() is None:
+                return
+            cur = cursor.execute(
+                "UPDATE sessions SET model_config = "
+                "CASE WHEN json_remove(COALESCE(model_config, '{}'), '$._delegate_from') = '{}' "
+                "THEN NULL ELSE json_remove(COALESCE(model_config, '{}'), '$._delegate_from') END "
+                "WHERE session_key IS NOT NULL AND session_key != '' "
+                "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NOT NULL"
+            )
+            if cur.rowcount:
+                logger.warning(
+                    "Healed %d polluted gateway session(s) carrying _delegate_from (session_key set) (#109073)",
+                    cur.rowcount,
+                )
+        except sqlite3.OperationalError as exc:
+            logger.debug("gateway delegate-marker heal skipped: %s", exc)
+
     # ── _init_schema ───────────────────────────────────────────────────────
 
     def _init_schema(self):
@@ -903,6 +940,15 @@ class SessionSchemaMixin:
         # already at v22+ when the column landed — the version-gated rebuild is unreachable there, #73823).
         # Same PK-rebuild constraint as gateway_routing above.
         self._heal_session_model_usage_pk(cursor)
+        # Heal polluted gateway sessions: a main gateway row (session_key set)
+        # must never carry _delegate_from — it hides the row from every picker
+        # while the gateway keeps routing into it (#109073). This is the
+        # opposite direction of #103789/PR#105284 (which stripped markers from
+        # children); here the marker leaked ONTO the main row via upsert/
+        # merge paths and via historic delegation upserts. Idempotent, runs on
+        # every open so already-versioned DBs are repaired without a version
+        # bump.
+        self._heal_polluted_gateway_delegate_markers(cursor)
 
         # Indexes referencing reconciler-added columns must be created AFTER _reconcile_columns
         # (in SCHEMA_SQL the executescript would fail on legacy DBs).

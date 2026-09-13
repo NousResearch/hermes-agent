@@ -545,6 +545,8 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             )
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
+            if msg.get("_turn_id"):
+                prev["_turn_id"] = msg["_turn_id"]  # the merged row now IS the current turn's row
             repairs += 1
             continue
         merged.append(msg)

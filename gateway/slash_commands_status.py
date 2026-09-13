@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import hashlib
+import json
 import os
 import re
 import time
@@ -79,35 +80,66 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry,
+                        *, session_override: dict, channel_override):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent -> session/channel override -> persisted gateway runtime -> current
+    config -> dominant billing route -> legacy billing. Display only: no runtime resolution or
+    credential operations, and no rehydration of session overrides.
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
+    from hermes_cli.model_switch import resolve_effective_model
     context_used = context_total = 0
-    routes = []
+    model_name = provider_name = ""
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
-        routes.append((_clean_str(getattr(status_agent, "model", "")),
-                       _clean_str(getattr(status_agent, "provider", ""))))
+        model_name = _clean_str(getattr(status_agent, "model", ""))
+        provider_name = _clean_str(getattr(status_agent, "provider", ""))
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
-    routes.append((_clean_str(persisted_route.get("model")),
-                   _clean_str(persisted_route.get("billing_provider"))))
-    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
-    # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
-    model_name, provider_name = next((r for r in routes if r[0] and r[1]), row_route)
+
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name or not context_total:
         user_config = _quiet_sync(_load_gateway_config, {})
-    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+    user_config = user_config if isinstance(user_config, dict) else {}
+    model_cfg = user_config.get("model", {})
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
-    model_name = model_name or _resolve_gateway_model(user_config)
-    provider_name = provider_name or _clean_str(model_cfg.get("provider"))
+
+    raw_model_config = session_row.get("model_config")
+    if isinstance(raw_model_config, str):
+        try:
+            raw_model_config = json.loads(raw_model_config)
+        except ValueError:
+            raw_model_config = {}
+    runtime = raw_model_config.get("gateway_runtime") if isinstance(raw_model_config, dict) else None
+    runtime = runtime if isinstance(runtime, dict) else {}
+    has_override = bool(session_override) or bool(
+        _clean_str(getattr(channel_override, "model", ""))
+        or _clean_str(getattr(channel_override, "provider", "")))
+    # First-accounted billing is NOT the route that last answered. A prompt-only channel
+    # override must not hide that persisted route; a routing override deliberately supersedes it.
+    if runtime and not has_override:
+        model_name = model_name or _clean_str(runtime.get("model") or session_row.get("model"))
+        provider_name = provider_name or _clean_str(runtime.get("provider"))
+    if not model_name:
+        model_name = resolve_effective_model(
+            session_override, channel_override, _resolve_gateway_model(user_config))
+    provider_name = (provider_name or _clean_str(session_override.get("provider"))
+                     or _clean_str(getattr(channel_override, "provider", ""))
+                     or _clean_str(model_cfg.get("provider")))
+
+    # Historical fallbacks are atomic: never attach an old billing provider to a current model.
+    if not model_name and not provider_name:
+        dominant_model = _clean_str(persisted_route.get("model"))
+        dominant_provider = _clean_str(persisted_route.get("billing_provider"))
+        if dominant_model and dominant_provider:
+            model_name, provider_name = dominant_model, dominant_provider
+        else:
+            model_name = _clean_str(session_row.get("model"))
+            provider_name = _clean_str(session_row.get("billing_provider"))
     configured_context = model_cfg.get("context_length")
     if not context_total and isinstance(configured_context, int) and configured_context > 0:
         context_total = configured_context
@@ -215,8 +247,8 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        source = event.source
+        from gateway.run import _AGENT_PENDING_SENTINEL, _get_channel_override
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         # Keep the sentinel distinct: a starting/pending run is not a usable agent for
@@ -229,11 +261,21 @@ class GatewayStatusCommandsMixin:
         title, session_row, db_total_tokens, persisted_route = await self._status_session_db_facts(
             session_entry.session_id
         )
-        # Prefer the live or cached agent (actual runtime route + context compressor); fall back
-        # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
+        # Peek only: /status must not create conversation override or runtime-recovery state.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
+        state = self._peek_session_state(session_key)
+        conversation = getattr(state, "conversation", None)
+        session_override = getattr(conversation, "model_override", None)
+        if not isinstance(session_override, dict) or not session_override:
+            session_override = getattr(session_entry, "model_override", None)
+        session_override = session_override if isinstance(session_override, dict) else {}
+        channel_override = _get_channel_override(
+            self.config, source.platform, str(source.chat_id),
+            thread_id=str(source.thread_id) if source.thread_id else None,
+            parent_id=str(source.parent_chat_id) if source.parent_chat_id else None)
         model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+            status_agent, persisted_route, session_row, session_entry,
+            session_override=session_override, channel_override=channel_override,
         )
 
         stamp = "%Y-%m-%d %H:%M"

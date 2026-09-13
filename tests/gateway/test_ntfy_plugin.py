@@ -570,3 +570,146 @@ class TestMultiplexProfileScope:
         assert _env_enablement() is None
         assert is_connected(PlatformConfig(enabled=True, extra={})) is False
 
+
+
+# --------------------------------------------------------------------------
+# Click + Actions headers
+# --------------------------------------------------------------------------
+
+
+class TestClickAndActionsHeaders:
+    """``Click`` deep-links a notification; ``Actions`` puts buttons on it.
+
+    Both are plain ntfy features the adapter simply never sent, so every
+    notification it produced was read-only: you could see that an approval was
+    waiting, and had to go and find an app to answer it.
+    """
+
+    def test_absent_by_default_so_existing_callers_are_byte_identical(self):
+        h = _ntfy._publish_headers("", False)
+        assert "Click" not in h and "Actions" not in h
+        assert h == {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ntfy._ECHO_TAG}
+
+    def test_click_is_passed_through(self):
+        h = _ntfy._publish_headers("", False, click="https://example.org/a/1")
+        assert h["Click"] == "https://example.org/a/1"
+
+    def test_app_scheme_click_is_allowed(self):
+        # ntfy: "If you pass another URI that can be handled by another app, the
+        # responsible app may open." A deep link into a specific approval card
+        # is the entire point.
+        h = _ntfy._publish_headers("", False, click="perch://approval/run_42")
+        assert h["Click"] == "perch://approval/run_42"
+
+    def test_http_action_renders_long_format(self):
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": "Approve", "url": "https://gw.lan/v1/runs/r1/approval",
+             "method": "POST", "body": '{"choice":"once"}',
+             "headers": {"Authorization": "Bearer k"}},
+        ])
+        a = h["Actions"]
+        assert a.startswith("action=http, label=Approve")
+        assert "url=https://gw.lan/v1/runs/r1/approval" in a
+        assert "method=POST" in a
+        assert "headers.Authorization=Bearer k" in a
+        # The body contains commas, so it MUST come back quoted or ntfy will
+        # read the rest of it as further parameters.
+        assert "body='{\"choice\":\"once\"}'" in a or 'body="{\\"choice\\":\\"once\\"}"' in a
+
+    def test_two_actions_are_semicolon_separated(self):
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": "Approve", "url": "https://gw.lan/a"},
+            {"action": "http", "label": "Deny", "url": "https://gw.lan/d"},
+        ])
+        assert h["Actions"].count(";") == 1
+
+    def test_more_than_three_actions_are_dropped(self):
+        # ntfy accepts three and silently ignores the rest.
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": f"A{i}", "url": "https://x/"} for i in range(5)
+        ])
+        assert h["Actions"].count(";") == 2
+
+    def test_newlines_cannot_inject_headers(self):
+        # The security case. `label` can carry agent-authored text, and a bare
+        # newline in an HTTP header value means everything after it is parsed as
+        # a NEW header by anything between here and ntfy.
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": "ok\r\nX-Priority: max", "url": "https://x/"},
+        ])
+        assert "\r" not in h["Actions"] and "\n" not in h["Actions"]
+        h2 = _ntfy._publish_headers("", False, click="https://x/\r\nX-Title: spoofed")
+        assert "\r" not in h2["Click"] and "\n" not in h2["Click"]
+
+    def test_malformed_entries_are_skipped_not_raised(self):
+        # A notification without its buttons is degraded; an exception in the
+        # send path is a MISSED ALERT, and delivery is this adapter's whole job.
+        h = _ntfy._publish_headers("", False, actions=[
+            "not-a-dict",
+            {"action": "nonsense", "label": "x"},
+            {"action": "http"},                       # no label
+            {"action": "http", "label": "Good", "url": "https://x/"},
+        ])
+        assert h["Actions"] == "action=http, label=Good, url=https://x/"
+
+    def test_non_dict_headers_or_extras_do_not_raise(self):
+        # `or {}` guards None but not a wrong TYPE — ["a"].items() raises
+        # AttributeError, which is the one way this function could still break
+        # its own never-raise-in-the-send-path contract. Flagged in review on
+        # the PR; this is the test that keeps it closed.
+        for bad in ([("Authorization", "Bearer x")], "Bearer x", 7, True):
+            h = _ntfy._publish_headers("", False, actions=[
+                {"action": "http", "label": "A", "url": "https://x/", "headers": bad},
+                {"action": "http", "label": "B", "url": "https://y/", "extras": bad},
+            ])
+            # Both actions still render; only the unusable mapping is dropped.
+            assert h["Actions"] == "action=http, label=A, url=https://x/; action=http, label=B, url=https://y/"
+
+    def test_dict_headers_still_render(self):
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": "A", "url": "https://x/",
+             "headers": {"Authorization": "Bearer k"}, "extras": {"k": "v"}},
+        ])
+        assert "headers.Authorization=Bearer k" in h["Actions"]
+        assert "extras.k=v" in h["Actions"]
+
+    def test_both_quote_characters_do_not_invent_an_escape(self):
+        # ntfy documents quoting with " or ', and NO escape sequence. Emitting
+        # \" would be inventing protocol: a receiver that takes the backslash
+        # literally ends the value at the next bare quote and misparses the
+        # action. Lossy-but-parseable beats silently-wrong.
+        h = _ntfy._publish_headers("", False, actions=[
+            {"action": "http", "label": """He said "go", don't""", "url": "https://x/"},
+        ])
+        assert "\\" not in h["Actions"]
+        assert 'label="He said go, dont"' in h["Actions"] or "label=" in h["Actions"]
+        # The delimiter that made quoting necessary is still inside the quotes.
+        assert h["Actions"].count('"') % 2 == 0
+
+    def test_priority_is_bounded_to_the_documented_set(self):
+        # An unknown priority risks the publish being rejected outright, and a
+        # rejected publish is a missed alert — the exact failure this adapter
+        # exists to avoid. Drop the value, keep the notification.
+        assert _ntfy._publish_headers("", False, priority="high")["X-Priority"] == "high"
+        assert _ntfy._publish_headers("", False, priority="5")["X-Priority"] == "5"
+        assert _ntfy._publish_headers("", False, priority="URGENT")["X-Priority"] == "urgent"
+        for bad in ("critical", "9", "", "very high"):
+            assert "X-Priority" not in _ntfy._publish_headers("", False, priority=bad)
+
+    def test_empty_actions_list_emits_no_header(self):
+        assert "Actions" not in _ntfy._publish_headers("", False, actions=[])
+        assert "Actions" not in _ntfy._publish_headers("", False, actions=["bad"])
+
+    def test_send_forwards_metadata(self):
+        cfg = PlatformConfig(enabled=True, extra={"topic": "t"})
+        ad = _ntfy.NtfyAdapter(cfg)
+        ad._http_client = MagicMock()
+        resp = MagicMock(status_code=200, headers={}, json=MagicMock(return_value={}))
+        ad._http_client.post = AsyncMock(return_value=resp)
+        asyncio.run(ad.send("t", "hi", metadata={
+            "click": "perch://approval/r1",
+            "actions": [{"action": "http", "label": "Approve", "url": "https://gw/a"}],
+        }))
+        sent = ad._http_client.post.call_args.kwargs["headers"]
+        assert sent["Click"] == "perch://approval/r1"
+        assert "label=Approve" in sent["Actions"]

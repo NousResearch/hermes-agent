@@ -124,10 +124,9 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # provider payloads, where a line-start anchor is unavailable. Require a
 # structural delimiter before the key so prose, dotted technical settings,
 # relative URLs, and form bodies remain available to their dedicated passes.
-_INLINE_SECRET_KEY_NAMES = r"(?:token|secret|password|passwd|credential|auth|api[_-]?key)"
 _INLINE_SECRET_ASSIGN_RE = re.compile(
-    rf"(^|[{{[(,;:|]\s*|\s+(?={_INLINE_SECRET_KEY_NAMES}\s*=)|[\"'])"
-    rf"({_INLINE_SECRET_KEY_NAMES})"
+    r"(^|[{[(,;:|]\s*|\s+(?=(?:token|secret|password|passwd|credential|auth|pass|pw|api[_-]?key)\s*=)|[\"'])"
+    r"(token|secret|password|passwd|credential|auth|pass|pw|api[_-]?key)"
     r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
     r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&|\"')\]}]+))",
     re.IGNORECASE | re.MULTILINE,
@@ -528,20 +527,25 @@ def _redact_assignments(text: str, *, force: bool = False) -> str:
             # handles the opt-in case). The uppercase regex above is all-caps-only, so it never matches URL
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
-            def _redact_inline_assignment(match):
-                if (
-                    match.group(1).isspace()
-                    and match.group(2).casefold() == "token"
-                    and not force
-                ):
-                    return match.group(0)
-                if not _should_redact_assignment(
-                    match.group(2), match.group(4), check_keyword=True
-                ):
-                    return match.group(0)
-                return f"{match.group(1)}{match.group(2)}{match.group(3)}***"
-
-            text = _INLINE_SECRET_ASSIGN_RE.sub(_redact_inline_assignment, text)
+            text = _INLINE_SECRET_ASSIGN_RE.sub(
+                lambda match: (
+                    match.group(0)
+                    if (
+                        (
+                            match.group(1).isspace()
+                            and not _looks_like_opaque_credential(match.group(4))
+                            and not _has_word_bounded_keyword(
+                                match.group(2), _STRONG_KEY_KEYWORD_RE
+                            )
+                        )
+                        or not _should_redact_assignment(
+                            match.group(2), match.group(4), check_keyword=True
+                        )
+                    )
+                    else f"{match.group(1)}{match.group(2)}{match.group(3)}***"
+                ),
+                text,
+            )
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
         # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
         # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are

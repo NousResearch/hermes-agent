@@ -1230,3 +1230,21 @@ class TestValueAwareGatingCorpus:
         result = redact_sensitive_text(block, force=True)
         assert prose_line in result
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("password", "supersecretvalue12345"),
+            ("secret", "supersecretvalue12345"),
+            ("credential", "supersecretvalue12345"),
+            ("pass", "supersecretvalue12345"),
+            ("pw", "supersecretvalue12345"),
+            ("api_key", "supersecretvalue12345"),
+        ],
+    )
+    def test_whitespace_delimited_credential_assignments_are_redacted(
+        self, key, value
+    ):
+        text = f"provider failed {key}={value}"
+        result = redact_sensitive_text(text, force=True)
+        assert value not in result

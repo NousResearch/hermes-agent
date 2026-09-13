@@ -7,7 +7,6 @@ import json
 import os
 import plistlib
 import re
-import shlex
 import signal
 import subprocess
 import time
@@ -106,32 +105,44 @@ class BundleInspector(Protocol):
 class SystemProcessController:
     def census(self) -> tuple[ProcessRecord, ...]:
         try:
-            completed = subprocess.run(
-                ("ps", "-axo", "pid=,comm=,args="),
-                check=False,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
+            import psutil
+        except ImportError as error:
             raise DeploymentError("process_census_unavailable") from error
-        if completed.returncode != 0:
-            raise DeploymentError("process_census_unavailable")
         records: list[ProcessRecord] = []
-        for line in completed.stdout.splitlines():
-            parts = line.strip().split(maxsplit=2)
-            if len(parts) < 3:
-                continue
-            try:
-                pid = int(parts[0])
-                argv = tuple(shlex.split(parts[2]))
-            except ValueError as error:
-                raise DeploymentError("process_census_ambiguous") from error
-            if not argv:
-                raise DeploymentError("process_census_ambiguous")
-            executable = Path(argv[0]) if Path(argv[0]).is_absolute() else Path(parts[1])
-            records.append(ProcessRecord(pid, executable, argv, None))
+        try:
+            for process in psutil.process_iter(["pid", "exe", "cmdline", "cwd"]):
+                try:
+                    info = process.info
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except psutil.AccessDenied as error:
+                    raise DeploymentError("process_census_ambiguous") from error
+                if not isinstance(info, dict):
+                    raise DeploymentError("process_census_ambiguous")
+                executable = info.get("exe")
+                argv = info.get("cmdline")
+                if not isinstance(executable, str) or not executable:
+                    raise DeploymentError("process_census_ambiguous")
+                if not isinstance(argv, list) or not argv or not all(
+                    isinstance(argument, str) for argument in argv
+                ):
+                    raise DeploymentError("process_census_ambiguous")
+                pid = info.get("pid")
+                if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+                    raise DeploymentError("process_census_ambiguous")
+                cwd = info.get("cwd")
+                records.append(
+                    ProcessRecord(
+                        pid,
+                        Path(executable),
+                        tuple(str(argument) for argument in argv),
+                        Path(cwd) if isinstance(cwd, str) else None,
+                    )
+                )
+        except DeploymentError:
+            raise
+        except (OSError, psutil.Error) as error:
+            raise DeploymentError("process_census_unavailable") from error
         return tuple(records)
 
     def terminate(self, pid: int) -> None:
@@ -261,6 +272,7 @@ class PostMergeExecutor:
             pre_census = self._processes.census()
             _require_runtime_absent(pre_census, self._policy)
             deployed_sha = self._repository.prepare(merge, self._policy)
+            _require_runtime_absent(self._processes.census(), self._policy)
             package = self._commands.run(
                 self._policy.package_argv,
                 cwd=self._policy.deployment_path,
@@ -302,7 +314,6 @@ class PostMergeExecutor:
             )
             if relaunch.returncode != 0 or relaunch.timed_out:
                 raise DeploymentError("relaunch_failed")
-            relaunched = True
             relaunch_census = _wait_for_process_to_appear(
                 identity.executable_path, self._processes
             )
@@ -311,6 +322,12 @@ class PostMergeExecutor:
                 self._policy,
                 blocker="protected_runtime_appeared_after_relaunch",
             )
+            _require_runtime_absent(
+                self._processes.census(),
+                self._policy,
+                blocker="protected_runtime_appeared_after_relaunch",
+            )
+            relaunched = True
         except DeploymentError as error:
             return self._record(
                 merge,
@@ -408,7 +425,7 @@ def _wait_for_process_to_appear(
     deadline = time.monotonic() + timeout
     while True:
         census = controller.census()
-        if any(process.executable.resolve() == expected for process in census):
+        if any(record.executable.resolve() == expected for record in census):
             return census
         remaining = deadline - time.monotonic()
         if remaining <= 0:

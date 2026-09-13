@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -246,6 +246,9 @@ class ScanResult:
     degraded: bool = False
     required_local_ci_backlog: int = 0
     local_ci_catalogue_deferred: int = 0
+    required_local_ci_backlog_by_repository: Mapping[str, int] = field(
+        default_factory=dict
+    )
 
 
 def _dispatch_generation(task: KanbanTask, lease: ClaimLease) -> KanbanTask:
@@ -1059,7 +1062,10 @@ class PooledLocalGitRepository:
     def _configure_case_collision_sparse_checkout(
         self, workspace: Path, head_sha: str
     ) -> None:
-        """Keep case-colliding tracked paths out of case-insensitive slots."""
+        """Fail closed on a case-insensitive slot whenever the requested head contains
+        case-colliding tracked paths -- silently sparse-checking them out of the tree
+        would let a local CI run pass, and issue a merge-authorizing receipt, without
+        ever testing the colliding files' actual content."""
 
         ignore_case = self._run(
             ["git", "-C", str(workspace), "config", "--bool", "core.ignorecase"],
@@ -1079,22 +1085,11 @@ class PooledLocalGitRepository:
             if len(names_for_key) > 1
             for name in names_for_key
         )
-        patterns = ["/*", *(f"!/{name}" for name in colliding_names)]
-        self._run(
-            ["git", "-C", str(workspace), "sparse-checkout", "init", "--no-cone"]
-        )
-        self._run(
-            [
-                "git",
-                "-C",
-                str(workspace),
-                "sparse-checkout",
-                "set",
-                "--no-cone",
-                *patterns,
-            ]
-        )
-        self._run(["git", "-C", str(workspace), "sparse-checkout", "reapply"])
+        if colliding_names:
+            raise ExactHeadUnavailable(
+                "exact head contains case-colliding tracked paths on a "
+                f"case-insensitive checkout: {', '.join(colliding_names)}"
+            )
 
     def _slot_belongs_to(self, path: Path, workspace: Path) -> bool:
         """Whether ``workspace`` is a live worktree of the repository at ``path``."""
@@ -1213,6 +1208,7 @@ class ScanController:
         created = 0
         attempted = 0
         required_local_ci_backlog = 0
+        required_local_ci_backlog_by_repository: dict[str, int] = {}
         local_ci_catalogue_deferred = 0
         self._label_batches = []
         if not self._policy.enabled or self._policy.not_before is None:
@@ -1220,6 +1216,7 @@ class ScanController:
                 created,
                 skipped,
                 required_local_ci_backlog=required_local_ci_backlog,
+                required_local_ci_backlog_by_repository=required_local_ci_backlog_by_repository,
             )
         for repository in self._policy.targets:
             target = self._policy.targets[repository]
@@ -1249,12 +1246,14 @@ class ScanController:
 
             pull_requests = order_pull_requests(pull_requests)
             self._label_batches.append((repository, target, pull_requests))
-            required_local_ci_backlog += _required_local_ci_backlog_count(
+            repository_backlog = _required_local_ci_backlog_count(
                 self._policy,
                 self._ledger,
                 target,
                 pull_requests,
             )
+            required_local_ci_backlog += repository_backlog
+            required_local_ci_backlog_by_repository[repository] = repository_backlog
             if (
                 self._policy.local_ci_audit is not None
                 and self._policy.local_ci_audit.applies_to(repository)
@@ -1510,6 +1509,7 @@ class ScanController:
             created,
             skipped,
             required_local_ci_backlog=required_local_ci_backlog,
+            required_local_ci_backlog_by_repository=required_local_ci_backlog_by_repository,
             local_ci_catalogue_deferred=local_ci_catalogue_deferred,
         )
 
@@ -1765,7 +1765,8 @@ class ScanController:
         if not isinstance(latest, CIAuditReceipt) or latest.receipt_id != audit.receipt_id:
             return "superseded_ci_receipt"
         if (
-            audit.actions_state.actions_enabled
+            not audit_policy.required_for_open_prs
+            and audit.actions_state.actions_enabled
             and not audit.actions_state.billing_blocked
             and audit.actions_state.check_count > 0
             and audit.actions_state.all_green
@@ -3419,6 +3420,7 @@ def _scan_result(
     skipped: Mapping[str, int],
     *,
     required_local_ci_backlog: int = 0,
+    required_local_ci_backlog_by_repository: Mapping[str, int] | None = None,
     local_ci_catalogue_deferred: int = 0,
 ) -> ScanResult:
     values = dict(skipped)
@@ -3428,5 +3430,8 @@ def _scan_result(
         values,
         degraded,
         required_local_ci_backlog=required_local_ci_backlog,
+        required_local_ci_backlog_by_repository=dict(
+            required_local_ci_backlog_by_repository or {}
+        ),
         local_ci_catalogue_deferred=local_ci_catalogue_deferred,
     )

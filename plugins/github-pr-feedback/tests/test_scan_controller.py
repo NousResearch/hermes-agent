@@ -2305,6 +2305,7 @@ def test_required_local_ci_backlog_signal_counts_missing_receipts_below_read_cap
     ).scan()
 
     assert getattr(result, "required_local_ci_backlog", 0) == 2
+    assert result.required_local_ci_backlog_by_repository == {"acme/widgets": 2}
     assert result.skipped.get("local_ci_open_pr_scan_cap", 0) == 0
     assert github.feedback_calls == [("acme/widgets", 17), ("acme/widgets", 18)]
     assert github.current_calls == [("acme/widgets", 17)]

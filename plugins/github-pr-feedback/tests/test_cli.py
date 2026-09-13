@@ -22,15 +22,19 @@ from github_pr_feedback.cli import (
     _ci_audit_comment,
     _factual_reply_is_missing,
     _retrigger_codex_review,
+    _run_repair_scan_by_repository,
 )
 from github_pr_feedback.controller import KanbanTask
 from github_pr_feedback.github_client import CheckState, Feedback
 from github_pr_feedback.ledger import FeedbackLedger
+from github_pr_feedback.ledger import MaintenanceCommandEvidence
 from github_pr_feedback.merge_controller import MergeDecision
 from github_pr_feedback.policy import (
     CODEX_REVIEW_TRIGGER,
     FeedbackReceipt,
+    PluginPolicy,
     PullRequest,
+    RepairStewardPolicy,
     Reviewer,
     codex_review_trigger_comment,
 )
@@ -264,6 +268,13 @@ def test_scan_prioritizes_feedback_before_degraded_repair_maintenance(
     monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
     monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
     monkeypatch.setattr("github_pr_feedback.cli.RepairController", Repair)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_repair_scan_by_repository",
+        lambda *_args, **_kwargs: (
+            order.append("repair")
+            or {"status": "degraded", "created": 0, "skipped": {}}
+        ),
+    )
     monkeypatch.setattr("github_pr_feedback.cli._controller", lambda *_args: Feedback())
     monkeypatch.setattr("github_pr_feedback.cli._github_client", lambda _policy: object())
 
@@ -301,7 +312,7 @@ def _run_scan_with_primary_result(
         enabled = True
         repair_steward = object()
         merge_maintainer = object()
-        release_maintenance = object()
+        release_maintenance = SimpleNamespace(repository="configured")
 
         def merge_policies(self):
             return (self.merge_maintainer,)
@@ -328,6 +339,12 @@ def _run_scan_with_primary_result(
                 required_local_ci_backlog=0,
             )
 
+    def repair_by_repository(_policy, _ledger, repository_backlog):
+        order.append(
+            "conflicts" if any(repository_backlog.values()) else "repair"
+        )
+        return {"status": "ok", "created": 0, "skipped": {}}
+
     def merge(*_args: object, **_kwargs: object) -> dict[str, object]:
         order.append("merge")
         return {"status": "ok"}
@@ -342,6 +359,10 @@ def _run_scan_with_primary_result(
     monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
     monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
     monkeypatch.setattr("github_pr_feedback.cli.RepairController", Repair)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_repair_scan_by_repository",
+        repair_by_repository,
+    )
     monkeypatch.setattr(
         "github_pr_feedback.cli._controller", lambda *_args: Primary()
     )
@@ -365,6 +386,7 @@ def test_scan_keeps_merge_maintainer_moving_during_required_ci_backlog(
         skipped={"local_ci_dispatch_cap": 1},
         degraded=False,
         required_local_ci_backlog=2,
+        required_local_ci_backlog_by_repository={"configured": 2},
     )
 
     returncode, order, payload = _run_scan_with_primary_result(
@@ -451,6 +473,7 @@ def test_scan_does_not_defer_secondary_fanout_for_read_cap_without_ci_backlog(
         skipped={"local_ci_open_pr_scan_cap": 1},
         degraded=False,
         required_local_ci_backlog=0,
+        required_local_ci_backlog_by_repository={"configured": 0},
     )
 
     returncode, order, payload = _run_scan_with_primary_result(
@@ -477,6 +500,67 @@ def test_scan_payload_reports_catalogue_deferred_separately_from_skips() -> None
 
     assert payload["local_ci_catalogue_deferred"] == 199
     assert "local_ci_open_pr_scan_cap" not in payload["skipped"]
+
+
+def test_repair_scan_keeps_unblocked_repositories_eligible() -> None:
+    from github_pr_feedback import cli
+
+    policy = PluginPolicy(
+        enabled=True,
+        targets={},
+        reviewer_logins=frozenset(),
+        reviewer_associations=frozenset(),
+        include_self_feedback=False,
+        include_bot_feedback=False,
+        auto_dispatch=False,
+        not_before=None,
+        assignee=None,
+        board=None,
+        repair_steward=RepairStewardPolicy(
+            assignee="repair-agent",
+            repositories=frozenset({"acme/blocked", "acme/eligible"}),
+            report_only=True,
+        ),
+    )
+    seen: list[tuple[frozenset[str], bool]] = []
+
+    class Repair:
+        def __init__(self, serial_policy, *_args: object, **_kwargs: object) -> None:
+            self.repositories = serial_policy.repair_steward.repositories
+
+        def scan(self, *, conflicts_only=False):
+            seen.append((self.repositories, conflicts_only))
+            return SimpleNamespace(created=1, skipped={}, degraded=False)
+
+    class Github:
+        pass
+
+    class Kanban:
+        pass
+
+    original_repair = cli.RepairController
+    original_github = cli.GitHubClient
+    original_kanban = cli.KanbanSubprocessClient
+    cli.RepairController = Repair
+    cli.GitHubClient = Github
+    cli.KanbanSubprocessClient = Kanban
+    try:
+        payload = _run_repair_scan_by_repository(
+            policy,
+            object(),
+            {"acme/blocked": 1, "acme/eligible": 0},
+        )
+    finally:
+        cli.RepairController = original_repair
+        cli.GitHubClient = original_github
+        cli.KanbanSubprocessClient = original_kanban
+
+    assert seen == [
+        (frozenset({"acme/blocked"}), True),
+        (frozenset({"acme/eligible"}), False),
+    ]
+    assert payload["created"] == 2
+    assert payload["deferred_repositories"] == ["acme/blocked"]
 
 
 class RecordingKanbanRunner:
@@ -1188,8 +1272,31 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from github_pr_feedback.release_maintenance import maintenance_worktree_path
+
     repository = tmp_path / "repository"
     subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    (repository / "README.md").write_text("maintenance\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Hermes Tests",
+            "-c",
+            "user.email=hermes-tests@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial",
+        ],
+        check=True,
+    )
+    head_sha = subprocess.check_output(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+    ).strip()
     settings = enabled_settings(repository)
     settings["release_maintenance"] = {
         "enabled": True,
@@ -1207,6 +1314,24 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
         ],
     }
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    worktree_root = tmp_path / "profile" / "github-pr-feedback" / "maintenance-worktrees"
+    exact_cwd = maintenance_worktree_path(
+        worktree_root, "acme/widgets", head_sha, "audit-unit-tests"
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(exact_cwd),
+            head_sha,
+        ],
+        check=True,
+    )
     context = RecordingContext(settings)
     parser = argparse.ArgumentParser()
     from github_pr_feedback.cli import handle_cli_with_context, setup_cli
@@ -1218,7 +1343,7 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
             "--repository",
             "acme/widgets",
             "--head-sha",
-            "a" * 40,
+            head_sha,
             "--lane",
             "unit-tests",
             "--status",
@@ -1230,7 +1355,9 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
                 [
                     {
                         "argv": ["python3", "-m", "pytest", "-q"],
-                        "cwd": str(repository),
+                        "cwd": str(
+                            exact_cwd
+                        ),
                         "returncode": 0,
                         "duration_ms": 125,
                         "timed_out": False,
@@ -1247,11 +1374,230 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
     ledger = FeedbackLedger.for_current_profile()
     try:
         assert (
-            ledger.maintenance_receipts("acme/widgets", "a" * 40)["unit-tests"].status
+            ledger.maintenance_receipts("acme/widgets", head_sha)["unit-tests"].status
             == "passed"
         )
     finally:
         ledger.close()
+
+
+def test_maintenance_command_evidence_requires_exact_command_and_clean_head(
+    tmp_path: Path,
+) -> None:
+    from github_pr_feedback.cli import _validate_maintenance_command_evidence
+    from github_pr_feedback.policy import ReleaseMaintenanceLane, ReleaseMaintenancePolicy
+    from github_pr_feedback.release_maintenance import maintenance_worktree_path
+
+    maintenance = ReleaseMaintenancePolicy(
+        assignee="steward",
+        repository="acme/widgets",
+        base_branch="stable",
+        quiet_period_seconds=900,
+        max_runtime_seconds=7200,
+        lanes=(
+            ReleaseMaintenanceLane(
+                "unit-tests", "tester", ("python3", "-m", "pytest", "-q")
+            ),
+        ),
+    )
+
+    def evidence(argv: tuple[str, ...]) -> MaintenanceCommandEvidence:
+        return MaintenanceCommandEvidence(
+            argv=argv,
+            cwd="/tmp/widgets",
+            returncode=0,
+            duration_ms=1,
+            timed_out=False,
+            stdout_sha256="a" * 64,
+            stderr_sha256="b" * 64,
+        )
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+
+    def commit(contents: str) -> str:
+        (repository / "README.md").write_text(contents, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "user.name=Hermes Tests",
+                "-c",
+                "user.email=hermes-tests@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "maintenance",
+            ],
+            check=True,
+        )
+        return subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+        ).strip()
+
+    head_sha = commit("initial\n")
+    repaired_head_sha = commit("repaired\n")
+    worktree_root = tmp_path / "maintenance-worktrees"
+    exact_cwd = maintenance_worktree_path(
+        worktree_root, "acme/widgets", head_sha, "audit-unit-tests"
+    )
+    repair_cwd = maintenance_worktree_path(
+        worktree_root, "acme/widgets", head_sha, "repair-unit-tests"
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(exact_cwd),
+            head_sha,
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(repair_cwd),
+            repaired_head_sha,
+        ],
+        check=True,
+    )
+    _validate_maintenance_command_evidence(
+        maintenance,
+        "unit-tests",
+        (
+            MaintenanceCommandEvidence(
+                argv=("python3", "-m", "pytest", "-q"),
+                cwd=str(exact_cwd),
+                returncode=0,
+                duration_ms=1,
+                timed_out=False,
+                stdout_sha256="a" * 64,
+                stderr_sha256="b" * 64,
+            ),
+        ),
+        worktree_root=worktree_root,
+        head_sha=head_sha,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        _validate_maintenance_command_evidence(
+            maintenance,
+            "unit-tests",
+            (evidence(("python3", "-m", "pytest", "-q", "--maxfail=1")),),
+            worktree_root=worktree_root,
+            head_sha=head_sha,
+        )
+    with pytest.raises(ValueError, match="exact worktree"):
+        _validate_maintenance_command_evidence(
+            maintenance,
+            "unit-tests",
+            (evidence(("python3", "-m", "pytest", "-q")),),
+            worktree_root=worktree_root,
+            head_sha=head_sha,
+        )
+    with pytest.raises(ValueError, match="HEAD does not match"):
+        _validate_maintenance_command_evidence(
+            maintenance,
+            "unit-tests",
+            (
+                MaintenanceCommandEvidence(
+                    argv=("python3", "-m", "pytest", "-q"),
+                    cwd=str(repair_cwd),
+                    returncode=0,
+                    duration_ms=1,
+                    timed_out=False,
+                    stdout_sha256="a" * 64,
+                    stderr_sha256="b" * 64,
+                ),
+            ),
+            worktree_root=worktree_root,
+            head_sha=head_sha,
+        )
+
+
+def test_scan_keeps_repository_keys_when_only_one_policy_is_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from github_pr_feedback.cli import _scan
+
+    class Lock:
+        def __enter__(self) -> bool:
+            return True
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Ledger:
+        @classmethod
+        def for_current_profile(cls):
+            return cls()
+
+        def close(self) -> None:
+            pass
+
+    class Policy:
+        enabled = True
+        repair_steward = None
+        merge_maintainer = None
+        release_maintenance = None
+
+        def merge_policies(self):
+            return ()
+
+        def release_policies(self):
+            return (
+                SimpleNamespace(repository="acme/eligible"),
+                SimpleNamespace(repository="acme/blocked"),
+            )
+
+    class Primary:
+        def scan(self, *, apply_labels: bool):
+            assert apply_labels is False
+            return SimpleNamespace(
+                created=0,
+                skipped={},
+                degraded=False,
+                required_local_ci_backlog=1,
+                required_local_ci_backlog_by_repository={
+                    "acme/eligible": 0,
+                    "acme/blocked": 1,
+                },
+            )
+
+        def apply_agent_labels(self):
+            return {"status": "ok", "updated": 0, "skipped": {}}
+
+    monkeypatch.setattr("github_pr_feedback.cli._load_policy_from_context", lambda _ctx: Policy())
+    monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
+    monkeypatch.setattr("github_pr_feedback.cli._controller", lambda *_args: Primary())
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_release_maintenance_scan",
+        lambda _policy, _ledger, *, maintenance: {
+            "status": "ok",
+            "repository": maintenance.repository,
+        },
+    )
+
+    assert _scan(object()) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["release_maintenance"] == {
+        "acme/eligible": {"repository": "acme/eligible", "status": "ok"}
+    }
 
 
 def test_release_maintenance_scan_is_part_of_the_governed_scan_surface(
@@ -3129,7 +3475,7 @@ def test_retrigger_codex_review_is_a_noop_while_same_head_request_is_pending() -
 
 def test_retrigger_codex_review_is_a_noop_when_codex_already_reviewed_this_head() -> None:
     head = "a" * 40
-    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head[:7])),))
+    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head)),))
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 

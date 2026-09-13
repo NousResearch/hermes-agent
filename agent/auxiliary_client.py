@@ -2401,6 +2401,8 @@ def _auxiliary_egress_binding(
         or DEFAULT_POLICY_DIGEST
     )
     candidate_base_url = getattr(client, "base_url", "")
+    if candidate_base_url:
+        candidate_base_url = str(candidate_base_url)
     if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
         ("http://", "https://")
     ):

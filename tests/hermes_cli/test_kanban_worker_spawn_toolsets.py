@@ -163,7 +163,8 @@ toolsets:
     assert resolved is not None
     assert "terminal" in resolved
     assert "web" in resolved
-    assert "kanban" in resolved  # recovered worker lifecycle surface
+    # The dispatcher adds the task-scoped lifecycle surface later in
+    # model_tools; this resolver returns only the profile's CLI pin.
     assert resolved != ["kanban"]
 
 
@@ -193,6 +194,5 @@ def test_resolve_worker_cli_toolsets_expands_all_without_unrestricted_sentinel(
     assert "all" not in resolved
     assert "*" not in resolved
     assert "terminal" in resolved
-    assert "kanban" in resolved
     assert "desktop_ui" not in resolved
     assert "project" not in resolved

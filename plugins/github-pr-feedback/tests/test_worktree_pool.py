@@ -9,6 +9,7 @@ import pytest
 
 import github_pr_feedback.controller as controller
 from github_pr_feedback.controller import (
+    ExactHeadUnavailable,
     LocalGitRepository,
     PooledLocalGitRepository,
     WorktreePoolExhausted,
@@ -641,9 +642,12 @@ def test_receipt_preparation_uses_exact_head_overflow_when_pool_is_exhausted(
     assert prepared.path.is_relative_to(tmp_path / "overflow-worktrees")
 
 
-def test_pool_excludes_case_colliding_tracked_paths_on_case_insensitive_fs(
+def test_pool_fails_closed_on_case_colliding_tracked_paths_on_case_insensitive_fs(
     tmp_path: Path,
 ) -> None:
+    """Silently sparse-checking out colliding paths would let a local CI run pass
+    (and issue a merge-authorizing receipt) without ever testing their content --
+    reject the checkout instead."""
     repo = initialized_repository(tmp_path)
     subprocess.run(
         ["git", "-C", str(repo), "config", "core.ignorecase", "true"],
@@ -655,25 +659,8 @@ def test_pool_excludes_case_colliding_tracked_paths_on_case_insensitive_fs(
         ledger, tmp_path / "pool", slot_count=1, owner_pid=lambda: 4242
     )
 
-    prepared = pool.prepare_receipt_worktree(repo, receipt(sha))
-
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(prepared.path),
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
-            "--",
-            ".",
-            ":!.venv",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert result.stdout == ""
+    with pytest.raises(ExactHeadUnavailable):
+        pool.prepare_receipt_worktree(repo, receipt(sha))
     ledger.close()
 
 

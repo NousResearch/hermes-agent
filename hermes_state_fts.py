@@ -325,6 +325,14 @@ class SessionFtsSetupMixin:
                 pass
 
     def _ensure_fts_schema(self, cursor: sqlite3.Cursor, table_name: str, ddl: str) -> bool:
+        # The hermes_state_search.optimize_fts docstring mentions an
+        # HERMES_DISABLE_FTS_TRIGRAM flag, but upstream never implemented it.
+        # The FTS5 trigram index is fragile under continuous writes and has
+        # corrupted state.db in production ("database disk image is malformed").
+        # The base messages_fts index remains active and covers word search;
+        # only the trigram index is skipped when the flag is set.
+        if table_name.endswith("_trigram") and os.getenv("HERMES_DISABLE_FTS_TRIGRAM"):
+            return False
         status = self._fts_table_probe(cursor, table_name)
         if status is None:
             return False

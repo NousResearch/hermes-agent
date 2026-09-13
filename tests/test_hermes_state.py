@@ -29,6 +29,25 @@ def _activity_snapshot(db, session_id):
     )
 
 
+def test_disable_fts_trigram_keeps_base_fts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+    db = SessionDB(db_path=tmp_path / "test_state.db")
+    try:
+        names = {
+            row[0]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "messages_fts" in names
+        assert "messages_fts_trigram" not in names
+        assert db._fts_enabled is True
+        assert db._trigram_available is False
+        db._conn.execute("SELECT rowid FROM messages_fts LIMIT 1").fetchall()
+    finally:
+        db.close()
+
+
 class _NoFtsCursor(sqlite3.Cursor):
     """Simulate a SQLite build without the fts5 module."""
 

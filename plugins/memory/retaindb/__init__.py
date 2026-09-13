@@ -310,6 +310,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._user_id, self._session_id, self._agent_id = "default", "", "hermes"
         self._lock = threading.Lock()  # guards the prefetch caches below
         self._context_result, self._dialectic_result, self._agent_model = "", "", {}
+        self._prefetch_generation = 0
         self._prefetch_threads: list[threading.Thread] = []  # tracked so rapid turns don't pile up threads
 
     @property
@@ -348,6 +349,18 @@ class RetainDBMemoryProvider(MemoryProvider):
             seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")  # noqa: E731
             threading.Thread(target=_quiet, args=("soul seed", seed), name="retaindb-soul-seed", daemon=True).start()
 
+    def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs) -> None:
+        """Rebind live tools/recall; queued writes keep their explicitly captured session."""
+        new_id = str(new_session_id or "").strip()
+        if not new_id:
+            return
+        with self._lock:
+            self._session_id = new_id
+            # Also invalidate a same-id rewind: an old in-flight result must not
+            # repopulate the cache after its transcript has been truncated.
+            self._prefetch_generation += 1
+            self._context_result, self._dialectic_result, self._agent_model = "", "", {}
+
     def system_prompt_block(self) -> str:
         project = self._client.project if self._client else "retaindb"
         return (f"# RetainDB Memory\nActive. Project: {project}.\nUse retaindb_search to find memories, retaindb_remember to store facts, "
@@ -357,36 +370,42 @@ class RetainDBMemoryProvider(MemoryProvider):
         """Fire context + dialectic + agent model prefetches in background (turn-end); prefetch() consumes them next turn."""
         if not self._client:
             return
+        with self._lock:
+            owner = session_id or self._session_id
+            if owner != self._session_id:
+                return  # A delayed manager task still belongs to the previous session.
+            generation = self._prefetch_generation
         for t in self._prefetch_threads:  # wait for the previous batch so threads don't accumulate on rapid turns
             t.join(timeout=2.0)
         if any(t.is_alive() for t in self._prefetch_threads):
             logger.debug("RetainDB prefetch still running; skipping new batch")
             return
         jobs = (  # (thread name, log label, cache attr, fetch) — fetch returns None to leave the cache untouched
-            ("retaindb-ctx", "context", "_context_result", lambda: self._context_overlay(query)["context"]),
+            ("retaindb-ctx", "context", "_context_result", lambda: self._context_overlay(query, session_id=owner)["context"]),
             ("retaindb-dialectic", "dialectic", "_dialectic_result", lambda: str(
                 self._client.ask_user(self._user_id, query, reasoning_level=self._reasoning_level(query)).get("answer") or "") or None),
             ("retaindb-agent-model", "agent model", "_agent_model", lambda: self._agent_model_or_none(self._client.get_agent_model(self._agent_id))),
         )
-        self._prefetch_threads = [threading.Thread(target=self._store, args=(label, attr, fetch), name=name, daemon=True)
+        self._prefetch_threads = [threading.Thread(target=self._store, args=(label, attr, fetch, generation), name=name, daemon=True)
                                   for name, label, attr, fetch in jobs]
         for t in self._prefetch_threads:
             t.start()
 
-    def _context_overlay(self, query: str) -> dict:
-        query_result = self._client.query_context(self._user_id, self._session_id, query)
+    def _context_overlay(self, query: str, *, session_id: str = "") -> dict:
+        query_result = self._client.query_context(self._user_id, session_id or self._session_id, query)
         return {"context": _build_overlay(self._client.get_profile(self._user_id), query_result), "raw": query_result}
 
     @staticmethod
     def _agent_model_or_none(model: dict) -> dict | None:
         return model if model.get("memory_count", 0) > 0 else None
 
-    def _store(self, label: str, attr: str, fetch: Callable[[], Any]) -> None:
+    def _store(self, label: str, attr: str, fetch: Callable[[], Any], generation: int) -> None:
         """Run one prefetch job; cache its value under the lock unless None (failures log at debug)."""
         value = _quiet(f"{label} prefetch", fetch)
         if value is not None:
             with self._lock:
-                setattr(self, attr, value)
+                if generation == self._prefetch_generation:
+                    setattr(self, attr, value)
 
     @staticmethod
     def _reasoning_level(query: str) -> str:
@@ -395,6 +414,8 @@ class RetainDBMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Consume prefetched results and return them as a context block."""
         with self._lock:
+            if session_id and session_id != self._session_id:
+                return ""
             context, dialectic, agent_model = self._context_result, self._dialectic_result, self._agent_model
             self._context_result, self._dialectic_result, self._agent_model = "", "", {}
         model_lines = [fmt(agent_model[k]) for k, fmt in _AGENT_MODEL_FIELDS if agent_model.get(k)] if agent_model.get("memory_count", 0) > 0 else []

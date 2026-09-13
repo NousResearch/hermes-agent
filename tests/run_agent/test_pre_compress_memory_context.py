@@ -1,8 +1,25 @@
 """Behavior contracts for the pre-compression memory-context handoff."""
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
+
+
+def _nested_alternate_json_spelling(layers: int) -> str:
+    spelling = r"\u0053\/K\u0065y"
+    for _ in range(layers - 1):
+        spelling = json.dumps(spelling)[1:-1]
+    return spelling
+
+
+ALTERNATE_JSON_SPELLINGS = tuple(
+    pytest.param(
+        _nested_alternate_json_spelling(layers),
+        id=f"json-escape-layers-{layers}",
+    )
+    for layers in (1, 2, 5, 10, 13)
+)
 
 
 def _make_agent(memory_manager, compressor):
@@ -182,6 +199,138 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
     assert "api-key=***&view=public" in context
     assert "client%2Dsecret=***&view=public" in context
     assert "//user:***@x.test/path" in context
+
+
+def test_provider_context_exact_masks_active_short_secret_before_engine(monkeypatch):
+    """Arbitrary provider text crosses the engine handoff only after masking."""
+    from hermes_cli import env_loader
+    from hermes_constants import get_hermes_home
+
+    secret = "r8$!"
+    home = get_hermes_home()
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(home.resolve()),
+        {"ARBITRARY_MEMORY_PROVIDER_SECRET": secret},
+    )
+    manager = MagicMock()
+    manager.on_pre_compress.return_value = f"provider insight contains {secret}"
+    received = []
+    compressor = MagicMock()
+
+    def capture_compress(messages, current_tokens=None, memory_context="", **_kwargs):
+        received.append(memory_context)
+        return [messages[0], messages[-1]]
+
+    compressor.compress.side_effect = capture_compress
+    _configure_engine_state(compressor)
+    agent = _make_agent(manager, compressor)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    agent._compress_context(_messages(), "sys", approx_tokens=100_000)
+
+    assert received == ["provider insight contains ***"]
+
+
+@pytest.mark.parametrize(
+    "alternate_spelling",
+    ALTERNATE_JSON_SPELLINGS,
+)
+def test_provider_context_masks_alternate_json_escapes_before_engine(
+    monkeypatch, alternate_spelling
+):
+    """Memory-provider JSON spellings are decoded on the disposable handoff."""
+    from hermes_cli import env_loader
+    from hermes_constants import get_hermes_home
+
+    secret = "S/Key"
+    provider_context = f'{{"credential":"{alternate_spelling}"}}'
+    home = get_hermes_home()
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(home.resolve()),
+        {"ARBITRARY_MEMORY_PROVIDER_SECRET": secret},
+    )
+    manager = MagicMock()
+    manager.on_pre_compress.return_value = provider_context
+    received = []
+    compressor = MagicMock()
+
+    def capture_compress(messages, current_tokens=None, memory_context="", **_kwargs):
+        received.append(memory_context)
+        return [messages[0], messages[-1]]
+
+    compressor.compress.side_effect = capture_compress
+    _configure_engine_state(compressor)
+    agent = _make_agent(manager, compressor)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    agent._compress_context(_messages(), "sys", approx_tokens=100_000)
+
+    assert len(received) == 1
+    assert json.loads(received[0]) == {"credential": "***"}
+    assert secret not in received[0]
+    assert alternate_spelling not in received[0]
+    assert manager.on_pre_compress.return_value == provider_context
+
+
+@pytest.mark.parametrize(
+    "fragment_kind",
+    (
+        "unterminated",
+        "invalid_escape",
+        "quote_parity",
+        "unquoted",
+        "single_quoted",
+    ),
+)
+def test_provider_context_masks_malformed_alternate_json_fragments_before_engine(
+    monkeypatch, fragment_kind
+):
+    """Memory handoff tolerates incomplete and invalid quoted JSON fragments."""
+    from hermes_cli import env_loader
+    from hermes_constants import get_hermes_home
+
+    secret = "S/Key"
+    alternate_spelling = r"\u0053\/K\u0065y"
+    if fragment_kind == "unterminated":
+        provider_context = f'{{"credential":"{alternate_spelling}'
+    elif fragment_kind == "invalid_escape":
+        provider_context = f'{{"credential":"\\q{alternate_spelling}"}}'
+    elif fragment_kind == "quote_parity":
+        provider_context = (
+            f'{{"broken":"prefix "credential":"{alternate_spelling}"}}'
+        )
+    elif fragment_kind == "unquoted":
+        provider_context = f"{{credential:{alternate_spelling}}}"
+    else:
+        provider_context = f"{{'credential':'{alternate_spelling}'}}"
+    home = get_hermes_home()
+    monkeypatch.setitem(
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+        str(home.resolve()),
+        {"MALFORMED_MEMORY_PROVIDER_SECRET": secret},
+    )
+    manager = MagicMock()
+    manager.on_pre_compress.return_value = provider_context
+    received = []
+    compressor = MagicMock()
+
+    def capture_compress(messages, current_tokens=None, memory_context="", **_kwargs):
+        received.append(memory_context)
+        return [messages[0], messages[-1]]
+
+    compressor.compress.side_effect = capture_compress
+    _configure_engine_state(compressor)
+    agent = _make_agent(manager, compressor)
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    agent._compress_context(_messages(), "sys", approx_tokens=100_000)
+
+    assert len(received) == 1
+    assert "***" in received[0]
+    assert alternate_spelling not in received[0]
+    assert manager.on_pre_compress.return_value == provider_context
 
 
 def test_provider_context_is_bounded_before_plugin_engine():

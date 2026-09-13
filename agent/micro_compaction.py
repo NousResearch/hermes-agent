@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from agent.provider_redaction import _exact_secret_pattern_scope
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
 # Log name parity with the origin module.
@@ -119,7 +120,10 @@ class MicroCompactionMixin:
 
         call_kwargs = {
             "task": "compression",
-            "messages": self._build_micro_summary_prompt(self._micro_compact_rolling_summary, exchange_text),
+            "messages": self._build_micro_summary_prompt(
+                _cc()._redact_compaction_text(self._micro_compact_rolling_summary),
+                _cc()._redact_compaction_text(exchange_text),
+            ),
             "max_tokens": min(1500, self.max_summary_tokens or 1500),
             "temperature": 0.1,
         }
@@ -153,7 +157,7 @@ class MicroCompactionMixin:
             return None
 
         from agent.agent_runtime_helpers import strip_think_blocks
-        return strip_think_blocks(None, content).strip() or None
+        return _cc()._redact_compaction_text(strip_think_blocks(None, content).strip()) or None
 
     def _needs_defrag(self) -> bool:
         """Return True when the rolling summary is large enough to defrag."""
@@ -196,6 +200,7 @@ class MicroCompactionMixin:
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
 
+    @_exact_secret_pattern_scope()
     def _micro_compact(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Run one round of micro-compaction (entry point from ``finalize_turn()``). Returns the
         (possibly modified) list and syncs the session DB via ``archive_and_compact`` (the

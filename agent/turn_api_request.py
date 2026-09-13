@@ -140,6 +140,11 @@ def build_api_request(
     # retry must bypass the cache.
     if agent._empty_content_retries > 0 and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
+    # Gate native payloads after ASCII/Harmony transformations and raw replay
+    # restoration. Middleware dispatch gets its own final gate below.
+    from agent.provider_redaction import redact_provider_api_kwargs
+
+    api_kwargs = redact_provider_api_kwargs(api_kwargs)
     # Copilot x-initiator: first call of a user turn is "user" (billed premium);
     # tool-loop follow-ups keep the default "agent".
     if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():

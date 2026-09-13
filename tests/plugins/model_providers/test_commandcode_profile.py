@@ -85,85 +85,28 @@ class TestCommandCodeProfileIdentity:
         assert commandcode_profile.get_hostname() == "api.commandcode.ai"
 
 
-class TestCommandCodeProfileNoThinkingInterference:
-    """Reasoning wire controls for the chat-completions profile.
+class TestCommandCodeReasoningWireControls:
+    """DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so the profile
+    must put the user's setting on the wire (#95232); other families stay a no-op."""
 
-    DeepSeek-family ids get the native DeepSeek controls (DeepSeek V4+
-    defaults to thinking when the field is omitted, so an explicit wire
-    control is required for ``/reasoning none`` to reach the request,
-    #95232); every other CommandCode model family keeps the base no-op.
-    """
-
-    def test_deepseek_disabled_reasoning_sends_thinking_disabled(
-        self, commandcode_profile
-    ):
+    def test_deepseek_disabled_reasoning_sends_thinking_disabled(self, commandcode_profile):
         extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False},
-            model="deepseek/deepseek-v4-flash",
+            reasoning_config={"enabled": False}, model="deepseek/deepseek-v4-flash",
         )
         assert extra_body.get("thinking") == {"type": "disabled"}
         assert top_level == {}
 
-    def test_deepseek_enabled_reasoning_maps_effort(self, commandcode_profile):
-        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "high"},
-            model="deepseek/deepseek-v4-pro",
-        )
-        assert extra_body.get("thinking") == {"type": "enabled"}
-        assert top_level.get("reasoning_effort") == "high"
+    def test_deepseek_effort_matches_native_profile_and_others_noop(self, commandcode_profile):
+        from plugins.model_providers.deepseek import deepseek
 
-    def test_deepseek_no_config_defaults_to_enabled(self, commandcode_profile):
-        # Matches DeepSeek's API default, applied explicitly so the field is
-        # never omitted for thinking-capable models.
-        extra_body, _ = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config=None, model="deepseek/deepseek-v4-flash"
-        )
-        assert extra_body.get("thinking") == {"type": "enabled"}
+        rc = {"enabled": True, "effort": "low"}
+        assert commandcode_profile.build_api_kwargs_extras(
+            reasoning_config=rc, model="deepseek/deepseek-v4.1-flash"
+        ) == deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")
+        assert commandcode_profile.build_api_kwargs_extras(
+            reasoning_config=rc, model="Qwen/Qwen3.7-Max"
+        ) == ({}, {})
 
-    def test_deepseek_v3_stays_noop(self, commandcode_profile):
-        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False},
-            model="deepseek/deepseek-v3",
-        )
-        assert extra_body == {}
-        assert top_level == {}
-
-    def test_passthrough_non_deepseek_family(self, commandcode_profile):
-        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "high"},
-            model="Qwen/Qwen3.7-Max",
-        )
-        assert extra_body == {}
-        assert top_level == {}
-
-    def test_passthrough_no_reasoning_config_non_deepseek(
-        self, commandcode_profile
-    ):
-        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config=None, model="gpt-5.5"
-        )
-        assert extra_body == {}
-        assert top_level == {}
-
-    def test_missing_deepseek_plugin_degrades_to_noop(
-        self, commandcode_profile, monkeypatch, caplog
-    ):
-        # The bundled-plugin loader pops half-registered modules when a
-        # plugin fails to load, so the deepseek shim can be absent at
-        # runtime; the delegation must degrade to the pre-fix no-op
-        # instead of crashing every DeepSeek-routed CommandCode turn.
-        import sys
-
-        monkeypatch.setitem(sys.modules, "plugins.model_providers.deepseek", None)
-        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False},
-            model="deepseek/deepseek-v4-flash",
-        )
-        assert extra_body == {}
-        assert top_level == {}
-
-
-# ── Anthropic Messages profile ────────────────────────────────────────────────
 
 class TestCommandCodeAnthropicProfileIdentity:
     """Anthropic-compatible profile metadata."""

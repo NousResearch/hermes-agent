@@ -337,6 +337,16 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Scheduled Task Exception Topics
+# =============================================================================
+# Opt in to fresh, replyable Telegram topics for otherwise-deliverable execution
+# failures or explicit first-line [CRON_BUSINESS_ERROR] reports. Normal delivery,
+# existing silence policy, and destinations are unchanged. Requires a running
+# native Telegram gateway with topic support; unavailable topics fail closed.
+cron:
+  telegram_error_topics: false
+
+# =============================================================================
 # Kanban Review Dispatch
 # =============================================================================
 # First-class review tasks are dispatched automatically by default. The worker

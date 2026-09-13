@@ -1692,6 +1692,9 @@ DEFAULT_CONFIG = {
         # untouched. User-written bare platforms address home conversations, unlike `all`
         # broadcast expansions, which do not gain mirror eligibility.
         "mirror_delivery": False,
+        # Route otherwise-deliverable Telegram execution/business failures into fresh seeded
+        # topics. Does not change destinations, suppression, or normal attach_to_session behavior.
+        "telegram_error_topics": False,
         # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
         # Env override: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,

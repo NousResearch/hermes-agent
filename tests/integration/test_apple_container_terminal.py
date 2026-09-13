@@ -57,6 +57,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     import tools.file_tools as file_tools
     import tools.terminal_tool as terminal
     from tools.code_execution_tool import execute_code
+    from tools.terminal_tool_lifecycle import get_active_env
     from tools.environments import apple_container
 
     apple_container._container_executable = None
@@ -106,7 +107,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         identity_raw = terminal.terminal_tool(
             command="uname -s && uname -m", task_id=task_id
         )
-        environment = terminal.get_active_env(task_id)
+        environment = get_active_env(task_id)
         assert isinstance(environment, apple_container.AppleContainerEnvironment)
         container_name = environment._container_name
         assert container_name and container_name.startswith("hermes-")
@@ -159,7 +160,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         assert credential.read_bytes() == b"native-readonly-fixture\n"
     finally:
         if environment is None:
-            environment = terminal.get_active_env(task_id)
+            environment = get_active_env(task_id)
             if isinstance(environment, apple_container.AppleContainerEnvironment):
                 container_name = environment._container_name
         if environment is not None:

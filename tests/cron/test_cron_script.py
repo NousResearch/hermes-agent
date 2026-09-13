@@ -782,7 +782,9 @@ class TestScriptTimeoutTreeKill:
         ok, out = sched_script._run_job_script(
             str(scripts_dir / "spawner.py"), workdir=str(cron_env)
         )
-        assert not ok, f"script should have timed out, got {out!r}"
+        assert not ok and out.startswith("Script timed out after 2s:"), (
+            f"expected the timeout path, got success={ok}, output={out!r}"
+        )
 
         deadline = time.monotonic() + 5
         gpid = None

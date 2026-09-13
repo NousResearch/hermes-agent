@@ -212,9 +212,24 @@ def _capture_spawn(monkeypatch):
 
 
 def _runner_parts(command):
+    """(mode, dm_file, transport argv) of a runner command. The optional ``--author <json>`` pair is skipped."""
     parts = shlex.split(command)
     marker = parts.index("--run-delivery")
-    return parts[marker + 1], parts[marker + 2], parts[marker + 3 :]
+    if parts[marker + 1] == "--author":
+        marker += 2
+    argv = parts[marker + 3 :]
+    if argv[:1] == ["--profile-home"]:
+        argv = argv[2:]
+    return parts[marker + 1], parts[marker + 2], argv
+
+
+def _runner_author(command):
+    """The parsed ``--author`` payload of a runner command, or None when the pair is absent."""
+    parts = shlex.split(command)
+    marker = parts.index("--run-delivery")
+    if parts[marker + 1] != "--author":
+        return None
+    return json.loads(parts[marker + 2])
 
 
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
@@ -261,6 +276,8 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     # message body rides the temp file, never the command line
     assert "PAYLOAD_SENTINEL_7A91" not in command
     assert "$(" not in command
+    # the sender rides the runner argv as a stable id plus display handle
+    assert _runner_author(command) == {"id": "bot:default", "name": "hermes", "is_bot": True}
 
     # attribution prefix applied server-side; body verbatim inside the file
     content = Path(dm_file).read_text(encoding="utf-8")
@@ -299,6 +316,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
     home = _managed_home(tmp_path, peers=("spark",))
     agent = _FakeAgent(home, title="Bot Chat")
 
@@ -310,6 +328,8 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
+    # the peer child reads the author from its env and forwards it in the request body
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/default", "name": "hermes", "is_bot": True}
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
@@ -319,6 +339,21 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+
+
+def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
+    """A peer dm crosses installs, so its author id is ``bot:<hostname>/<profile>``: the peer's own ``coder`` and a
+    remote ``coder`` must not share one id. A teammate on this install still sees the bare ``bot:coder``."""
+    calls = _capture_spawn(monkeypatch)
+    monkeypatch.setattr("socket.gethostname", lambda: " eri/mac\x00.local ")
+    home = _managed_home(tmp_path, teammates=("researcher", "coder"), peers=("spark",))
+    agent = _FakeAgent(home / "profiles" / "coder", title="Bot Chat")
+
+    assert json.loads(bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent))["status"] == "sent"
+    assert json.loads(bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent))["status"] == "sent"
+
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:erimac.local/coder", "name": "coder", "is_bot": True}
+    assert _runner_author(calls[1]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):
@@ -336,6 +371,31 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     assert Path(dm_file).read_text(encoding="utf-8").startswith(
         "Message from 🤖 coder (@coder): "
     )
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
+
+
+def test_delivery_command_author_json_survives_quoting_and_windows_slash_rewrite(tmp_path, monkeypatch):
+    """The author JSON sits between ``--run-delivery`` and the mode, survives shlex, and the Windows slash rewrite skips it."""
+    author = {"id": "bot:default", "name": "hermes", "is_bot": True}
+    command = bot_mode_dm._delivery_command(["hermes", "-p", "x"], str(tmp_path / "dm.txt"),
+                                            stdin_file=False, author=author)
+    parts = shlex.split(command)
+    assert parts[2:4] == ["--run-delivery", "--author"]
+    assert json.loads(parts[4]) == author
+    assert parts[5] == "query-file"
+    assert _runner_parts(command) == ("query-file", str(tmp_path / "dm.txt"), ["hermes", "-p", "x"])
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    command = bot_mode_dm._delivery_command(["hermes", "-p", "x"], "C:\\Users\\me\\dm.txt",
+                                            stdin_file=False, author={"id": "bot:default", "name": 'q"q', "is_bot": True})
+    parts = shlex.split(command)
+    assert json.loads(parts[4]) == {"id": "bot:default", "name": 'q"q', "is_bot": True}
+    assert parts[6] == "C:/Users/me/dm.txt"
+
+    # without an author the legacy shape is produced unchanged
+    command = bot_mode_dm._delivery_command(["hermes"], "dm.txt", stdin_file=True)
+    assert shlex.split(command)[2:4] == ["--run-delivery", "stdin"]
+    assert _runner_author(command) is None
 
 
 def test_spawn_failure_reports_error(tmp_path, monkeypatch):
@@ -353,6 +413,55 @@ def test_spawn_failure_reports_error(tmp_path, monkeypatch):
     )
     assert "error" in result
     assert "could not be started" in result["error"]
+
+
+def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
+    from tools import bot_live_delivery as live
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner if Path(h) == target else None)
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "wrong-home"))
+    import tools.terminal_tool as terminal
+    monkeypatch.setattr(terminal, "terminal_tool", lambda *a, **k: json.dumps({"error": "spawn failed"}))
+
+    result = json.loads(bot_mode_dm.message_agent_tool("researcher", "hello", agent=_FakeAgent(home)))
+    assert result["status"] == "queued"
+    record = live.read_delivery_result(target, result["delivery_id"])
+    assert record is not None
+    assert record["owner"] == owner
+    assert record["message"] == "Message from 🤖 hermes (@hermes): hello"
+    assert record["author"] == {"id": "bot:default", "name": "hermes", "is_bot": True}
+    assert "notification_error" in result
+
+
+def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    home = _managed_home(tmp_path)
+    target = home / "profiles" / "researcher"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    argv = ["hermes", "-p", "researcher"]
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
+    queued = json.loads(capsys.readouterr().out)
+    assert queued["status"] == "queued"
+    claimed = live.claim_pending_delivery(target, owner)
+    assert claimed is not None
+    live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
+    failed = json.loads(capsys.readouterr().out)
+    assert failed["status"] == "failed"
+    assert failed["delivery_id"] == queued["delivery_id"]
+    assert dm_file.read_text(encoding="utf-8") == "hello"
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
@@ -475,9 +584,61 @@ def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     assert not dm_file.exists()
 
 
-@pytest.mark.parametrize("args", [[], ["--run-delivery"], ["--run-delivery", "bad", "x"]])
-def test_delivery_main_rejects_invalid_cli(args):
-    assert bot_mode_dm._delivery_main(args) == 2
+@pytest.mark.parametrize("mode, author", [
+    ("stdin", {"id": "bot:eri-mac.local/coder", "name": "coder", "is_bot": True}),
+    ("query-file", {"id": "bot:coder", "name": "coder", "is_bot": True}),
+    ("query-file", None),
+], ids=["stdin", "query-file", "no author"])
+def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypatch, mode, author):
+    """The ``--author`` payload becomes HERMES_TURN_AUTHOR on the child. Without it the runner drops the
+    variable it inherited from the sending bot's own turn instead of passing it on as the recipient's author."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("HERMES_DM_TEST_MARKER", "kept")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+    author_args = ["--author", json.dumps(author)] if author else []
+
+    returncode = bot_mode_dm._delivery_main(
+        ["--run-delivery", *author_args, mode, str(dm_file), "hermes", "-p", "researcher"])
+
+    assert returncode == 0
+    [(argv, kwargs)] = calls
+    assert argv[:3] == ["hermes", "-p", "researcher"]
+    assert kwargs["env"]["HERMES_DM_TEST_MARKER"] == "kept"
+    assert (json.loads(kwargs["env"][TURN_AUTHOR_ENV]) if TURN_AUTHOR_ENV in kwargs["env"] else None) == author
+    assert not dm_file.exists()
+
+
+def test_real_delivery_command_round_trip_carries_author(tmp_path):
+    """Through a real subprocess, the runner argv built by ``_delivery_command`` sets HERMES_TURN_AUTHOR on the child."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import os, pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text(os.environ.get('HERMES_TURN_AUTHOR', 'unset'), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    author = {"id": "bot:default", "name": "hermes", "is_bot": True}
+    command = bot_mode_dm._delivery_command(
+        [sys.executable, str(child), str(observed)], str(dm_file), stdin_file=False, author=author
+    )
+
+    result = subprocess.run(shlex.split(command), check=False)
+
+    assert result.returncode == 0
+    assert json.loads(observed.read_text(encoding="utf-8")) == author
+    assert not dm_file.exists()
 
 
 @pytest.mark.parametrize("mode", ["stdin", "query-file"])
@@ -643,7 +804,7 @@ def test_successful_spawn_transfers_cleanup_to_runner(tmp_path, monkeypatch):
 
 
 def test_write_dm_file_unlinks_partial_file_on_write_exception(tmp_path, monkeypatch):
-    dm_file = tmp_path / "partial.txt"
+    tmp_path / "partial.txt"
     real_mkstemp = bot_mode_dm.tempfile.mkstemp
 
     def fixed_mkstemp(**kwargs):

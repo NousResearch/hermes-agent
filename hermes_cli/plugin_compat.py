@@ -27,6 +27,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+from utils import atomic_json_write
 
 COMPAT_REMOVAL_DATE = _dt.date(2026, 9, 14)
 COMPAT_REMOVAL = COMPAT_REMOVAL_DATE.isoformat()
@@ -247,10 +248,7 @@ def _write_report_file(report: Dict[str, List[Hit]]) -> None:
                    "written_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                    "plugins": {k: [h.__dict__ for h in v] for k, v in report.items()},
                    "lines": summary_lines(report)}
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=1), encoding="utf-8")
-        os.replace(tmp, p)
+        atomic_json_write(p, payload, indent=1)
     except Exception:
         pass
 

@@ -23,8 +23,10 @@ import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 //     profile switches in the same window: an unscoped key let profile A's
 //     tail be painted against profile B's backend, which then retried a
 //     session id that does not exist there ("session not found") on every
-//     wake. The scope mirrors the in-memory twin's transcriptTailKey
-//     (transcript-tail.ts). Entries persisted before scoping shipped (v1,
+//     wake. The scope is the REQUEST scope the resume path passes (always a
+//     named profile); the in-memory twin (transcript-tail.ts) keys by the
+//     resolved owner instead and the two are never cross-read. Entries
+//     persisted before scoping shipped (v1,
 //     bare-id keys) carry no owner and are unreachable by construction —
 //     they are swept once per window so a stale tail can never paint again.
 

@@ -135,12 +135,21 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
 
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
+    """Return True when a Docker sandbox may expose host paths.
+
+    Conservative by design: ``docker_extra_args`` interpretation lives with container
+    creation in :mod:`tools.environments.docker` and flags *potential* binds, so a
+    mount-looking token that is really another option's value also counts. See
+    :func:`~tools.environments.docker.extra_args_may_bind_host_path`.
+    """
     if config.get("env_type") != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    if any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", [])):
+        return True
+    from tools.environments.docker import extra_args_may_bind_host_path
+    return extra_args_may_bind_host_path(config.get("docker_extra_args", []))
 
 
 def _check_all_guards(command: str, env_type: str,

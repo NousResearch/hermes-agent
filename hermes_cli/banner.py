@@ -405,6 +405,10 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     repo_dir = None if embedded_rev else _resolve_repo_dir()
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     cached = _read_json(cache_file)
+    # If the checkout disappeared between checks, retain the cached revision as the only
+    # available cache key; there is no local HEAD against which to invalidate it.
+    if repo_dir is None and cached is not None and not embedded_rev:
+        head_rev = cached.get("head")
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
             and cached.get("head") == head_rev:
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS

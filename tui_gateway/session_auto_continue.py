@@ -145,8 +145,8 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
         "text": text, "transport": transport,
         **({"image_paths": image_paths} if image_paths else {}),
         **({"turn_author": turn_author} if turn_author else {}),
-        "client_surface": client_surface,
-        "voice_live_context": voice_live_context,
+        **({"client_surface": client_surface} if client_surface else {}),
+        **({"voice_live_context": voice_live_context} if voice_live_context else {}),
     }
     existing = session.get("queued_prompt")
     if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
@@ -280,8 +280,14 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             session, text, transport, image_paths=image_paths, turn_author=turn_author,
             client_surface=client_surface, voice_live_context=voice_live_context,
         )
-        session["client_surface"] = client_surface
-        session["voice_live_context"] = voice_live_context if client_surface == "voice-live" else ""
+        # A busy submit that omits surface metadata is still part of the active
+        # turn. Do not erase the surface that the live turn is already using;
+        # the normal idle-submit path records an explicit empty surface below.
+        if client_surface:
+            session["client_surface"] = client_surface
+            session["voice_live_context"] = voice_live_context if client_surface == "voice-live" else ""
+        elif voice_live_context:
+            session["voice_live_context"] = voice_live_context
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``

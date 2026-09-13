@@ -4003,6 +4003,8 @@ class GatewayRunner(
             return self._is_user_authorized(source, allow_adapter_delegation=False)
 
         authorization_home = getattr(source, "_authorization_profile_home", None)
+        if authorization_home is None:
+            authorization_home = self._authorization_home_for_source(source)
         if authorization_home is not None:
             with _profile_runtime_scope(Path(authorization_home)):
                 return _check()
@@ -5225,8 +5227,6 @@ async def _start_gateway_shutdown_tail(
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
-    if _exit_with_failure_verdict(runner):
-        return False
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
@@ -5249,6 +5249,8 @@ async def _start_gateway_shutdown_tail(
     with suppress(Exception):
         await _shutdown_mcp_servers_nonblocking()
 
+    if _exit_with_failure_verdict(runner):
+        return False
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 

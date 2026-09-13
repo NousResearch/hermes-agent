@@ -1384,8 +1384,8 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "interval_hours": 24 * 7,  # hours between runs
         "min_idle_hours": 2,  # only run after the agent has been idle this long
-        "stale_after_days": 30,  # mark "stale" after this many unused days
-        "archive_after_days": 90,  # move to skills/.archive/ (recoverable) after this many
+        "stale_after_days": 14,  # mark "stale" after this many unused days
+        "archive_after_days": 30,  # move to skills/.archive/ (recoverable) after this many
         # LLM consolidation (umbrella-building) pass. OFF = deterministic inactivity prune only, no
         # aux-model cost. `hermes curator run --consolidate` overrides once.
         "consolidate": False,
@@ -1907,8 +1907,6 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-        # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
-        "multiplex_profile_allowlist": None,
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
@@ -2377,7 +2375,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 42,  # Config schema version - bump this when adding new required fields
+    "_config_version": 44,  # Config schema version - bump this when adding new required fields
 }
 
 

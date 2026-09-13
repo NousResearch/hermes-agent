@@ -2221,15 +2221,22 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     if not hermes_home:
         return None
     try:
+        from agent.secret_scope import (
+            build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
         token = set_hermes_home_override(hermes_home)
+        secret_token = (
+            set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
+            if is_multiplex_active() else None)
         try:
             cfg = load_config()
-            toolsets = sorted(set(_get_platform_tools(cfg, "cli")) - {"all", "*"})
+            toolsets = sorted(set(_get_platform_tools(cfg, "cli")))
         finally:
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
             reset_hermes_home_override(token)
         return toolsets or None
     except Exception as exc:
@@ -2363,7 +2370,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import build_subprocess_env
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
     env = build_subprocess_env(
         scrub_secrets=is_multiplex_active(),
@@ -2383,6 +2390,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # hermes_constants is imported.
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        strip_launch_profile_env(env, env["HERMES_HOME"])
         from hermes_cli.kanban_worker_environment import validate_profile_config
 
         validate_profile_config(env["HERMES_HOME"])

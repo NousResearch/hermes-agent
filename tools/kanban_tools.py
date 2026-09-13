@@ -1041,7 +1041,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
-    if reviewer:
+    if reviewer and not kw.get("_reviewer_already_validated"):
         from hermes_cli.profiles import list_profile_names, normalize_profile_name, profile_exists
 
         reviewer = normalize_profile_name(reviewer)

@@ -810,7 +810,12 @@ def load_gateway_config() -> GatewayConfig:
         with contextlib.suppress(Exception):
             raw_yaml = config_loader.read_yaml_layers(_home)
             slack_cfg = raw_yaml.get("slack") if isinstance(raw_yaml, dict) else None
-    if isinstance(slack_cfg, dict) and "ignored_channels" in slack_cfg and not os.environ.get("SLACK_IGNORED_CHANNELS"):
+    secondary_profile = False
+    with contextlib.suppress(Exception):
+        from gateway.config_env import _loading_secondary_under_multiplexer
+        secondary_profile = _loading_secondary_under_multiplexer()
+    if (isinstance(slack_cfg, dict) and "ignored_channels" in slack_cfg
+            and not os.environ.get("SLACK_IGNORED_CHANNELS") and not secondary_profile):
         ignored = slack_cfg.get("ignored_channels")
         if isinstance(ignored, (list, tuple, set)):
             os.environ["SLACK_IGNORED_CHANNELS"] = ",".join(str(item).strip() for item in ignored if str(item).strip())

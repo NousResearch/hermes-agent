@@ -267,7 +267,7 @@ def reconcile_kanban_stop_to_review(
             "reviewer": reviewer,
             "metadata": {"source": "kanban_stop_guard", "terminal_nudges": attempts,
                          "completion_inferred": False},
-        })
+        }, _reviewer_already_validated=True)
         payload = json.loads(raw) if isinstance(raw, str) else raw
         return isinstance(payload, dict) and payload.get("ok") is True
     except Exception:

@@ -33,6 +33,9 @@ _STDIO_NO_RESPAWN_MSG = (
 _STDIO_DIED_AGAIN_MSG = (
     "MCP server '{s}' respawned its stdio subprocess and it exited again immediately. The server is not starting "
     "cleanly — do NOT retry this tool; ask the user to check the server's command and its stderr log.")
+_STDIO_OUTCOME_UNCERTAIN_MSG = (
+    "MCP server '{s}' lost its stdio subprocess after the tool call began. The operation may have completed, so "
+    "Hermes did not replay it. Do NOT retry automatically; inspect the external state first.")
 
 
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
@@ -140,17 +143,15 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
 
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
-    """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
-    when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
+    (an application error is still the tool's real answer, and still a breaker strike per #10447);
+    None when the retry raised (caller falls through)."""
     try:
         result = retry_call()
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    if _result_is_error(result):
-        return None
-    _core._reset_server_error(server_name)
-    return result
+    return _record_call_outcome(server_name, result)
 
 
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
@@ -203,11 +204,19 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
 class _StdioChildExited(RuntimeError):
     """Stdio subprocess gone when (or while) a call ran. Deliberately NOT a TimeoutError."""
 
+    def __init__(self, message: str, *, in_flight: bool):
+        super().__init__(message)
+        self.in_flight = in_flight
+
 
 def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry_call, op_description: str):
-    """Respawn a dead stdio child and retry once; None if not our error. Never spawns itself: it
-    sets ``_reconnect_event`` and waits, so spawn frequency stays governed by ``run()``'s
-    rapid-drop budget. Single-shot: a child that dies again reports and stops.
+    """Respawn a dead stdio child; retry once only when it was dead before dispatch.
+
+    A mid-call exit is ambiguous: the server may have applied a side effect before its
+    response pipe disappeared. Reconnect for future calls but never replay that operation.
+    None means this is not our error. This function never spawns itself: it sets
+    ``_reconnect_event`` and waits, so spawn frequency stays governed by ``run()``'s rapid-drop
+    budget. A pre-dispatch retry whose child dies again reports and stops.
 
     Why retrying here cannot hot-cycle respawns: this function never spawns anything. It sets
     ``_reconnect_event`` (one signal, same as before) and waits for the server task to publish a fresh
@@ -219,13 +228,20 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     reconnected = False
     srv = _lookup_reconnectable_server(server_name)
     if srv is not None:
-        logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); respawning and retrying once.",
-                    server_name, op_description, exc)
+        action = "reconnecting without replay" if exc.in_flight else "respawning and retrying once"
+        logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); %s.",
+                    server_name, op_description, exc, action)
         if _mcp_loop_running():
             reconnected = _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=op_description, timeout=_core._STDIO_RESPAWN_WAIT_SEC)
         else:  # No MCP loop to wait on (non-async adapters, tests): still request the respawn.
             _loop._signal_reconnect(srv)
+    if exc.in_flight:
+        return _strike(
+            server_name,
+            _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),
+            outcome_uncertain=True,
+        )
     if not reconnected:
         return _strike(server_name, _STDIO_NO_RESPAWN_MSG.format(s=server_name, t=_core._STDIO_RESPAWN_WAIT_SEC))
     try:
@@ -234,6 +250,12 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
         # Died again right after respawn: broken server; run()'s budget takes it to the park.
         logger.warning("MCP server '%s': %s stdio subprocess exited again right after respawn (%s); not retrying "
                        "further.", server_name, op_description, retry_exc)
+        if retry_exc.in_flight:
+            return _strike(
+                server_name,
+                _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),
+                outcome_uncertain=True,
+            )
         return _strike(server_name, _STDIO_DIED_AGAIN_MSG.format(s=server_name))
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after stdio respawn failed: %s", server_name, op_description, retry_exc)
@@ -299,12 +321,16 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
-    owns the reconnect signal. callable()/``is True`` because MagicMock attributes are truthy."""
+    owns the reconnect signal; only pre-call failure is safe to replay. callable()/``is True``
+    because MagicMock attributes are truthy."""
     # Fast-fail (#81995): a stdio subprocess that is already dead must not own this call slot — fail
     # immediately instead of waiting out the full tool timeout on a transport nobody will ever answer.
     _stdio_dead = getattr(server, "_stdio_children_dead", None)
     if callable(_stdio_dead) and _stdio_dead() is True:
-        raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched")
+        raise _StdioChildExited(
+            f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
+            in_flight=False,
+        )
     _call_coro = server.session.call_tool(tool_name, arguments=args)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
@@ -318,8 +344,18 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
         done, _pending = await asyncio.wait({rpc_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
         if watch_task in done and not rpc_task.done():
             rpc_task.cancel()
-            raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' exited mid-call")
-        return await rpc_task
+            raise _StdioChildExited(
+                f"MCP stdio subprocess for '{server_name}' exited mid-call", in_flight=True)
+        try:
+            return await rpc_task
+        except Exception as exc:
+            _is_http = getattr(server, "_is_http", None)
+            if callable(_is_http) and _is_http() is False and _is_session_expired_error(exc):
+                raise _StdioChildExited(
+                    f"MCP stdio subprocess for '{server_name}' closed its transport mid-call",
+                    in_flight=True,
+                ) from exc
+            raise
     finally:
         watch_task.cancel()
         if not rpc_task.done():

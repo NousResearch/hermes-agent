@@ -65,6 +65,18 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
     ~28 min holding ``_CACHE_LOCK``). Temp files make ``wait()`` cover only the child."""
     try:
         with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+            if os.name != "nt":
+                try:
+                    result = subprocess.run(
+                        cmd, stdout=out_f, stderr=err_f, timeout=timeout, check=False,
+                        # CREATE_NO_WINDOW (0 on POSIX): pythonw hosts would flash a console
+                        stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                except subprocess.TimeoutExpired:
+                    return -1, "", "timeout"
+                out_f.seek(0)
+                err_f.seek(0)
+                return (result.returncode, out_f.read().decode("utf-8", "replace").strip(),
+                        err_f.read().decode("utf-8", "replace").strip())
             try:
                 process = subprocess.Popen(
                     cmd, stdout=out_f, stderr=err_f,

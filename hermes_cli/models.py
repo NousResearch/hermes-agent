@@ -637,7 +637,7 @@ def fetch_ai_gateway_models(
     from hermes_constants import AI_GATEWAY_BASE_URL
 
     fallback = list(VERCEL_AI_GATEWAY_MODELS)
-    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, urllib.request.urlopen)
+    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
     if live is None:
         return list(_ai_gateway_catalog_cache or fallback)
     _, live_by_id = live
@@ -2481,7 +2481,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _HERMES_USER_AGENT}
     try:
         url = base_url.rstrip("/") + "/models"
-        data = _get_json(url, timeout=timeout, headers=headers, opener=urllib.request.urlopen)
+        data = _get_json(url, timeout=timeout, headers=headers)
         return [
             m["id"] for m in data.get("data", [])
             if m.get("id") and m.get("type") == "language" and "tool-use" in (m.get("tags") or [])]

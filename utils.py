@@ -231,6 +231,18 @@ def atomic_json_write(
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path))
 
 
+def read_json_or_empty(path: Union[str, Path]) -> dict:
+    """The JSON object at *path*, or ``{}`` when the file is missing, unreadable, malformed or
+    not an object. The read half of every ``read → merge → atomic_json_write`` config store
+    (memory-provider ``save_config``), so a corrupt sidecar degrades to defaults instead of
+    taking the provider down."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: str = "", log: logging.Logger | None = None) -> bool:
     """Warn when a credential file is group/world-readable; True when a warning was emitted.
 

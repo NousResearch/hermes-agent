@@ -21,12 +21,6 @@ class CopilotACPProfile(ProviderProfile):
 
         return CopilotACPClient(**client_kwargs)
 
-    def fetch_models(
-        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
-    ) -> list[str] | None:
-        """Model listing is handled by the ACP subprocess."""
-        return None
-
 
 copilot_acp = CopilotACPProfile(
     name="copilot-acp", aliases=("github-copilot-acp", "copilot-acp-agent"),
@@ -34,6 +28,7 @@ copilot_acp = CopilotACPProfile(
     env_vars=(),  # Managed by ACP subprocess
     base_url="acp://copilot",  # ACP internal scheme
     auth_type="external_process",
+    supports_model_listing=False,  # model listing is handled by the ACP subprocess
     # How to launch the CLI; env var names predate this profile (formerly hardcoded in
     # hermes_cli/auth.py), so existing setups keep working.
     process_command="copilot",

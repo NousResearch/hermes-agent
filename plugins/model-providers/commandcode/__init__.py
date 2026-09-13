@@ -6,6 +6,7 @@ import json
 import logging
 import urllib.request
 
+from hermes_cli.urllib_security import open_credentialed_url
 from providers import register_provider
 from providers.base import ProviderProfile, _profile_user_agent
 
@@ -30,7 +31,7 @@ class CommandCodeProfile(ProviderProfile):
             req = urllib.request.Request(models_url)
             req.add_header("Accept", "application/json")
             req.add_header("User-Agent", _profile_user_agent())
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             return [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
         except Exception as exc:

@@ -17,7 +17,6 @@ import os
 # replacing the single process-wide slot that pinned the first profile's workspace and bearer for every
 # later profile in multi-profile processes (#69123 multiplexed gateway, #74065 dashboard). The legacy names
 # above are retained only for reset bookkeeping.
-import threading as _threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -505,16 +504,6 @@ class HonchoClientConfig:
         if self.session_strategy in {"per-directory", "per-session"}:
             return self._with_peer_prefix(Path(cwd).name)
         return self.workspace_id
-
-
-def spawn_context_thread(target, *, name: str, daemon: bool = True, args: tuple = ()) -> "_threading.Thread":
-    """Thread that inherits the caller's contextvars: profile isolation is a ContextVar
-    (set_hermes_home_override) and a plain Thread starts EMPTY, so ambient resolution on it
-    would silently land on the default profile."""
-    import contextvars
-
-    ctx = contextvars.copy_context()
-    return _threading.Thread(target=lambda: ctx.run(target, *args), name=name, daemon=daemon)
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:

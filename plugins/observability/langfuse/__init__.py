@@ -88,16 +88,12 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _secret(name: str) -> str:
-    """Credential read honoring the active profile's secret scope; plain os.environ when unscoped."""
-    try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            return (get_secret(name) or "").strip()
-        except UnscopedSecretError:
-            pass
-    except Exception:
-        pass
-    return _env(name)
+    """Credential read through the profile secret scope. A scope-less multiplex caller raises
+    (``UnscopedSecretError``): that is a spawn-site bug, and reading ``os.environ`` instead would
+    ship this profile's traces with the DEFAULT profile's keys."""
+    from agent.secret_scope import get_secret
+
+    return (get_secret(name) or "").strip()
 
 
 def _debug(message: str) -> None:

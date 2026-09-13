@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from utils import read_json_or_empty
+
 logger = logging.getLogger(__name__)
 
 ACCESS_TOKEN_PREFIX = "hch-at-"
@@ -107,15 +109,9 @@ def _mark_grant_dead(key: tuple[str, str], cred: OAuthCredential) -> None:
     _dead_grants[key] = hashlib.sha256(cred.refresh_token.encode("utf-8")).hexdigest()
     _reauth_check_cache.pop(key, None)  # verdict changed without a config rewrite
 
-def _read_config(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
 def _load_cred(path: Path, host: str, raw: dict[str, Any] | None = None) -> OAuthCredential | None:
     """Credential from ``host``'s block in ``raw`` (or the file at ``path``)."""
-    source = raw if raw is not None else _read_config(path)
+    source = raw if raw is not None else read_json_or_empty(path)
     return OAuthCredential.from_host_block((source.get("hosts") or {}).get(host) or {})
 
 def reauth_required(path: Path, host: str) -> bool:
@@ -285,7 +281,7 @@ def _persist_credential(path: Path, host: str, cred: OAuthCredential, raw: dict[
     the file's current content), leaving the rest intact; marks the grant live."""
     from utils import atomic_json_write
 
-    raw = _read_config(path) if raw is None else raw
+    raw = read_json_or_empty(path) if raw is None else raw
     block = raw.setdefault("hosts", {}).setdefault(host, {})
     block["apiKey"], block["oauth"] = cred.access_token, cred.oauth_block()
     atomic_json_write(path, raw, mode=0o600)
@@ -361,7 +357,7 @@ def install_grant(
     ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only."""
     now = time.time() if now is None else now
     cred = OAuthCredential.from_token_response(grant, now=now, client_id=client_id, token_endpoint=token_endpoint)
-    raw = _read_config(path)
+    raw = read_json_or_empty(path)
     granted_config = grant.get("config")
     if isinstance(granted_config, dict):
         cred.consent_peer_name = granted_config.get("peerName")

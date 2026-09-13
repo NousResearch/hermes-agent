@@ -207,12 +207,11 @@ def _env(name: str) -> str:
 
 def _scoped_env(name: str) -> str:
     """Credential-bearing env read via the profile secret scope so a multiplexed profile never reports
-    another profile's env-bridged credentials; unscoped CLI probes fall back to plain env."""
-    try:
-        from agent.secret_scope import get_secret
-        return (get_secret(name) or "").strip()
-    except Exception:  # UnscopedSecretError, import failure, or any scope error
-        return _env(name)
+    another profile's env-bridged credentials. Unscoped CLI probes (multiplex off) read the process
+    env through ``get_secret`` itself; a scope-less multiplex caller raises — spawn-site bug."""
+    from agent.secret_scope import get_secret
+
+    return (get_secret(name) or "").strip()
 
 
 # (label, predicate) for env-var-driven credential sources, in chain order.

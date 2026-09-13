@@ -357,9 +357,7 @@ class TestCommandCodeBaseUrlOverride:
             captured["url"] = req.full_url
             return _FakeResp()
 
-        with mock_patch.object(
-            cc_mod.urllib.request, "urlopen", side_effect=fake_urlopen
-        ):
+        with mock_patch.object(cc_mod, "open_credentialed_url", side_effect=fake_urlopen):
             result = commandcode_profile.fetch_models(
                 api_key="k", base_url=cc_mod._COMMANDCODE_BASE + "/"
             )

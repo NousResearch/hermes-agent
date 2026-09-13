@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret
 from agent.file_safety import raise_if_read_blocked
 from tools.registry import tool_error
@@ -186,7 +186,7 @@ class _WriteQueue:
 
     def __init__(self, client: _Client, db_path: Path):
         self._client, self._db_path, self._q = client, db_path, queue.Queue()
-        self._thread = threading.Thread(target=self._loop, name="retaindb-writer", daemon=True)
+        self._thread = spawn_context_thread(self._loop, name="retaindb-writer")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()  # one cached connection per thread, all tracked in _connections
         self._connections: set[sqlite3.Connection] = set()
@@ -346,7 +346,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         soul = (home / "SOUL.md").read_text(encoding="utf-8", errors="replace").strip() if (home / "SOUL.md").exists() else ""
         if soul:  # seed agent identity from SOUL.md in background
             seed = lambda: self._client.seed_agent_identity(self._agent_id, soul, source="soul_md")  # noqa: E731
-            threading.Thread(target=_quiet, args=("soul seed", seed), name="retaindb-soul-seed", daemon=True).start()
+            spawn_context_thread(_quiet, args=("soul seed", seed), name="retaindb-soul-seed").start()
 
     def system_prompt_block(self) -> str:
         project = self._client.project if self._client else "retaindb"
@@ -368,7 +368,7 @@ class RetainDBMemoryProvider(MemoryProvider):
                 self._client.ask_user(self._user_id, query, reasoning_level=self._reasoning_level(query)).get("answer") or "") or None),
             ("retaindb-agent-model", "agent model", "_agent_model", lambda: self._agent_model_or_none(self._client.get_agent_model(self._agent_id))),
         )
-        self._prefetch_threads = [threading.Thread(target=self._store, args=(label, attr, fetch), name=name, daemon=True)
+        self._prefetch_threads = [spawn_context_thread(self._store, args=(label, attr, fetch), name=name)
                                   for name, label, attr, fetch in jobs]
         for t in self._prefetch_threads:
             t.start()

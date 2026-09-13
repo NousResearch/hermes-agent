@@ -73,7 +73,11 @@ def local_fallback_steps(route, step_factory):
             classification = classify_destination(provider, base_url, api_mode)
             if classification in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
                 auxiliary._record_route_info(route.route_info, provider, model)
-                response = yield step_factory("fallback", (client, model, label))
+                response, _ = yield from auxiliary._rung(
+                    step_factory("fallback", (client, model, label)),
+                    lambda exc: any(check(exc) for check, _ in auxiliary._FALLBACK_REASONS)
+                    or auxiliary._is_transient_transport_error(exc),
+                )
                 if response is not None:
                     return response
                 # A local candidate may have been quarantined by the call

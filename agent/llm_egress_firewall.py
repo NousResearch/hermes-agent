@@ -800,22 +800,9 @@ def classify_destination(
     remote policy.  Missing or malformed endpoint data is unknown.
     """
 
-    normalized_provider = str(provider or "").strip().lower()
     mode = str(api_mode or "").strip().lower()
     if mode in _LOCAL_PROCESS_MODES:
         return DestinationClass.LOCAL_PROCESS
-    # ACP is a trusted subprocess transport, not an HTTP endpoint. Trust only
-    # providers registered with the external-process transport metadata;
-    # arbitrary ``acp://`` values remain unknown.
-    if mode == "chat_completions":
-        from hermes_cli.runtime_provider_backends import _is_external_process_provider
-
-        is_registered_external_process = _is_external_process_provider(normalized_provider)
-    else:
-        is_registered_external_process = False
-    if is_registered_external_process and mode == "chat_completions":
-        if isinstance(base_url, str) and base_url.strip().lower().startswith("acp://"):
-            return DestinationClass.LOCAL_PROCESS
     if not isinstance(base_url, str) or not base_url.strip():
         return DestinationClass.UNKNOWN
     try:

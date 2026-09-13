@@ -293,7 +293,7 @@ def test_external_process_registry_metadata_preserves_out_of_tree_acp_marker(mon
 
     assert agent.base_url == "acp://seam-acp"
     assert route.base_url == "acp://seam-acp"
-    assert classify_destination("seam-acp", route.base_url, route.api_mode) is DestinationClass.LOCAL_PROCESS
+    assert classify_destination("seam-acp", route.base_url, route.api_mode) is DestinationClass.UNKNOWN
 
 
 def test_only_compression_auxiliary_binding_gets_larger_exact_grant_caps():
@@ -5560,3 +5560,23 @@ def test_streaming_local_fallback_refreshes_or_skips_stale_candidate(monkeypatch
     assert stale.chat.completions.create.call_count == 1
     assert healthy.chat.completions.create.call_count == 1
     assert quarantined.call_count == (0 if refresh else 1)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_local_recovery_skips_unavailable_candidate(monkeypatch, stream):
+    import agent.auxiliary_client as auxiliary
+
+    primary = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    offline = MagicMock(base_url="http://127.0.0.1:11434/v1")
+    offline.chat.completions.create.side_effect = ConnectionError("connection refused")
+    healthy = MagicMock(base_url="http://127.0.0.1:11435/v1")
+    expected = iter(["chunk"]) if stream else _aux_egress_response("healthy")
+    healthy.chat.completions.create.return_value = expected
+    monkeypatch.setattr(auxiliary, "_get_cached_client", lambda *a, **kw: (primary, "model"))
+    candidates = iter([(offline, "model", "custom"), (healthy, "model", "custom")])
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", lambda *a, **kw: next(candidates))
+    result = call_llm(task="compression", provider="openai-codex", model="gpt-5.4", stream=stream,
+                      messages=[{"role": "user", "content": "token=super-secret-value"}])
+    assert result is expected
+    primary.chat.completions.create.assert_not_called()
+    healthy.chat.completions.create.assert_called_once()

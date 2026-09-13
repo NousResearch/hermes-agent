@@ -42,6 +42,8 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $turnStartedAt,
+  $workspaceCwdOwner,
+  _resetSessionOwnerHintsForTests,
   getSessionOwnerHint,
   knownSessionOwner,
   sessionMatchesStoredId,
@@ -62,8 +64,10 @@ import {
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
+  setSessionOwnerHint,
   setSessions,
-  setTurnStartedAt
+  setTurnStartedAt,
+  workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
@@ -4529,5 +4533,92 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
     expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'session.close')).toEqual([])
     expect(ambientRequest).not.toHaveBeenCalledWith('session.close', expect.anything())
     expect(getSessionOwnerHint(STORED)).toEqual(route)
+  })
+})
+
+
+// ── Files-pane workspace resolution (#108805) ────────────────────────────────
+// "No project open" for a session whose workspace row is identical to a
+// sibling's. The pane's answer for the SELECTED conversation must come from
+// whatever row the renderer already holds for it; the owner-ROUTING lookup
+// (deliberately fail-closed when an exact route cannot be read) must not be
+// able to erase it. Here the conversation's only loaded row is its project lane
+// row — the shape every drilled-in project lane carries — and its persisted
+// owner hint forces a scoped by-id read that fails.
+describe('Files-pane workspace resolution across every list that holds the row', () => {
+  function projectLane(session: SessionInfo) {
+    return [
+      {
+        id: 'p_repro',
+        label: 'Repro',
+        path: '/repo',
+        repos: [
+          {
+            groups: [{ id: 'g_repro', label: 'main', path: '/repo', sessions: [session] }],
+            id: 'r_repro',
+            label: 'repo',
+            path: '/repo',
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1
+      } as never
+    ]
+  }
+
+  beforeEach(() => {
+    $projectTree.set([])
+    setSessions([])
+    setCronSessions([])
+    setMessagingSessions([])
+    setSelectedStoredSessionId(null)
+    setCurrentCwd('')
+    $workspaceCwdOwner.set(null)
+    _resetSessionOwnerHintsForTests()
+  })
+
+  afterEach(() => {
+    cleanup()
+    $projectTree.set([])
+    setSessions([])
+    setCronSessions([])
+    setMessagingSessions([])
+    setSelectedStoredSessionId(null)
+    setCurrentCwd('')
+    $workspaceCwdOwner.set(null)
+    _resetSessionOwnerHintsForTests()
+    vi.restoreAllMocks()
+  })
+
+  it('resolves the workspace from a lane-only row when the owner-route read cannot', async () => {
+    // Identical workspace row on both sides: only WHERE the row is loaded
+    // differs, which is the reporter's per-session split.
+    setSessions([storedSession({ cwd: '/repo', id: 'sibling' })])
+    $projectTree.set(projectLane(storedSession({ cwd: '/repo', id: 'stored-1', profile: 'default' })))
+    // A persisted exact owner route (it survives restarts) sends the row lookup
+    // through a scoped by-id read that fails.
+    setSessionOwnerHint('stored-1', { connectionId: 'local', profile: 'default' })
+    vi.mocked(getSession).mockRejectedValue(new Error('Request failed 404'))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
+      method === 'session.resume'
+        ? ({ info: {}, messages: [], resumed: params?.session_id, session_id: 'runtime-1' } as never)
+        : ({} as never)
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    // The sibling's identical workspace resolves...
+    expect($sessions.get().find(session => session.id === 'sibling')?.cwd).toBe('/repo')
+    // ...so the selected conversation must resolve to that same workspace
+    // instead of blanking the Files pane.
+    expect($selectedStoredSessionId.get()).toBe('stored-1')
+    expect($currentCwd.get()).toBe('/repo')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
   })
 })

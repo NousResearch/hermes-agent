@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
-import { $connection, $selectedStoredSessionId, $workspaceCwdOwner, setCurrentCwd } from '@/store/session'
+import { $connection, $selectedStoredSessionId, $workspaceCwdOwner, setCurrentCwd, setSessions } from '@/store/session'
+import { makeSessionInfo } from '@/test/session-info'
 
 import { resetProjectTreeState } from './files/use-project-tree'
 
@@ -19,6 +20,7 @@ describe('RightSidebarPane', () => {
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
+    setSessions([])
     resetProjectTreeState()
     readDir.mockReset()
     readDir.mockResolvedValue({ entries: [{ isDirectory: false, name: 'README.md', path: '/repo/README.md' }] })
@@ -31,6 +33,7 @@ describe('RightSidebarPane', () => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
+    setSessions([])
     resetProjectTreeState()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
@@ -59,6 +62,21 @@ describe('RightSidebarPane', () => {
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
+  })
+
+  // #108805: the ownership marker is stamped by whichever claim happened to
+  // run, so conversations whose claim was never stamped read as "No project
+  // open" forever — even with a workspace row identical to a working sibling's.
+  // The pane must answer from the SELECTED conversation's own loaded row.
+  it('shows the tree for a session whose own row names a workspace, without an ownership claim', async () => {
+    $selectedStoredSessionId.set('stored-lane')
+    $workspaceCwdOwner.set(null)
+    setCurrentCwd('/previous-project')
+    setSessions([makeSessionInfo({ cwd: '/repo', id: 'stored-lane', profile: 'default' })])
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo'))
   })
 
   it('shows no tree for a detached chat (no working dir)', async () => {

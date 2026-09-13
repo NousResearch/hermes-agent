@@ -9,7 +9,6 @@ import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
-import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
   $currentCwd,
@@ -39,6 +38,7 @@ import {
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import { sessionTileOwnerRoute } from '@/store/session-states'
+import { candidateSessionRows } from '@/store/workspace-cwd'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -1411,30 +1411,14 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   ])
 }
 
-// Every session row reachable through the profile-scoped project tree —
-// preview rows on a collapsed project plus the drill-in lane rows. These are
-// the only rows guaranteed to name their owning profile (the gateway stamps
-// the request scope onto them), so owner resolution has to see them.
-function projectTreeSessions(): SessionInfo[] {
-  return $projectTree
-    .get()
-    .flatMap(project => [
-      ...(project.previewSessions ?? []),
-      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
-    ])
-}
-
 // The best cached row for a stored id, across every list that can hold one.
 // "Best" means self-describing: the same conversation can appear both as an
 // ownerless legacy Recents copy and as a profile-stamped project-tree row, and
 // picking the ownerless one throws away the only routing information we have.
+// The candidate set is shared with the workspace resolution (see
+// @/store/workspace-cwd) so both ladders see the same rows.
 export function cachedSessionRow(storedSessionId: string): SessionInfo | undefined {
-  const candidates = [
-    ...$sessions.get(),
-    ...$cronSessions.get(),
-    ...$messagingSessions.get(),
-    ...projectTreeSessions()
-  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
+  const candidates = candidateSessionRows().filter(session => sessionMatchesStoredId(session, storedSessionId))
 
   return (
     candidates.find(session => session.connection_id?.trim()) ??

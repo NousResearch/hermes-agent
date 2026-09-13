@@ -34,7 +34,7 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
     monkeypatch.setattr("hermes_cli.gateway.find_windows_gateway_services", lambda: [])
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
-    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda **_kwargs: [])
     monkeypatch.setattr(
         "hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
@@ -89,7 +89,7 @@ class TestCollectInventory:
 
         monkeypatch.setattr(
             "hermes_cli.gateway.find_profile_gateway_processes",
-            lambda exclude_pids=None: [
+            lambda **_kwargs: [
                 ProfileGatewayProcess(profile="legacy", path=Path("/x"), pid=300),
                 # duplicate of an already-seen pid — must be deduped
                 ProfileGatewayProcess(profile="default", path=Path("/y"), pid=100),

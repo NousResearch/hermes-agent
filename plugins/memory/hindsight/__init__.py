@@ -273,6 +273,58 @@ def _event_timestamp() -> str:
     return event_time.isoformat(timespec="seconds")
 
 
+def _load_thread_routing() -> dict:
+    """Load the optional thread-scoped recall routing table.
+
+    Same resolution/fail-open discipline as _load_config(): a missing file is a
+    silent no-op (empty table); a malformed file or a bad entry is logged and
+    that entry (or the whole table) is skipped — this must never raise and
+    must never block plugin initialize(). Path is profile-scoped via
+    get_hermes_home(), same as config.json, so multi-profile setups don't
+    collide (Planner review t_a1317d5c, S3).
+
+    Format: {"<platform>:<thread_id>": {"extra_tags": [...], "domain": "...",
+    "vault_path": "..."}}. A key without the "<platform>:<id>" colon form is a
+    bare DOMAIN key (Desktop workstream routing, SPEC-INFRA-DESKRECALL-001 §3.2):
+    same entry shape, same extra_tags element-type validation, same dormant-entry
+    skip. Only "extra_tags" is consumed by this plugin today;
+    "domain"/"vault_path" are inert here, reserved for future use — a SOUL-level
+    bootstrap-recipe mechanism sharing this table was considered and declined
+    2026-07-24 (Planner consult t_32e5ae5d); these fields stay for whatever else
+    ends up wanting per-thread domain/path metadata.
+    """
+    from pathlib import Path
+
+    routing_path = get_hermes_home() / "hindsight" / "thread_routing.json"
+    if not routing_path.exists():
+        return {}
+    try:
+        raw = json.loads(routing_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("thread_routing.json is malformed, ignoring (fail-open to global recall config): %s", e)
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("thread_routing.json root is not an object, ignoring: %r", type(raw))
+        return {}
+
+    validated: dict = {}
+    for key, entry in raw.items():
+        try:
+            if not isinstance(key, str) or not isinstance(entry, dict):
+                raise ValueError("entry must be a string key -> object")
+            if entry.get("dormant"):
+                continue  # skip dormant entries — archived threads fall back to global recall config
+            extra_tags = entry.get("extra_tags", [])
+            if extra_tags is None:
+                extra_tags = []
+            if not isinstance(extra_tags, list) or not all(isinstance(t, str) for t in extra_tags):
+                raise ValueError("extra_tags must be a list of strings")
+            validated[key] = {"extra_tags": extra_tags}
+        except Exception as e:
+            logger.warning("thread_routing.json entry %r is invalid, skipping: %s", key, e)
+    return validated
+
+
 def _mint_document_id(session_id: str) -> str:
     """Per-process document id: reusing session_id alone overwrote the document on
     /resume (the reloaded session's first retain replaced the stored content)."""
@@ -352,6 +404,12 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._last_recall_returned, self._last_recall_count = False, 0
+        # Desktop workstream routing (SPEC-INFRA-DESKRECALL-001): the routing table
+        # is loaded once at initialize(); the marker records whether a platform:thread
+        # override already fired there, because the desktop domain branch must never
+        # shadow it. Defaults here keep any pre-initialize read safe.
+        self._thread_routing_table: dict = {}
+        self._thread_routing_override = False
         self._apply_recall_settings({})
 
     @property
@@ -691,6 +749,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 return
         self._apply_connection_settings(cfg)
         self._apply_retain_settings(cfg)
+        # Routing table loaded once here; the desktop domain branch reads the
+        # CONTEXT cwd per recall call, never the table (SPEC-INFRA-DESKRECALL-001
+        # §3.1/§3.2).
+        self._thread_routing_table = _load_thread_routing()
         self._apply_recall_settings(cfg)
 
         client_version = "unknown"
@@ -787,6 +849,32 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
         self._recall_indicator = bool(cfg.get("recall_indicator", True))
 
+        # Thread-scoped recall override (Step 2, Planner review t_a1317d5c).
+        # Must run AFTER the config-based assignment above — and in the new
+        # structure that holds here: initialize() sets _SESSION_KWARGS
+        # (platform/thread_id) before calling this method. Fail-open by
+        # construction: an unmatched key, missing file, or malformed table all
+        # leave self._recall_tags/_recall_tags_match at whatever config.json
+        # already specified — zero behavior change for any unrouted thread.
+        self._thread_routing_override = False
+        if self._platform and self._thread_id:
+            _routing_key = f"{self._platform}:{self._thread_id}"
+            _routing_entry = self._thread_routing_table.get(_routing_key)
+            if _routing_entry is not None:
+                _channel_tag = f"channel:{self._platform}:{self._thread_id}"
+                _override_tags = [_channel_tag] + list(_routing_entry.get("extra_tags", []))
+                self._recall_tags = _override_tags
+                # Recorded so the desktop domain branch stays a disjoint condition:
+                # it fires only when no platform:thread override applied (§3.2).
+                self._thread_routing_override = True
+                # any_strict, not any (Planner S1) — "any" would also admit
+                # untagged facts, silently weakening the existing config.
+                self._recall_tags_match = "any_strict"
+                logger.info(
+                    "Hindsight thread-routing override active: key=%s recall_tags=%s recall_tags_match=%s",
+                    _routing_key, self._recall_tags, self._recall_tags_match,
+                )
+
     def _start_embedded_daemon(self) -> None:
         """Start the embedded daemon on a background thread (Rich output -> log file)."""
         # PostgreSQL's initdb refuses root; without this guard the start thread
@@ -863,19 +951,146 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: skipped (%s)", why)
         return why is not None
 
+    def _effective_recall_filter(self) -> tuple[list[str] | None, str, bool]:
+        """Resolve the recall filter for THIS call (SPEC-INFRA-DESKRECALL-001 §3.4).
+
+        Baseline ``(self._recall_tags, self._recall_tags_match)`` — the config.json
+        values — UNLESS the desktop domain-routing branch activates: platform is
+        exactly ``desktop`` (single predicate, R3-1), no platform:thread override
+        fired at initialize(), ``recall_sync`` is true (§3.7 verified prerequisite),
+        the configured ``desktop_context_root`` is set, the session cwd (session
+        ContextVar override OR terminal-scope fallback, §3.1) resolves under
+        ``root/<domain>/`` (``Path.resolve()`` + ``relative_to``; cwd == root or
+        outside root = no match), and that domain key's ``extra_tags`` is — as a
+        WHOLE — a nonempty list of nonblank strings, forwarded verbatim (never
+        stripped, never sanitized to a subset). Every other case — unrouted
+        Discord/CLI sessions, resolver None, a resolver OSError/RuntimeError
+        (e.g. an unresolvable ``~user`` session override), outside root, cwd ==
+        root, unmatched or dormant domain, blank/non-str tag elements,
+        missing/malformed table, root key absent — returns the baseline unchanged
+        (fail-open): the desktop branch never REPLACES the baseline with an empty
+        filter, which would drop both tags and tags_match and cause unrestricted
+        bank recall (R1-F2). A TerminalPolicyUnavailable refusal from the
+        terminal scope is a deliberate refusal and deliberately propagates
+        (R5 boundary).
+
+        Returns ``(tags, tags_match, activated)``: ``activated`` is True
+        only when this call took the Desktop domain branch. It is the single
+        per-call signal _reflect() may use to forward a tag filter — upstream
+        _reflect() sends none, so baseline returns must never add one.
+        """
+        from agent.runtime_cwd import resolve_context_cwd
+
+        baseline = (self._recall_tags, self._recall_tags_match)
+        if self._thread_routing_override:
+            # A platform:thread override already applied at initialize() — that
+            # routing decision is authoritative; the domain branch must not shadow
+            # it (§3.2: explicit, disjoint condition).
+            logger.debug(
+                "Hindsight desktop domain routing skipped (platform:thread "
+                "override already applied at initialize())"
+            )
+            return (*baseline, False)
+        if self._platform != "desktop":
+            # Single platform predicate (R3-1): every other platform keeps
+            # byte-identical baseline behavior (debug-only signal, no noise at
+            # default log levels).
+            logger.debug(
+                "Hindsight desktop domain routing skipped (platform=%s)",
+                self._platform,
+            )
+            return (*baseline, False)
+        if not self._recall_sync:
+            # §3.8.6 defensive close: buffered async prefetch results cannot be
+            # scope-invalidated (§3.7 out of scope), so domain routing trips
+            # closed whenever recall_sync is off — feature disablement, not a
+            # confidentiality guarantee (R3 interpretation, binding at build).
+            logger.debug(
+                "Hindsight desktop domain routing trips closed (recall_sync=%s): "
+                "platform=%s keeps the global recall filter",
+                self._recall_sync, self._platform,
+            )
+            return (*baseline, False)
+        root_raw = (self._config or {}).get("desktop_context_root")
+        if not root_raw:
+            # config key absent (or null) -> branch inert (§3.4)
+            logger.debug(
+                "Hindsight desktop domain routing: desktop_context_root absent "
+                "-> global filter"
+            )
+            return (*baseline, False)
+        try:
+            cwd = resolve_context_cwd()
+        except (OSError, RuntimeError) as exc:
+            # Unresolvable ~user session override or traversal failure (§3.1):
+            # fail open to the baseline. Deliberately NARROW — a
+            # TerminalPolicyUnavailable refusal (active terminal scope) is a
+            # refusal, not a resolution failure, and propagates (R5 boundary).
+            logger.debug(
+                "Hindsight desktop domain routing: context cwd resolution failed "
+                "(%s: %s) -> global filter",
+                type(exc).__name__, exc,
+            )
+            return (*baseline, False)
+        if not cwd:
+            logger.debug("Hindsight desktop domain routing: no context cwd resolved -> global filter")
+            return (*baseline, False)
+        try:
+            root = Path(root_raw).expanduser().resolve()
+            rel = cwd.resolve().relative_to(root)
+            domain = rel.parts[0] if rel.parts else None
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            # Outside root, cwd == root, symlink boundary crossing the root edge,
+            # unresolvable paths, or a non-path root value.
+            logger.debug("Hindsight desktop domain routing: cwd %r not routable under root %r (%s)",
+                         str(cwd), root_raw, exc)
+            return (*baseline, False)
+        if not domain:
+            # cwd == root -> no domain component
+            logger.debug(
+                "Hindsight desktop domain routing: cwd == root -> global filter")
+            return (*baseline, False)
+        entry = self._thread_routing_table.get(domain)
+        if entry is None:
+            logger.debug("Hindsight desktop domain routing: no active route for domain %r", domain)
+            return (*baseline, False)
+        extra = entry.get("extra_tags") if isinstance(entry, dict) else None
+        if (not isinstance(extra, list) or not extra
+                or not all(isinstance(t, str) and t.strip() for t in extra)):
+            # §3.4: extra_tags must BE a nonempty list of nonblank strings.
+            # Any deviation — blank or non-str element, empty list — yields the
+            # baseline; never a sanitized subset, never a stripped rewrite.
+            logger.debug(
+                "Hindsight desktop domain routing: domain %r extra_tags is not a "
+                "nonempty list of nonblank strings -> baseline", domain)
+            return (*baseline, False)
+        logger.info(
+            "Hindsight desktop domain-routing override active: key=%s domain=%s "
+            "tags=%s tags_match=any_strict",
+            domain, domain, extra,
+        )
+        return extra, "any_strict", True
+
     def _recall(self, query: str) -> list:
+        tags, tags_match, _activated = self._effective_recall_filter()
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
-        if self._recall_tags:
-            kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
+        if tags:
+            kwargs.update(tags=tags, tags_match=tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
     def _reflect(self, query: str) -> str | None:
-        resp = self._run_hindsight_operation(
-            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
-        )
+        tags, tags_match, activated = self._effective_recall_filter()
+        kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget}
+        # Upstream _reflect() forwards NO tag filter. Only an active
+        # Desktop domain match may add one (upstream-extraction
+        # Correction #2): unconfigured, non-Desktop, and unrouted
+        # sessions keep byte-identical upstream reflect behavior.
+        if activated and tags:
+            kwargs.update(tags=tags, tags_match=tags_match)
+        resp = self._run_hindsight_operation(lambda client: client.areflect(**kwargs))
         return resp.text
 
     def _do_recall(self, query: str) -> tuple[str, int]:

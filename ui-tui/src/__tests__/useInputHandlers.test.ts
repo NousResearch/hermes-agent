@@ -10,6 +10,7 @@ import {
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
 const baseKey = {
   downArrow: false,
@@ -181,6 +182,25 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    await pending
+  })
+
+  it('declines a save-login prompt without putting credentials in the transcript', async () => {
+    resetOverlayState()
+    resetUiState()
+    patchUiState({ status: 'save login for Example' })
+    patchOverlayState({
+      vaultSaveLogin: { origin: 'https://example.test', requestId: 'save-1', site: 'Example' }
+    })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(getUiState().status).toBe('ready')
+    expect(sys).toHaveBeenCalledWith('login was not saved')
+    expect(rpc).toHaveBeenCalledWith('vault.save_login.respond', { login: '', request_id: 'save-1' })
     await pending
   })
 })

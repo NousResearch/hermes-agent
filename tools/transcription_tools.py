@@ -370,6 +370,12 @@ def _transcribe_local(
                                   if v})
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            # faster-whisper's transcribe() is lazy: the decode (and with it the
+            # dlopen-on-first-use of the CUDA runtime on Windows) happens while
+            # ITERATING segments, after this call has already returned (#103793).
+            # Consume inside the guard so a first-use cuBLAS/cuDNN load failure
+            # retries on CPU exactly like a load-time failure does.
+            segments = list(segments)
         except Exception as exc:
             # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
             # cached model, reload on CPU and retry once, else every later message fails.
@@ -379,6 +385,7 @@ def _transcribe_local(
                            "evicting cached model and retrying on CPU (int8).", exc)
             model = _replace_cached_model_on_cpu(model_name)
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            segments = list(segments)
         transcript = _join_confident_segments(segments, local_cfg)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)

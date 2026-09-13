@@ -81,9 +81,12 @@ def _try_lazy_install_stt() -> bool:
 # Substrings identifying a missing/unloadable CUDA runtime library: the "auto" device
 # picker has already committed to CUDA, so we fall back to CPU and reload. Deliberately
 # narrow (library names + dlopen phrasing) so legitimate runtime failures like "CUDA
-# out of memory" surface to the user instead of silently running on CPU.
+# out of memory" surface to the user instead of silently running on CPU. Windows DLL
+# names carry no "lib" prefix (cublas64_12.dll, cudnn64_9.dll, cudart64_12.dll), so
+# both POSIX and Windows spellings are listed (#103793).
 _CUDA_LIB_ERROR_MARKERS = (
-    "libcublas", "libcudnn", "libcudart", "cannot be loaded", "cannot open shared object",
+    "libcublas", "libcudnn", "libcudart", "cublas64_", "cudnn64_", "cudart64_",
+    "cannot be loaded", "cannot open shared object",
     "no kernel image is available", "CUBLAS_STATUS_NOT_SUPPORTED", "no CUDA-capable device",
     "CUDA driver version is insufficient")
 

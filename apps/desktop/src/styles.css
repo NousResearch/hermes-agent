@@ -3468,6 +3468,17 @@ button[data-slot='aui_msg-reactions'] svg {
   touch-action: none;
 }
 
+/* Collapsed HUD must be fully click-through except for the bar itself.
+   The resize frame is invisible chrome around the whole window — when the
+   transcript is collapsed (no recent activity, not held, not focused) it
+   hangs in transparent space and its thin border strips intercept clicks
+   meant for the app underneath. Gate the handles on the HUD being
+   interactive so only the bar remains hit-testable at rest. (#108793) */
+[data-hud-shell]:not([data-hud-recent]):not([data-hud-held]):not(:has([data-slot='composer-rich-input']:focus))
+  [data-hud-resize] {
+  pointer-events: none;
+}
+
 [data-hud-shell] [data-hud-resize='n'] {
   top: 0;
   right: 1.25rem;

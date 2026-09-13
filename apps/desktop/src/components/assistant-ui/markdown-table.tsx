@@ -32,9 +32,9 @@ import { cn } from '@/lib/utils'
  * per-column component, no index threading — a column knows its position
  * because it *is* in that position.
  *
- * Until a table is resized it stays in auto layout, which is the better
- * default: the browser fits columns to their content. The colgroup only appears
- * once there is a width to state.
+ * Tables use `table-layout: fixed` so long cells wrap inside the card instead
+ * of growing a horizontal scrollbar (#101311). The colgroup only appears once
+ * there is a stored width to state.
  *
  * A drag sets state on this component alone, and `children` is an already-built
  * element tree whose reference does not change, so React reconciles the
@@ -154,11 +154,10 @@ export function ResizableMarkdownTable({ children, className, ...props }: Compon
   }, [])
 
   return (
-    <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
+    <div className="aui-md-table my-2 max-w-full overflow-x-hidden rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
       <table
         className={cn(
-          'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
-          widths && 'table-fixed [&_td]:wrap-anywhere',
+          'm-0 w-full table-fixed border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0 [&_td]:wrap-anywhere',
           className
         )}
         onDoubleClick={onDoubleClick}
@@ -193,7 +192,7 @@ export function ResizableMarkdownTh({ children, className, ...props }: Component
     >
       {/* Truncation lives on an inner box, not the cell: the grab band straddles
           the cell's edge, so a clipping `<th>` would cut half of it off. */}
-      <span className="block overflow-hidden text-ellipsis whitespace-nowrap">{children}</span>
+      <span className="block wrap-anywhere">{children}</span>
       {/* Invisible grab band straddling the seam, with the hairline revealed on
           hover — the pane sash treatment (`tree-split.tsx`) scaled to a header
           row. The table carries no vertical rules otherwise, so the line only

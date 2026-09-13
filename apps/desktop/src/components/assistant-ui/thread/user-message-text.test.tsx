@@ -58,4 +58,17 @@ describe('a sent reference renders as the chip the composer showed', () => {
 
     expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('const x = 1\n')
   })
+
+  it('wraps fenced code instead of growing a horizontal scrollbar', () => {
+    render(<UserMessageText text={'```\n' + 'a'.repeat(400) + '\n```'} />)
+
+    const fence = document.querySelector('[data-slot="aui_user-fence"]')
+    const code = fence?.querySelector('code')
+
+    expect(fence?.className).toContain('overflow-x-hidden')
+    expect(fence?.className).not.toContain('overflow-x-auto')
+    expect(fence?.className).toContain('whitespace-pre-wrap')
+    expect(code?.className).toContain('whitespace-pre-wrap')
+    expect(code?.className).toContain('wrap-anywhere')
+  })
 })

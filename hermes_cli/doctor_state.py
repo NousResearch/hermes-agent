@@ -322,9 +322,28 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
         if q_count > 0:
             check_warn(f"{q_count} skill(s) in quarantine", "(pending review)")
     from hermes_cli.config import get_env_value
-    if get_env_value("HERMES_GITHUB_BOT_TOKEN"):
-        check_ok("Dedicated Hermes GitHub automation token configured (mrkillbobbot)")
-    elif get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN"):
+    bot_token = get_env_value("HERMES_GITHUB_BOT_TOKEN")
+    bot_login = get_env_value("HERMES_GITHUB_BOT_LOGIN")
+    if bot_token or bot_login:
+        try:
+            from hermes_cli.github_identity import GitHubAutomationIdentity
+            GitHubAutomationIdentity.from_environment({
+                "HERMES_GITHUB_BOT_LOGIN": bot_login or "",
+            })
+        except Exception:
+            check_warn(
+                "Dedicated Hermes GitHub automation token is incomplete",
+                "(set both HERMES_GITHUB_BOT_TOKEN and HERMES_GITHUB_BOT_LOGIN)",
+            )
+        else:
+            if bot_token:
+                check_ok("Dedicated Hermes GitHub automation token configured (mrkillbobbot)")
+            else:
+                check_warn(
+                    "Dedicated Hermes GitHub automation token is incomplete",
+                    "(set HERMES_GITHUB_BOT_TOKEN)",
+                )
+    if get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN"):
         check_ok("GitHub token configured (authenticated API access)")
     else:
         check_bool(_gh_authenticated(), ("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)"),

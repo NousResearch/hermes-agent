@@ -191,7 +191,7 @@ def _sanitize_protected_kanban_body(value: Any) -> Any:
 def provider_uses_egress_firewall(provider: Any) -> bool:
     """Return whether an exact configured provider owns a protected remote lane."""
 
-    return egress_enforcement_enabled() and str(provider or "").strip().lower() in _PROTECTED_REMOTE_PROVIDERS
+    return str(provider or "").strip().lower() in _PROTECTED_REMOTE_PROVIDERS
 
 
 def egress_enforcement_enabled() -> bool:
@@ -201,6 +201,16 @@ def egress_enforcement_enabled() -> bool:
     switch preserves the firewall and its diagnostics while allowing operator
     testing to continue until the false-positive cases are repaired.
     """
+    try:
+        from hermes_cli import managed_scope
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        if managed_scope.is_key_managed("runtime.llm_egress_enforcement"):
+            posture = str((config.get("runtime") or {}).get("llm_egress_enforcement", "enabled") or "enabled")
+            return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
+    except Exception:
+        pass
     raw = os.environ.get("HERMES_LLM_EGRESS_ENFORCEMENT", "").strip().lower()
     if raw:
         return raw not in {"0", "false", "off", "disabled", "disable", "monitor"}
@@ -902,6 +912,8 @@ def dispatch_authorized_agent_request(
     sdk_control_keys: Sequence[str] = _SDK_CONTROL_KEYS,
 ) -> Any:
     resolved_route = _route_for_agent(agent, route)
+    if not egress_enforcement_enabled():
+        return callback(dict(kwargs))
     destination = classify_destination(
         str(_route_field(resolved_route, "provider", "") or ""),
         _route_field(resolved_route, "base_url"),

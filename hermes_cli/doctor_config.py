@@ -227,7 +227,10 @@ def _validate_model_config(config_path, issues: list) -> None:
         except Exception:
             continue
     runtime_provider = catalog_provider = provider
+    user_provider_disabled = False
     if provider and provider not in {"auto", "custom"}:
+        provider_entry = (cfg.get("providers") or {}).get(provider)
+        user_provider_disabled = isinstance(provider_entry, dict) and provider_entry.get("enabled") is False
         if resolve_auth is not None:
             try:
                 runtime_provider = resolve_auth(provider)
@@ -242,7 +245,9 @@ def _validate_model_config(config_path, issues: list) -> None:
     # local provider can be valid even when ``resolve_provider_full`` cannot return a
     # ProviderDef yet (for example, before a managed llama.cpp endpoint is running).
     # Requiring a catalog definition here made doctor disagree with the actual boot path.
-    provider_is_known = bool(accept & valid_provider_ids) or catalog_provider is not None
+    provider_is_known = bool(accept & valid_provider_ids) or (
+        catalog_provider is not None and not user_provider_disabled
+    )
     if provider and provider != "auto" and not provider_is_known:
         known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
         _fail_and_issue(f"model.provider '{provider_raw}' is not a recognised provider", f"(known: {known_list})",

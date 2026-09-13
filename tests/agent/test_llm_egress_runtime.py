@@ -2635,11 +2635,46 @@ def test_operator_config_can_temporarily_disable_egress_enforcement(
     import agent.llm_egress_runtime as runtime
 
     assert runtime.egress_enforcement_enabled() is False
-    assert runtime.provider_uses_egress_firewall("nous") is False
+    assert runtime.provider_uses_egress_firewall("nous") is True
+
+    calls = []
+    runtime.dispatch_authorized_agent_request(
+        _agent(tmp_path),
+        {"model": "test-model", "messages": [{"role": "user", "content": "SECRET_TOKEN=allowed-for-operator-test"}]},
+        lambda request: calls.append(request),
+    )
+    assert calls
 
     monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "enabled")
     assert runtime.egress_enforcement_enabled() is True
     assert runtime.provider_uses_egress_firewall("nous") is True
+
+
+def test_managed_egress_posture_overrides_environment_disable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "hermes").mkdir()
+    (tmp_path / "managed").mkdir()
+    (tmp_path / "hermes" / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: disabled\n", encoding="utf-8"
+    )
+    (tmp_path / "managed" / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: enabled\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "disabled")
+
+    import agent.llm_egress_runtime as runtime
+    from hermes_cli import config as config_mod, managed_scope
+
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+    assert runtime.egress_enforcement_enabled() is True
+
+
+def test_runtime_config_schema_exposes_egress_posture():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["runtime"]["llm_egress_enforcement"] == "enabled"
 
 
 def test_reconstructed_kanban_worker_redacts_paths_without_marker(

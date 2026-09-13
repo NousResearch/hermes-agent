@@ -3863,19 +3863,33 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_slash_confirm", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
+    _CLARIFY_LABEL_MAX_CHARS = 64
+
+    def _clarify_button_label(self, index: int, choice: Any) -> str:
+        """Button text for one clarify choice: its number, or the choice text when ``telegram.clarify_button_labels``
+        is ``text``. Long text is shortened on the button; the message body always carries it in full."""
+        if str((self.config.extra or {}).get("clarify_button_labels", "number")).strip().lower() != "text":
+            return str(index + 1)
+        label = str(choice).strip()
+        if len(label) <= self._CLARIFY_LABEL_MAX_CHARS:
+            return label
+        return label[: self._CLARIFY_LABEL_MAX_CHARS - 1] + "…"
+
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
-        text-capture mode); without choices, plain question and the gateway text-intercept captures."""
+        """Render a clarify prompt: one button per choice plus "✏️ Other (type answer)" (flips to text-capture
+        mode); without choices, plain question and the gateway text-intercept captures."""
         def build():
             text = f"❓ {_html.escape(question)}"
             keyboard = None
             if choices:
-                # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
+                # Full option text in the body (mobile truncates button labels); buttons are numbered by default.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
+                rows = [
+                    [InlineKeyboardButton(self._clarify_button_label(idx, choice), callback_data=f"cl:{clarify_id}:{idx}")]
+                    for idx, choice in enumerate(choices)]
                 rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
@@ -6565,7 +6579,9 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in (
+            "guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics",
+            "clarify_button_labels"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map

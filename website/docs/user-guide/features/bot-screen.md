@@ -18,6 +18,14 @@ its own cookies. Screens are work surfaces, not security boundaries: the bots
 share the host's user account, files and network (the same model as other
 hosted-agent products).
 
+**Threat model.** The screen's RFB socket, the X display, the browser profile
+and the control-lease file all belong to the gateway's OS user. Any process
+running as that user — another bot on the same host, and the bot's own
+`terminal` tool included — can reach them directly, bypassing the pane and the
+lease. The lease is a tool-level fence on `computer_use` and the browser tools,
+not an OS one. Running each bot as its own OS user is out of scope; if that
+isolation matters to you, put the bots on separate hosts.
+
 ## Requirements
 
 - The gateway host runs Linux. macOS and Windows hosts already have a real
@@ -34,8 +42,8 @@ hosted-agent products).
   | Distro | Packages |
   |---|---|
   | Debian / Ubuntu | `tigervnc-standalone-server xfce4-panel xfwm4 xfdesktop4 xfce4-settings xfce4-terminal dbus-x11 x11-xserver-utils x11-utils xauth fonts-dejavu-core` |
-  | Fedora | `tigervnc-server-minimal xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal dbus-x11 xorg-x11-server-utils xorg-x11-utils xorg-x11-xauth dejavu-sans-fonts` |
-  | Arch | `tigervnc xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal xorg-xsetroot xorg-xset xorg-xdpyinfo xorg-xauth xorg-setxkbmap ttf-dejavu` |
+  | Fedora | `tigervnc-server-minimal xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal dbus-x11 xsetroot xset xdpyinfo xprop xorg-x11-xauth setxkbmap dejavu-sans-fonts` |
+  | Arch | `tigervnc xfce4-panel xfwm4 xfdesktop xfce4-settings xfce4-terminal xorg-xsetroot xorg-xset xorg-xdpyinfo xorg-xprop xorg-xauth xorg-setxkbmap ttf-dejavu` |
 
   Deliberately **not** the `xfce4` metapackage: it pulls in the screensaver,
   power manager and polkit agent that lock or prompt a headless desktop.
@@ -65,10 +73,17 @@ Every bot's computer is one click away in three places of Hermes Desktop:
 3. Click **Take over**. The border turns red, your keyboard and mouse now drive
    the bot's screen. Sign in, solve the CAPTCHA, approve the payment.
 4. Click **Hand back**. The bot regains control and re-captures the screen
-   before continuing. Closing the pane also hands control back.
+   before continuing. Closing the pane also hands control back. A *dropped*
+   connection is different: if your laptop lid closes or Wi-Fi drops while you
+   hold control, you keep it — the bot stays locked out of a screen you may be
+   mid-login on — until you reconnect and hand back. If you come back after a
+   reload and the pane still says a human holds control, a **Hand back (force)**
+   button appears to clear it.
 
-While you hold control the bot's `computer_use` calls (captures included) are
-refused with `human_has_control`; the bot never sees what you type.
+While you hold control, the bot's `computer_use` and browser tools are refused
+with `human_has_control`, captures included. This is a tool-level fence, not an
+OS one: the bot runs as the same user as its screen. Don't type secrets into a
+bot you wouldn't trust with them.
 
 The bot can ask for you: when it recognises a login or verification step it
 calls `computer_use` with `action: "request_handoff"` and a reason, the pane
@@ -114,7 +129,9 @@ Xauthority, launcher log, per-profile xfconf).
 
 - **TigerVNC `Xvnc`** is the X server and the RFB server in one process, per
   profile, listening only on a `0600` Unix socket. No TCP port, no VNC
-  password: the gateway is the only process that can reach it.
+  password: only processes running as the gateway's user can reach it (see the
+  threat model above), and the gateway's WebSocket bridge is the authenticated
+  way in.
 - **Xfce** starts component-wise (`xfsettingsd`, `xfwm4 --compositor=off`,
   `xfdesktop`, `xfce4-panel`) under a private D-Bus session, without
   `xfce4-session`, so nothing tries to lock the screen or reach `logind`.
@@ -125,7 +142,13 @@ Xauthority, launcher log, per-profile xfconf).
   and Hermes Cloud connections alike.
 - **Control lease.** The gateway drops keyboard, pointer and clipboard messages
   from any viewer that does not hold the lease, at the RFB byte level; noVNC's
-  view-only flag is only the UI hint. The same lease gates `computer_use`.
+  view-only flag is only the UI hint. The same lease gates `computer_use` and
+  the browser tools. It is a file under `<HERMES_HOME>/bot-desktop/`: no file
+  means the bot holds control (a fresh profile); a file that exists but cannot
+  be read or parsed fails closed — the bot is treated as locked out until the
+  next successful hand-off rewrites it. Xvnc never pushes the screen's clipboard
+  to viewers (`-SendCutText=0`), so watchers do not receive what the person in
+  control copies; pasting into the screen still works.
 - **Display binding.** The launcher publishes `DISPLAY`, `XAUTHORITY` and the
   D-Bus address; every cua-driver and headed-browser spawn for that profile
   inherits them, so the bot never acts on a display a human is sitting at.
@@ -140,4 +163,6 @@ Xauthority, launcher log, per-profile xfconf).
   keysyms and cua-driver agree; change it with `setxkbmap` on that `DISPLAY`
   if you need another layout.
 - **Bot says `human_has_control` after you left** — click **Hand back** in the
-  pane, or `hermes computer-use screen stop` / `start`.
+  pane (or **Hand back (force)** after a reload). From a shell,
+  `hermes computer-use screen stop` releases the lease and stops the screen;
+  `hermes computer-use screen start` brings it back with the bot in control.

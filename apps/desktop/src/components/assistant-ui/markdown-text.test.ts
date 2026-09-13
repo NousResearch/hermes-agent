@@ -70,12 +70,88 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('const value = 1;')
   })
 
+  it.each([
+    ['four-space', '    '],
+    ['tab', '\t']
+  ])('preserves %s-indented fenced-looking code exactly', (_label, indent) => {
+    const input = [
+      `${indent}\`\`\`ts`,
+      `${indent}const icon = '<svg viewBox="0 0 1 1"></svg>'`,
+      `${indent}\`\`\``
+    ].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it.each([
+    ['four-space', '    '],
+    ['tab', '\t']
+  ])('preserves cleanup-sensitive bytes and blank continuations in %s-indented code', (_label, indent) => {
+    const input = [
+      `${indent}<thinking>literal code</thinking>  `,
+      `${indent}[Preview: local](#preview:3000)`,
+      '   ',
+      `${indent}const value = 1;  `,
+      `${indent}`
+    ].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it.each([
+    ['four-space', '    '],
+    ['tab', '\t']
+  ])('preserves prose-sensitive literals in %s-indented code exactly', (_label, indent) => {
+    const input = `${indent}const sample = '$5 https://example.com @session:work/20260101_abc123'`
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it.each([
+    ['four-space', '    '],
+    ['tab', '\t']
+  ])('never fences raw SVG inside %s-indented code', (_label, indent) => {
+    const input = `${indent}<svg viewBox="0 0 1 1"><path d="M0 0h1"/></svg>`
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+    expect(output).not.toContain('```svg')
+  })
+
+  it('terminates a nested-blockquote fence before reprocessing shallower fence lines', () => {
+    const svg = '> > <svg viewBox="0 0 1 1"></svg>'
+    const input = ['> > ```html', svg, '> ```', '> > ```'].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(['> > ```html', svg, '>', '> > '].join('\n'))
+  })
+
+  it('preserves a container-terminated fence while removing the reprocessed empty fence', () => {
+    const svg = '> > <svg viewBox="0 0 1 1"></svg>'
+    const input = ['> > ```html', svg, '> ```'].join('\n')
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(['> > ```html', svg, '> '].join('\n'))
+    expect(output).not.toContain('```svg')
+  })
+
   it('keeps dangling real code fences during streaming', () => {
     const input = ['```ts', 'const value = 1;'].join('\n')
     const output = preprocessMarkdown(input)
 
     expect(output.startsWith('```ts')).toBe(true)
     expect(output).toContain('const value = 1;')
+  })
+
+  it('preserves cleanup-sensitive bytes in a dangling code fence while streaming', () => {
+    const chunks = [
+      ['```ts', "const price = '$5"].join('\n'),
+      ['```ts', "const price = '$5 https://example.com"].join('\n'),
+      ['```ts', 'const icon = \'<svg viewBox="0 0 1 1"></svg>\''].join('\n')
+    ]
+
+    for (const chunk of chunks) {
+      expect(preprocessMarkdown(chunk)).toBe(chunk)
+    }
   })
 
   it('demotes dangling prose fences', () => {

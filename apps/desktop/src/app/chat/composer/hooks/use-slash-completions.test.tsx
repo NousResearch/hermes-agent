@@ -3,19 +3,30 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
+import { rememberDesktopCommandsCatalog, type CommandsCatalogLike } from '@/lib/desktop-slash-commands'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
 import { isSkillItem } from '../composer-utils'
 
-import { useSlashCompletions } from './use-slash-completions'
+import { canonicalizeSlashCommandCompletions, useSlashCompletions } from './use-slash-completions'
 
-const CATALOG = {
+const CATALOG: CommandsCatalogLike = {
   categories: [{ name: 'Session', pairs: [['/new', 'Start a new session']] }],
   pairs: [
     ['/new', 'Start a new session'],
     ['/work', 'Kick off a task in a fresh worktree']
   ]
+}
+
+const ALIAS_CATALOG: CommandsCatalogLike = {
+  ...CATALOG,
+  canon: {
+    '/agents': '/agents',
+    '/tasks': '/agents',
+    '/bg': '/bg',
+    '/btw': '/btw'
+  }
 }
 
 // A catalog shaped like a real install: a couple of skills the user lives in,
@@ -74,6 +85,7 @@ async function completions(api: { search: (query: string) => readonly Unstable_T
 afterEach(() => {
   cleanup()
   queryClient.clear()
+  rememberDesktopCommandsCatalog(undefined)
 })
 
 describe('useSlashCompletions', () => {
@@ -128,6 +140,136 @@ describe('useSlashCompletions', () => {
     const skills = commandsOf((await completions(api, '')).filter(isSkillItem))
 
     expect(skills).toEqual(['/work', '/research', '/docx'])
+  })
+
+  it('shows the matched alias beside its canonical command', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? ALIAS_CATALOG
+          : { items: [{ text: '/tasks ', display: '/tasks', meta: 'Show active agents and running tasks' }] }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const items = await completions(api, 'tas')
+
+    expect(commandsOf(items)).toEqual(['/agents'])
+    expect(items[0]?.label).toBe('agents (tasks)')
+    expect(items[0]?.description).toBe('Show active agents and running tasks')
+  })
+
+  it('waits briefly for an in-flight catalog before canonicalizing alias results', async () => {
+    let resolveCatalog!: (catalog: CommandsCatalogLike) => void
+    const catalogPromise = new Promise<CommandsCatalogLike>(resolve => {
+      resolveCatalog = resolve
+    })
+    const request = vi.fn().mockImplementation((method: string) =>
+      method === 'commands.catalog'
+        ? catalogPromise
+        : Promise.resolve({ items: [{ text: '/tasks ', display: '/tasks', meta: 'Show active agents and running tasks' }] })
+    )
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await act(async () => {
+      api.search('tas')
+      await new Promise(resolve => setTimeout(resolve, 120))
+    })
+    expect(request).toHaveBeenCalledWith('complete.slash', { text: '/tas' })
+
+    await act(async () => {
+      resolveCatalog(ALIAS_CATALOG)
+      await Promise.resolve()
+    })
+    const items = api.search('tas')
+
+    expect(commandsOf(items)).toEqual(['/agents'])
+    expect(items[0]?.label).toBe('agents (tasks)')
+  })
+
+  it('does not withhold command completions when the catalog stalls', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      method === 'commands.catalog'
+        ? new Promise(() => {})
+        : Promise.resolve({ items: [{ text: '/help', display: '/help', meta: 'Show help' }] })
+    )
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await act(async () => {
+      api.search('help')
+      await new Promise(resolve => setTimeout(resolve, 300))
+    })
+
+    expect(commandsOf(api.search('help'))).toEqual(['/help'])
+  })
+
+  it('matches aliases case-insensitively', () => {
+    rememberDesktopCommandsCatalog(ALIAS_CATALOG)
+
+    expect(
+      canonicalizeSlashCommandCompletions(
+        [{ text: '/TASKS', display: '/TASKS', meta: 'Show active agents and running tasks' }],
+        '/TAS'
+      )
+    ).toEqual([
+      {
+        text: '/agents',
+        display: '/agents (tasks)',
+        meta: 'Show active agents and running tasks'
+      }
+    ])
+  })
+
+  it('does not annotate a canonical command match with its aliases', async () => {
+    const request = vi.fn().mockResolvedValue({
+      items: [{ text: '/agents', display: '/agents', meta: 'Show active agents and running tasks' }]
+    })
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const items = await completions(api, 'agents')
+
+    expect(commandsOf(items)).toEqual(['/agents'])
+    expect(items[0]?.label).toBe('agents')
+  })
+
+  it('deduplicates canonical and alias matches into one command row', () => {
+    rememberDesktopCommandsCatalog(ALIAS_CATALOG)
+
+    const items = canonicalizeSlashCommandCompletions(
+      [
+        { text: '/agents', display: '/agents', meta: 'Show active agents and running tasks' },
+        { text: '/tasks', display: '/tasks', meta: 'Show active agents and running tasks' }
+      ],
+      '/a'
+    )
+
+    expect(items.map(item => item.text)).toEqual(['/agents'])
+  })
+
+  it('keeps /btw canonical after the background command moved to /bg', () => {
+    rememberDesktopCommandsCatalog(ALIAS_CATALOG)
+
+    expect(canonicalizeSlashCommandCompletions([{ text: '/btw', display: '/btw' }], '/bt')).toEqual([
+      { text: '/btw', display: '/btw' }
+    ])
+  })
+
+  it('does not wait for a stalled catalog before returning argument completions', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      method === 'commands.catalog'
+        ? new Promise(() => {})
+        : Promise.resolve({
+            replace_from: 9,
+            items: [{ text: 'openai', display: 'openai', meta: 'OpenAI models' }]
+          })
+    )
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const items = await completions(api, 'handoff open')
+
+    expect(commandsOf(items)).toEqual(['/handoff openai'])
   })
 
   // Typing is a search, and a search that hides a match is broken. Order

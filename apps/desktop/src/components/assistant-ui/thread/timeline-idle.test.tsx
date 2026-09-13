@@ -124,12 +124,23 @@ describe('ThreadTimeline popover', () => {
 })
 
 describe('ThreadTimeline below the threshold', () => {
-  it('renders nothing for a short thread', () => {
-    messages = transcript(2)
+  it('renders nothing for a single-prompt thread', () => {
+    // One prompt is the only transcript where a "jump between turns" rail has
+    // nothing to jump between; two is the first that does (MIN_ENTRIES).
+    messages = transcript(1)
 
     const { container } = renderTimeline()
 
     expect(container.querySelector('[data-slot="thread-timeline"]')).toBeNull()
+  })
+
+  it('renders the rail as soon as a second prompt exists', () => {
+    messages = transcript(2)
+
+    const { container } = renderTimeline()
+
+    expect(container.querySelector('[data-slot="thread-timeline"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-slot="thread-timeline-ticks"] button')).toHaveLength(2)
   })
 })
 

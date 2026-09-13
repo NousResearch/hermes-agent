@@ -88,15 +88,9 @@ Skill 冲突由 `--skill-conflict` 处理：`skip` 保留现有 Hermes skill，`
 | Docker 沙箱 | `agents.defaults.sandbox.backend` | `terminal.backend` | "docker" → "docker" |
 | Docker 镜像 | `agents.defaults.sandbox.docker.image` | `terminal.docker_image` | 直接复制 |
 
-### 会话重置策略
+### 会话生命周期
 
-| OpenClaw 配置路径 | Hermes 配置路径 | 备注 |
-|---------------------|-------------------|-------|
-| `session.reset.mode` | `session_reset.mode` | "daily"、"idle" 或两者 |
-| `session.reset.atHour` | `session_reset.at_hour` | 每日重置的小时（0–23） |
-| `session.reset.idleMinutes` | `session_reset.idle_minutes` | 不活跃分钟数 |
-
-注意：OpenClaw 还有 `session.resetTriggers`（简单字符串数组，如 `["daily", "idle"]`）。若结构化的 `session.reset` 不存在，迁移将回退到从 `resetTriggers` 推断。
+不会导入空闲或每日重置计时器。Hermes 会话会持续保留，直到显式使用 `/new` 或 `/reset`。身份关联、线程绑定、维护、作用域和发送策略等高级设置仍会归档以供参考。
 
 ### MCP 服务器
 
@@ -225,7 +219,7 @@ OpenClaw 配置中 token 和 API 密钥的值支持三种格式：
 
 5. **测试消息平台** — 若迁移了平台 token，重启 gateway：`systemctl --user restart hermes-gateway`
 
-6. **检查会话策略** — 验证 `hermes config get session_reset` 是否符合预期。
+6. **检查会话归档** — 查看已归档的高级设置；空闲和每日重置计时器不会导入。
 
 7. **重新配对 WhatsApp** — WhatsApp 使用二维码配对（Baileys），不支持 token 迁移。运行 `hermes whatsapp` 进行配对。
 

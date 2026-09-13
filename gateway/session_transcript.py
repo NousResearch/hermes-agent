@@ -419,6 +419,19 @@ class SessionTranscriptMixin:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
+    def transcript_tail_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
+        when empty, no DB, or the read fails — the boundary write would fail the same way)."""
+        session_id = self._compression_tip_for_session_id(self._follow_reroutes(session_id))
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        try:
+            return db.latest_conversation_role(session_id)
+        except Exception:
+            logger.debug("transcript tail lookup failed for %s", session_id, exc_info=True)
+            return None
+
     def rewrite_transcript(
         self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
         reject_active_turn_lease: bool = False) -> bool:
@@ -452,6 +465,29 @@ class SessionTranscriptMixin:
                 return False
             self._clear_dirty_transcript(session_id)
             return True
+
+    def has_input_owner(self, session_id: str, owner: str) -> bool:
+        """Find this accepted input on the canonical live continuation and its ancestors.
+
+        Content and unrelated writers cannot establish ownership. Query only existence;
+        compaction archives can contain many megabytes that replay never needs to load.
+        """
+        try:
+            current = self._follow_reroutes(session_id)
+            db = self._db_for_session_id(current)
+            current = db.get_compression_tip(current) or current
+            seen = set()
+            while current and current not in seen:
+                seen.add(current)
+                if db.has_gateway_input_owner(current, owner):
+                    return True
+                row = db.get_session(current)
+                if not row or not db._is_compression_child_row(row):
+                    break
+                current = row["parent_session_id"]
+            return False
+        except Exception as e:
+            raise TranscriptReadError(session_id) from e
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the

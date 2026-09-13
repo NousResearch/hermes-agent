@@ -20,7 +20,8 @@ except ImportError:
     aiohttp = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,9 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._msg_id: int = 0
         extra = config.extra or {}
-        self._hass_url: str = (extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/")
+        # URL is scoped like the token below: a secondary's HASS_TOKEN must never be posted to the
+        # DEFAULT profile's HA instance (os.environ under multiplex).
+        self._hass_url: str = (extra.get("url") or _get_scoped_secret("HASS_URL", "http://homeassistant.local:8123")).rstrip("/")
         self._hass_token: str = config.token or _get_scoped_secret("HASS_TOKEN", "")
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
         self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
@@ -316,7 +319,7 @@ async def _standalone_send(
     if not AIOHTTP_AVAILABLE:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     extra = getattr(pconfig, "extra", {}) or {}
-    hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
+    hass_url = (extra.get("url") or _get_scoped_secret("HASS_URL", "")).rstrip("/")
     token = (getattr(pconfig, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
         return {"error": "Home Assistant standalone send: HASS_URL and HASS_TOKEN must both be set"}

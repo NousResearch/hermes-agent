@@ -19,6 +19,7 @@ import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
   ClarifyRespondResponse,
   ConfigSetResponse,
@@ -46,6 +47,7 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
+import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
@@ -590,8 +592,19 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     let stopped = false
+    applyAgentSnapshot(ui.sid)
 
     const refresh = () => {
+      const sid = ui.sid
+      gw.request<SubagentListResponse>('subagent.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<SubagentListResponse>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
       gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
@@ -633,7 +646,12 @@ export function useMainApp(gw: GatewayClient) {
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
-  const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+  const marker =
+    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+      ? '⚠'
+      : ui.busy
+        ? '⏳'
+        : '✓'
 
   const tabCwd = ui.info?.cwd
 
@@ -1052,6 +1070,26 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
+  const answerVaultUnlock = useCallback(
+    (password: string) => {
+      if (!overlay.vaultUnlock) {
+        return
+      }
+
+      const requestId = overlay.vaultUnlock.requestId
+
+      if (!password) {
+        patchOverlayState({ vaultUnlock: null })
+      }
+
+      return respondWith('vault.unlock.respond', { password, request_id: requestId }, () => {
+        patchOverlayState({ vaultUnlock: null })
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [overlay.vaultUnlock, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1162,6 +1200,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
@@ -1185,6 +1224,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultUnlock,
       clearSelection,
       closeLiveSession,
       newPromptSession,

@@ -16,6 +16,7 @@ import pytest
 
 from hermes_state import SessionDB
 from hermes_cli import session_recovery
+from hermes_cli import session_schema_history
 from hermes_cli.session_lost_and_found import (
     STUB_TITLE_PREFIX,
     classify_lost_and_found_row,
@@ -156,9 +157,10 @@ def test_exact_lookup_recovers_tail_row_next_to_damaged_high_edge(
 
     copied = report["copy"]["messages"]
     bounds = copied["rowid_bounds"]
-    # Premise check: the high edge probe really failed and fell back.
+    # Premise check: the high edge probe really failed; the bound came from the aggregate
+    # (#98050) or, when that fails too, the synthetic-domain fallback.
     assert any("high rowid" in error for error in bounds["errors"]), bounds
-    assert "high" in bounds["fallback_edges"]
+    assert "high" in bounds["fallback_edges"] or "high" in bounds.get("aggregate_edges", ())
 
     conn = sqlite3.connect(str(output))
     try:
@@ -301,6 +303,54 @@ def test_lost_and_found_lane_recovers_schema_unreadable_source(
         assert len(sessions) == expected["sessions"]
     finally:
         recovered_db.close()
+
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_lost_and_found_lane_recovers_page1_header_damaged_source(tmp_path: Path) -> None:
+    """#106667: a garbage page-1 header makes SQLite (and the shell's .recover) refuse the file
+    with 'file is not a database' although every data page survives. The lane must still
+    salvage the rows, and must do it on its snapshot — the user's file stays byte-identical."""
+    source = tmp_path / "header-damaged.db"
+    output = tmp_path / "header-recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        for session_number in range(3):
+            session_id = f"hdr-session-{session_number}"
+            db.create_session(session_id, "cli", cwd="/tmp/hdr")
+            for message_number in range(9):
+                db.append_message(session_id, "user", f"payload {session_number} {message_number}")
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        conn.close()
+    data = bytearray(source.read_bytes())
+    data[0:100] = bytes(range(1, 101))  # not the magic, not zeroes: the incident shape
+    source.write_bytes(data)
+    damaged_bytes = source.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+        sqlite3.connect(str(source)).execute("SELECT count(*) FROM sqlite_master").fetchone()
+
+    report = recover_session_database(source, output, work_dir=tmp_path, allow_partial=True)
+
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["sqlite3_cli"]["header_zeroed"] is True
+    assert any("header salvage" in warning for warning in report["verification"]["warnings"])
+    assert source.read_bytes() == damaged_bytes
+    conn = sqlite3.connect(str(output))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 27
+    finally:
+        conn.close()
 
 
 # ── mapper unit tests (no sqlite3 CLI required) ─────────────────────────────
@@ -623,14 +673,28 @@ def _map_salvage_rows(
         def session_row(session_id: str) -> list:
             # title is UNIQUE (idx_sessions_title_unique) — keep it distinct
             # per row so the probe isolates timestamp mis-mapping.
+            # Five populated cells cannot pin a 58-column layout by
+            # themselves; the discriminating cells a real store carries
+            # (session_key, model_config, cwd, ...) make the declared order
+            # the only surviving layout, so the probe below isolates the
+            # timestamp gate rather than layout inference.
             row = {
                 "id": session_id,
                 "source": "telegram",
+                "session_key": f"agent:main:telegram:dm:{session_id}",
+                "chat_type": "dm",
+                "model": "gpt-4.1",
+                "model_config": "{}",
                 "started_at": None
                 if blank_session_started_at
                 else 1_754_000_000.0,
+                "ended_at": 1_754_000_600.0,
+                "end_reason": "completed",
                 "message_count": 2,
+                "cwd": "/home/user/project",
                 "title": f"mis-mapped probe {session_id}",
+                "title_source": "llm",
+                "api_call_count": 1,
             }
             return [row.get(column) for column in sessions_columns]
 
@@ -759,7 +823,10 @@ def _rebuild_with_started_at_appended(conn: sqlite3.Connection) -> None:
 
     reordered = [r for r in info if r[1] != "started_at"] + [r for r in info if r[1] == "started_at"]
     cols = ", ".join(f'"{c}"' for c in declared)
-    conn.executescript("PRAGMA foreign_keys=OFF;")
+    # ``messages_fts_trigram_src`` joins sessions; SQLite refuses to rename a
+    # table a view references unless legacy_alter_table is on (the view's
+    # body is text, so it re-resolves ``sessions`` after the swap).
+    conn.executescript("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")
     conn.execute("CREATE TABLE sessions_new (" + ", ".join(coldef(r) for r in reordered) + ")")
     conn.execute(f"INSERT INTO sessions_new({cols}) SELECT {cols} FROM sessions")
     conn.executescript("DROP TABLE sessions; ALTER TABLE sessions_new RENAME TO sessions;")
@@ -825,6 +892,208 @@ def test_lost_and_found_lane_refuses_to_verify_a_physically_shifted_source(
         out.close()
 
 
+# The physical column order of the reporter's upgraded store in #101409:
+# every column ALTER TABLE ADD COLUMN appended, in add order, which is NOT
+# the order SCHEMA_SQL declares them in. Written out literally (rather than
+# read back from the production layout table) so the regression pins the
+# reported layout, not whatever the mapper believes today.
+_UPGRADED_SESSIONS_PHYSICAL = (
+    "id", "source", "user_id", "model", "model_config", "system_prompt",
+    "parent_session_id", "started_at", "ended_at", "end_reason",
+    "message_count", "tool_call_count", "input_tokens", "output_tokens",
+    "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+    "billing_provider", "billing_base_url", "billing_mode",
+    "estimated_cost_usd", "actual_cost_usd", "cost_status", "cost_source",
+    "pricing_version", "title", "api_call_count", "handoff_state",
+    "handoff_platform", "handoff_error", "cwd", "rewind_count", "archived",
+    "session_key", "chat_id", "chat_type", "thread_id", "git_branch",
+    "git_repo_root", "compression_failure_cooldown_until",
+    "compression_failure_error", "display_name", "origin_json",
+    "expiry_finalized", "compression_fallback_streak", "profile_name",
+    "compression_ineffective_count", "pinned", "system_prompt_hash",
+    "last_activity_at", "last_activity_description",
+    "last_activity_provenance", "git_metadata_generation", "title_source",
+    "hidden", "last_read_at",
+)
+
+_UPGRADED_MESSAGES_PHYSICAL = (
+    "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
+    "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
+    "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "codex_message_items", "platform_message_id", "observed", "active",
+    "compacted", "effect_disposition", "api_content", "display_kind",
+    "display_metadata", "_compressed_summary",
+)
+
+_UPGRADED_USAGE_PHYSICAL = (
+    "session_id", "model", "billing_provider", "billing_base_url",
+    "api_call_count", "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
+    "first_seen", "last_seen", "billing_mode", "actual_cost_usd",
+    "cost_status", "cost_source", "task",
+)
+
+
+def test_upgraded_physical_layout_maps_cells_by_name(tmp_path: Path) -> None:
+    """#101409: salvaged cells from an ALTER-TABLE-upgraded store must land on
+    the columns they came from, not on the destination's declared order.
+
+    The reporter's store has ``model`` where the template declares
+    ``message_count``, ``started_at`` eight columns earlier than declared, and
+    ``timestamp`` where ``effect_disposition`` is declared. Mapping by
+    position writes the message count into ``model``, 0.0 into ``started_at``
+    and blanks every title.
+    """
+
+    output = tmp_path / "mapped.db"
+    SessionDB(db_path=output).close()
+
+    declared = sqlite3.connect(str(output))
+    try:
+        sessions_declared = [
+            str(row[1]) for row in declared.execute("PRAGMA table_info(sessions)")
+        ]
+        messages_declared = [
+            str(row[1]) for row in declared.execute("PRAGMA table_info(messages)")
+        ]
+    finally:
+        declared.close()
+    # Premise: declared order really does differ from the physical order, so
+    # a positional map cannot be correct.
+    assert sessions_declared[:56] != list(_UPGRADED_SESSIONS_PHYSICAL)
+    assert messages_declared[:24] != list(_UPGRADED_MESSAGES_PHYSICAL)
+
+    session_id = "20260701_101010_abc001"
+    started_at = 1_754_000_000.0
+    message_timestamp = 1_754_000_321.0
+    session_cells = {
+        "id": session_id,
+        "source": "telegram",
+        "model": "gpt-4.1",
+        "started_at": started_at,
+        "message_count": 42,
+        "tool_call_count": 7,
+        "input_tokens": 1_234,
+        "output_tokens": 567,
+        "title": "quarterly planning notes",
+        "title_source": "llm",
+        "cwd": "/home/user/project",
+        "git_branch": "main",
+        "last_activity_at": started_at + 900.0,
+        "archived": 0,
+        "pinned": 0,
+    }
+    message_cells = {
+        "id": None,  # rowid alias: NULL in the record
+        "session_id": session_id,
+        "role": "assistant",
+        "content": "salvaged assistant payload",
+        "timestamp": message_timestamp,
+        "token_count": 55,
+        "finish_reason": "stop",
+        "observed": 1,
+        "active": 1,
+    }
+    usage_cells = {
+        "session_id": session_id,
+        "model": "gpt-4.1",
+        "billing_provider": "openai",
+        "billing_base_url": "https://api.openai.com/v1",
+        "api_call_count": 4,
+        "input_tokens": 1_234,
+        "output_tokens": 567,
+        "estimated_cost_usd": 0.25,
+        "billing_mode": "api",
+        "task": "",
+        "first_seen": started_at,
+        "last_seen": started_at + 900.0,
+    }
+
+    lf_path = tmp_path / "lost_and_found.db"
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    try:
+        width = len(_UPGRADED_SESSIONS_PHYSICAL)
+        columns = ", ".join(f"c{index}" for index in range(width))
+        lf_conn.execute(
+            "CREATE TABLE lost_and_found (rootpgno INTEGER, pgno INTEGER, "
+            "nfield INTEGER, id INTEGER, " + columns + ")"
+        )
+
+        def insert(layout: tuple[str, ...], rowid: int, values: dict) -> None:
+            cells = [values.get(name) for name in layout]
+            padded = cells + [None] * (width - len(cells))
+            placeholders = ", ".join("?" for _ in range(4 + width))
+            lf_conn.execute(
+                "INSERT INTO lost_and_found VALUES (" + placeholders + ")",
+                [2, 5, len(layout), rowid, *padded],
+            )
+
+        insert(_UPGRADED_SESSIONS_PHYSICAL, 1, session_cells)
+        insert(_UPGRADED_MESSAGES_PHYSICAL, 100, message_cells)
+        insert(_UPGRADED_USAGE_PHYSICAL, 200, usage_cells)
+    finally:
+        lf_conn.close()
+
+    lf_conn = sqlite3.connect(str(lf_path), isolation_level=None)
+    dest = sqlite3.connect(str(output), isolation_level=None)
+    try:
+        dest.execute("PRAGMA foreign_keys=OFF")
+        report = map_lost_and_found_rows(lf_conn, dest)
+        assert report["mapped"] == {
+            "sessions": 1, "messages": 1, "session_model_usage": 1,
+        }
+        assert report["unrecognized_layout_rows"] == 0
+
+        session = dict(
+            zip(
+                ("started_at", "title", "model", "message_count", "source",
+                 "cwd", "title_source"),
+                dest.execute(
+                    "SELECT started_at, title, model, message_count, source, "
+                    "cwd, title_source FROM sessions WHERE id = ?",
+                    (session_id,),
+                ).fetchone(),
+            )
+        )
+        # Each cell landed on the column it was written from — not shifted.
+        assert session["started_at"] == started_at
+        assert session["title"] == session_cells["title"]
+        assert session["model"] == session_cells["model"]
+        assert session["message_count"] == session_cells["message_count"]
+        assert session["source"] == session_cells["source"]
+        assert session["cwd"] == session_cells["cwd"]
+        assert session["title_source"] == session_cells["title_source"]
+
+        timestamp, role, content, disposition, token_count = dest.execute(
+            "SELECT timestamp, role, content, effect_disposition, token_count "
+            "FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert timestamp == message_timestamp
+        assert role == message_cells["role"]
+        assert content == message_cells["content"]
+        assert token_count == message_cells["token_count"]
+        # The declared-order collision the issue names: timestamp must not
+        # have been written into effect_disposition.
+        assert disposition is None
+
+        usage_model, task, calls, mode = dest.execute(
+            "SELECT model, task, api_call_count, billing_mode "
+            "FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert usage_model == usage_cells["model"]
+        assert task == usage_cells["task"]
+        assert calls == usage_cells["api_call_count"]
+        assert mode == usage_cells["billing_mode"]
+
+        # Correctly mapped salvage has nothing for the gate to flag.
+        assert session_recovery._lost_and_found_plausibility_errors(dest) == []
+    finally:
+        lf_conn.close()
+        dest.close()
+
+
 def test_plausibility_gate_ignores_stub_only_sessions(tmp_path: Path) -> None:
     """Stub rows from ``stub_missing_parent_sessions`` legitimately carry
     ``started_at = 0.0``; a salvage where only stubs survived is depleted,
@@ -859,3 +1128,50 @@ def test_plausibility_gate_ignores_stub_only_sessions(tmp_path: Path) -> None:
         assert len(errors) == 1 and "sessions.started_at" in errors[0]
     finally:
         conn.close()
+
+
+@pytest.mark.skipif(
+    not HAVE_SQLITE3_CLI,
+    reason="sqlite3 CLI not on PATH; .recover is a shell-only feature",
+)
+def test_recovery_lane_refuses_to_verify_when_rows_matched_no_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wiring: ``unrecognized_layout_rows`` from the mapper must reach the
+    verifier — once the recognised rows map correctly, the all-rows
+    timestamp gate cannot see a few positionally guessed ones."""
+    import hermes_cli.session_lost_and_found as lf_module
+
+    real = lf_module.map_lost_and_found_rows
+
+    def counting(lf_conn, dest):
+        report = real(lf_conn, dest)
+        report["unrecognized_layout_rows"] += 2
+        return report
+
+    monkeypatch.setattr(lf_module, "map_lost_and_found_rows", counting)
+
+    source = tmp_path / "source.db"
+    output = tmp_path / "recovered.db"
+    db = SessionDB(db_path=source)
+    try:
+        sid = "20260812_140000_def000"
+        db.create_session(sid, "cli", cwd="/tmp/x")
+        db.append_message(sid, "user", "payload")
+    finally:
+        db.close()
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    with open(source, "r+b") as fh:
+        fh.write(b"\0" * _page_size(source.read_bytes()))
+
+    report = recover_session_database(source, output, work_dir=tmp_path, allow_partial=True)
+    assert report["mode"] == "lost_and_found_salvage"
+    assert report["lost_and_found"]["unrecognized_layout_rows"] == 2
+    assert report["verified"] is False
+    assert any("matched no known physical column layout" in e for e in report["verification"]["errors"])

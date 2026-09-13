@@ -88,6 +88,12 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def secret_source_names() -> tuple[str, ...]:
+    """Every env-var name some profile's external secret source supplied (names only — the map is
+    process-wide, so a value must be resolved through the active profile's secret scope)."""
+    return tuple(_SECRET_SOURCES)
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
@@ -150,11 +156,21 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     return dict(values)
 
 
-def reset_secret_source_cache() -> None:
-    """Forget applied homes so the next load re-pulls (tests, long-running processes after config edits)."""
-    _APPLIED_HOMES.clear()
-    _SECRET_SOURCES.clear()
-    _SECRET_SOURCE_VALUES_BY_HOME.clear()
+def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> None:
+    """Forget applied homes so the next load re-pulls (tests, long-running processes after config edits).
+
+    ``hermes_home`` limits the reset to ONE home: a multiplex gateway keeps every profile's snapshot in
+    this process, and a per-fire cron re-pull or a plugin-discovery refresh for one home must not wipe
+    a sibling's hydrated snapshot — the sibling's next scope build would run empty until it re-hydrated
+    (#102041)."""
+    if hermes_home is None:
+        _APPLIED_HOMES.clear()
+        _SECRET_SOURCES.clear()
+        _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        return
+    home_key = str(Path(hermes_home).resolve())
+    _APPLIED_HOMES.discard(home_key)
+    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -470,19 +486,26 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # Marking AFTER the attempt keeps the earlier failure paths retryable.
     _APPLIED_HOMES.add(home_key)
 
-    # A real fetch attempt happened (success OR error). Mark the home now so the 3-5 import-time
-    # load_hermes_dotenv() calls per startup don't re-fetch / re-print — error retries within one process
-    # are opt-in via reset_secret_source_cache(). Marking AFTER the attempt (not before, see #40597) is what
-    # lets the earlier failure paths stay retryable.
     if report.applied_any:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
-        # Re-run the ASCII sanitization pass: vault values are user-supplied and might have the same
-        # copy-paste corruption as a manually edited .env (see #6843).
-        values: dict[str, str] = {}
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
-            if name in os.environ:
-                values[name] = os.environ[name]
+
+    # Snapshot EVERY name a source supplied, not just the newly applied ones. A name the source supplied
+    # but the pre-existing process value won (``skipped_existing``) is still this home's effective value
+    # for it — and on the unscoped path os.environ IS this home's environment. Skipping those names
+    # latched an EMPTY snapshot whenever the key was already in the env: after the first cron/plugin
+    # re-pull (the previous apply's own write-back shadows every key) or from boot under systemd
+    # ``EnvironmentFile=``. Under multiplex the scope is the only credential source, so an empty
+    # snapshot failed every default-profile turn for the process lifetime (#102041).
+    values: dict[str, str] = {}
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(src.skipped_existing)
+    for name in supplied:
+        if name in os.environ:
+            values[name] = os.environ[name]
+    if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
 
     for src in report.sources:

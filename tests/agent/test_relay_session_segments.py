@@ -167,6 +167,36 @@ def _run_turn(coordinator, lease, turn_id):
     return turn
 
 
+class TestTurnMetadata:
+    def test_includes_request_metadata_without_overriding_runtime_fields(
+        self, coordinator
+    ):
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        lease = _acquire(coordinator, runtime)
+
+        turn = coordinator.begin_turn(
+            lease,
+            turn_id="t1",
+            task_id="task1",
+            metadata={
+                "request_id": "req-123",
+                "context": {"tenant": "example"},
+                relay_runtime.RUNTIME_INSTANCE_KEY: "caller-supplied",
+            },
+        )
+
+        turn_metadata = [
+            push
+            for push in fake.scope.pushes
+            if push["name"] == relay_runtime.TURN_SCOPE
+        ][-1]["metadata"]
+        assert turn_metadata["request_id"] == "req-123"
+        assert turn_metadata["context"] == {"tenant": "example"}
+        assert turn_metadata[relay_runtime.RUNTIME_INSTANCE_KEY] == runtime.runtime_id
+        coordinator.end_turn(turn, outcome="success")
+
+
 class TestDefaultsNeverRotate:
     def test_no_rotation_across_many_turns_and_compactions(self, coordinator):
         fake = _FakeRelay()

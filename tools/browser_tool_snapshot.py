@@ -121,5 +121,5 @@ def _redact_browser_output(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_redact_browser_output(item) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_browser_output(item) for key, item in value.items()}
+        return {_redact_browser_output(key): _redact_browser_output(item) for key, item in value.items()}
     return value

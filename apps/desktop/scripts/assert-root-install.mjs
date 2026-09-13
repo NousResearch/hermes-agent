@@ -11,7 +11,7 @@
 // re-runs it for anyone invoking the build steps directly; the check is pure
 // filesystem lookups, so paying for it twice costs nothing.
 
-import { existsSync, readFileSync } from "fs"
+import { existsSync, readFileSync, realpathSync } from "fs"
 import { createRequire } from "module"
 import { resolve, join, dirname } from "path"
 import { isMain } from "./utils.mjs"
@@ -76,17 +76,19 @@ export function requiredPackages(appDir) {
   }
 }
 
-// esbuild switches to Yarn Plug'n'Play resolution when it finds a PnP manifest
-// in *any* ancestor directory — including ones above this repo, such as a stray
-// `~/.pnp.cjs` left by running `yarn` in a home directory. The manifest does not
-// list this workspace's packages, so `bundle-electron-main.mjs` then fails with
-// `Could not resolve "simple-git"` even though the npm install is complete, and
-// nothing in that error points at a file outside the repo. A fresh OS user has
-// no such file, which makes the failure look machine-specific and random.
+// esbuild adopts a Yarn Plug'n'Play manifest from any ancestor of its working
+// directory (the build runs from this app's directory) — including folders above
+// the repo, such as a stray `~/.pnp.cjs` left by running `yarn` in a home
+// directory. A real manifest that does not list this workspace makes every bare
+// import fail (`Could not resolve "simple-git"`) over a complete npm install, and
+// nothing in that error points outside the repo. An empty file, a directory, or an
+// unrelated file with the same name is ignored by esbuild, so the filename alone
+// must not fail the build: `findPnpManifest` is only a cheap pre-filter, and
+// `checkPnpResolution` asks esbuild itself.
 const PNP_MANIFESTS = [".pnp.cjs", ".pnp.js", ".pnp.data.json"]
 export { PNP_MANIFESTS }
 
-// First PnP manifest found walking from `fromDir` up to the filesystem root, or null.
+// First path named like a PnP manifest, walking from `fromDir` up to the filesystem root, or null.
 export function findPnpManifest(fromDir) {
   let dir = fromDir
   for (;;) {
@@ -100,22 +102,62 @@ export function findPnpManifest(fromDir) {
   }
 }
 
-// Pure check — returns { ok: true } or { ok: false, error: "..." }.
-// Kept side-effect-free so it can be unit tested without spawning a process.
-export function checkRootInstall(appDir, rootDir) {
-  const pnpManifest = findPnpManifest(appDir)
-  if (pnpManifest) {
+const PNP_PROBE_ENTRY = "assert-root-install-pnp-probe"
+
+// Resolves `probePackage` through esbuild from `appDir` — same working directory
+// as the real bundle — without writing or bundling anything: the probe module is
+// served from memory and every resolved file is stubbed. Fails only when esbuild
+// reports that a Plug'n'Play manifest blocked the import; any other esbuild error
+// is left for the build itself to report.
+export async function checkPnpResolution(requestedAppDir, probePackage = "vite") {
+  const candidate = findPnpManifest(requestedAppDir)
+  if (!candidate) return { ok: true }
+
+  // The build's working directory is always a real path; esbuild matches the
+  // manifest against real paths, so a symlinked spelling (macOS /var -> /private/var)
+  // would silently skip PnP and hide the failure this check exists to catch.
+  const appDir = realpathSync(requestedAppDir)
+  const probePath = join(appDir, `${PNP_PROBE_ENTRY}.js`)
+  const { build } = await import("esbuild")
+  try {
+    await build({
+      entryPoints: [PNP_PROBE_ENTRY],
+      absWorkingDir: appDir,
+      bundle: true,
+      write: false,
+      platform: "node",
+      logLevel: "silent",
+      plugins: [{
+        name: PNP_PROBE_ENTRY,
+        setup(pluginBuild) {
+          pluginBuild.onResolve({ filter: new RegExp(`^${PNP_PROBE_ENTRY}$`) }, () => ({ path: probePath }))
+          pluginBuild.onLoad({ filter: /.*/ }, args =>
+            args.path === probePath
+              ? { contents: `import ${JSON.stringify(probePackage)}`, loader: "js", resolveDir: appDir }
+              : { contents: "", loader: "js" })
+        }
+      }]
+    })
+    return { ok: true }
+  } catch (err) {
+    const note = (err.errors ?? []).flatMap(message => message.notes ?? [])
+      .find(n => n.text.includes("Plug'n'Play"))
+    if (!note) return { ok: true }
+    const manifest = note.location?.file ? resolve(appDir, note.location.file) : candidate
     return {
       ok: false,
       error:
-        `found a Yarn Plug'n'Play manifest at ${pnpManifest}. This workspace is ` +
-        `installed with npm, but esbuild honours PnP manifests in any parent ` +
-        `directory and will fail to resolve installed packages (e.g. ` +
-        `Could not resolve "simple-git"). Move or delete that file — it is ` +
-        `usually left over from running yarn in a parent folder — then rebuild.`
+        `esbuild is using the Yarn Plug'n'Play manifest at ${manifest}, which does not ` +
+        `list this npm workspace, so the build cannot resolve installed packages ` +
+        `(${note.text.replace(/:\s*$/, "")}). Move or delete that file — it is usually ` +
+        `left over from running yarn in a parent folder — then rebuild.`
     }
   }
+}
 
+// Pure check — returns { ok: true } or { ok: false, error: "..." }.
+// Kept side-effect-free so it can be unit tested without spawning a process.
+export function checkRootInstall(appDir, rootDir) {
   const wanted = [...new Set([...BUILD_CRITICAL_PACKAGES, ...requiredPackages(appDir)])]
   const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir))
   if (missing.length > 0) {
@@ -167,17 +209,19 @@ export function checkRootInstall(appDir, rootDir) {
   return { ok: true }
 }
 
-function main() {
+async function main() {
   const app = resolve(import.meta.dirname, "..")
   const root = resolve(app, "..", "..")
-  const result = checkRootInstall(app, root)
-
-  if (!result.ok) {
-    console.error(`✗ assert-root-install: ${result.error}`)
-    process.exit(1)
+  // The PnP probe loads esbuild, so it only runs once the install check has
+  // confirmed the declared toolchain is present.
+  for (const result of [checkRootInstall(app, root), await checkPnpResolution(app)]) {
+    if (!result.ok) {
+      console.error(`✗ assert-root-install: ${result.error}`)
+      process.exit(1)
+    }
   }
 }
 
 if (isMain(import.meta.url)) {
-  main()
+  await main()
 }

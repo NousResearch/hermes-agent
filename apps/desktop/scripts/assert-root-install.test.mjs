@@ -6,6 +6,7 @@ import { test } from 'vitest'
 
 import {
   BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL,
+  checkPnpResolution,
   checkRootInstall,
   findPnpManifest,
   requiredPackages
@@ -208,23 +209,92 @@ test('checkRootInstall keeps the floor when the manifest is unreadable', () => {
   }
 })
 
-// esbuild adopts a Yarn PnP manifest from any ancestor directory, so a stray
-// `.pnp.cjs` above the repo (typically in a home directory) breaks
-// `bundle-electron-main.mjs` with `Could not resolve "simple-git"` over a
-// complete npm install. The guard must name the file instead.
-test('checkRootInstall fails when a PnP manifest sits above the repo root', () => {
+// esbuild adopts a Yarn PnP manifest from any ancestor of its working directory,
+// so a real manifest above the repo (typically a stray one in a home directory)
+// breaks `bundle-electron-main.mjs` with `Could not resolve "..."` over a complete
+// npm install. Only a manifest esbuild actually loads may fail the check: an empty
+// file, a directory, an unrelated file or a corrupt manifest with the same name must
+// not block a build. These fixtures run the real esbuild resolver.
+
+// A minimal Yarn PnP state for a lone root workspace that declares no dependencies —
+// the shape `yarn` leaves behind when run in an otherwise empty folder.
+const PNP_STATE = JSON.stringify({
+  dependencyTreeRoots: [{ name: 'stray-root', reference: 'workspace:.' }],
+  enableTopLevelFallback: true,
+  fallbackExclusionList: [['stray-root', ['workspace:.']]],
+  fallbackPool: [],
+  ignorePatternData: null,
+  packageRegistryData: [
+    [null, [[null, { packageLocation: './', packageDependencies: [], linkType: 'SOFT' }]]],
+    ['stray-root', [['workspace:.', { packageLocation: './', packageDependencies: [['stray-root', 'workspace:.']], linkType: 'SOFT' }]]]
+  ]
+})
+
+const PNP_FIXTURES = {
+  'valid .pnp.data.json': outer => fs.writeFileSync(path.join(outer, '.pnp.data.json'), PNP_STATE),
+  'valid .pnp.cjs': outer => fs.writeFileSync(path.join(outer, '.pnp.cjs'), [
+    '"use strict";',
+    `const RAW_RUNTIME_STATE =\n'${PNP_STATE}';`,
+    'function $$SETUP_STATE(hydrateRuntimeState, basePath) {',
+    '  return hydrateRuntimeState(JSON.parse(RAW_RUNTIME_STATE), {basePath: basePath || __dirname});',
+    '}',
+    ''
+  ].join('\n')),
+  'empty .pnp.cjs': outer => fs.writeFileSync(path.join(outer, '.pnp.cjs'), ''),
+  '.pnp.cjs directory': outer => fs.mkdirSync(path.join(outer, '.pnp.cjs')),
+  'unrelated .pnp.js': outer => fs.writeFileSync(path.join(outer, '.pnp.js'), 'module.exports = {}\n'),
+  'corrupt .pnp.data.json': outer => fs.writeFileSync(path.join(outer, '.pnp.data.json'), '{"packageRegistryData": ['),
+}
+
+// An app workspace nested under `outer`, with one resolvable package hoisted to the repo root.
+function makePnpTree(fixture) {
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-pnp-'))
-  fs.writeFileSync(path.join(outer, '.pnp.cjs'), '', 'utf8')
-  const { tempRoot, appDir } = makeTree({ parentDir: outer })
+  const appDir = path.join(outer, 'repo', 'apps', 'desktop')
+  const pkgDir = path.join(outer, 'repo', 'node_modules', 'probe-pkg')
+  fs.mkdirSync(appDir, { recursive: true })
+  fs.mkdirSync(pkgDir, { recursive: true })
+  fs.writeFileSync(path.join(outer, 'repo', 'package.json'), JSON.stringify({ name: 'repo', private: true, workspaces: ['apps/*'] }))
+  fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', dependencies: { 'probe-pkg': '1.0.0' } }))
+  fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'probe-pkg', version: '1.0.0', main: 'index.js' }))
+  fs.writeFileSync(path.join(pkgDir, 'index.js'), 'module.exports = 1\n')
+  if (fixture) PNP_FIXTURES[fixture](outer)
+  return { outer, appDir }
+}
+
+test('checkPnpResolution passes without any PnP manifest', async () => {
+  const { outer, appDir } = makePnpTree(null)
   try {
-    const result = checkRootInstall(appDir, tempRoot)
-    assert.equal(result.ok, false)
-    assert.ok(result.error.includes(path.join(outer, '.pnp.cjs')))
-    assert.match(result.error, /Plug'n'Play/)
+    assert.deepEqual(await checkPnpResolution(appDir, 'probe-pkg'), { ok: true })
   } finally {
     fs.rmSync(outer, { recursive: true, force: true })
   }
 })
+
+for (const fixture of ['valid .pnp.data.json', 'valid .pnp.cjs']) {
+  test(`checkPnpResolution fails and names the manifest for a ${fixture} above the repo`, async () => {
+    const { outer, appDir } = makePnpTree(fixture)
+    try {
+      const result = await checkPnpResolution(appDir, 'probe-pkg')
+      assert.equal(result.ok, false)
+      assert.ok(result.error.includes(path.join(fs.realpathSync(outer), fixture.split(' ')[1])), result.error)
+      assert.match(result.error, /Plug'n'Play/)
+      assert.match(result.error, /probe-pkg/)
+    } finally {
+      fs.rmSync(outer, { recursive: true, force: true })
+    }
+  })
+}
+
+for (const fixture of ['empty .pnp.cjs', '.pnp.cjs directory', 'unrelated .pnp.js', 'corrupt .pnp.data.json']) {
+  test(`checkPnpResolution does not block the build for a stray ${fixture} above the repo`, async () => {
+    const { outer, appDir } = makePnpTree(fixture)
+    try {
+      assert.deepEqual(await checkPnpResolution(appDir, 'probe-pkg'), { ok: true })
+    } finally {
+      fs.rmSync(outer, { recursive: true, force: true })
+    }
+  })
+}
 
 test('findPnpManifest detects every manifest name and returns null when absent', () => {
   for (const name of ['.pnp.cjs', '.pnp.js', '.pnp.data.json']) {

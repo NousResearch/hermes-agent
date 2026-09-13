@@ -437,8 +437,10 @@ test('exec() returns stdout on success and rejects (classified) on failure', asy
 })
 
 test('exec() treats a hung ssh as a timeout (half-open connection)', async () => {
+  // connectTimeoutMs bounds the eviction's own -O exit call below — without it
+  // this falls back to the 15s production default and the test hangs for real.
   const spawnFn = scriptedSpawn([{ hang: true }])
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 30 })
   await assert.rejects(
     () => conn.exec('uname -s', { timeoutMs: 30 }),
     (err: any) => {
@@ -447,6 +449,49 @@ test('exec() treats a hung ssh as a timeout (half-open connection)', async () =>
       return true
     }
   )
+})
+
+test('exec() evicts a wedged master immediately instead of leaving it for the next open()', async () => {
+  // Mirrors the "open() evicts a wedged master" scenario, but the wedge
+  // develops *mid-attempt* (between two execs on an already-`_opened`
+  // connection), which open()'s dial-time check-then-verify never sees.
+  // Without eviction here, the next attempt's open() would find the same
+  // local master still answering `-O check` (it's a live process talking to
+  // a dead peer) and pay its own full verify-then-evict timeout again.
+  const dir = path.join(os.tmpdir(), `hermes-ssh-exec-evict-${process.pid}-${Date.now()}`)
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+
+  const ops: string[] = []
+
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('-O')) {
+      ops.push('evict')
+
+      return { code: 0 }
+    }
+
+    ops.push('exec')
+
+    return { hang: true }
+  })
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: dir, connectTimeoutMs: 30 })
+  fs.writeFileSync(conn.controlPath, '') // simulate an already-open master from a prior successful exec
+  conn._opened = true
+
+  await assert.rejects(
+    () => conn.exec('uname -s', { timeoutMs: 30 }),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.TIMEOUT)
+
+      return true
+    }
+  )
+
+  assert.deepEqual(ops, ['exec', 'evict'], 'a hung exec evicts the wedged master immediately, not on the next open()')
+  assert.equal(conn._opened, false, 'the connection no longer trusts the wedged master')
+  assert.ok(!fs.existsSync(conn.controlPath), 'the stale control socket is removed so the next open() dials fresh')
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 test('forward() issues -O forward with a loopback-bound -L spec', async () => {

@@ -392,7 +392,8 @@ def _(rid, params: dict) -> dict:
     # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
     if not clone_from:
         _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
-    _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
+    if not is_truthy_value(params.get("no_alias", False)):
+        _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
     soul = params.get("soul")
     soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
         lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
@@ -707,6 +708,12 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
                              "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
     return _ok(rid, {"found": False})
+
+
+@_profile_handler("profiles.remember_onboarding", 5067)
+def _(rid, params: dict) -> dict:
+    from tui_gateway.onboarding_personalization import remember_onboarding
+    return _ok(rid, remember_onboarding(params.get("answers")))
 
 
 def register(server) -> None:

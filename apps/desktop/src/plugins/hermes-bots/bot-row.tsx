@@ -56,6 +56,7 @@ import {
 } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
+import { $activeGroupMemberKeys } from './group-presence'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
@@ -144,7 +145,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
     : activitySession?.last_active || 0
 
-  const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId)
+  const groupKeys = useValue($activeGroupMemberKeys)
+  const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
   // Status keys off the canonical Bot Chat — the very session this row opens,
   // so the dot and the click can never describe different conversations.
   const canonicalSessionId = botCanonicalSessionId(bot)

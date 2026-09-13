@@ -1636,8 +1636,25 @@ class HygieneTurnHoldExceeded(Exception):
 def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Return the authoritative profile set for one multiplex gateway config."""
     from hermes_cli.profiles import profiles_to_serve
-    return list(profiles_to_serve(
-        multiplex=True, profile_allowlist=getattr(config, "multiplex_profile_allowlist", None)))
+    kwargs = {"multiplex": True}
+    allowlist = getattr(config, "multiplex_profile_allowlist", None)
+    if allowlist is not None:
+        kwargs["profile_allowlist"] = allowlist
+    return list(profiles_to_serve(**kwargs))
+
+
+def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
+    """Return served homes plus an active named profile outside ``profiles/``."""
+    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+
+    homes = _multiplex_profile_homes(config)
+    active = get_active_profile_name() or "default"
+    if any(name == active for name, _home in homes):
+        return homes
+    try:
+        return homes + [(active, get_profile_dir(active))]
+    except Exception:
+        return homes
 
 
 def _enable_multiplex_log_routing(config: object) -> bool:
@@ -5094,11 +5111,11 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     # Multiplex: tell the ticker which profile homes to tick, else secondary profiles' jobs never run.
     if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
         try:
-            profile_homes = _multiplex_profile_homes(runner.config)
+            profile_homes = _cron_tick_profile_homes(runner.config)
             if profile_homes:
                 # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
                 # the multiplexer runs gets its jobs fired without a restart (hot-serve).
-                cron_start_kwargs["profile_homes"] = lambda: _multiplex_profile_homes(runner.config)
+                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
                 # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's

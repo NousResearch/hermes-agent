@@ -76,6 +76,18 @@ _EXIT_CODE_SEMANTICS: dict[str, dict[int, str]] = {
     "git": {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
 }
 
+# Model-facing warning attached when the backend replaced its container/sandbox
+# mid-command (out-of-band removal, terminal sandbox state). Persistent-filesystem
+# state was restored, but background processes and anything outside the synced
+# paths are gone (ported from lobehub/lobehub#19329).
+_ENV_RECREATED_NOTE = (
+    "The execution environment was recreated while running this command "
+    "(the previous container/sandbox was gone). Persistent files were restored "
+    "where the backend supports it, but background processes and any files "
+    "outside persisted paths from earlier commands may be lost — verify state "
+    "before relying on prior work."
+)
+
 
 def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     """Note for a non-zero exit code that is informational rather than an
@@ -251,6 +263,7 @@ def finalize_foreground_result(
     # metadata is present only when output overflowed the capture window.
     optional_fields: list[tuple[str, Any]] = [
         ("cwd", changed_cwd),
+        ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",

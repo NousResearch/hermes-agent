@@ -312,8 +312,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
+            raw = new_model
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            # An explicit ``provider:model`` prefix is a selection; detection is a fallback for bare
+            # names only and must not second-guess it (#59089).
+            if target_provider == current_provider and new_model == raw:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected
@@ -875,7 +878,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         streamed_message: bool,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
-        if result.get("messages"):
+        # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844);
+        # only a result without the key leaves the history untouched.
+        if "messages" in result and isinstance(result["messages"], list):
             state.history = result["messages"]
             self.session_manager.save_session(session_id)
 

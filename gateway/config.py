@@ -277,6 +277,9 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
 })
 # Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
 PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
+# Port-binders whose profile-prefixed surface is mirrored by the default adapter.
+SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:

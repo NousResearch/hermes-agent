@@ -21,9 +21,11 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from gateway.status import resolve_gateway_liveness
+from gateway.status import (
+    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
@@ -214,6 +216,12 @@ def _messaging_platform_payload(
         pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
     ).running
+    if not gateway_running:
+        # gateway_state.json outlives its writer and keeps per-platform entries across
+        # restarts, so a stopped gateway that once ran WITHOUT credentials still says
+        # "fatal / No bot token configured" after the user saved a token. Only a live
+        # process's verdict describes the current config; a dead one's is history.
+        runtime_platform = {}
 
     def env_value(key: str) -> str:
         # Profile-scoped: judge only the profile's own .env — the dashboard process's
@@ -252,6 +260,8 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        # Multiplex secondary served on the default's shared listener: the vendor callback URL.
+        "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
@@ -268,6 +278,14 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
+    if runtime is None:
+        # A profile served by the multiplexer writes no record of its own; its adapters live in the
+        # multiplexer's record under ``<profile>:<platform>``. Unscoped, the profile is the process's
+        # own home (a pooled ``hermes --profile X serve``); the default home resolves to None here.
+        own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+        served = multiplexer_liveness_for_profile(own_home)
+        if served is not None:
+            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 
@@ -781,19 +799,17 @@ async def get_messaging_platforms(profile: Optional[str] = None):
 
 
 def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Optional[str]) -> Optional[str]:
-    """Reason enabling ``platform_id`` on the target profile would break a
-    multiplexed gateway, or ``None`` when allowed.
+    """Reason enabling ``platform_id`` on the target profile is pointless under a multiplexed
+    gateway, or ``None`` when allowed.
 
-    Mirrors ``_start_one_profile_adapters`` (gateway/run.py): with
-    ``gateway.multiplex_profiles`` on, the default profile owns the single shared
-    HTTP listener (``/p/<profile>/``), so a SECONDARY profile must never enable a
-    port-binding platform or the shared gateway dies with ``MultiplexConfigError``
-    for ALL profiles. Only *enabling* is blocked; disabling/clearing stays allowed
-    so users can repair an invalid profile.
+    With ``gateway.multiplex_profiles`` on, the default profile's listener already mirrors
+    ``api_server`` and ``webhook`` at ``/p/<profile>/`` for every profile, so a SECONDARY must not
+    enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
+    secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import PORT_BINDING_PLATFORM_VALUES, load_gateway_config
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, load_gateway_config
 
-    if platform_id not in PORT_BINDING_PLATFORM_VALUES:
+    if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
 
     requested = (requested_profile or "").strip()
@@ -816,10 +832,9 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
             return None
 
     return (
-        f"Cannot enable '{platform_id}' on profile '{target}': it binds its own listener port, "
-        "and gateway.multiplex_profiles is on, so the default profile owns the single shared HTTP "
-        "listener for every profile. Configure this channel on the default profile instead "
-        "(disabling or clearing it here is still allowed)."
+        f"Cannot enable '{platform_id}' on profile '{target}': gateway.multiplex_profiles is on and the "
+        f"default profile's listener already serves it for every profile at /p/{target}/. Configure it "
+        "on the default profile instead (disabling or clearing it here is still allowed)."
     )
 
 

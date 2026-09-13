@@ -540,11 +540,24 @@ def _ensure_terminal_env_bridged() -> None:
     suppresses the bridge entirely: writing scope values into the process-global
     env would re-create the first-writer-wins cross-profile leak the scope fixes.
 
+    Ambient ``os.environ`` is the *launch* profile's authority only. Under a
+    context-local ``HERMES_HOME`` override (multiplexed dashboard / gateway
+    secondary profile), this bridge is a no-op — otherwise the first unscoped
+    call under that override would latch the secondary profile's ``terminal.*``
+    into process-global env and poison later unscoped launch-profile turns
+    (#107422 residual of #68559). Routed profiles must bind a terminal scope
+    instead (same rule as ``env_loader._reapply_terminal_config_bridge``).
+
     terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*). See #61115, #65696.
     """
     from tools.terminal_scope import get_terminal_scope
 
     if get_terminal_scope() is not None:
+        return
+    # Never write a secondary profile's terminal.* into process-global env.
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override() is not None:
         return
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:

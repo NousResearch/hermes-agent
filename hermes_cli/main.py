@@ -141,6 +141,7 @@ def _run_and_exit_oneshot(
     skills: object = None,
     usage_file: object = None,
     resume: object = None,
+    reasoning: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -153,6 +154,7 @@ def _run_and_exit_oneshot(
             skills=skills,
             usage_file=usage_file,
             resume=resume,
+            reasoning=reasoning,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -358,6 +360,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
@@ -450,18 +453,15 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     sudo invocations the best signal is SUDO_USER: root is only doing the
     privileged install/start action; the profile store belongs to the user.
     """
-    if name == "default" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+    if name == "default":
         return None
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if not sudo_user or sudo_user == "root":
-        return None
-    try:
-        import pwd
+    from hermes_constants import sudo_invoker_default_home
 
-        candidate = Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes" / "profiles" / name
-        return str(candidate) if candidate.is_dir() else None
-    except Exception:
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is None:
         return None
+    candidate = sudo_home / "profiles" / name
+    return str(candidate) if candidate.is_dir() else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:
@@ -955,7 +955,9 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable.
+    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
+    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
+    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1040,6 +1042,12 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
+    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
+    try:
+        from hermes_cli.anon_auth import guest_enabled, has_guest
+        return guest_enabled() and has_guest()
+    except Exception as exc:
+        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1443,6 +1451,15 @@ def _apply_in_dir(args) -> None:
     except OSError as e:
         print(f"Error: cannot enter --in directory {in_dir}: {e}")
         sys.exit(1)
+    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
+    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
+    # cwd, so a value inherited from a parent surface, the shell or .env outlives
+    # this chdir and re-homes the session in the old directory (#106220). Refresh
+    # it. An unset variable stays unset: the backends then derive from the new
+    # process cwd (local exports it at cli import, docker mounts it, ssh and
+    # container backends keep their own remote/sandbox default).
+    if os.environ.get("TERMINAL_CWD", "").strip():
+        os.environ["TERMINAL_CWD"] = _target_dir
     args.no_restore_cwd = True
 
 
@@ -1675,7 +1692,11 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: check if any provider is configured before launching
+    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
+    # that may create the identity), then the inventory decides whether setup is needed.
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
+    run_bootstrap(announce=False)
     if not _has_any_provider_configured():
         _first_run_setup_guard(args)
         return
@@ -1709,10 +1730,6 @@ def cmd_chat(args):
             **passthrough,
         )
 
-    # Import and run the CLI only after startup guards and the TUI fast path;
-    # this keeps CLI module-level config reads behind --ignore-user-config.
-    from cli import main as cli_main
-
     _read_query_file(args)
 
     safe_mode = getattr(args, "safe_mode", False)
@@ -1731,12 +1748,20 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
+        from cli import main as cli_main
+
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
     except ImportError as e:
+        # Mixed-version installs (new cli.py, older hermes_cli.config) crash
+        # here — e.g. missing resolve_turn_limit / split_model_config_default
+        # (#96900). The agent-setup mixin prints this hint too late: HermesCLI
+        # construction already failed. Fast-chat launch also goes through
+        # cmd_chat, so this one catch covers `hermes` / `hermes chat`.
         from hermes_constants import emit_partial_update_hint
+
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
@@ -2614,9 +2639,10 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update", "federation",
+        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
-        "secure-worker", "browser",
+        "browser",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
         "help",
@@ -2900,6 +2926,7 @@ def _run_oneshot_from_args(args) -> None:
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
         resume=getattr(args, "resume", None),
+        reasoning=getattr(args, "reasoning", None),
     )
 
 
@@ -3204,13 +3231,6 @@ def _build_cli_parser():
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
-    try:
-        from hermes_cli.secure_worker_cli import register_cli as _sw_register
-        secure_worker_parser = subparsers.add_parser("secure-worker", help="Run secure worker controls")
-        _sw_register(secure_worker_parser)
-    except Exception as _sw_err:
-        logger.debug("secure-worker CLI registration failed: %s", _sw_err)
-
     build_login_parser(subparsers, cmd_login=cmd_login)
     build_logout_parser(subparsers, cmd_logout=cmd_logout)
     build_auth_parser(subparsers, cmd_auth=cmd_auth)
@@ -3264,14 +3284,11 @@ def _build_cli_parser():
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
+    build_vault_parser(subparsers)
     build_update_parser(subparsers, cmd_update=cmd_update)
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
-    from hermes_cli.federation import cmd_federation
-    from hermes_cli.subcommands.federation import build_federation_parser
-
-    build_federation_parser(subparsers, cmd_federation=cmd_federation)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
     build_dashboard_parser(
         subparsers,

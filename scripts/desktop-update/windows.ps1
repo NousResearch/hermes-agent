@@ -1644,7 +1644,7 @@ try {
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCode = "import hermes_cli.main; from pathlib import Path; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update(Path.cwd())"
+        $verifyCode = "import hermes_cli.main; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update()"
         $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
         if ($verify.Code -ne 0) {
             $finalCode = 8

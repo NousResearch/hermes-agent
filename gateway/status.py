@@ -920,6 +920,61 @@ class GatewayLiveness:
     source: str
     health_body: Optional[dict[str, Any]] = None
     probe_error: bool = False
+    runtime: Optional[dict[str, Any]] = None
+
+
+def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
+    """Return the live default multiplexer record when it serves ``profile_dir``."""
+    name = _profile_name_for_home(Path(profile_dir))
+    if not name:
+        return None
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    from hermes_constants import get_default_hermes_root
+
+    if not named_profile_served_by_running_multiplexer(name):
+        return None
+    pid = live_default_gateway_pid()
+    if pid is None:
+        return None
+    return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
+
+
+def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
+    """Return default-listener mirror entries for a served secondary profile."""
+    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
+
+    plats = (runtime or {}).get("platforms")
+    if not profile or profile == "default" or not isinstance(plats, dict):
+        return {}
+    mirrored: dict[str, Any] = {}
+    for name in sorted(SHARED_LISTENER_MIRROR_PLATFORMS):
+        entry = plats.get(name)
+        if not isinstance(entry, dict) or entry.get("state") not in {"connected", "connecting", "retrying"}:
+            continue
+        base = entry.get("listener_base")
+        url = (
+            f"{base}/p/{profile}{SHARED_LISTENER_MIRROR_PATHS.get(name, '')}"
+            if isinstance(base, str) and base
+            else None
+        )
+        mirrored[name] = {key: value for key, value in entry.items() if key != "listener_base"}
+        mirrored[name].update(ingress_url=url, mirrored_from="default")
+    return mirrored
+
+
+def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
+    """Return a served profile's bare platform state, including default listener mirrors."""
+    plats = (runtime or {}).get("platforms")
+    if not isinstance(plats, dict):
+        return {}
+    prefix = f"{profile}:"
+    own = {
+        key[len(prefix):]: value
+        for key, value in plats.items()
+        if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)
+    }
+    return {**shared_listener_mirror_platforms(runtime, profile), **own}
 
 
 def resolve_gateway_liveness(
@@ -980,6 +1035,13 @@ def resolve_gateway_liveness(
     if runtime_pid is not None:
         return GatewayLiveness(
             running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
+        )
+    own_home = profile_dir if scoped else _get_process_hermes_home()
+    served = guarded(multiplexer_liveness_for_profile, own_home)
+    if served is not None:
+        mux_pid, mux_runtime = served
+        return GatewayLiveness(
+            running=True, pid=mux_pid, source="multiplexer", health_body=health_body, runtime=mux_runtime
         )
     return GatewayLiveness(
         running=False, pid=None, source="none", health_body=health_body, probe_error=probe_error

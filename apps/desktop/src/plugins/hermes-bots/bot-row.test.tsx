@@ -1,9 +1,10 @@
 /**
- * The bot row's only activation side effect is opening.
+ * The bot row's two side effects: pre-warming and opening.
  *
- * A roster may contain hundreds of rows and can reflow under a stationary
- * pointer. Pointer-entry pre-warming therefore behaves like roster-wide
- * warming in practice and must not start profile backends.
+ * Pre-warm is per-row and hover-scoped. Warming the whole roster on paint
+ * spun up every profile backend the moment the Bots rail rendered, so the row
+ * warms exactly one bot and only once a pointer is actually over it — and a
+ * source-scoped row pre-dials its OWN source rather than the active gateway.
  *
  * Opening is delegated whole: the row hands its exact roster row to
  * openRosterBot and does nothing else. It never activates a connection
@@ -15,10 +16,11 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BotRow } from './bot-row'
+import { $groupChats } from './group-chat'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
@@ -70,19 +72,42 @@ beforeEach(() => {
   requestProfile.mockResolvedValue({})
 })
 
-describe('roster browsing never starts profile backends', () => {
-  it('does not warm a local row on paint or pointer entry', () => {
+describe('group-turn presence', () => {
+  it('updates only the exact member face and clears it when the room stops', () => {
+    const local: RosterRow = { name: 'default', connectionId: 'local' }
+    const remote: RosterRow = { name: 'default', connectionId: 'remote', remoteSource: true }
+
+    const { container } = render(
+      <>
+        {[local, remote].map(bot => (
+          <BotRow bot={bot} key={bot.connectionId} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+        ))}
+      </>
+    )
+
+    const moods = () => [...container.querySelectorAll('[data-hb-mood]')].map(el => el.getAttribute('data-hb-mood'))
+    act(() => $groupChats.set({ Room: { log: [], watermarks: {}, running: true, turn: remote } }))
+    expect(moods()).toEqual(['idle', 'think'])
+    act(() => $groupChats.set({ Room: { log: [], watermarks: {}, running: true, turn: local } }))
+    expect(moods()).toEqual(['think', 'idle'])
+    act(() => $groupChats.set({}))
+    expect(moods()).toEqual(['idle', 'idle'])
+  })
+})
+
+describe('pre-warm is hover-scoped, never roster-wide', () => {
+  it('warms nothing on paint and exactly the hovered bot on pointer entry', async () => {
     const row = renderRow({ name: 'alpha' } as RosterRow)
 
     expect(warmProfile).not.toHaveBeenCalled()
 
     fireEvent.pointerEnter(row)
 
-    expect(warmProfile).not.toHaveBeenCalled()
+    expect(warmProfile.mock.calls).toEqual([['alpha']])
     expect(warmAgent).not.toHaveBeenCalled()
   })
 
-  it('does not pre-dial a source-scoped row on pointer entry', () => {
+  it('pre-dials a source-scoped row on its own source', async () => {
     const row = renderRow({
       connectionId: 'work',
       connectionLabel: 'Work',
@@ -93,7 +118,7 @@ describe('roster browsing never starts profile backends', () => {
 
     fireEvent.pointerEnter(row)
 
-    expect(warmAgent).not.toHaveBeenCalled()
+    expect(warmAgent.mock.calls).toEqual([['work', 'research']])
     expect(warmProfile).not.toHaveBeenCalled()
   })
 })

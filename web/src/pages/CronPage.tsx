@@ -1107,8 +1107,8 @@ export default function CronPage() {
             <Card key={jobKey}>
               <CardContent className="flex items-start gap-4 py-4">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className="font-medium text-sm truncate min-w-0">
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>

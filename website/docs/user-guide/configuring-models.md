@@ -73,7 +73,7 @@ Click **Show auxiliary** to reveal the 11 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain, then Hermes' built-in auxiliary discovery chain. Override a specific task when you want a cheaper or faster model for a side-job.
+Every auxiliary task defaults to `auto` — meaning Hermes tries your main model for that job too. If that route is unavailable or hits a capacity-style failure, `auto` follows any task-specific `auxiliary.<task>.fallback_chain`, then the main `fallback_providers` / `fallback_model` chain. It never guesses a provider you did not configure: with a main provider selected and no fallback declared, the side task is skipped with a warning rather than billed to another account you happen to be logged into. (Hermes' built-in discovery chain only runs when no main provider is selected at all.) Override a specific task when you want a cheaper or faster model for a side-job.
 
 ### Common override patterns
 
@@ -163,7 +163,7 @@ auxiliary:
         model: inclusionai/ring-2.6-1t:free
 ```
 
-When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain before the built-in auxiliary discovery chain.
+When `fallback_chain` is absent, `auto` uses the top-level `fallback_providers` chain. If that is also absent and the main provider cannot serve the call, the task is skipped with a warning — Hermes does not fall through to other logged-in providers.
 
 ## Per-provider request options
 

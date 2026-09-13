@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 
+# Sessions remembered in _joined_author_peers; the oldest is dropped past this and its authors rejoin on their next write.
+_SESSION_CACHE_MAX_SIZE = 128
+
 
 @dataclass
 class HonchoSession:
@@ -63,6 +66,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
+        # honcho_session_id -> author peer IDs already joined to that session.
+        self._joined_author_peers: dict[str, set[str]] = {}
         self._sessions_cache: dict[str, Any] = {}
         # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client, so an
         # in-flight resolver never stores an object bound to the discarded client.
@@ -211,8 +216,10 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             honcho_session = self._authed_call("session setup", lambda: self._sdk_session(session_id))
         return honcho_session, existing_messages
 
-    def get_or_create(self, key: str) -> HonchoSession:
-        """Get an existing session or create a new one for ``key`` (usually channel:chat_id)."""
+    def get_or_create(self, key: str, *, user_peer_id: str | None = None) -> HonchoSession:
+        """Get an existing session or create a new one for ``key`` (usually channel:chat_id).
+        ``user_peer_id`` replaces the resolved user peer when the session's participant is not the
+        runtime user, e.g. the sender bot of an a2a session."""
         with self._cache_lock:
             if key in self._cache:
                 logger.debug("Local session cache hit: %s", key)
@@ -222,8 +229,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         # bots scope memory per user; config can alias/prefix it, or pinPeerName pins all
         # identities to peerName for single-user deployments (see _resolve_user_peer_id).
         # Determine peer IDs — no lock needed (read-only, no shared state mutation). See #14984.
-        user_peer_id = self._resolve_user_peer_id(key)
-        assistant_peer_id = self._sanitize_id(self._config.ai_peer if self._config else "hermes-assistant")
+        user_peer_id = user_peer_id or self._resolve_user_peer_id(key)
+        assistant_peer_id = self.assistant_peer_id()
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth.
         honcho_session_id = self._sanitize_id(key)
@@ -245,6 +252,34 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
     # ----- Writes -----
 
+    def _join_observation_flags(self, honcho_session_id: str) -> tuple[bool, bool]:
+        """(observe_me, observe_others) for an author peer joining ``honcho_session_id``."""
+        # Manager-wide today. #103889 stores the effective flags per session and plugs in here.
+        return self._user_observe_me, self._user_observe_others
+
+    def _author_peer_for_session(self, honcho_session: Any, honcho_session_id: str, author_peer_id: str) -> Any:
+        """The author's peer, joined to the session the first time it writes.
+
+        Joins are remembered per session, so this costs one API call per author."""
+        peer = self._get_or_create_peer(author_peer_id)
+        with self._cache_lock:
+            if author_peer_id in self._joined_author_peers.get(honcho_session_id, ()):
+                return peer
+        try:
+            from honcho.session import SessionPeerConfig
+            observe_me, observe_others = self._join_observation_flags(honcho_session_id)
+            config = SessionPeerConfig(observe_me=observe_me, observe_others=observe_others)
+            honcho_session.add_peers([(peer, config)])
+        except Exception as e:
+            # The write still lands under the right peer. Only the membership (observe config) is missing.
+            logger.debug("Honcho author peer join failed for %s: %s", author_peer_id, e)
+            return peer
+        with self._cache_lock:
+            self._joined_author_peers.setdefault(honcho_session_id, set()).add(author_peer_id)
+            while len(self._joined_author_peers) > _SESSION_CACHE_MAX_SIZE:
+                self._joined_author_peers.pop(next(iter(self._joined_author_peers)))
+        return peer
+
     def _flush_session(self, session: HonchoSession) -> bool:
         """Write unsynced messages to Honcho synchronously."""
         new_messages = [m for m in session.messages if not m.get("_synced")]
@@ -258,7 +293,15 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session is None:
                 honcho_session, _ = self._get_or_create_honcho_session(session.honcho_session_id, user_peer, assistant_peer)
-            honcho_messages = [(user_peer if m["role"] == "user" else assistant_peer).message(m["content"]) for m in new_messages]
+            honcho_messages = []
+            for m in new_messages:
+                if m["role"] != "user":
+                    honcho_messages.append(assistant_peer.message(m["content"]))
+                    continue
+                author_peer_id = m.get("author_peer_id")
+                peer = (self._author_peer_for_session(honcho_session, session.honcho_session_id, author_peer_id)
+                        if author_peer_id else user_peer)
+                honcho_messages.append(peer.message(m["content"]))
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
 

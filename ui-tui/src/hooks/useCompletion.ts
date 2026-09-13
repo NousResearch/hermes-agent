@@ -29,9 +29,10 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
 export function completionRequestForInput(
-  input: string
+  input: string,
+  sessionId?: string | null
 ):
-  | { method: 'complete.path'; params: { word: string }; replaceFrom: number }
+  | { method: 'complete.path'; params: { word: string; session_id?: string }; replaceFrom: number }
   | { method: 'complete.slash'; params: { text: string }; replaceFrom: number; skillsOnly?: boolean }
   | null {
   const isSlashCommand = looksLikeSlashCommand(input)
@@ -71,12 +72,12 @@ export function completionRequestForInput(
 
   return {
     method: 'complete.path',
-    params: { word: pathWord },
+    params: { word: pathWord, ...(sessionId ? { session_id: sessionId } : {}) },
     replaceFrom: input.length - pathWord.length
   }
 }
 
-export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
+export function useCompletion(input: string, blocked: boolean, gw: GatewayClient, sessionId?: string | null) {
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
@@ -102,7 +103,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
     ref.current = input
 
-    const request = completionRequestForInput(input)
+    const request = completionRequestForInput(input, sessionId)
 
     if (!request) {
       clear()
@@ -163,7 +164,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     }, 60)
 
     return () => clearTimeout(t)
-  }, [blocked, gw, input])
+  }, [blocked, gw, input, sessionId])
 
   return { completions, compIdx, setCompIdx, compReplace }
 }

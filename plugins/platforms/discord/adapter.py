@@ -5122,7 +5122,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
 
             platform = getattr(event.source.platform, "value", event.source.platform)
-            registry = self._specialist_capability_registry(settings)
+            registry = await asyncio.to_thread(self._specialist_capability_registry, settings)
             signature = registry.configured_signature(decision.profile or "")
             if signature is None:
                 logger.warning(

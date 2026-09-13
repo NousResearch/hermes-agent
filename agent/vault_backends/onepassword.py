@@ -49,14 +49,14 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
         from agent.secret_scope import get_secret
-        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
+        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_")}
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
         # profile's own secret scope like the service token does — never from the launch environment.
-        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
+        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_LOAD_DESKTOP_APP_SETTINGS"):
             if v := get_secret(k, ""):
                 env[k] = v
         env["NO_COLOR"] = "1"
-        account = str(self.cfg.get("account") or "")
+        account = str(self.cfg.get("account") or get_secret("OP_ACCOUNT", "") or "")
         if account:
             env["OP_ACCOUNT"] = account
         if self._service_token:

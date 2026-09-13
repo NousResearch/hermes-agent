@@ -890,7 +890,7 @@ def create_profile(
         _bootstrap_profile_dir(profile_dir, source_dir)
     if source_dir is not None and not clone_channels:
         from hermes_cli.profile_channels import strip_channel_settings
-        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
+        stripped = strip_channel_settings(profile_dir, include_state=clone_all, source_dir=source_dir)
         if stripped:
             logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
 

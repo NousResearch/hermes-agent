@@ -1395,6 +1395,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
+    if update_complete and not restart.incomplete:
+        try:
+            from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
+            maybe_auto_migrate_after_update()
+        except Exception:
+            logger.exception("Automatic gateway migration failed")
+            restart.incomplete = True
+
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         _receipt_path = finalize_update_receipt(
@@ -1409,9 +1417,6 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
-    with _best_effort('Automatic gateway migration check failed: %s'):
-        from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
-        maybe_auto_migrate_after_update()
 
 
 def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:

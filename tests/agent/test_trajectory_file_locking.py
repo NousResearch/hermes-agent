@@ -157,3 +157,53 @@ def test_append_honours_a_foreign_exclusive_lock(tmp_path):
             holder.wait()
     assert waited >= 1.0, f"append went through a held lock after {waited:.2f}s"
     assert json.loads(target.read_text(encoding="utf-8").strip().splitlines()[-1])["completed"] is False
+
+
+def test_interrupted_append_recovers_without_reading_history(tmp_path, monkeypatch):
+    import builtins
+    from agent.trajectory import _append_gzip_member_atomically, _build_gzip_member
+    target = tmp_path / "recover.gz"
+    _append_gzip_member_atomically(str(target), _build_gzip_member("first\n"))
+    script = textwrap.dedent(f"""
+        import builtins, os, sys
+        sys.path.insert(0, {_REPO_ROOT!r})
+        from agent.trajectory import _append_gzip_member_atomically, _build_gzip_member
+        real_open = builtins.open
+        class Interrupted:
+            def __init__(self, stream): self.stream = stream
+            def __enter__(self): return self
+            def __exit__(self, *args): self.stream.close()
+            def __getattr__(self, key): return getattr(self.stream, key)
+            def write(self, payload):
+                self.stream.write(payload[:5]); self.stream.flush()
+                os.fsync(self.stream.fileno()); os._exit(99)
+        def interrupted_open(name, mode='r', *args, **kwargs):
+            stream = real_open(name, mode, *args, **kwargs)
+            return Interrupted(stream) if str(name) == {str(target)!r} else stream
+        builtins.open = interrupted_open
+        _append_gzip_member_atomically({str(target)!r}, _build_gzip_member('lost\\n'))
+    """)
+    assert subprocess.run([sys.executable, "-c", script]).returncode == 99
+    real_open = builtins.open
+    def guarded_open(name, mode="r", *args, **kwargs):
+        if str(name) == str(target):
+            assert mode == "a+b", "must not read/copy accumulated history"
+        return real_open(name, mode, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", guarded_open)
+    _append_gzip_member_atomically(str(target), _build_gzip_member("second\n"))
+    monkeypatch.undo()
+    with gzip.open(target, "rt") as stream:
+        assert stream.read() == "first\nsecond\n"
+
+
+@pytest.mark.macos_only
+def test_first_gzip_creation_honors_umask(tmp_path):
+    import os
+    import stat
+    target = tmp_path / "shared.gz"
+    old = os.umask(0o002)
+    try:
+        save_trajectory([], "m", True, str(target))
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o664

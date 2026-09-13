@@ -46,7 +46,10 @@ class BitwardenLoginBackend(LoginBackend):
         return Path(found)
 
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
-        env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
+        from agent.secret_scope import get_secret
+        env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ and k != "BITWARDENCLI_APPDATA_DIR"}
+        if appdata := get_secret("BITWARDENCLI_APPDATA_DIR", ""):
+            env["BITWARDENCLI_APPDATA_DIR"] = appdata
         env["NO_COLOR"] = "1"
         if session_token:
             env["BW_SESSION"] = session_token

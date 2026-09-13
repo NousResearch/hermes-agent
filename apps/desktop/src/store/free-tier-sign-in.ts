@@ -79,7 +79,14 @@ function clearTimers() {
 const set = (state: FreeTierSignInState) => $freeTierSignIn.set(state)
 
 const fail = (kind: FreeTierSignInFailure, message: null | string = null) => {
+  const state = $freeTierSignIn.get()
+  attempt += 1
   clearTimers()
+
+  if (state.status === 'code') {
+    cancelOAuthSession(state.sessionId).catch(() => undefined)
+  }
+
   set({ kind, message: message?.trim() || null, status: 'failed' })
 }
 

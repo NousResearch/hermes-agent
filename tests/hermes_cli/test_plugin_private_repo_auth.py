@@ -2,7 +2,6 @@
 
 import base64
 import subprocess
-import sys
 
 import pytest
 
@@ -51,16 +50,25 @@ def test_private_clone_authenticates_without_writing_credentials_to_checkout(tmp
     assert git_credentials.with_git_auth(base, "git@github.com:acme/probe.git") == dict(base)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell stub credential helper")
-def test_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch):
+def _check_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch):
     helper = tmp_path / "helper.sh"
     helper.write_text("#!/bin/sh\n[ \"$1\" = get ] && printf 'username=bob\\npassword=pw-from-helper\\n'\n")
     helper.chmod(0o755)
     gitconfig = tmp_path / "gitconfig"
-    gitconfig.write_text(f'[credential "https://git.example.test"]\n\thelper = !{helper}\n')
+    gitconfig.write_text(f'[credential]\n\tuseHttpPath = true\n[credential "https://git.example.test/acme/x.git"]\n\thelper = !{helper}\n', encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_ASKPASS", "/nonexistent/askpass-must-not-run")
 
     assert git_credentials.resolve_git_basic_auth("https://git.example.test/acme/x.git") == ("bob", "pw-from-helper")
     # Unknown host: no helper answers → None quickly, no prompt attempt escaped.
     assert git_credentials.resolve_git_basic_auth("https://nothing.example.test/x.git") is None
+
+
+@pytest.mark.linux_only
+def test_credential_fill_uses_stored_helper_linux(tmp_path, monkeypatch):
+    _check_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch)
+
+
+@pytest.mark.macos_only
+def test_credential_fill_uses_stored_helper_macos(tmp_path, monkeypatch):
+    _check_credential_fill_uses_stored_helper_and_never_prompts(tmp_path, monkeypatch)

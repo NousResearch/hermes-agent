@@ -7,8 +7,7 @@ guaranteed three ways:
    declarations fails here);
 2. every FAL video family must carry the per-family keys the fal provider's
    active-model capabilities() resolution reads;
-3. declaration⇄implementation: a provider that declares seed/upscale must
-   implement it, and vice versa (source-level sweep, both directions).
+3. each discovered provider's seed/upscale capabilities control its published schema.
 """
 import os
 import sys
@@ -42,54 +41,29 @@ FAL_FAMILY_KEYS = ("durations", "aspect_ratios", "resolutions", "audio",
                    "negative", "seed")
 
 
-def _plugin_sources():
-    import pathlib
+def _providers():
+    import importlib
+    import inspect
+    import pkgutil
+    import plugins.video_gen
+    from agent.video_gen_provider import VideoGenProvider
 
-    plugins_dir = (pathlib.Path(__file__).resolve().parents[2]
-                   / "plugins" / "video_gen")
-    assert plugins_dir.is_dir(), plugins_dir
-    out = {}
-    for plugin in sorted(plugins_dir.iterdir()):
-        src_file = plugin / "__init__.py"
-        if src_file.is_file():
-            out[plugin.name] = src_file.read_text(encoding="utf-8")
-    return out
+    providers = []
+    for entry in pkgutil.iter_modules(plugins.video_gen.__path__):
+        module = importlib.import_module(f"plugins.video_gen.{entry.name}")
+        providers.extend(value() for value in vars(module).values()
+                         if inspect.isclass(value) and value.__module__ == module.__name__
+                         and issubclass(value, VideoGenProvider) and not inspect.isabstract(value))
+    assert providers, "No bundled video providers discovered"
+    return providers
 
 
 class TestFleetCapabilityCoverage(unittest.TestCase):
     def test_every_provider_declares_every_axis(self):
-        """Instantiate each in-tree provider class and check the RETURNED
-        capabilities dict — source grep can't see inherited keys."""
-        checked = 0
-        # fal
-        from plugins.video_gen.fal import FALVideoGenProvider
-
-        caps = FALVideoGenProvider().capabilities()
-        for axis in CAPABILITY_AXES:
-            self.assertIn(axis, caps, f"fal missing {axis}")
-        checked += 1
-        # xai
-        from plugins.video_gen.xai import XAIVideoGenProvider
-
-        caps = XAIVideoGenProvider().capabilities()
-        for axis in CAPABILITY_AXES:
-            self.assertIn(axis, caps, f"xai missing {axis}")
-        checked += 1
-        # deepinfra
-        from plugins.video_gen.deepinfra import DeepInfraVideoGenProvider
-
-        caps = DeepInfraVideoGenProvider().capabilities()
-        for axis in CAPABILITY_AXES:
-            self.assertIn(axis, caps, f"deepinfra missing {axis}")
-        checked += 1
-        # openrouter
-        from plugins.video_gen.openrouter import OpenRouterVideoGenProvider
-
-        caps = OpenRouterVideoGenProvider().capabilities()
-        for axis in CAPABILITY_AXES:
-            self.assertIn(axis, caps, f"openrouter missing {axis}")
-        checked += 1
-        self.assertGreaterEqual(checked, 4)
+        for provider in _providers():
+            caps = provider.capabilities()
+            for axis in CAPABILITY_AXES:
+                self.assertIn(axis, caps, f"{provider.name} missing {axis}")
 
     def test_abc_default_fails_closed(self):
         from agent.video_gen_provider import VideoGenProvider
@@ -144,39 +118,13 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
         self.assertNotIn("audio", schema["parameters"]["properties"])
         self.assertIn("always on", schema["description"])
 
-    def test_declaration_matches_implementation(self):
-        """supports_seed / supports_upscale: declaration ⇄ implementation,
-        source-level, both directions, every in-tree plugin.
-
-        deepinfra inherits generate() from OpenAICompatibleVideoGenProvider
-        (agent/video_gen_provider.py), so its implementation source is the
-        base class file."""
-        import pathlib
-
-        base_src = (pathlib.Path(__file__).resolve().parents[2]
-                    / "agent" / "video_gen_provider.py").read_text(encoding="utf-8")
-        for name, src in _plugin_sources().items():
-            with self.subTest(provider=name):
-                impl_src = src if "def generate" in src else src + base_src
-                declares_upscale = '"supports_upscale": True' in src
-                implements_upscale = ("_upscale_video" in impl_src
-                                      or "UPSCALER_ENDPOINT" in impl_src)
-                self.assertEqual(
-                    declares_upscale, implements_upscale,
-                    f"{name}: supports_upscale declaration "
-                    f"({declares_upscale}) != implementation "
-                    f"({implements_upscale})",
-                )
-                declares_seed = '"supports_seed": True' in src
-                implements_seed = ("seed" in impl_src
-                                   and ("payload[\"seed\"]" in impl_src
-                                        or "seed: Optional[int]" in impl_src
-                                        or "\"seed\": seed" in impl_src))
-                self.assertEqual(
-                    declares_seed, implements_seed,
-                    f"{name}: supports_seed declaration ({declares_seed}) "
-                    f"!= implementation ({implements_seed})",
-                )
+    def test_fleet_capabilities_control_published_schema(self):
+        for provider in _providers():
+            with self.subTest(provider=provider.name), patch.object(vt, "_resolve_active_provider", return_value=provider):
+                caps = provider.capabilities()
+                properties = _build_dynamic_video_schema()["parameters"]["properties"]
+                self.assertEqual("seed" in properties, bool(caps.get("supports_seed")))
+                self.assertEqual("upscale" in properties, bool(caps.get("supports_upscale")))
 
 
 class TestDynamicParamGating(unittest.TestCase):

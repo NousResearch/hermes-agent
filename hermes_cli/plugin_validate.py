@@ -1,24 +1,14 @@
 """``hermes plugins validate`` — admission checks for a plugin directory.
 
-This is the command the plugin-catalog admission CI (and the
-``.github/actions/plugin-validate`` composite action) runs against a
-candidate plugin. It performs static manifest checks plus a
-subprocess-isolated capability probe: the plugin is imported and its
-``register(ctx)`` called against a minimal recording stub context in a
-scratch child process (with a throwaway ``HERMES_HOME``), so a crashing or
-malicious plugin cannot take down the CLI, and the *actually registered*
-tools/hooks/middleware are compared against the manifest's declared
-``provides_*`` lists.
+Catalog admission performs static manifest and Python registration checks. Candidate
+modules are parsed, never imported or executed: a subprocess alone is not a sandbox.
+Static results do not certify runtime behavior or plugin safety.
 """
 
 from __future__ import annotations
 
-import json
-import os
+import ast
 import re
-import subprocess
-import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,8 +18,6 @@ _CONFIG_TYPES = {
     "str", "string", "int", "integer", "float", "number",
     "bool", "boolean", "list", "array", "dict", "mapping", "map",
 }
-_PROBE_TIMEOUT = 30
-_PROBE_SENTINEL = "HERMES_VALIDATE_JSON:"
 
 
 @dataclass
@@ -178,135 +166,61 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
         report.add("requires_env", True, "all entries UPPER_SNAKE")
 
 
-# ─── Capability probe (subprocess-isolated) ──────────────────────────────────
+# ─── Static capability declarations ──────────────────────────────────────────
 
-# Self-contained harness run in a scratch child process. Imports the plugin
-# module using the same file-location mechanics PluginManager uses, calls
-# register() against a recording stub ctx, and prints a sentinel-prefixed
-# JSON line of what was actually registered. Deliberately imports NOTHING
-# from hermes so a hostile plugin only sees a bare interpreter.
-_PROBE_SCRIPT = r"""
-import importlib.util
-import json
-import sys
-
-plugin_dir = sys.argv[1]
-sentinel = sys.argv[2]
-
-recorded = {"tools": [], "hooks": [], "middleware": [], "commands": []}
+_REGISTRATION_KINDS = {
+    "register_tool": ("tools", "name"),
+    "register_hook": ("hooks", "hook_name"),
+    "register_middleware": ("middleware", "kind"),
+    "register_command": ("commands", "name"),
+    "register_cli_command": ("commands", "name"),
+}
 
 
-class RecordingContext:
-    plugin_config = {}
-    profile_name = "default"
+def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
+    """Inspect literal registration calls without running candidate code.
 
-    def register_tool(self, name, *args, **kwargs):
-        recorded["tools"].append(str(name))
-
-    def register_hook(self, hook_name, callback):
-        recorded["hooks"].append(str(hook_name))
-
-    def register_middleware(self, kind, callback):
-        recorded["middleware"].append(str(kind))
-
-    def register_command(self, name, *args, **kwargs):
-        recorded["commands"].append(str(name))
-
-    def register_cli_command(self, name, *args, **kwargs):
-        recorded["commands"].append(str(name))
-
-    def get_config(self, key, default=None):
-        # Mirrors PluginContext.get_config with no config on disk: the DEFAULT, never None —
-        # plugins do `int(ctx.get_config("timeout", 180))` in register().
-        return default
-
-    def __getattr__(self, _name):
-        # Any other registration surface (platforms, providers, skills,
-        # context engines, ...) is accepted as a no-op — the probe only
-        # audits the declared-capability categories.
-        def _noop(*args, **kwargs):
-            return None
-
-        return _noop
-
-
-def emit(payload):
-    print(sentinel + json.dumps(payload))
-
-
-try:
-    spec = importlib.util.spec_from_file_location(
-        "hermes_validate_probe_plugin",
-        plugin_dir + "/__init__.py",
-        submodule_search_locations=[plugin_dir],
-    )
-    module = importlib.util.module_from_spec(spec)
-    module.__path__ = [plugin_dir]
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-except Exception as exc:
-    emit({"error": "import failed: %s" % exc})
-    sys.exit(0)
-
-register = getattr(module, "register", None)
-if register is None:
-    emit({"error": "no register() function"})
-    sys.exit(0)
-
-try:
-    register(RecordingContext())
-except Exception as exc:
-    emit({"error": "register() raised: %s" % exc})
-    sys.exit(0)
-
-emit(recorded)
-"""
-
-
-def _run_capability_probe(plugin_dir: Path) -> Tuple[Optional[dict], str]:
-    """Run the recording probe in a scratch subprocess.
-
-    Returns ``(recorded, error)`` — exactly one is meaningful: *recorded*
-    is the ``{tools, hooks, middleware, commands}`` dict on success, and
-    *error* is a human-readable failure description otherwise.
+    Dynamic names cannot establish admission declarations and fail closed. Calls in
+    helpers and conditional branches are included conservatively, not claimed to run.
     """
-    with tempfile.TemporaryDirectory(prefix="hermes-validate-") as scratch:
-        env = dict(os.environ)
-        env["HERMES_HOME"] = scratch
+    recorded = {"tools": [], "hooks": [], "middleware": [], "commands": []}
+    entry = plugin_dir / "__init__.py"
+    has_register = False
+    for path in sorted(plugin_dir.rglob("*.py")):
+        if any(part in {".git", ".venv", "venv", "__pycache__"} for part in path.relative_to(plugin_dir).parts):
+            continue
         try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    _PROBE_SCRIPT,
-                    str(plugin_dir),
-                    _PROBE_SENTINEL,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=_PROBE_TIMEOUT,
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            return None, f"capability probe timed out after {_PROBE_TIMEOUT}s"
-
-    payload: Optional[dict] = None
-    for line in (result.stdout or "").splitlines():
-        if line.startswith(_PROBE_SENTINEL):
-            try:
-                payload = json.loads(line[len(_PROBE_SENTINEL):])
-            except json.JSONDecodeError:
-                payload = None
-
-    if payload is None:
-        err = (result.stderr or "").strip()
-        return None, (
-            "capability probe produced no result "
-            f"(exit {result.returncode})" + (f": {err}" if err else "")
-        )
-    if "error" in payload:
-        return None, str(payload["error"])
-    return payload, ""
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, UnicodeError, SyntaxError) as exc:
+            return None, f"cannot parse plugin Python: {exc}"
+        if path == entry:
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "register":
+                    has_register = True
+                    if any(isinstance(statement, ast.Raise) for statement in node.body):
+                        return None, "register() contains an unconditional raise"
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in _REGISTRATION_KINDS:
+                parent = parents.get(node)
+                if not isinstance(parent, ast.Call) or parent.func is not node:
+                    return None, "aliased registration requires manual capability review"
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr":
+                if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value in _REGISTRATION_KINDS:
+                    return None, "dynamic registration lookup requires manual capability review"
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            registration = _REGISTRATION_KINDS.get(node.func.attr)
+            if registration is None:
+                continue
+            kind, keyword = registration
+            name = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg == keyword), None)
+            if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+                return None, f"dynamic {node.func.attr} name requires manual capability review ({path.name}:{node.lineno})"
+            recorded[kind].append(name.value)
+    if not has_register:
+        return None, "no statically defined register() function"
+    return recorded, ""
 
 
 def _declared_list(manifest: dict, key: str) -> List[str]:
@@ -319,7 +233,7 @@ def _declared_list(manifest: dict, key: str) -> List[str]:
 def _check_capabilities(
     report: ValidationReport, manifest: dict, plugin_dir: Path
 ) -> Optional[dict]:
-    """Probe actual registrations and diff against declared capabilities.
+    """Compare statically visible registration calls against declared capabilities.
 
     Returns the recorded dict (for the built-in collision check) or None
     when the probe failed / was skipped.
@@ -331,11 +245,12 @@ def _check_capabilities(
         report.add("capability probe", True, "skipped (no __init__.py)")
         return None
 
-    recorded, error = _run_capability_probe(plugin_dir)
+    recorded, error = _scan_capabilities(plugin_dir)
     if recorded is None:
         report.add("capability probe", False, error)
         return None
-    report.add("capability probe", True, "register() ran in isolation")
+    report.add("capability probe", True, "literal registration calls inspected without execution")
+    report.warn("Static inspection only: runtime behavior, imported registrations, capability completeness, and plugin safety are not verified.")
 
     for kind, manifest_key in (
         ("tools", "provides_tools"),
@@ -354,16 +269,16 @@ def _check_capabilities(
                 f"{', '.join(undeclared)}",
             )
         else:
-            report.add(f"declared {kind}", True, "matches registrations")
+            report.add(f"declared {kind}", True, "matches statically visible calls")
         if unregistered:
             report.warn(
                 f"{manifest_key} declares {', '.join(unregistered)} "
-                f"but register() did not register them"
+                f"but no literal registration call was found"
             )
     return recorded
 
 
-def _builtin_tool_names() -> List[str]:
+def _builtin_tool_names() -> Optional[List[str]]:
     """Return the built-in tool registry names (discovery-timing safe).
 
     ``tools.registry`` starts empty — built-in tool modules self-register on
@@ -376,7 +291,7 @@ def _builtin_tool_names() -> List[str]:
         discover_builtin_tools()
         return list(registry.get_all_tool_names())
     except Exception:
-        return []
+        return None
 
 
 def _check_builtin_collisions(
@@ -388,7 +303,11 @@ def _check_builtin_collisions(
     if not candidate_tools:
         report.add("built-in tool collisions", True, "no tools to check")
         return
-    builtin = set(_builtin_tool_names())
+    names = _builtin_tool_names()
+    if names is None:
+        report.add("built-in tool collisions", False, "built-in discovery unavailable")
+        return
+    builtin = set(names)
     collisions = sorted(candidate_tools & builtin)
     if collisions:
         report.add(

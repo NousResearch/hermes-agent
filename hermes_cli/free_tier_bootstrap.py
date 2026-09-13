@@ -107,11 +107,15 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
     with _lock:
         if _record is not None:
             return _record
-        if _started:
-            _done.wait(SETUP_READY_WAIT_SECONDS)
+        already_started = _started
+        _started = True
+    if already_started:
+        # The owner needs this lock to publish the record and signal completion.
+        _done.wait(SETUP_READY_WAIT_SECONDS)
+        with _lock:
             if _record is not None:
                 return _record
-        _started = True
+        return SetupRecord(False, "", False, False, False, error="bootstrap still in progress")
 
     from hermes_cli import anon_auth
 

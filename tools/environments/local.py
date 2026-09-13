@@ -629,7 +629,7 @@ def _make_run_env(env: dict) -> dict:
         for key in _LOCAL_TERMINAL_GIT_AUTH_ENV:
             if source.get(key) is not None:
                 result[key] = source[key]
-            elif key in {"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL"}:
+            elif key in {"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"}:
                 # Let gh/git use their normal HOME-scoped defaults in the trusted
                 # terminal. The scrubber's /dev/null values must not leak into it.
                 result.pop(key, None)

@@ -810,3 +810,46 @@ def _wait_for_path(path: Path, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.01)
     return path.exists()
+
+@pytest.mark.parametrize("layout", ["linked", "submodule", "separate"])
+def test_durable_source_preserves_selected_checkout(repo, db, tmp_path, layout):
+    from tui_gateway.git_probe import common_repo_root
+    source = tmp_path / "selected"
+    if layout == "linked":
+        git(repo, "worktree", "add", "-b", "selected", str(source))
+    elif layout == "submodule":
+        git(repo, "-c", "protocol.file.allow=always", "submodule", "add", str(repo), "child")
+        source = repo / "child"
+    else:
+        git(repo, "clone", "--separate-git-dir", str(tmp_path / "metadata"), str(repo), str(source))
+    assert common_repo_root(str(source))
+    original = manager(source, db, tmp_path)
+    binding = original.bind_new_root_session("layout-root", conversation_kind="interactive")
+    record = db.get_conversation_worktree("layout-root")
+    assert Path(record.source_worktree) == source.resolve()
+    resumed = manager(repo, db, tmp_path)
+    assert resumed.resolve_existing_session("layout-root").path == binding.path
+    assert resumed._durable_source(record) == source.resolve()
+    verdict = resumed.inspect_cleanup("layout-root", active_session_bound=False)
+    assert "unknown" not in verdict.reasons
+    assert "mismatched identity" not in verdict.reasons
+    if layout == "linked":
+        git(binding.path, "commit", "--allow-empty", "-m", "conversation change")
+        git(source, "merge", "--ff-only", str(binding.branch))
+        verdict = resumed.inspect_cleanup("layout-root", active_session_bound=False)
+        assert "unintegrated" not in verdict.reasons
+
+
+def test_stale_ready_record_cannot_adopt_foreign_worktree(repo, db, tmp_path):
+    foreign = tmp_path / "foreign"
+    git(repo, "worktree", "add", "-b", "foreign", str(foreign))
+    db.claim_conversation_worktree(root_session_id="foreign", worktree_path=str(foreign),
+        branch="foreign", base_commit=git(repo, "rev-parse", "HEAD"),
+        repo_common_dir=git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        source_worktree=str(repo))
+    db.mark_conversation_worktree_ready("foreign")
+    owner = manager(repo, db, tmp_path)
+    with pytest.raises(ConversationWorktreeError, match="ownership"):
+        owner.resolve_existing_session("foreign")
+    assert not owner.inspect_cleanup("foreign", active_session_bound=False).allowed
+    assert foreign.is_dir()

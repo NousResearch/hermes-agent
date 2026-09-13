@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Optional, Tuple
 from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, _prefix_within_utf16_limit, utf16_len
+from gateway.platforms.base import _prefix_within_utf16_limit, utf16_len
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from utils import is_truthy_value
 

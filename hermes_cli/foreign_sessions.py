@@ -8,11 +8,13 @@ import json
 import os
 import re
 import sys
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any, Dict, List, Optional, Tuple
+
+from hermes_state_ids import new_session_id
 
 # User-message texts that are really injected context wrappers, not typed input.
 _WRAPPER_TAG_RE = re.compile(
@@ -108,7 +110,7 @@ def _message_turn(message: Any) -> Optional[Tuple[str, str]]:
 
 def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
     for role, text in turns:
-        if role == "user" and (line := text.strip().splitlines()[0].strip()):
+        if role == "user" and (line := text.strip().partition("\n")[0].strip()):
             return line[:_TITLE_MAX * 2]
     return None
 
@@ -162,27 +164,61 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
     return _parsed(turns, cwd, session_id)
 
 
-# source -> (default root under ~, glob pattern, recursive, parser)
+# source -> (default root under ~, env override var, subdir under the env root, glob pattern,
+#            recursive, parser)
 _SOURCES = {
-    "claude": ((".claude", "projects"), "*/*.jsonl", False, parse_claude_session),
-    "codex": ((".codex", "sessions"), "rollout-*.jsonl", True, parse_codex_session),
+    "claude": ((".claude", "projects"), "CLAUDE_CONFIG_DIR", "projects", "*/*.jsonl", False,
+               parse_claude_session),
+    "codex": ((".codex", "sessions"), "CODEX_HOME", "sessions", "rollout-*.jsonl", True,
+              parse_codex_session),
 }
 
 
-def _list_sessions(source: str, root: Optional[Path]) -> List[ForeignSession]:
-    default_root, pattern, recursive, parse = _SOURCES[source]
-    root = Path(root) if root else Path.home().joinpath(*default_root)
-    results: List[ForeignSession] = []
-    for jsonl in sorted((root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ()):
+def _parser(source: str):
+    return _SOURCES[source][5]
+
+
+def _default_root(source: str) -> Path:
+    """Default session store for *source*, honoring the tool's own relocation env var.
+
+    Claude Code moves its whole config dir with ``CLAUDE_CONFIG_DIR``; Codex CLI with
+    ``CODEX_HOME``. A blank/whitespace value is treated as unset (an empty override must not
+    resolve to a relative ``"projects"`` under the CWD). Ported from cline/cline#13827."""
+    default_parts, env_var, env_subdir, *_ = _SOURCES[source]
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        return Path(override).expanduser() / env_subdir
+    return Path.home().joinpath(*default_parts)
+
+
+def _walk(source: str, root: Optional[Path] = None) -> List[Tuple[Path, os.stat_result]]:
+    """Regular log files of *source* under *root* (default: the tool's env-aware store, see
+    ``_default_root``) as ``(path, stat)``, newest first. Symlinks escaping the root and
+    unreadable/rotated entries are skipped, so one bad file never hides the rest. Shared by the
+    CLI picker and the desktop browser."""
+    pattern, recursive = _SOURCES[source][3], _SOURCES[source][4]
+    root = (Path(root) if root else _default_root(source)).resolve()
+    found: List[Tuple[Path, os.stat_result]] = []
+    for path in (root.rglob(pattern) if recursive else root.glob(pattern)) if root.is_dir() else ():
         try:
-            mtime = jsonl.stat().st_mtime
+            resolved = path.resolve()
+            st = resolved.stat()
         except OSError:
             continue
-        parsed = parse(jsonl)
+        if resolved.is_relative_to(root) and S_ISREG(st.st_mode):
+            found.append((resolved, st))
+    found.sort(key=lambda item: item[1].st_mtime, reverse=True)
+    return found
+
+
+def _list_sessions(source: str, root: Optional[Path]) -> List[ForeignSession]:
+    parse = _parser(source)
+    results: List[ForeignSession] = []
+    for path, st in _walk(source, root):
+        parsed = parse(path)
         if parsed["turns"]:
-            results.append(ForeignSession(source, jsonl, mtime, parsed["cwd"], parsed["title_guess"],
+            results.append(ForeignSession(source, path, st.st_mtime, parsed["cwd"], parsed["title_guess"],
                                           len(parsed["turns"]), parsed["session_id"]))
-    results.sort(key=lambda s: s.mtime, reverse=True)
     return results
 
 
@@ -196,7 +232,7 @@ def import_foreign_session(source: str, path, db=None) -> str:
     path = Path(path).expanduser()
     if not path.is_file():
         raise ValueError(f"Session file not found: {path}")
-    parsed = _SOURCES[source][3](path)
+    parsed = _parser(source)(path)
     turns = parsed["turns"]
     if not turns:
         raise ValueError(f"No user/assistant conversation turns found in {path}")
@@ -209,7 +245,7 @@ def import_foreign_session(source: str, path, db=None) -> str:
         from hermes_state import SessionDB
         db = SessionDB()
     try:
-        session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        session_id = new_session_id()
         origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
         db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
         for turn in turns:

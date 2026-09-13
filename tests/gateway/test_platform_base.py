@@ -9,7 +9,6 @@ import pytest
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
-    MessageEvent,
     SendResult,
     cache_audio_from_bytes,
     cache_image_from_bytes,
@@ -21,6 +20,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+from gateway.platforms.event import MessageEvent
 
 
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
@@ -705,6 +705,37 @@ class TestMediaDeliveryDefaultMode:
             path.write_bytes(b"SQLite format 3\x00")
         assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
         assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
+
+    def test_denylist_covers_every_profile_home_not_just_the_launch_home(self, tmp_path, monkeypatch):
+        """Multiplex: one process serves every ``<root>/profiles/*``. The credential denylist must
+        cover each profile's ``.env`` / ``auth.json`` / ``state.db`` / transcripts whether the emitting
+        turn is the launch (default) profile's or the secondary's own (HERMES_HOME override), while
+        the profile's cache artifacts and plain agent-written files stay deliverable."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        self._patch_roots(monkeypatch)
+        fake_home = tmp_path / "home"
+        hermes_root = fake_home / ".hermes"
+        profile_b = hermes_root / "profiles" / "beta"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+
+        denied = [".env", "auth.json", "state.db", "state.db-wal", "config.yaml",
+                  "sessions/20260101_abc.json", "mcp-tokens/server.json"]
+        allowed = ["cache/images/gen.png", "report.pdf"]
+        for rel in denied + allowed:
+            path = profile_b / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SECRET=1\n")
+
+        for scope in (None, profile_b):  # default profile's turn, then beta's own turn
+            token = set_hermes_home_override(scope)
+            try:
+                assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(profile_b / rel))] == []
+                assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(profile_b / rel))] == []
+            finally:
+                reset_hermes_home_override(token)
 
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older

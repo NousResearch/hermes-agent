@@ -30,6 +30,53 @@ class TestWeComAdapterInit:
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
 
 
+class TestWeComInboundImageExtension:
+    def test_octet_stream_falls_through_to_magic_bytes(self):
+        """WeCom's CDN serves images as application/octet-stream; the cached file must get the
+        real image extension from magic bytes, not ".bin" (#10085)."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+        ext = WeComAdapter._guess_extension(
+            "https://wwcdn.weixin.qq.com/img?aeskey=abc", "application/octet-stream",
+            fallback=WeComAdapter._detect_image_ext(jpeg))
+        assert ext == ".jpg"
+        assert WeComAdapter._guess_extension("https://x/y.png", "image/png", fallback=".jpg") == ".png"
+
+    def test_encoded_aeskey_and_octet_stream_image_cached_as_real_image(self, monkeypatch):
+        """End to end through `_cache_media`: a percent-encoded, unpadded `aeskey` decrypts, and an
+        octet-stream-labelled PNG is stored with an image MIME, not application/octet-stream."""
+        from urllib.parse import quote
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from plugins.platforms.wecom import media as wecom_media
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        key = os.urandom(32)
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+        pad = 16 - len(png) % 16
+        enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = enc.update(png + bytes([pad]) * pad) + enc.finalize()
+        encoded_key = quote(base64.b64encode(key).decode().rstrip("="), safe="")
+
+        adapter = WeComAdapter.__new__(WeComAdapter)
+        stored = {}
+
+        async def _download(url, max_bytes):
+            return encrypted, {"content-type": "application/octet-stream"}
+
+        async def _cache(raw, ext):
+            stored["raw"] = raw
+            return f"/tmp/img{ext}"
+
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        monkeypatch.setattr(wecom_media, "cache_image_from_bytes_async", _cache)
+
+        result = asyncio.run(adapter._cache_media("image", {"url": "https://cdn/x", "aeskey": encoded_key}))
+
+        assert result == ("/tmp/img.png", "image/png")
+        assert stored["raw"] == png
+
+
 class TestWeComAdapterAuthzScope:
     """dm_policy/allowlist reads must honor the profile secret scope under
     multiplexing (#93522): a secondary profile's own scope is authoritative
@@ -654,7 +701,7 @@ class TestTextBatchFlushRace:
     async def test_superseded_task_does_not_pop_or_process_event(self):
         """A flush task that has been superseded must leave the event in the
         batch dict for the new task to handle."""
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -697,7 +744,7 @@ class TestTextBatchFlushRace:
     @pytest.mark.asyncio
     async def test_active_task_processes_event_normally(self):
         """When the task is not superseded it must still process the event."""
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -811,7 +858,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.text == "what is this?"
         assert event.media_urls == ["/tmp/x.png"]
@@ -831,7 +878,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.media_urls == ["/tmp/x.png"]
         assert event.message_type == MessageType.PHOTO
@@ -880,7 +927,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.2)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.text == "just text"
         assert event.media_urls == []

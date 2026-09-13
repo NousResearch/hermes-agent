@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Generic, Optional, TypeVar
+
+from hermes_constants import secure_parent_dir
+from utils import atomic_json_write
 
 __all__ = [
     "CachedFetch",
@@ -68,32 +69,13 @@ def entry_from_payload(payload: object) -> Optional[CachedFetch]:
     return CachedFetch(secrets=typed, fetched_at=float(fetched_at))
 
 
-def atomic_write_json(path: Path, payload: dict, *, tmp_prefix: str) -> None:
-    """Write ``payload`` to ``path`` via mkstemp → chmod 0600 → os.replace.
-
-    The containing dir is forced to ``0700`` (``mkdir``'s mode is umask-subject,
-    so the chmod is the reliable form). Raises ``OSError`` on failure; callers
-    decide whether that is best-effort.
-    """
-    cache_dir = path.parent
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(cache_dir, 0o700)
-    except OSError:
-        pass
-    # tempfile honours os.umask, so chmod 0600 explicitly before the rename.
-    fd, tmp = tempfile.mkstemp(prefix=tmp_prefix, suffix=".tmp", dir=str(cache_dir))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+def atomic_write_json(path: Path, payload: dict) -> None:
+    """Secret cache entry at 0600 from creation; the containing dir is tightened to 0700
+    (``secure_parent_dir`` refuses ``/``, top-level dirs and the install tree). Raises ``OSError``
+    on failure; callers decide whether that is best-effort."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+    atomic_json_write(path, payload, indent=None, mode=0o600)
 
 
 K = TypeVar("K")
@@ -116,8 +98,6 @@ class DiskCache(Generic[K]):
     def __init__(self, basename: str, *, key_serializer: Callable[[K], str]) -> None:
         self._basename = basename
         self._key_serializer = key_serializer
-        # Per-backend temp prefix so concurrent writers in one dir never collide.
-        self._tmp_prefix = f".{basename.split('.', 1)[0]}_"
 
     def path(self, home_path: Optional[Path] = None) -> Path:
         return resolve_cache_home(home_path) / "cache" / self._basename
@@ -142,7 +122,7 @@ class DiskCache(Generic[K]):
             return
         payload = {"key": self._key_serializer(key), "secrets": entry.secrets, "fetched_at": entry.fetched_at}
         try:
-            atomic_write_json(self.path(home_path), payload, tmp_prefix=self._tmp_prefix)
+            atomic_write_json(self.path(home_path), payload)
         except OSError:
             pass  # best-effort — a disk-cache miss next invocation is fine
 

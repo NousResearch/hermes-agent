@@ -19,6 +19,27 @@ from tools.approval_context import _normalize_approval_mode
 from tools.approval_smart import _smart_approve
 
 
+class TestPackageManagerUninstallApproval:
+    """Package-manager removal verbs remove software outside the project (#10199)."""
+
+    @pytest.mark.parametrize("command", [
+        "npm uninstall -g left-pad", "npm r left-pad", "pnpm un -g left-pad",
+        "yarn global remove left-pad", "pip3 uninstall left-pad", "brew rm left-pad",
+        "npm --prefix ./app uninstall left-pad", "pip --proxy http://p:1 uninstall -y requests",
+        "cd app && yarn --cwd ./app remove left-pad",
+    ])
+    def test_uninstall_requires_approval(self, command):
+        dangerous, key, _ = detect_dangerous_command(command)
+        assert dangerous and key == "package manager uninstall"
+
+    @pytest.mark.parametrize("command", [
+        "npm update -g left-pad", "pnpm add left-pad", "yarn install", "pip install left-pad", "brew upgrade left-pad",
+        'git commit -m "document npm uninstall usage"', 'echo "pip uninstall foo"',
+    ])
+    def test_install_and_update_stay_unprompted(self, command):
+        assert detect_dangerous_command(command) == (False, None, None)
+
+
 class TestApprovalModeParsing:
     def test_normalization_table(self):
         # Unquoted YAML `off`/`on` arrive as booleans; unknown/empty fall back
@@ -211,6 +232,40 @@ class TestSafeCommand:
             assert is_dangerous is False, cmd
             assert key is None
             assert desc is None
+
+
+class TestCloudMetadataEndpoint:
+    IMDS_KEY = "cloud metadata endpoint access (instance credentials)"
+
+    def test_metadata_credential_fetches_flagged(self):
+        # AWS/Azure link-local IP, GCP hostname, AWS IPv6 form, Alibaba Cloud IP —
+        # each is an instance-credential fetch and must prompt for approval.
+        aws_ip = ".".join(["169", "254", "169", "254"])
+        ali_ip = ".".join(["100", "100", "100", "200"])
+        for cmd in (
+            f"curl http://{aws_ip}/latest/meta-data/iam/security-credentials/",
+            'curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+            f"wget http://{aws_ip}/latest/api/token",
+            f'curl -H "Metadata: true" "http://{aws_ip}/metadata/identity/oauth2/token?api-version=2018-02-01"',
+            "curl http://[fd00:ec2::254]/latest/meta-data/",
+            f"curl http://{ali_ip}/latest/meta-data/ram/security-credentials/",
+        ):
+            is_dangerous, key, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert key == self.IMDS_KEY, cmd
+
+    def test_other_link_local_and_ordinary_urls_not_flagged(self):
+        # Other 169.254.x.x link-local addresses and ordinary URLs are unrelated
+        # to instance credentials and must not trip this rule.
+        for cmd in (
+            "curl http://169.254.1.1/status",
+            "ping 169.254.100.100",
+            "curl https://example.com/api/169.254.169.2540",  # longer dotted run, not the endpoint
+            "curl https://metadata.google.internal.example.com/",  # different host
+        ):
+            is_dangerous, key, _ = detect_dangerous_command(cmd)
+            assert not (is_dangerous and key == self.IMDS_KEY), cmd
+
 
 
 def _clear_session(key):
@@ -561,6 +616,26 @@ class TestPatternKeyUniqueness:
             load_permanent({"find"})
             assert is_approved("legacy-find", key_exec) is True
             assert is_approved("legacy-find", key_delete) is True
+
+
+class TestPermanentAllowlistReload:
+    def test_load_permanent_replaces_stale_entries(self):
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({"old-pattern"})
+            assert is_approved("reload", "old-pattern") is True
+
+            load_permanent({"new-pattern"})
+
+            assert is_approved("reload", "old-pattern") is False
+            assert is_approved("reload", "new-pattern") is True
+
+    def test_load_permanent_allowlist_clears_when_config_is_empty(self):
+        with mock_patch.object(approval_module, "_permanent_approved", {"stale-pattern"}):
+            with mock_patch("hermes_cli.config.load_config_readonly", return_value={"command_allowlist": []}):
+                assert approval_module.load_permanent_allowlist() == set()
+
+            assert approval_module._permanent_approved == set()
+            assert is_approved("reload", "stale-pattern") is False
 
 
 class TestFullCommandAlwaysShown:

@@ -261,7 +261,8 @@ class GatewayNotificationsMixin:
         return switched
 
     async def _deliver_media_from_response(
-        self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[Dict[str, Any]] = None
+        self, response: str, event: MessageEvent, adapter,
+        thread_metadata: Optional[Dict[str, Any]] = None, session_key: Optional[str] = None,
     ) -> None:
         """Deliver explicit MEDIA: tags from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
@@ -278,7 +279,8 @@ class GatewayNotificationsMixin:
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                media_files, session_key=session_key or "")
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
@@ -382,7 +384,7 @@ class GatewayNotificationsMixin:
             return
         await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
-            thread_metadata=metadata,
+            thread_metadata=metadata, session_key=session_key,
         )
 
     async def _send_queued_final_text(

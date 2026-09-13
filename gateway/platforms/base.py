@@ -940,6 +940,78 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
+def _is_named_profile_session_key(session_key: str) -> bool:
+    """Return whether *session_key* carries a non-default profile namespace."""
+    parts = str(session_key or "").split(":", 2)
+    return len(parts) >= 2 and parts[0] == "agent" and parts[1] not in {"", "main", "default"}
+
+
+def _profile_name_from_session_key(session_key: str) -> Optional[str]:
+    """Return a validated, live profile name from a routed session key."""
+    if not _is_named_profile_session_key(session_key):
+        return None
+    profile_name = str(session_key).split(":", 2)[1]
+    try:
+        from hermes_cli.profiles import (
+            get_profile_dir, normalize_profile_name, profile_exists, validate_profile_name,
+        )
+
+        profile = normalize_profile_name(profile_name)
+        validate_profile_name(profile)
+        if not profile_exists(profile):
+            return None
+        # Resolve through the canonical helper after validation so a malformed namespace can never
+        # become a filesystem path, even when the profile directory happens to exist.
+        get_profile_dir(profile)
+        return profile
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+@contextlib.contextmanager
+def _docker_media_profile_scope(session_key: str):
+    """Bind the routed profile while Docker MEDIA paths and policies are resolved.
+
+    Deferred delivery runs after the turn's profile context has been reset.  A validated named
+    profile gets a context-local Hermes home and terminal policy; keyless and historical
+    ``agent:main`` callers deliberately retain ambient behavior.  Missing or unreadable named
+    profiles yield ``False`` so callers can fail closed instead of borrowing another profile.
+    """
+    if not _is_named_profile_session_key(session_key):
+        yield True
+        return
+
+    profile = _profile_name_from_session_key(session_key)
+    if profile is None:
+        yield False
+        return
+
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.terminal_scope import (
+            TerminalPolicyUnavailable, build_profile_terminal_scope,
+            reset_terminal_scope, set_terminal_scope,
+        )
+
+        profile_home = get_profile_dir(profile)
+        terminal_policy = build_profile_terminal_scope(profile_home)
+        home_token = set_hermes_home_override(profile_home)
+        terminal_token = set_terminal_scope(terminal_policy)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        yield False
+        return
+    except TerminalPolicyUnavailable:
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        reset_terminal_scope(terminal_token)
+        reset_hermes_home_override(home_token)
+
+
 def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
     ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
@@ -1065,7 +1137,7 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path_in_scope(candidate: Path, session_key: str = "") -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
     if not candidate.is_absolute():
@@ -1106,25 +1178,24 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     return None
 
 
-def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
-    """Safe absolute file path for native media delivery, else None. Default: any existing
-    regular file outside the credential / system denylist (symmetric with inbound). Strict
-    (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
-    host secrets): MUST be under a Hermes cache, an operator root (``HERMES_MEDIA_ALLOW_DIRS``),
-    or freshly produced within the recency window. Symlinks are resolved before any check."""
-    candidate = _normalize_media_tag_path(path)
-    if not candidate:
-        return None
-    try:
-        expanded = Path(os.path.expanduser(candidate))
-    except (OSError, RuntimeError, ValueError):
-        # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
-        return None
-    if not expanded.is_absolute():
-        return None
+def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+    """Translate a Docker MEDIA path under the profile named by *session_key*."""
+    with _docker_media_profile_scope(session_key) as profile_available:
+        if not profile_available:
+            _warn_unresolved_docker_media(candidate, session_key, "profile namespace unavailable")
+            return None
+        return _translate_docker_container_media_path_in_scope(candidate, session_key)
+
+
+def _validate_media_delivery_path_in_scope(expanded: Path, session_key: str) -> Optional[str]:
+    """Validate an expanded path while its routed profile scope is still installed."""
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
-    resolved = _translate_docker_container_media_path(expanded, session_key=session_key)
+    resolved = _translate_docker_container_media_path_in_scope(expanded, session_key=session_key)
     if resolved is None:
+        # A named Docker namespace owns its container paths. Never reinterpret an unresolved
+        # /root, /workspace, or /output path through the ambient host filesystem.
+        if _is_named_profile_session_key(session_key) and _docker_env_active():
+            return None
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
@@ -1143,6 +1214,29 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
             and _file_is_recently_produced(resolved, window)):
         return str(resolved)
     return None
+
+
+def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+    """Safe absolute file path for native media delivery, else None. Default: any existing
+    regular file outside the credential / system denylist (symmetric with inbound). Strict
+    (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
+    host secrets): MUST be under a Hermes cache, an operator root (``HERMES_MEDIA_ALLOW_DIRS``),
+    or freshly produced within the recency window. Symlinks are resolved before any check."""
+    candidate = _normalize_media_tag_path(path)
+    if not candidate:
+        return None
+    try:
+        expanded = Path(os.path.expanduser(candidate))
+    except (OSError, RuntimeError, ValueError):
+        # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
+        return None
+    if not expanded.is_absolute():
+        return None
+    with _docker_media_profile_scope(session_key) as profile_available:
+        if not profile_available:
+            _warn_unresolved_docker_media(expanded, session_key, "profile namespace unavailable")
+            return None
+        return _validate_media_delivery_path_in_scope(expanded, session_key)
 
 
 # Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks: a

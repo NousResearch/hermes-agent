@@ -1471,6 +1471,134 @@ class TestDockerProfileSandboxMediaTranslation:
             "/root/note.txt", session_key=self.SESSION_KEY
         ) == str(produced.resolve())
 
+    def test_named_profile_scope_restores_sandbox_and_volume_policy(self, tmp_path, monkeypatch):
+        """The session namespace must restore both profile-scoped Docker inputs."""
+        import json
+
+        import gateway.platforms.base as base
+        from hermes_cli.profiles import get_active_profile_name
+        from tools.environments.path_utils import sanitize_task_id_for_path
+        from tools.terminal_scope import get_terminal_scope, terminal_env
+
+        hermes_home = tmp_path / "hermes"
+        public_home = hermes_home / "profiles" / "public"
+        public_home.mkdir(parents=True)
+        public_output = public_home / "cache" / "output"
+        public_output.mkdir(parents=True)
+        (public_home / "config.yaml").write_text(json.dumps({
+            "terminal": {
+                "backend": "docker",
+                "docker_volumes": [f"{public_output}:/output"],
+            },
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        self._enable_docker(monkeypatch)
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/ambient:/output"]))
+
+        session_key = "agent:public:discord:thread:1:2"
+        expected_sandbox = (
+            public_home / "sandboxes" / "docker"
+            / sanitize_task_id_for_path("profile:public") / "home"
+        ).resolve()
+        expected_sandbox.mkdir(parents=True)
+        with base._docker_media_profile_scope(session_key) as profile_available:
+            assert profile_available is True
+            assert get_active_profile_name() == "public"
+            assert json.loads(terminal_env("TERMINAL_DOCKER_VOLUMES")) == [f"{public_output}:/output"]
+            assert base._docker_sandbox_dir_candidates(session_key)[0] == (
+                sanitize_task_id_for_path("profile:public")
+            )
+            assert base._docker_persistent_sandbox_roots(session_key, "home") == [expected_sandbox]
+        assert get_active_profile_name() == "default"
+        assert get_terminal_scope() is None
+
+    @pytest.mark.linux_only
+    def test_named_profile_home_and_output_mounts_ignore_ambient_default(self, tmp_path, monkeypatch):
+        """Deferred delivery must restore the producing profile before reading Docker state."""
+        import json
+
+        import gateway.platforms.base as base
+        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        hermes_home = tmp_path / "hermes"
+        public_home = hermes_home / "profiles" / "public"
+        public_home.mkdir(parents=True)
+        public_output = public_home / "cache" / "output"
+        public_output.mkdir(parents=True)
+        (public_home / "config.yaml").write_text(json.dumps({
+            "terminal": {
+                "backend": "docker",
+                "docker_volumes": [f"{public_output}:/output"],
+            },
+        }), encoding="utf-8")
+
+        default_home_file = hermes_home / "sandboxes" / "docker" / "default" / "home" / "named.txt"
+        default_home_file.parent.mkdir(parents=True)
+        default_home_file.write_text("ambient", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        public_home_file = (
+            get_profile_dir("public") / "sandboxes" / "docker"
+            / sanitize_task_id_for_path("profile:public") / "home" / "named.txt"
+        )
+        public_home_file.parent.mkdir(parents=True)
+        public_home_file.write_text("public", encoding="utf-8")
+
+        ambient_output = tmp_path / "ambient-output"
+        ambient_output.mkdir()
+        (ambient_output / "output.txt").write_text("ambient", encoding="utf-8")
+        (public_output / "output.txt").write_text("public", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        self._enable_docker(monkeypatch)
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{ambient_output}:/output"]))
+
+        session_key = "agent:public:discord:thread:1:2"
+        assert get_profile_dir("public") == public_home
+        assert get_active_profile_name() == "default"
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/named.txt", session_key=session_key
+        ) == str(public_home_file.resolve())
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/output/output.txt", session_key=session_key
+        ) == str((public_output / "output.txt").resolve())
+
+    def test_named_profile_docker_path_fails_closed_without_translation(self, tmp_path, monkeypatch):
+        """A named Docker path must not fall back to an ambient host file."""
+        import gateway.platforms.base as base
+
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "profiles" / "secondary").mkdir(parents=True)
+        ambient = tmp_path / "ambient.png"
+        ambient.write_bytes(b"png")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._enable_docker(monkeypatch)
+        monkeypatch.setattr(base, "_docker_env_active", lambda: True)
+        monkeypatch.setattr(base, "_translate_docker_container_media_path", lambda *_a, **_k: None)
+        monkeypatch.setattr(base, "_resolve_path", lambda _path, **_kwargs: ambient)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "C:/root/ambient.png", session_key="agent:secondary:telegram:dm:123"
+        ) is None
+
+    def test_keyless_and_main_docker_paths_keep_host_fallback(self, tmp_path, monkeypatch):
+        """Unscoped and historical ``agent:main`` callers retain compatibility."""
+        import gateway.platforms.base as base
+
+        ambient = tmp_path / "ambient.png"
+        ambient.write_bytes(b"png")
+        monkeypatch.setattr(base, "_docker_env_active", lambda: True)
+        monkeypatch.setattr(base, "_translate_docker_container_media_path", lambda *_a, **_k: None)
+        monkeypatch.setattr(base, "_resolve_path", lambda _path, **_kwargs: ambient)
+
+        assert BasePlatformAdapter.validate_media_delivery_path("C:/root/ambient.png") == str(ambient)
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "C:/root/ambient.png", session_key="agent:main:telegram:dm:123"
+        ) == str(ambient)
+
     def test_home_credential_surface_still_refused(self, monkeypatch):
         """The /root/.hermes exclusion survives profile scoping: translating
         the home mount must never expose the container's secret surface —

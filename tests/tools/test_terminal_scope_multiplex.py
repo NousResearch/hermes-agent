@@ -143,6 +143,22 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"])  # A unchanged
 
 
+def test_sandbox_dir_reads_routed_profile_policy(tmp_path):
+    """Sandbox storage must follow the scoped profile, not the launch environment."""
+    import gateway.run as gw
+    from tools.environments.base import get_sandbox_dir
+
+    custom = tmp_path / "profile-sandbox"
+    home = _profile(
+        tmp_path,
+        "bee",
+        json.dumps({"terminal": {"backend": "docker", "sandbox_dir": str(custom)}}),
+    )
+    with gw._profile_runtime_scope(home):
+        assert get_sandbox_dir() == custom
+        assert custom.is_dir()
+
+
 def test_malformed_profile_config_refuses_execution(tmp_path):
     """Unresolvable policy → refusal scope; terminal_tool refuses instead of
     running under the launch process's ambient policy (fail closed)."""

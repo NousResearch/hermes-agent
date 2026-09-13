@@ -19,6 +19,7 @@ Three invariants:
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -222,6 +223,31 @@ class TestFinalAdoptionGuards:
 
 
 class TestQueuedLaneReconcile:
+    @pytest.mark.asyncio
+    async def test_queued_media_keeps_the_routed_session_key(self):
+        """Deferred post-stream media must retain named-profile identity."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._deliver_media_from_response = AsyncMock()
+        runner._pop_post_delivery_callback = lambda *_args: None
+        source = SimpleNamespace(chat_id="D1", platform="discord")
+        session_key = "agent:public:discord:thread:1:2"
+
+        await GatewayRunner._deliver_queued_first_response(
+            runner,
+            "MEDIA: /output/result.pdf",
+            source=source,
+            adapter=SimpleNamespace(),
+            metadata={"thread_id": "2"},
+            text_already_delivered=True,
+            deliver_media=True,
+            session_key=session_key,
+        )
+
+        runner._deliver_media_from_response.assert_awaited_once()
+        assert runner._deliver_media_from_response.await_args.kwargs["session_key"] == session_key
+
     @pytest.mark.asyncio
     async def test_queued_first_response_edits_in_place(self):
         from gateway.run import GatewayRunner

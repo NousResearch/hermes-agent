@@ -46,5 +46,9 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "unicode-animations@1.0.3": true
   }
 }

@@ -20,6 +20,8 @@ export function SystemActionsProvider({
 }) {
   const [pendingAction, setPendingAction] = useState<SystemAction | null>(null);
   const [activeAction, setActiveAction] = useState<SystemAction | null>(null);
+  const [activeInvocationId, setActiveInvocationId] = useState<string | null>(null);
+  const [actionGeneration, setActionGeneration] = useState(0);
   const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(
     null,
   );
@@ -33,13 +35,13 @@ export function SystemActionsProvider({
   }, [toast]);
 
   useEffect(() => {
-    if (!activeAction) return;
+    if (!activeAction || !activeInvocationId) return;
     const name = ACTION_NAMES[activeAction];
     let cancelled = false;
 
     const poll = async () => {
       try {
-        const resp = await api.getActionStatus(name);
+        const resp = await api.getActionStatus(name, 200, activeInvocationId);
         if (cancelled) return;
         setActionStatus(resp);
         if (!resp.running) {
@@ -62,34 +64,49 @@ export function SystemActionsProvider({
     return () => {
       cancelled = true;
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+  }, [
+    activeAction,
+    activeInvocationId,
+    actionGeneration,
+    t.status.actionFinished,
+    t.status.actionFailed,
+  ]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {
+      const label = action === "restart"
+        ? t.status.restartGateway
+        : t.status.updateHermes;
+      if (typeof window === "undefined" || !window.confirm(`${label}?`)) {
+        return;
+      }
       setPendingAction(action);
       setActionStatus(null);
       try {
-        if (action === "restart") {
-          await api.restartGateway();
-        } else {
-          await api.updateHermes();
-        }
+        const launch = action === "restart"
+          ? await api.restartGateway()
+          : await api.updateHermes();
+        setActionGeneration((generation) => generation + 1);
+        setActiveInvocationId(launch.invocation_id);
         setActiveAction(action);
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
+      } catch {
+        setActiveAction(null);
+        setActiveInvocationId(null);
+        setActionStatus(null);
         setToast({
           type: "error",
-          message: `${t.status.actionFailed}: ${detail}`,
+          message: t.status.actionFailed,
         });
       } finally {
         setPendingAction(null);
       }
     },
-    [t.status.actionFailed],
+    [t.status.actionFailed, t.status.restartGateway, t.status.updateHermes],
   );
 
   const dismissLog = useCallback(() => {
     setActiveAction(null);
+    setActiveInvocationId(null);
     setActionStatus(null);
   }, []);
 

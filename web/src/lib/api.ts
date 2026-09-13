@@ -318,6 +318,9 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // Harness control room
+  getHarnesses: () => fetchJSON<HarnessesResponse>("/api/harnesses"),
+
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -431,12 +434,34 @@ export const api = {
 
   // Gateway / update actions
   restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+    fetchJSON<ActionResponse>("/api/gateway/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true }),
+    }),
   updateHermes: () =>
-    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
-  getActionStatus: (name: string, lines = 200) =>
+    fetchJSON<ActionResponse>("/api/hermes/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true }),
+    }),
+  getActionStatus: (name: string, lines = 200, invocationId?: string) =>
     fetchJSON<ActionStatusResponse>(
-      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
+      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}${
+        invocationId ? `&invocation_id=${encodeURIComponent(invocationId)}` : ""
+      }`,
+    ),
+  runHarnessGatewayAction: (
+    profile: string,
+    action: HarnessGatewayAction,
+  ) =>
+    fetchJSON<HarnessGatewayActionResponse>(
+      `/api/harnesses/${encodeURIComponent(profile)}/gateway/${action}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true }),
+      },
     ),
 
   // Dashboard plugins
@@ -527,6 +552,7 @@ export interface ActionResponse {
   name: string;
   ok: boolean;
   pid: number;
+  invocation_id: string;
 }
 
 /** Per-call overrides for {@link fetchJSON}. */
@@ -540,17 +566,27 @@ interface FetchJSONOptions {
 
 export interface ActionStatusResponse {
   exit_code: number | null;
+  invocation_id?: string | null;
   lines: string[];
   name: string;
   pid: number | null;
   running: boolean;
+  profile?: string | null;
+  action?: HarnessGatewayAction | "update" | null;
+  runtime?: HarnessInfo["gateway"] | null;
+}
+
+export type HarnessGatewayAction = "start" | "stop" | "restart";
+
+export interface HarnessGatewayActionResponse extends ActionResponse {
+  profile: string;
+  action: HarnessGatewayAction;
 }
 
 export interface PlatformStatus {
-  error_code?: string;
-  error_message?: string;
   state: string;
-  updated_at: string;
+  updated_at: string | null;
+  needs_attention?: boolean;
 }
 
 export interface StatusResponse {
@@ -566,7 +602,7 @@ export interface StatusResponse {
   config_path: string;
   config_version: number;
   env_path: string;
-  gateway_exit_reason: string | null;
+  gateway_has_exit_reason: boolean;
   gateway_health_url: string | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
@@ -707,6 +743,49 @@ export interface ProfileInfo {
   provider: string | null;
   has_env: boolean;
   skill_count: number;
+}
+
+export interface HarnessPlatform {
+  name: string;
+  state: string;
+  needs_attention: boolean;
+  updated_at: string | null;
+}
+
+export interface HarnessInfo {
+  name: string;
+  is_default: boolean;
+  model: string | null;
+  provider: string | null;
+  has_env: boolean;
+  skill_count: number;
+  gateway: {
+    state: "running" | "starting" | "stopped" | "startup_failed" | "unknown";
+    running: boolean;
+    pid: number | null;
+    updated_at: string | null;
+    stale: boolean;
+    has_exit_reason: boolean;
+    platforms: HarnessPlatform[];
+  };
+  sessions: {
+    active: number;
+    total: number;
+    last_activity_at: string | null;
+  };
+  connected_platforms: number;
+  attention: boolean;
+}
+
+export interface HarnessesResponse {
+  generated_at: string;
+  harnesses: HarnessInfo[];
+  summary: {
+    total: number;
+    running: number;
+    connected_platforms: number;
+    attention: number;
+  };
 }
 
 export interface ModelsAnalyticsModelEntry {

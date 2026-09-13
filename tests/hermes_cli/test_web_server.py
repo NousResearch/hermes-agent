@@ -154,7 +154,11 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 200
         assert resp.json()["gateway_platforms"] == {
-            "telegram": {"state": "connected", "updated_at": "2026-04-12T00:00:00+00:00"},
+            "telegram": {
+                "state": "connected",
+                "updated_at": "2026-04-12T00:00:00+00:00",
+                "needs_attention": False,
+            },
         }
 
     def test_get_status_hides_stale_platforms_when_gateway_not_running(self, monkeypatch):
@@ -1451,7 +1455,7 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] == 999
         assert data["gateway_state"] == "running"
-        assert data["gateway_health_url"] == "http://gw:8642"
+        assert data["gateway_health_url"] is None
 
     def test_status_remote_probe_not_attempted_when_local_pid_found(self, monkeypatch):
         """When local PID check succeeds, the remote probe is never called."""

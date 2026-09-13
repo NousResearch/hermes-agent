@@ -637,7 +637,6 @@ export default function SessionsPage() {
     if (status.gateway_state === "startup_failed") {
       alerts.push({
         message: t.status.gatewayFailedToStart,
-        detail: status.gateway_exit_reason ?? undefined,
       });
     }
     const failedPlatformEntries = platformEntries.filter(
@@ -650,7 +649,6 @@ export default function SessionsPage() {
           : t.status.platformDisconnected;
       alerts.push({
         message: `${name.charAt(0).toUpperCase() + name.slice(1)} ${stateLabel}`,
-        detail: info.error_message ?? undefined,
       });
     }
   }
@@ -762,7 +760,7 @@ export default function SessionsPage() {
           >
             {actionStatus?.lines && actionStatus.lines.length > 0
               ? actionStatus.lines.join("\n")
-              : t.status.waitingForOutput}
+              : t.status.startedInBackground}
           </pre>
         </div>
       )}

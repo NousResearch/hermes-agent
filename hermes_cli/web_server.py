@@ -10,6 +10,7 @@ Usage:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import hmac
 import importlib.util
 import json
@@ -23,8 +24,9 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import yaml
 
@@ -56,7 +58,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, StrictBool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -68,7 +70,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, StrictBool
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -561,10 +563,89 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
                     body = json.loads(resp.read())
-                    return True, body
+                    if isinstance(body, dict):
+                        return True, body
         except Exception:
             continue
     return False, None
+
+
+def _safe_pid(value: Any) -> Optional[int]:
+    """Return a valid positive process id, never arbitrary runtime data."""
+    return value if type(value) is int and value > 0 else None
+
+
+_SAFE_GATEWAY_STATES = frozenset({
+    "starting", "running", "stopped", "startup_failed", "unknown",
+})
+
+
+def _safe_gateway_state(value: Any) -> Optional[str]:
+    """Return a known gateway state, never arbitrary runtime text."""
+    return value if isinstance(value, str) and value in _SAFE_GATEWAY_STATES else None
+
+
+def _safe_iso_timestamp(value: Any) -> Optional[str]:
+    """Return a normalized ISO timestamp, or ``None`` for malformed input."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+_SAFE_PLATFORM_STATES = frozenset({
+    "connected", "disconnected", "connecting", "retrying", "fatal", "paused",
+})
+
+
+def _safe_platform_name(name: Any) -> Optional[str]:
+    """Return a bounded platform identifier, or ``None`` if malformed."""
+    if not isinstance(name, str) or not 1 <= len(name) <= 64:
+        return None
+    if not name.isascii() or not name[0].isalnum():
+        return None
+    if not all(char.isalnum() or char in "_-" for char in name):
+        return None
+    return name
+
+
+def _safe_platform_status(name: Any, value: Any) -> Optional[Dict[str, Any]]:
+    """Return one non-sensitive platform status, or ``None`` if malformed."""
+    safe_name = _safe_platform_name(name)
+    if safe_name is None or not isinstance(value, dict):
+        return None
+    raw_state = value.get("state")
+    state = (
+        raw_state
+        if isinstance(raw_state, str) and raw_state in _SAFE_PLATFORM_STATES
+        else "unknown"
+    )
+    updated_at = _safe_iso_timestamp(value.get("updated_at"))
+    needs_attention = value.get("needs_attention")
+    return {
+        "name": safe_name,
+        "state": state,
+        "updated_at": updated_at if isinstance(updated_at, str) else None,
+        "needs_attention": needs_attention if isinstance(needs_attention, bool) else False,
+    }
+
+
+def _safe_status_platforms(value: Any) -> Dict[str, Dict[str, Any]]:
+    """Return a non-sensitive, typed platform map for ``/api/status``."""
+    if not isinstance(value, dict):
+        return {}
+    safe: Dict[str, Dict[str, Any]] = {}
+    for name, raw in value.items():
+        entry = _safe_platform_status(name, raw)
+        if entry is None:
+            continue
+        safe[name] = {key: value for key, value in entry.items() if key != "name"}
+    return safe
 
 
 @app.get("/api/status")
@@ -575,7 +656,7 @@ async def get_status():
     # Try local PID check first (same-host).  If that fails and a remote
     # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
     # dashboard works when the gateway runs in a separate container.
-    gateway_pid = get_running_pid()
+    gateway_pid = _safe_pid(get_running_pid())
     gateway_running = gateway_pid is not None
     remote_health_body: dict | None = None
 
@@ -588,11 +669,11 @@ async def get_status():
             gateway_running = True
             # PID from the remote container (display only — not locally valid)
             if remote_health_body:
-                gateway_pid = remote_health_body.get("pid")
+                gateway_pid = _safe_pid(remote_health_body.get("pid"))
 
     gateway_state = None
     gateway_platforms: dict = {}
-    gateway_exit_reason = None
+    gateway_has_exit_reason = False
     gateway_updated_at = None
     configured_gateway_platforms: set[str] | None = None
     try:
@@ -608,29 +689,31 @@ async def get_status():
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
-    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+    if runtime is not None and not isinstance(runtime, dict):
+        runtime = None
+    if runtime is None and remote_health_body and _safe_gateway_state(
+        remote_health_body.get("gateway_state")
+    ) is not None:
         runtime = remote_health_body
 
     if runtime:
-        gateway_state = runtime.get("gateway_state")
-        gateway_platforms = runtime.get("platforms") or {}
+        gateway_state = _safe_gateway_state(runtime.get("gateway_state"))
+        gateway_platforms = _safe_status_platforms(runtime.get("platforms"))
         if configured_gateway_platforms is not None:
             gateway_platforms = {
                 key: value
                 for key, value in gateway_platforms.items()
                 if key in configured_gateway_platforms
             }
-        gateway_exit_reason = runtime.get("exit_reason")
-        gateway_updated_at = runtime.get("updated_at")
+        gateway_has_exit_reason = bool(runtime.get("exit_reason"))
+        gateway_updated_at = _safe_iso_timestamp(runtime.get("updated_at"))
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
             gateway_platforms = {}
-        elif gateway_running and remote_health_body is not None:
-            # The health probe confirmed the gateway is alive, but the local
-            # runtime status file may be stale (cross-container).  Override
-            # stopped/None state so the dashboard shows the correct badge.
-            if gateway_state in {None, "stopped"}:
-                gateway_state = "running"
+        elif gateway_running:
+            # A live process is authoritative over stale or malformed persisted
+            # lifecycle metadata, including cross-container health snapshots.
+            gateway_state = "running"
 
     # If there was no runtime info at all but the health probe confirmed alive,
     # ensure we still report the gateway as running (no shared volume scenario).
@@ -677,10 +760,12 @@ async def get_status():
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
-        "gateway_health_url": _GATEWAY_HEALTH_URL,
+        # The configured health endpoint may reveal internal topology or
+        # credentials embedded in a URL; probe it server-side but never expose it.
+        "gateway_health_url": None,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
-        "gateway_exit_reason": gateway_exit_reason,
+        "gateway_has_exit_reason": gateway_has_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
         "auth_required": auth_required,
@@ -693,9 +778,9 @@ async def get_status():
 #
 # Both commands are spawned as detached subprocesses so the HTTP request
 # returns immediately.  stdin is closed (``DEVNULL``) so any stray ``input()``
-# calls fail fast with EOF rather than hanging forever.  stdout/stderr are
-# streamed to a per-action log file under ``~/.hermes/logs/<action>.log`` so
-# the dashboard can tail them back to the user.
+# calls fail fast with EOF rather than hanging forever. stdout/stderr are
+# streamed to a per-action log file under ``~/.hermes/logs/<action>.log`` for
+# local operator inspection only; action output is never returned through APIs.
 # ---------------------------------------------------------------------------
 
 _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
@@ -709,15 +794,36 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
+_ACTION_META: Dict[str, Dict[str, str]] = {}
+# Invocation ID → immutable process snapshot. Name-keyed state remains for
+# legacy callers, while new callers can poll the exact process they launched.
+_ACTION_INVOCATIONS: Dict[str, Tuple[str, subprocess.Popen, Dict[str, str]]] = {}
+# Completed process identities, not action names or PIDs. A profile may run
+# the same action again after completion, and the OS or Python may reuse a PID
+# or object id; retaining the Popen object itself prevents an older watcher
+# from suppressing or misattributing a newer process's completion audit.
+_ACTION_FINALIZED: set[Tuple[str, subprocess.Popen]] = set()
+_ACTION_MUTATION_LOCK = threading.Lock()
+_ACTION_AUDIT_LOCK = threading.Lock()
 
 
-def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
+class _ActionLaunch(NamedTuple):
+    process: subprocess.Popen
+    invocation_id: str
+
+
+def _spawn_hermes_action(
+    subcommand: List[str],
+    name: str,
+    log_file_name: Optional[str] = None,
+) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
     Uses the running interpreter's ``hermes_cli.main`` module so the action
     inherits the same venv/PYTHONPATH the web server is using.
     """
-    log_file_name = _ACTION_LOG_FILES[name]
+    log_file_name = log_file_name or _ACTION_LOG_FILES[name]
+    _ACTION_LOG_FILES[name] = log_file_name
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = _ACTION_LOG_DIR / log_file_name
     log_file = open(log_path, "ab", buffering=0)
@@ -742,9 +848,207 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+    finally:
+        log_file.close()
     _ACTION_PROCS[name] = proc
     return proc
+
+
+def _audit_harness_action(
+    profile: str,
+    action: str,
+    outcome: str,
+    pid: Optional[int] = None,
+    exit_code: Optional[int] = None,
+) -> None:
+    """Append a redacted lifecycle event to the dashboard audit log."""
+    record = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "source": "dashboard",
+        "profile": profile,
+        "action": action,
+        "outcome": outcome,
+        "pid": pid,
+        "exit_code": exit_code,
+    }
+    try:
+        _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with _ACTION_AUDIT_LOCK:
+            with (_ACTION_LOG_DIR / "harness-actions.jsonl").open(
+                "a", encoding="utf-8"
+            ) as audit_file:
+                audit_file.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        _log.exception("Failed to write harness action audit event")
+
+
+def _watch_harness_action(
+    name: str,
+    profile: str,
+    action: str,
+    proc: subprocess.Popen,
+) -> None:
+    """Record completion independently of a browser polling the status API."""
+    try:
+        exit_code = proc.wait()
+    except Exception:
+        _log.exception("Failed waiting for dashboard gateway action %s", name)
+        exit_code = None
+    process_key = (name, proc)
+    with _ACTION_MUTATION_LOCK:
+        if process_key in _ACTION_FINALIZED:
+            return
+        _ACTION_FINALIZED.add(process_key)
+    _audit_harness_action(
+        profile,
+        action,
+        "finished" if exit_code == 0 else "failed",
+        pid=proc.pid,
+        exit_code=exit_code,
+    )
+
+
+def _profile_action_is_running(profile: str) -> bool:
+    """Return whether any tracked action is still running for ``profile``.
+
+    Callers must hold ``_ACTION_MUTATION_LOCK`` while checking this so a
+    second request cannot pass the check before the first process is stored.
+    """
+    for active_name, active_meta in _ACTION_META.items():
+        active_proc = _ACTION_PROCS.get(active_name)
+        if (
+            active_meta["profile"] == profile
+            and active_proc is not None
+            and active_proc.poll() is None
+        ):
+            return True
+    return False
+
+
+def _any_action_is_running() -> bool:
+    """Return whether any tracked action is still running.
+
+    Callers must hold ``_ACTION_MUTATION_LOCK`` while checking this so the
+    check and subsequent process registration are atomic.
+    """
+    for active_name, active_proc in _ACTION_PROCS.items():
+        if (
+            active_name in _ACTION_META
+            and active_proc is not None
+            and active_proc.poll() is None
+        ):
+            return True
+    return False
+
+
+def _action_type_is_running(action: str) -> bool:
+    """Return whether a tracked action type is still running."""
+    for active_name, active_meta in _ACTION_META.items():
+        active_proc = _ACTION_PROCS.get(active_name)
+        if (
+            active_meta["action"] == action
+            and active_proc is not None
+            and active_proc.poll() is None
+        ):
+            return True
+    return False
+
+
+def _start_tracked_harness_action(
+    profile: str,
+    action: str,
+    command: List[str],
+    name: str,
+) -> _ActionLaunch:
+    """Spawn a profile-scoped action with locking, metadata, and a watcher."""
+    with _ACTION_MUTATION_LOCK:
+        if (
+            (action == "update" and _any_action_is_running())
+            or (
+                action != "update"
+                and (
+                    _profile_action_is_running(profile)
+                    or _action_type_is_running("update")
+                )
+            )
+        ):
+            raise HTTPException(status_code=409, detail="An action is already running")
+        proc = _spawn_hermes_action(
+            command,
+            name,
+            log_file_name=f"{name}.log",
+        )
+        invocation_id = uuid.uuid4().hex
+        meta = {
+            "profile": profile,
+            "action": action,
+            "invocation_id": invocation_id,
+        }
+        _ACTION_META[name] = meta
+        _ACTION_INVOCATIONS[invocation_id] = (name, proc, meta)
+    _audit_harness_action(profile, action, "started", pid=proc.pid)
+    if hasattr(proc, "wait"):
+        threading.Thread(
+            target=_watch_harness_action,
+            args=(name, profile, action, proc),
+            name=f"harness-action-{profile}-{action}",
+            daemon=True,
+        ).start()
+    return _ActionLaunch(proc, invocation_id)
+
+
+def _resolve_harness_action(profile: str, action: str) -> Tuple[str, List[str]]:
+    """Validate a profile/action pair and return a safe Hermes command."""
+    from hermes_cli import profiles as profiles_mod
+
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(status_code=400, detail="Unsupported gateway action")
+    try:
+        profiles_mod.validate_profile_name(profile)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    if profile != "default" and not profiles_mod.profile_exists(profile):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    # Always pass an explicit profile, including default. Without this flag
+    # the CLI may honor an active_profile file inherited by the dashboard
+    # process and target a different harness.
+    command = ["--profile", profile, "gateway", action]
+    return f"gateway-{profile}-{action}", command
+
+
+class HarnessGatewayAction(BaseModel):
+    # Do not accept truthy strings/numbers for a destructive operation.
+    confirmed: StrictBool = False
+
+
+@app.post("/api/harnesses/{profile}/gateway/{action}")
+async def run_harness_gateway_action(
+    profile: str,
+    action: str,
+    body: HarnessGatewayAction,
+):
+    """Run one explicitly confirmed lifecycle action for one profile."""
+    if not body.confirmed:
+        raise HTTPException(status_code=400, detail="Confirmation required")
+    name, command = _resolve_harness_action(profile, action)
+    try:
+        launch = _start_tracked_harness_action(profile, action, command, name)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("Failed to spawn dashboard gateway action for %s", profile)
+        _audit_harness_action(profile, action, "spawn_failed")
+        raise HTTPException(status_code=500, detail="Failed to start gateway action")
+    return {
+        "ok": True,
+        "name": name,
+        "profile": profile,
+        "action": action,
+        "pid": launch.process.pid,
+        "invocation_id": launch.invocation_id,
+    }
 
 
 def _tail_lines(path: Path, n: int) -> List[str]:
@@ -762,46 +1066,90 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 
 
 @app.post("/api/gateway/restart")
-async def restart_gateway():
-    """Kick off a ``hermes gateway restart`` in the background."""
+async def restart_gateway(body: HarnessGatewayAction):
+    """Kick off a confirmed, default-profile gateway restart."""
+    if not body.confirmed:
+        raise HTTPException(status_code=400, detail="Confirmation required")
+    profile = "default"
+    name, command = _resolve_harness_action(profile, "restart")
+    # Keep the legacy action name for existing status consumers, while using
+    # the same explicit profile scope and per-profile lock as the harness UI.
+    name = "gateway-restart"
     try:
-        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
-    except Exception as exc:
+        launch = _start_tracked_harness_action(profile, "restart", command, name)
+    except HTTPException:
+        raise
+    except Exception:
         _log.exception("Failed to spawn gateway restart")
-        raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
+        _audit_harness_action(profile, "restart", "spawn_failed")
+        raise HTTPException(status_code=500, detail="Failed to restart gateway")
     return {
         "ok": True,
-        "pid": proc.pid,
-        "name": "gateway-restart",
+        "pid": launch.process.pid,
+        "name": name,
+        "profile": profile,
+        "action": "restart",
+        "invocation_id": launch.invocation_id,
     }
 
 
 @app.post("/api/hermes/update")
-async def update_hermes():
-    """Kick off ``hermes update`` in the background."""
+async def update_hermes(body: HarnessGatewayAction):
+    """Kick off a confirmed, default-profile Hermes update."""
+    if not body.confirmed:
+        raise HTTPException(status_code=400, detail="Confirmation required")
+    profile = "default"
+    name = "hermes-update"
+    command = ["--profile", profile, "update"]
     try:
-        proc = _spawn_hermes_action(["update"], "hermes-update")
-    except Exception as exc:
-        _log.exception("Failed to spawn hermes update")
-        raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
+        launch = _start_tracked_harness_action(profile, "update", command, name)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("Failed to spawn Hermes update")
+        _audit_harness_action(profile, "update", "spawn_failed")
+        raise HTTPException(status_code=500, detail="Failed to start update")
     return {
         "ok": True,
-        "pid": proc.pid,
-        "name": "hermes-update",
+        "pid": launch.process.pid,
+        "name": name,
+        "profile": profile,
+        "action": "update",
+        "invocation_id": launch.invocation_id,
     }
 
 
 @app.get("/api/actions/{name}/status")
-async def get_action_status(name: str, lines: int = 200):
-    """Tail an action log and report whether the process is still running."""
-    log_file_name = _ACTION_LOG_FILES.get(name)
+async def get_action_status(
+    name: str,
+    lines: int = 200,
+    invocation_id: Optional[str] = None,
+):
+    """Report liveness for one action invocation without exposing output."""
+    with _ACTION_MUTATION_LOCK:
+        log_file_name = _ACTION_LOG_FILES.get(name)
+        if invocation_id is not None:
+            if (
+                len(invocation_id) != 32
+                or any(char not in "0123456789abcdef" for char in invocation_id)
+            ):
+                raise HTTPException(status_code=404, detail="Action invocation not found")
+            invocation = _ACTION_INVOCATIONS.get(invocation_id)
+            if invocation is None or invocation[0] != name:
+                raise HTTPException(status_code=404, detail="Action invocation not found")
+            _, proc, meta = invocation
+            meta = dict(meta)
+        else:
+            proc = _ACTION_PROCS.get(name)
+            meta = dict(_ACTION_META[name]) if name in _ACTION_META else None
     if log_file_name is None:
         raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
 
-    log_path = _ACTION_LOG_DIR / log_file_name
-    tail = _tail_lines(log_path, min(max(lines, 1), 2000))
+    # Action logs can contain provider URLs, adapter errors, or other
+    # credential-bearing output. They stay local and are never returned,
+    # including after a dashboard restart when in-memory metadata is gone.
+    tail: List[str] = []
 
-    proc = _ACTION_PROCS.get(name)
     if proc is None:
         running = False
         exit_code: Optional[int] = None
@@ -811,12 +1159,40 @@ async def get_action_status(name: str, lines: int = 200):
         running = exit_code is None
         pid = proc.pid
 
+    runtime = None
+    if meta:
+        from hermes_cli import profiles as profiles_mod
+
+        profile_home = (
+            profiles_mod._get_default_hermes_home()
+            if meta["profile"] == "default"
+            else profiles_mod.get_profile_dir(meta["profile"])
+        )
+        runtime = _read_profile_runtime(profile_home)
+        if proc is not None and not running:
+            process_key = (name, proc)
+            with _ACTION_MUTATION_LOCK:
+                should_finalize = process_key not in _ACTION_FINALIZED
+                _ACTION_FINALIZED.add(process_key)
+            if should_finalize:
+                _audit_harness_action(
+                    meta["profile"],
+                    meta["action"],
+                    "finished" if exit_code == 0 else "failed",
+                    pid=pid,
+                    exit_code=exit_code,
+                )
+
     return {
         "name": name,
+        "invocation_id": meta.get("invocation_id") if meta else None,
         "running": running,
         "exit_code": exit_code,
         "pid": pid,
         "lines": tail,
+        "profile": meta["profile"] if meta else None,
+        "action": meta["action"] if meta else None,
+        "runtime": runtime,
     }
 
 
@@ -2891,6 +3267,176 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             })
 
     return profiles
+
+
+def _iso_from_epoch(value: Any) -> Optional[str]:
+    """Convert a session timestamp to a stable UTC ISO string."""
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def _read_profile_runtime(profile_home: Path) -> Dict[str, Any]:
+    """Read one profile's runtime state without changing process-global HOME."""
+    runtime: Dict[str, Any] = {}
+    try:
+        runtime_path = profile_home / "gateway_state.json"
+        if runtime_path.is_file():
+            payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                runtime = payload
+    except (OSError, ValueError, TypeError):
+        # A gateway can be writing the file while the dashboard reads it.
+        # Unknown is safer than presenting a partial status as healthy.
+        runtime = {}
+
+    pid_path = profile_home / "gateway.pid"
+    try:
+        running_pid = _safe_pid(get_running_pid(pid_path, cleanup_stale=False))
+    except Exception:
+        _log.exception("Failed to read gateway liveness for %s", profile_home)
+        running_pid = None
+
+    raw_gateway_state = runtime.get("gateway_state")
+    gateway_state = raw_gateway_state if isinstance(raw_gateway_state, str) else None
+    if running_pid is not None:
+        gateway_state = "running"
+    elif gateway_state not in {"stopped", "startup_failed", "starting"}:
+        gateway_state = "unknown"
+
+    platforms: List[Dict[str, Any]] = []
+    raw_platforms = runtime.get("platforms")
+    if isinstance(raw_platforms, dict):
+        for name, value in sorted(raw_platforms.items()):
+            entry = _safe_platform_status(name, value)
+            if entry is None:
+                continue
+            platforms.append(entry)
+
+    raw_updated_at = runtime.get("updated_at")
+    updated_at = _safe_iso_timestamp(raw_updated_at)
+    # ``updated_at`` is a lifecycle-state write, not a periodic heartbeat in
+    # every gateway version. Only call it stale when the process is not live;
+    # otherwise a healthy long-running gateway would produce a false alert.
+    stale = False
+    if running_pid is None and gateway_state == "starting":
+        if updated_at is None:
+            stale = True
+        else:
+            try:
+                parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                stale = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() > 300
+            except ValueError:
+                stale = True
+
+    return {
+        "state": gateway_state,
+        "running": running_pid is not None,
+        "pid": running_pid,
+        "updated_at": updated_at,
+        "stale": stale,
+        # Never expose provider/adapter exception text through this endpoint.
+        "has_exit_reason": bool(runtime.get("exit_reason")),
+        "platforms": platforms,
+    }
+
+
+def _profile_session_summary(profile_home: Path) -> Dict[str, Any]:
+    """Return small session metrics for a profile, with safe empty fallback."""
+    try:
+        from hermes_state import SessionDB
+
+        db_path = profile_home / "state.db"
+        if not db_path.is_file():
+            return {"active": 0, "total": 0, "last_activity_at": None}
+        db = SessionDB(db_path=db_path)
+        try:
+            total = db.session_count()
+            sessions = db.list_sessions_rich(limit=max(total, 1))
+        finally:
+            db.close()
+        now = time.time()
+        active = sum(
+            1 for session in sessions
+            if session.get("ended_at") is None
+            and (now - (session.get("last_active") or session.get("started_at") or 0)) < 300
+        )
+        timestamps: list[float] = []
+        for session in sessions:
+            value = session.get("last_active") or session.get("started_at")
+            try:
+                if value is not None:
+                    timestamps.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        last_activity = max(timestamps) if timestamps else None
+        return {
+            "active": active,
+            "total": total,
+            "last_activity_at": _iso_from_epoch(last_activity),
+        }
+    except Exception:
+        _log.exception("Failed to read session summary for %s", profile_home)
+        return {"active": 0, "total": 0, "last_activity_at": None}
+
+
+@app.get("/api/harnesses")
+async def list_harnesses_endpoint():
+    """Return an aggregated, read-only view of every configured harness."""
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        profiles = [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("GET /api/harnesses failed while listing profiles")
+        profiles = _fallback_profile_dicts(profiles_mod)
+
+    harnesses: List[Dict[str, Any]] = []
+    for profile in profiles:
+        try:
+            home = Path(str(profile.get("path", "")))
+            runtime = _read_profile_runtime(home)
+            sessions = _profile_session_summary(home)
+            platform_rows = runtime["platforms"]
+            connected = sum(
+                1 for row in platform_rows
+                if runtime["running"] and row["state"] == "connected"
+            )
+            attention = (
+                runtime["state"] in {"startup_failed", "unknown"}
+                or runtime["stale"]
+                or runtime["has_exit_reason"]
+                or (
+                    runtime["running"]
+                    and any(row["needs_attention"] or row["state"] != "connected" for row in platform_rows)
+                )
+            )
+            harnesses.append({
+                "name": profile.get("name", ""),
+                "is_default": bool(profile.get("is_default", False)),
+                "model": profile.get("model"),
+                "provider": profile.get("provider"),
+                "has_env": bool(profile.get("has_env", False)),
+                "skill_count": int(profile.get("skill_count", 0) or 0),
+                "gateway": runtime,
+                "sessions": sessions,
+                "connected_platforms": connected,
+                "attention": attention,
+            })
+        except Exception:
+            _log.exception("Failed to aggregate harness %r", profile.get("name"))
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "harnesses": harnesses,
+        "summary": {
+            "total": len(harnesses),
+            "running": sum(1 for item in harnesses if item["gateway"]["running"]),
+            "connected_platforms": sum(item["connected_platforms"] for item in harnesses),
+            "attention": sum(1 for item in harnesses if item["attention"]),
+        },
+    }
 
 
 def _resolve_profile_dir(name: str) -> Path:

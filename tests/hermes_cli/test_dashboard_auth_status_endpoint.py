@@ -91,8 +91,9 @@ def test_status_preserves_existing_fields(loopback_client):
         "version", "release_date", "hermes_home", "config_path", "env_path",
         "config_version", "latest_config_version", "gateway_running",
         "gateway_pid", "gateway_health_url", "gateway_state",
-        "gateway_platforms", "gateway_exit_reason", "gateway_updated_at",
+        "gateway_platforms", "gateway_has_exit_reason", "gateway_updated_at",
         "active_sessions", "auth_required", "auth_providers",
     }
     missing = expected_keys - set(body.keys())
     assert not missing, f"/api/status dropped fields: {missing}"
+    assert "gateway_exit_reason" not in body

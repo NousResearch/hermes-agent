@@ -61,12 +61,6 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                     {name}
                   </span>
 
-                  {info.error_message && (
-                    <span className="font-mondwest normal-case text-xs text-destructive">
-                      {info.error_message}
-                    </span>
-                  )}
-
                   {info.updated_at && (
                     <span className="font-mondwest normal-case text-xs text-muted-foreground">
                       {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}

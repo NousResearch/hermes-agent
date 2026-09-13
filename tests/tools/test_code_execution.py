@@ -397,6 +397,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         "service_side_effects",
         "service_relationships",
         "service_health",
+        "service_code_control",
     }
 
     def test_stubs_cover_all_schema_params(self):

@@ -1659,6 +1659,69 @@ def _(rid, params: dict) -> dict:
                 )
             if action in {"remove", "pause", "resume"}:
                 return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
+            if action in {"describe", "history"}:
+                # Read paths. `list` caps `prompt_preview` at 100 chars for the
+                # model's benefit; a person expanding a job card needs the whole
+                # prompt (`describe`) and the execution ledger (`history`).
+                if not jid:
+                    return _err(rid, 4001, "name (job id) is required")
+                from cron.jobs import get_job, resolve_job_ref
+
+                job = get_job(jid) or resolve_job_ref(jid)
+                if job is None:
+                    return _err(rid, 4404, f"cron job '{jid}' not found")
+                if action == "describe":
+                    from cron.jobs import job_source_files
+                    from tools.cronjob_tools import _format_job
+
+                    detail = _format_job(job)
+                    detail["prompt"] = job.get("prompt") or ""
+                    for field in ("inputs", "outputs", "side_effects", "source_files", "context_from"):
+                        detail[field] = list(job.get(field) or [])
+                    detail["source_files_resolved"] = job_source_files(job)
+                    return _ok(rid, {"success": True, "job": detail})
+                from cron.executions import list_executions
+
+                try:
+                    limit = max(1, min(int(params.get("limit") or 50), 500))
+                except (TypeError, ValueError):
+                    limit = 50
+                runs = list_executions(job_id=job["id"], limit=limit)
+                return _ok(
+                    rid,
+                    {
+                        "success": True,
+                        "job_id": job["id"],
+                        "job_name": job.get("name"),
+                        "count": len(runs),
+                        "runs": runs,
+                    },
+                )
+            if action == "update":
+                if not jid:
+                    return _err(rid, 4001, "name (job id) is required")
+                # `name` is already the job identifier on this method, so the
+                # new friendly name travels as `job_name`. Every other field is
+                # passed straight to the tool, which normalizes + validates.
+                kwargs = {}
+                if "prompt" in params:
+                    kwargs["prompt"] = params["prompt"]
+                if "job_name" in params:
+                    kwargs["name"] = params["job_name"]
+                for key in (
+                    "schedule", "deliver", "repeat", "skills", "script",
+                    "monitor_script", "monitor_url", "context_from", "workdir",
+                    "enabled_toolsets", "inputs", "outputs", "side_effects",
+                    "source_files",
+                ):
+                    if key in params:
+                        kwargs[key] = params[key]
+                if not kwargs:
+                    return _err(rid, 4001, "update needs at least one field to change")
+                result = json.loads(cronjob(action="update", job_id=jid, **kwargs))
+                if result.get("success") is False:
+                    return _err(rid, 4017, str(result.get("error") or "update failed"))
+                return _ok(rid, result)
             return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:
         return _err(rid, 5023, str(e))

@@ -1,6 +1,6 @@
 ---
 name: llm-wiki-native
-description: "LLM Wiki via Hermes' native wiki API — scan, query, and record changesets so the desktop app's graph + timeline stay live."
+description: "Scan, query, and record changesets via the native wiki API."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

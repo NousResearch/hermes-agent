@@ -583,6 +583,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("source_files"):
+        result["source_files"] = list(job["source_files"])
     if job.get("monitor_script"):
         result["monitor_script"] = job["monitor_script"]
     if job.get("monitor_url"):
@@ -1084,6 +1086,7 @@ def cronjob(
     inputs: Optional[Union[str, List[str]]] = None,
     outputs: Optional[Union[str, List[str]]] = None,
     side_effects: Optional[Union[str, List[str]]] = None,
+    source_files: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
 ) -> str:
@@ -1175,6 +1178,7 @@ def cronjob(
                     inputs=inputs,
                     outputs=outputs,
                     side_effects=side_effects,
+                    source_files=source_files,
                 )
             except CronSchedulerRegistrationError as exc:
                 _partial = exc.to_dict()
@@ -1433,6 +1437,7 @@ def cronjob(
                 ("inputs", inputs),
                 ("outputs", outputs),
                 ("side_effects", side_effects),
+                ("source_files", source_files),
             ):
                 if _df_value is not None:
                     updates[_df_field] = _df_value
@@ -1504,7 +1509,7 @@ NOTE: The agent's final response is auto-delivered to the target. Put the primar
 user-facing content in the final response. Cron jobs run autonomously with no user
 present — they cannot ask questions or request clarification.
 
-On create, DECLARE the job's dataflow so it appears correctly in the cron interflow graph: `inputs` (what it reads), `outputs` (consumable data it writes for other crons), and `side_effects` (terminal actions like telegram/pr). These are typed 'scheme:value' lists — see each field's description. Crons never call each other; they communicate through data, so a `cron-output:<id>` input is what links this job to an upstream producer.
+On create, DECLARE the job's dataflow so it appears correctly in the cron interflow graph: `inputs` (what it reads), `outputs` (consumable data it writes for other crons), and `side_effects` (terminal actions like telegram/pr). These are typed 'scheme:value' lists — see each field's description. Crons never call each other; they communicate through data, so a `cron-output:<id>` input is what links this job to an upstream producer. Also declare `source_files` — the scripts/modules the prompt tells the agent to run — so the job's graph node links to its code (`script` and `monitor_script` are picked up automatically).
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
@@ -1627,6 +1632,20 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "leave the system. On update, pass an empty array to clear."
                 ),
             },
+            "source_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "The CODE this job runs or relies on, as filesystem paths — every script or "
+                    "module the prompt tells the agent to execute, import, or read as source (e.g. "
+                    "'ingest.py' for ~/.hermes/scripts/ingest.py, '~/.hermes/hermes-agent/indexing/"
+                    "x402_snapshot.py', or an absolute path). `script` and `monitor_script` are "
+                    "included automatically; list the rest here. These are NOT dataflow: a script is "
+                    "what the job is made of, not data it exchanges (use `inputs` for a file it "
+                    "reads as data). Shown on the job's node in Portal's cron graph, where each file "
+                    "opens in a code reader. On update, pass an empty array to clear."
+                ),
+            },
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1702,6 +1721,7 @@ registry.register(
         inputs=args.get("inputs"),
         outputs=args.get("outputs"),
         side_effects=args.get("side_effects"),
+        source_files=args.get("source_files"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     ),

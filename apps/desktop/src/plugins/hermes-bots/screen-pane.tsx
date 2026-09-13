@@ -343,8 +343,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       </div>
       <div className={iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'}>
         {/* data-terminal: the same keyboard-ownership marker the terminal pane uses, so the app's
-            type-to-focus / bare-key shortcuts never steal keystrokes meant for the remote screen. */}
-        <div className="absolute inset-0" data-terminal="" ref={canvasHost} />
+            type-to-focus / bare-key shortcuts never steal keystrokes meant for the remote screen.
+            data-remote-screen: tells the ⌘W close-tab router this is NOT a local terminal tab —
+            the chord belongs to the remote desktop, nothing local should close. */}
+        <div className="absolute inset-0" data-remote-screen="" data-terminal="" ref={canvasHost} />
         {conn === 'attaching' ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-white/70">
             <GlyphSpinner /> {t.screen.attaching}

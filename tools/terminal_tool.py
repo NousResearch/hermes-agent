@@ -1101,16 +1101,17 @@ def _run_foreground(
         except Exception as e:
             if "timeout" in str(e).lower():
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
+            error_preview = _safe_command_preview(str(e))
             # Retry on transient errors
             if retry_count < max_retries:
                 wait_time = 2 ** (retry_count + 1)
                 logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                               wait_time, retry_count + 1, max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
+                               wait_time, retry_count + 1, max_retries, _safe_command_preview(command), type(e).__name__, error_preview, eff, env_type)
                 time.sleep(wait_time)
                 continue
             logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                         max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
-            return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
+                         max_retries, _safe_command_preview(command), type(e).__name__, error_preview, eff, env_type)
+            return _error_json(f"Command execution failed: {type(e).__name__}: {error_preview}")
 
     if result.get("yielded_session_id"):
         return json.dumps({

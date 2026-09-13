@@ -729,6 +729,8 @@ class LocalEnvironment(BaseEnvironment):
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
+        self._staged_command_scripts: set[str] = set()
+        self._staged_command_processes: dict[str, object] = {}
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -774,6 +776,68 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
+    def _stage_command_script(self, cmd_string: str) -> str:
+        """Write a generated Bash program without putting it in Windows argv."""
+        fd, path = tempfile.mkstemp(
+            prefix="hermes-command-",
+            suffix=".sh",
+            dir=self.get_temp_dir(),
+        )
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                # Preserve surrogateescaped bytes inherited from decoded
+                # filesystem or subprocess data instead of replacing them.
+                handle.write(cmd_string.encode("utf-8", "surrogateescape"))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            raise
+
+        self._staged_command_scripts.add(path)
+        return path
+
+    def _discard_staged_command_script(self, path: str | None) -> None:
+        """Release one staged command script owned by this environment."""
+        if not path:
+            return
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.debug(
+                "Failed to remove staged terminal script %s",
+                os.path.basename(path),
+                exc_info=True,
+            )
+            return
+        self._staged_command_scripts.discard(path)
+        self._staged_command_processes.pop(path, None)
+
+    def _discard_staged_command_script_after_exit(self, proc, path: str) -> None:
+        """Keep a yielded script until its adopted background process exits."""
+        if getattr(proc, "_hermes_staged_cleanup_started", False):
+            return
+        proc._hermes_staged_cleanup_started = True
+
+        def _cleanup_when_exited() -> None:
+            while True:
+                try:
+                    if proc.poll() is not None:
+                        break
+                except Exception:
+                    return
+                time.sleep(0.05)
+            self._discard_staged_command_script(path)
+
+        threading.Thread(
+            target=_cleanup_when_exited,
+            name=f"terminal-script-cleanup-{getattr(proc, 'pid', 'unknown')}",
+            daemon=True,
+        ).start()
+
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible
         (e.g. a command ``rm -rf``'d its own cwd) — otherwise Popen raises before bash
@@ -801,20 +865,63 @@ class LocalEnvironment(BaseEnvironment):
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        staged_script = None
+        if _IS_WINDOWS:
+            staged_script = self._stage_command_script(cmd_string)
+            args = [bash, *(["-l"] if login else []), _bash_safe_path(staged_script)]
+        else:
+            args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True, cwd=self.cwd,
-            **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        try:
+            proc = subprocess.Popen(
+                args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True, cwd=self.cwd,
+                **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        except BaseException:
+            self._discard_staged_command_script(staged_script)
+            raise
+        if staged_script is not None:
+            proc._hermes_staged_command_script = staged_script
+            self._staged_command_processes[staged_script] = proc
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
+
+    def _wait_for_process(
+        self, proc, timeout: int = 120, *, bounded_capture: bool = False,
+        watch_interrupt_tid: int | None = None, yield_handler=None,
+    ) -> dict:
+        """Wait for a command and release its staged Windows script safely."""
+        path = getattr(proc, "_hermes_staged_command_script", None)
+        if path:
+            self._staged_command_processes[path] = proc
+        try:
+            result = super()._wait_for_process(
+                proc,
+                timeout=timeout,
+                bounded_capture=bounded_capture,
+                watch_interrupt_tid=watch_interrupt_tid,
+                yield_handler=yield_handler,
+            )
+        except BaseException:
+            self._discard_staged_command_script(path)
+            raise
+
+        if path:
+            try:
+                still_running = proc.poll() is None
+            except Exception:
+                still_running = False
+            if still_running:
+                self._discard_staged_command_script_after_exit(proc, path)
+            else:
+                self._discard_staged_command_script(path)
+        return result
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
@@ -823,6 +930,10 @@ class LocalEnvironment(BaseEnvironment):
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()
+        finally:
+            self._discard_staged_command_script(
+                getattr(proc, "_hermes_staged_command_script", None)
+            )
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —
@@ -853,3 +964,16 @@ class LocalEnvironment(BaseEnvironment):
         for f in (self._snapshot_path, self._cwd_file, *stale):
             with contextlib.suppress(OSError):
                 os.unlink(f)
+        for path in tuple(self._staged_command_scripts):
+            proc = self._staged_command_processes.get(path)
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        self._discard_staged_command_script_after_exit(proc, path)
+                        continue
+                except Exception:
+                    # Unknown liveness is not permission to remove a script a
+                    # child may still be reading. The temp-cache pruner remains
+                    # the crash-recovery backstop.
+                    continue
+            self._discard_staged_command_script(path)

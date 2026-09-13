@@ -128,11 +128,11 @@ def check_skills_requirements() -> bool:
 
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
-    (respects test monkeypatching), then skills.external_dirs."""
+    (respects test monkeypatching), then skills.create_dir and skills.external_dirs."""
     dirs_to_check = [_skills_dir()]
     with suppress(Exception):
-        from agent.skill_utils import get_external_skills_dirs
-        dirs_to_check.extend(get_external_skills_dirs())
+        from agent.skill_utils import get_all_skills_dirs
+        dirs_to_check.extend(get_all_skills_dirs()[1:])
     for skills_dir in dirs_to_check:
         with suppress(ValueError):
             if len(parts := skill_path.relative_to(skills_dir).parts) >= 3:
@@ -176,11 +176,12 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 def _skill_search_dirs() -> Tuple[list, list, Path]:
     """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
     first-wins dedup / the collision resolver prefer them."""
-    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+    from agent.skill_utils import get_all_skills_dirs, get_project_skills_dirs
     project_dirs = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
     all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
-    all_dirs += get_external_skills_dirs()
+    # [1:] = skills.create_dir + external_dirs: the same dirs the prompt index advertises.
+    all_dirs += get_all_skills_dirs()[1:]
     return project_dirs, all_dirs, active_skills_dir
 
 

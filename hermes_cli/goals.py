@@ -516,21 +516,21 @@ _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 
 
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
-    """Construct SessionDB off-loop and populate the cache (worker thread)."""
+    """Acquire the process-shared SessionDB off-loop and populate the cache."""
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire
 
         # Bind the caller's home for this thread: the cache key is the caller's scoped home, and
         # without the override a multiplexed worker thread would resolve the process env (default
         # profile) and cache the wrong profile's DB under this profile's key.
         token = set_hermes_home_override(home)
         try:
-            db = SessionDB()
+            db = acquire()
         finally:
             reset_hermes_home_override(token)
     except Exception as exc:  # pragma: no cover
-        logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
+        logger.debug("GoalManager: background SessionDB acquire raised (%s)", exc)
         db = None
     with _DB_BOOTSTRAP_LOCK:
         if db is not None and home not in _DB_CACHE:
@@ -540,15 +540,14 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
 
 
 def _get_session_db() -> Optional[Any]:
-    """Cached SessionDB per HERMES_HOME (profile switches pick the right DB); None on any failure.
+    """Cached registry-shared SessionDB per HERMES_HOME; None on any failure.
 
-    Never constructs SessionDB on an event-loop thread: a cache miss there kicks a one-shot background
+    Never acquires SessionDB on an event-loop thread: a cache miss there kicks a one-shot background
     bootstrap and waits a bounded grace window (the kick call waits ``_DB_BOOTSTRAP_INIT_WAIT_S`` so a
     healthy cold init completes and the first write isn't dropped).
     """
     try:
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
 
         home = str(get_hermes_home())
     except Exception as exc:  # pragma: no cover
@@ -582,18 +581,19 @@ def _get_session_db() -> Optional[Any]:
         return _DB_CACHE.get(home)
 
     try:
-        db = SessionDB()
+        from hermes_state_registry import acquire
+
+        db = acquire()
     except Exception as exc:  # pragma: no cover
-        logger.debug("GoalManager: SessionDB() raised (%s)", exc)
+        logger.debug("GoalManager: SessionDB acquire raised (%s)", exc)
         return None
     with _DB_BOOTSTRAP_LOCK:
         existing = _DB_CACHE.get(home)
         if existing is not None:
-            # A concurrent bootstrap won the race; close ours so connections don't leak.
-            try:
-                db.close()
-            except Exception:
-                pass
+            # A concurrent bootstrap won the race; return this registry reference.
+            from hermes_state_registry import release_or_close
+
+            release_or_close(db)
             return existing
         _DB_CACHE[home] = db
     return db

@@ -48,9 +48,9 @@ def _clean_cache(monkeypatch):
 
 
 def _patch_sessiondb(monkeypatch):
-    import hermes_state
+    import hermes_state_registry
 
-    monkeypatch.setattr(hermes_state, "SessionDB", _RecordingDB)
+    monkeypatch.setattr(hermes_state_registry, "acquire", _RecordingDB)
 
 
 def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
@@ -119,7 +119,7 @@ def test_slow_construction_does_not_block_the_loop(monkeypatch):
     1.5s window plus margins; the two-window CONTRACT is what's under
     test, not the production constants.
     """
-    import hermes_state
+    import hermes_state_registry
 
     monkeypatch.setattr(goals, "_DB_BOOTSTRAP_INIT_WAIT_S", 0.3)
     monkeypatch.setattr(goals, "_DB_BOOTSTRAP_LOOP_WAIT_S", 0.05)
@@ -134,7 +134,7 @@ def test_slow_construction_does_not_block_the_loop(monkeypatch):
         def get_meta(self, key):
             return None
 
-    monkeypatch.setattr(hermes_state, "SessionDB", _BlockingDB)
+    monkeypatch.setattr(hermes_state_registry, "acquire", _BlockingDB)
     elapsed = None
     elapsed2 = None
     result = "UNSET"
@@ -168,3 +168,18 @@ def test_slow_construction_does_not_block_the_loop(monkeypatch):
     assert elapsed > elapsed2, (
         "kick call should wait the one-time init window; in-flight calls the short one"
     )
+
+
+def test_goals_cache_uses_process_shared_session_db():
+    """Goals must borrow the same writer generation used by cron and gateway callers."""
+    import hermes_state_registry
+
+    goals_db = goals._get_session_db()
+    peer = hermes_state_registry.acquire()
+    try:
+        assert goals_db is peer
+        assert hermes_state_registry.stats()["live_generations"] == 1
+    finally:
+        peer.close()
+        goals_db.close()
+        goals._DB_CACHE.clear()

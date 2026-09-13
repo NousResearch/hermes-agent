@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -26,6 +27,59 @@ import {
   target,
   validateSshTarget
 } from './ssh-connection'
+
+const hasOpenSsh = spawnSync('ssh', ['-V'], { encoding: 'utf8' }).status === 0
+
+// Parse the actual OpenSSH policy without opening a connection. Checking for
+// a literal -L argument alone misses ClearAllForwardings discarding it.
+function effectiveForwards(args: string[], config = os.devNull): string[] {
+  return execFileSync('ssh', ['-G', '-F', config, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    .split(/\r?\n/)
+    .filter(line => /^(?:local|remote|dynamic)forward /.test(line))
+    .map(line => line.replaceAll('[', '').replaceAll(']', ''))
+}
+
+test.skipIf(!hasOpenSsh)('command-only SSH calls do not inherit configured forwards', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ssh-policy-'))
+  const config = path.join(dir, 'config')
+  const conn = { user: 'me', host: 'box', port: 22, keyPath: '', controlPath: path.join(dir, 'master.sock') }
+
+  try {
+    fs.writeFileSync(config, 'Host *\n  LocalForward 127.0.0.1:54100 127.0.0.1:54101\n')
+
+    for (const args of [
+      buildMasterArgs(conn),
+      buildExecArgs(conn, 'exit 0'),
+      buildExecArgs({ ...conn, controlPath: '' }, 'exit 0'),
+      buildInteractiveSshArgs(conn, '')
+    ]) {
+      assert.deepEqual(effectiveForwards(args, config), [], `configured forward leaked: ${args.join(' ')}`)
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(!hasOpenSsh)('mux forward and cancel keep only the explicitly requested tunnel', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ssh-policy-'))
+  const config = path.join(dir, 'config')
+  const conn = { user: 'me', host: 'box', port: 22, keyPath: '', controlPath: path.join(dir, 'master.sock') }
+  const spec = forwardSpec(54200, 54201)
+
+  try {
+    fs.writeFileSync(
+      config,
+      'Host *\n  LocalForward 127.0.0.1:54100 127.0.0.1:54101\n  ClearAllForwardings yes\n'
+    )
+
+    for (const op of ['forward', 'cancel']) {
+      const args = buildControlArgs(conn, op, ['-L', spec])
+      assert.deepEqual(effectiveForwards(args, config), ['localforward 127.0.0.1:54200 127.0.0.1:54201'])
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('redactSecrets scrubs the spawn-time session token env var', () => {
   const line = 'setsid env HERMES_DASHBOARD_SESSION_TOKEN=abc123deadbeef HERMES_DESKTOP=1 hermes dashboard'
@@ -559,6 +613,10 @@ test('no-mux: forward spawns a persistent -N -L child; cancel + close kill it', 
   assert.equal(tunnels.length, 1, 'one persistent tunnel child')
   assert.ok(tunnels[0].args.includes('-L'), 'tunnel child carries -L spec')
   assert.ok(!tunnels[0].args.some(a => /ControlPath/.test(a)))
+
+  if (hasOpenSsh) {
+    assert.deepEqual(effectiveForwards(tunnels[0].args), [`localforward 127.0.0.1:${localPort} 127.0.0.1:9119`])
+  }
 
   await conn.cancelForward(localPort, 9119)
   assert.ok(tunnels[0].child._killed, 'cancelForward kills the tunnel child')

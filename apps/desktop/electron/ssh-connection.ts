@@ -253,6 +253,8 @@ function target(user, host) {
 
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {
   return [
+    '-o',
+    'ClearAllForwardings=yes',
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
     ...hostArgs(conn),
     '--',
@@ -265,6 +267,11 @@ function buildControlArgs(conn, op, extra: string[] = [], connectTimeoutMs?) {
   return [
     '-O',
     op,
+    // The existing master already resolved aliases, keys and jump hosts.
+    // Do not reload configured forwards (or ClearAllForwardings, which would
+    // also discard the explicit -L below) for this socket-only operation.
+    '-F',
+    os.devNull,
     ...extra,
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
     ...hostArgs(conn),
@@ -281,6 +288,8 @@ function buildMasterArgs(conn, connectTimeoutMs?) {
     '-M',
     '-N',
     '-f',
+    '-o',
+    'ClearAllForwardings=yes',
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
     ...hostArgs(conn),
     '--',
@@ -297,6 +306,8 @@ function buildMasterArgs(conn, connectTimeoutMs?) {
 function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteCommand?) {
   const args = [
     '-tt',
+    '-o',
+    'ClearAllForwardings=yes',
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
     ...hostArgs(conn),
     '--',

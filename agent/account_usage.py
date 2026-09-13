@@ -366,6 +366,24 @@ def _plural(count: int) -> str:
     return "s" if count != 1 else ""
 
 
+def _anthropic_scoped_weekly_windows(payload: dict) -> list[AccountUsageWindow]:
+    """Per-model weekly caps from ``payload["limits"]`` (``kind: weekly_scoped``, e.g. a Fable-only
+    week). They are separate from the account-wide ``seven_day`` window: a model can be out for the
+    week while the session window and the shared week are free. Unscoped entries duplicate the
+    ``five_hour`` / ``seven_day`` fields and are skipped."""
+    windows: list[AccountUsageWindow] = []
+    for entry in payload.get("limits") or ():
+        if not isinstance(entry, dict) or entry.get("kind") != "weekly_scoped":
+            continue
+        model_name = (((entry.get("scope") or {}).get("model") or {}).get("display_name") or "").strip()
+        percent = entry.get("percent")
+        if not model_name or not _is_num(percent):
+            continue
+        windows.append(AccountUsageWindow(label=f"{model_name} week", used_percent=float(percent),
+                                          reset_at=_parse_dt(entry.get("resets_at"))))
+    return windows
+
+
 def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
@@ -512,6 +530,7 @@ def _fetch_anthropic_account_usage(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
                   ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
     )
+    windows.extend(_anthropic_scoped_weekly_windows(payload))
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     used_credits, monthly_limit = extra.get("used_credits"), extra.get("monthly_limit")

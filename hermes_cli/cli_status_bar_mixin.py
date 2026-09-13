@@ -956,8 +956,8 @@ class CLIStatusBarMixin:
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
-        config controls visibility only.
+        focus, yolo, stash, battery, title, limits and total_tokens (both opt-in only). Order
+        is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -973,6 +973,18 @@ class CLIStatusBarMixin:
             result = None
         self._status_bar_field_set_cache = result
         return result
+
+    def _account_limits(self) -> list:
+        """``[(label, used_percent), ...]`` for the ``limits`` segment. The poller is started on
+        first use and only ever read here, so repaints never wait on the network."""
+        poller = getattr(self, "_account_limits_poller", None)
+        if poller is None:
+            from hermes_cli.status_bar_limits import AccountLimitsPoller
+            # Idle bars repaint only on input, so a fresh reading asks for one (throttled).
+            poller = self._account_limits_poller = AccountLimitsPoller(
+                on_change=lambda: self._invalidate(min_interval=0.0))
+            poller.start()
+        return poller.read()
 
     def _status_bar_segments(
         self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
@@ -1028,6 +1040,13 @@ class CLIStatusBarMixin:
                     ])
                 else:
                     segs.append([(bar_style, percent_label)])
+            # Subscription rate limits (shortest window per provider, per-model weeks) - opt-in via an
+            # explicit fields list, like total_tokens. Same color ladder as the context bar:
+            # the number closest to blocking you is the reddest.
+            if field_set is not None and "limits" in field_set:
+                from hermes_cli.status_bar_limits import format_limit
+                for label, used in self._account_limits():
+                    segs.append([(self._status_bar_context_style(round(used)), format_limit(label, used))])
             cache = self._cache_hit_rate(snapshot, precision=1 if wide else 0)
             if cache:
                 add("cache_hit", self._cache_hit_rate_style(cache[0]), cache[1])

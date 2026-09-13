@@ -119,6 +119,22 @@ async def test_registration_grants_only_the_exact_real_action_allowlist(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_developer_mode_registration_never_negotiates_eval_or_raw_cdp(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    monkeypatch.setattr(adapter, "_browser_control_developer_mode", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=["browser_evaluate", "browser_cdp"]),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        body = await response.json()
+    assert response.status == 400
+    assert body["error"]["code"] == "browser_control_no_capabilities"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("overrides", "code"),
     [

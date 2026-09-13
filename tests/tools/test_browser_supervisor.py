@@ -309,35 +309,13 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
-def test_browser_cdp_frame_id_real_oopif_smoke_documented():
-    """Document that real-OOPIF E2E was manually verified — see PR #14540.
+def test_browser_cdp_frame_id_is_rejected_at_capability_boundary():
+    """OOPIF observation does not create a public frame-routing transport."""
+    from tools.browser_cdp_tool import CDP_CAPABILITY_ERROR, _validate_cdp_capability
 
-    A pytest version of this hits an asyncio version-quirk in the venv
-    (3.11) that doesn't show up in standalone scripts (3.13 + system
-    websockets). The mechanism IS verified end-to-end by two separate
-    smoke scripts in /tmp/dialog-iframe-test/:
-
-      * smoke_local_oopif.py   — local Chrome + 2 http servers on
-        different hostnames + --site-per-process. Outer page on
-        localhost:18905, iframe src=http://127.0.0.1:18906. Calls
-        browser_cdp(method='Runtime.evaluate', frame_id=<OOPIF>) and
-        verifies inner page's title comes back from the OOPIF session.
-        PASSED on 2026-04-23: iframe document.title = 'INNER-FRAME-XYZ'
-
-      * smoke_bb_iframe_agent_path.py — Browserbase + real cross-origin
-        iframe (src=https://example.com/). Same browser_cdp(frame_id=)
-        path. PASSED on 2026-04-23: iframe document.title =
-        'Example Domain'
-
-    The test_browser_cdp_frame_id_routes_via_supervisor pytest covers
-    the supervisor-routing plumbing with a fake injected OOPIF.
-    """
-    pytest.skip(
-        "Real-OOPIF E2E verified manually with smoke_local_oopif.py and "
-        "smoke_bb_iframe_agent_path.py — pytest version hits an asyncio "
-        "version quirk between venv (3.11) and standalone (3.13). "
-        "Smoke logs preserved in /tmp/dialog-iframe-test/."
-    )
+    assert _validate_cdp_capability(
+        "Runtime.evaluate", {"expression": "document.title"}, None, "oopif-1"
+    ) == CDP_CAPABILITY_ERROR
 
 
 def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):

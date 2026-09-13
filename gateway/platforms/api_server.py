@@ -2283,6 +2283,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
                     "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
                     "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
+                    "retired_capabilities": ["browser_cdp", "browser_evaluate"],
                     "developer_mode": self._browser_control_developer_mode(),
                     "artifact_transport": {
                         "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
@@ -2351,11 +2352,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response(
                 "At least one permitted browser-control capability is required.", 400,
                 code="browser_control_no_capabilities")
-        # Developer capabilities need broker Developer Mode (fail closed past the filter).
-        if capabilities & BROWSER_CONTROL_DEVELOPER_CAPABILITIES and not developer_mode:
-            return _error_response(
-                "Developer Mode is required for browser_evaluate and raw CDP.", 403,
-                code="browser_control_developer_mode_required")
+
         scope = ControllerScope(
             principal_id=self._derive_browser_control_principal(profile), profile_id=profile,
             session_id=session_id or None, controller_id=controller_id,
@@ -2492,7 +2489,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return "local-api" if host in ("127.0.0.1", "::1", "localhost") else "remote-api"
 
     def _browser_control_developer_mode(self) -> bool:
-        """Broker Developer Mode gate for ``browser_evaluate`` / raw CDP; tests monkeypatch this."""
+        """Legacy controller Developer Mode flag; eval/raw CDP remain unavailable."""
         try:
             return browser_control_developer_mode()
         except Exception:

@@ -28,7 +28,7 @@ def _browser_mode(monkeypatch):
 )
 def test_private_page_blocks_state_changing_actions(monkeypatch, tool_call, args):
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda task_id, *, include_private: PRIVATE_URL)
 
     def fail_run(*_args, **_kwargs):
         raise AssertionError("browser command should not run on a private page")
@@ -47,7 +47,7 @@ def test_click_still_runs_when_current_page_is_public(monkeypatch):
     calls = []
 
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: None)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda task_id, *, include_private: None)
 
     def fake_run(task_id, command, args):
         calls.append((task_id, command, args))
@@ -61,19 +61,19 @@ def test_click_still_runs_when_current_page_is_public(monkeypatch):
     assert calls == [("task-1", "click", ["@e1"])]
 
 
-def test_guard_inactive_does_not_block_or_probe(monkeypatch):
-    """When the SSRF guard is inactive (local backend / allow_private_urls),
-    the action must proceed WITHOUT even probing the page URL — a private-looking
-    current URL is irrelevant. This is the branch most likely to silently regress
-    if the guard condition is ever inverted, so it is exercised explicitly."""
+def test_guard_inactive_allows_ordinary_private_pages(monkeypatch):
+    """Local backends and allow_private_urls retain ordinary-private access while
+    still using the shared metadata-floor probe."""
     calls = []
+    probes = []
 
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
 
-    def fail_probe(task_id):
-        raise AssertionError("_current_page_private_url must not be probed when guard inactive")
+    def current_page_blocked_url(task_id, *, include_private):
+        probes.append((task_id, include_private))
+        return None
 
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", fail_probe)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", current_page_blocked_url)
 
     def fake_run(task_id, command, args):
         calls.append((task_id, command, args))
@@ -84,6 +84,7 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
     out = json.loads(browser_tool.browser_click("@e1", task_id="task-1"))
 
     assert out == {"success": True, "clicked": "@e1"}
+    assert probes == [("task-1", False)]
     assert calls == [("task-1", "click", ["@e1"])]
 
 
@@ -120,7 +121,7 @@ def test_browser_back_blocks_when_landed_page_is_private(monkeypatch):
     browser_navigate preflight never saw — the same class of gap already
     closed for browser_snapshot/vision/console/eval and click/type/press."""
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda task_id, *, include_private: PRIVATE_URL)
     monkeypatch.setattr(
         bt_session, "_run_browser_command",
         lambda task_id, command, args: {"success": True, "data": {"url": PRIVATE_URL}},
@@ -138,7 +139,7 @@ def test_browser_back_blocks_when_landed_page_is_private(monkeypatch):
 
 def test_browser_back_returns_url_when_landed_page_is_public(monkeypatch):
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: None)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda task_id, *, include_private: None)
     monkeypatch.setattr(
         bt_session, "_run_browser_command",
         lambda task_id, command, args: {"success": True, "data": {"url": "https://example.com/"}},

@@ -126,7 +126,10 @@ Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wir
 Browser extensions can opt into the disabled-by-default controller protocol to
 drive the exact browser session that opened the Hermes conversation. The API
 and dashboard transports share one principal-bound broker and one explicit
-capability allowlist; see [Browser-extension control](../user-guide/features/api-server#browser-extension-control).
+capability allowlist. Developer Mode does not grant controller evaluation or raw
+CDP: `browser_evaluate` is retired and the narrow direct `browser_cdp` inspection
+tool is not a controller capability. It requires an explicit `/browser connect`
+or `browser.cdp_url` override, which may be cloud-hosted; see [Browser-extension control](../user-guide/features/api-server#browser-extension-control).
 
 ### Model catalog surfaces
 

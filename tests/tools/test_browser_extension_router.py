@@ -231,6 +231,42 @@ def test_selected_controller_dict_result_is_serialized_for_registry_contract():
     assert result == '{"ok": true, "title": "Example Domain", "refs": []}'
 
 
+@pytest.mark.parametrize("field", [
+    "target_id", "targetId", "frame_id", "frameId", "session_id", "sessionId", "targetInfo",
+])
+def test_controller_routing_aliases_are_rejected_before_dispatch(field):
+    from gateway.browser_control_broker import ControllerUnavailable
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result="unsafe")
+    with pytest.raises(ControllerUnavailable, match="unsafe browser_snapshot arguments"):
+        route_browser_tool(
+            "browser_snapshot", {field: "attached-target"}, fallback=lambda: pytest.fail("no fallback"),
+            broker=broker, enabled=True, session_id="session-fixture", principal_id="principal-fixture",
+            transport_family="local-api")
+    assert not any(call[0] == "dispatch" for call in broker.calls)
+
+
+def test_controller_navigation_uses_shared_url_policy_before_dispatch(monkeypatch):
+    from gateway.browser_control_broker import ControllerUnavailable
+    from tools import browser_tool
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture", result="unsafe")
+    monkeypatch.setattr(browser_tool, "evaluate_url_safety", lambda url: {"error": "blocked"} if "169.254" in url else None)
+    with pytest.raises(ControllerUnavailable, match="unsafe browser_navigate arguments"):
+        route_browser_tool(
+            "browser_navigate", {"url": "http://169.254.169.254/latest/meta-data/"},
+            fallback=lambda: pytest.fail("no fallback"), broker=broker, enabled=True,
+            session_id="session-fixture", principal_id="principal-fixture", transport_family="local-api")
+    assert not any(call[0] == "dispatch" for call in broker.calls)
+
+    result = route_browser_tool(
+        "browser_navigate", {"url": "http://10.0.0.9/"}, fallback=lambda: pytest.fail("no fallback"),
+        broker=broker, enabled=True, session_id="session-fixture", principal_id="principal-fixture",
+        transport_family="local-api")
+    assert result == "unsafe"
+    assert broker.calls[-1][0] == "dispatch"
+
+
 def test_selected_controller_failure_never_retries_through_existing_backend():
     broker = FakeBroker(
         scope="scope-fixture",

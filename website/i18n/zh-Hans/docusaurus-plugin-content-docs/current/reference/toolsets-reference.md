@@ -52,7 +52,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 
 | 工具集 | 工具 | 用途 |
 |--------|------|------|
-| `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | 核心浏览器自动化。包含 `web_search` 作为快速查询的备用方案。`browser_cdp` 和 `browser_dialog` 在运行时受限——仅在会话启动时 CDP 端点可达（通过 `/browser connect`、`browser.cdp_url` 配置、Browserbase 或 Camofox）时才注册。`browser_dialog` 与 `browser_snapshot` 在附加 CDP supervisor 时添加的 `pending_dialogs` 和 `frame_tree` 字段配合使用。 |
+| `browser` | `browser_back`, `browser_cdp`, `browser_click`, `browser_console`, `browser_dialog`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | 核心浏览器自动化。包含 `web_search` 作为快速查询的备用方案。`browser_cdp` 是直接只读 CDP 检查，不是浏览器控制器能力（包括开发者模式）；任意求值已退役。`browser_cdp` 和 `browser_dialog` 仅在会话启动时通过 `/browser connect` 或 `browser.cdp_url` 配置显式 CDP 覆盖时注册，端点可托管在云端。provider 托管的每会话 CDP 不会自动暴露给这些工具。只要 supervisor 附加了 CDP 会话，`browser_snapshot` 就可能添加 `pending_dialogs` 和 `frame_tree`。 |
 | `clarify` | `clarify` | 当 agent 需要澄清时向用户提问。 |
 | `code_execution` | `execute_code` | 运行以编程方式调用 Hermes 工具的 Python 脚本。 |
 | `cronjob` | `cronjob` | 调度和管理周期性任务。 |

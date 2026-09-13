@@ -418,13 +418,14 @@ DEFAULT_CONFIG = {
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
         # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
         "real_profile_pin": "",
-        # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
-        # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
-        # is the legacy override that bypasses that denylist entirely.
+        # Retired compatibility keys: public browser_console(expression=...) is always rejected.
+        # Keep these inert values only so existing user configuration remains parseable.
         "allow_unsafe_evaluate": False,
         "restrict_evaluate": False,
-        # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
-        # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
+        # CDP supervisor: dialog + frame detection over a persistent WebSocket; it can attach to any
+        # browser session with a CDP URL. An explicitly configured CDP override (/browser connect or
+        # browser.cdp_url), including a cloud-hosted endpoint, also enables the read-only browser_cdp
+        # and browser_dialog tools. See
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
@@ -443,8 +444,8 @@ DEFAULT_CONFIG = {
         },
         # Authenticated browser-extension controller lane: a registered extension can become the
         # exact controller for a session's browser_* tools (fail-closed once bound). Local API
-        # registration also requires the API server bearer key. developer_mode gates the privileged
-        # browser_cdp / browser_evaluate capabilities.
+        # registration also requires the API server bearer key. Developer Mode does not expand the
+        # unconditional read-only browser_cdp boundary.
         "extension_control": {"enabled": False, "developer_mode": False},
     },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first

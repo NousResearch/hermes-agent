@@ -1540,9 +1540,8 @@ browser:
   # 可选 CDP 覆盖 —— 设置后，Hermes 直接附加到您自己的
   # Chromium 系浏览器（通过 /browser connect），而不是启动无头浏览器。
   cdp_url: ""
-  # 对话框监督器 —— 控制当 CDP 后端附加时（Browserbase、本地 Chromium 系
-  # 浏览器通过 /browser connect）如何处理原生 JS 对话框（alert/confirm/prompt）。
-  # 在 Camofox 和默认本地 agent 浏览器模式下忽略。
+  # 对话框监督器 —— 只要 supervisor 已附加 CDP 会话，就控制原生 JS 对话框（alert/confirm/prompt）。
+  # browser_dialog 仅在显式 /browser connect 或 browser.cdp_url 覆盖下注册，端点可托管在云端。
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
   dialog_timeout_s: 300          # must_respond 下的安全自动关闭（秒）
   camofox:
@@ -1558,7 +1557,7 @@ browser:
 - `auto_dismiss` —— 捕获，立即关闭。Agent 仍然在事后的 `browser_snapshot.recent_dialogs` 中看到对话框记录，`closed_by="auto_policy"`。
 - `auto_accept` —— 捕获，立即接受。适用于有激进 `beforeunload` 提示的页面。
 
-完整对话框工作流请参阅[浏览器功能页面](./features/browser.md#browser_dialog)。
+这些策略只要 CDP supervisor 已附加就会生效。`browser_dialog` 本身仅通过显式 `/browser connect` 或 `browser.cdp_url` 覆盖注册，端点可托管在云端；provider 托管的每会话 CDP URL 单独并不会注册它。完整对话框工作流请参阅[浏览器功能页面](./features/browser.md#browser_dialog)。
 
 浏览器工具集支持多个 provider。有关 Browserbase、Browser Use 和本地 Chromium 系 CDP 设置的详细信息，请参阅[浏览器功能页面](/user-guide/features/browser)。
 

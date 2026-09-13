@@ -248,14 +248,7 @@ def test_filter_rejects_developer_capabilities_without_developer_mode():
         {"controller.noop", "browser_navigate", "browser_artifact_upload", "browser_artifact_download"}
     )
     assert filter_browser_control_capabilities(requested, developer_mode=True) == frozenset(
-        {
-            "controller.noop",
-            "browser_navigate",
-            "browser_artifact_upload",
-            "browser_artifact_download",
-            "browser_evaluate",
-            "browser_cdp",
-        }
+        {"controller.noop", "browser_navigate", "browser_artifact_upload", "browser_artifact_download"}
     )
     assert filter_browser_control_capabilities("not-a-list", developer_mode=True) == frozenset()
 
@@ -285,7 +278,11 @@ def test_broker_developer_gate_blocks_evaluate_and_cdp_dispatch(tmp_path):
     assert broker.select(scope, "browser_evaluate") is None
 
 
-def test_broker_developer_mode_allows_negotiated_privileged_dispatch(tmp_path):
+@pytest.mark.parametrize("action,arguments", [
+    ("browser_evaluate", {"expression": "document.title"}),
+    ("browser_cdp", {"method": "Browser.getVersion"}),
+])
+def test_developer_mode_never_dispatches_retired_controller_capabilities(tmp_path, action, arguments):
     broker = BrowserControlBroker(developer_mode=True)
     store = ArtifactStore(tmp_path / "root")
     broker.attach_artifact_store(store)
@@ -293,18 +290,31 @@ def test_broker_developer_mode_allows_negotiated_privileged_dispatch(tmp_path):
         capabilities=frozenset({"browser_evaluate", "browser_cdp", "controller.noop"})
     )
 
-    def send(frame):
-        broker.complete(
-            frame["params"]["command_id"],
-            ok=True,
-            result={"expression": frame["params"]["arguments"]["expression"]},
-        )
+    sent = []
+    broker.attach(scope, sent.append)
+    with pytest.raises(ControllerUnavailable, match="not available through browser controllers"):
+        broker.dispatch(scope, action=action, arguments=arguments)
+    assert sent == []
 
-    broker.attach(scope, send)
-    result = broker.dispatch(
-        scope, action="browser_evaluate", arguments={"expression": "document.title"}
-    )
-    assert result == {"expression": "document.title"}
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"method": "Runtime.evaluate", "params": {"expression": "fetch('http://169.254.169.254/latest/meta-data/')"}},
+        {"method": "Runtime.evaluate", "params": {"expression": "document.title"}, "frame_id": "oopif-1"},
+    ],
+)
+def test_developer_mode_controller_cannot_dispatch_raw_cdp(tmp_path, arguments):
+    broker = BrowserControlBroker(developer_mode=True)
+    broker.attach_artifact_store(ArtifactStore(tmp_path / "root"))
+    scope = _broker_scope(capabilities=frozenset({"browser_cdp", "controller.noop"}))
+    sent = []
+    broker.attach(scope, sent.append)
+
+    with pytest.raises(ControllerUnavailable, match="not available through browser controllers"):
+        broker.dispatch(scope, action="browser_cdp", arguments=arguments)
+
+    assert sent == []
 
 
 def test_broker_artifact_action_requires_attached_store(tmp_path):
@@ -553,7 +563,7 @@ async def test_artifact_routes_rate_limit_per_principal(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_capabilities_advertise_artifact_transport_and_developer_mode(monkeypatch):
+async def test_capabilities_advertise_artifact_transport_and_retired_controller_capabilities(monkeypatch):
     adapter = _adapter()
     monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
     monkeypatch.setattr(adapter, "_browser_control_developer_mode", lambda: True)
@@ -564,8 +574,8 @@ async def test_capabilities_advertise_artifact_transport_and_developer_mode(monk
 
     control = data["features"]["browser_extension_control"]
     assert control["developer_mode"] is True
-    assert "browser_evaluate" in control["developer_capabilities"]
-    assert "browser_cdp" in control["developer_capabilities"]
+    assert control["developer_capabilities"] == []
+    assert control["retired_capabilities"] == ["browser_cdp", "browser_evaluate"]
     assert "browser_evaluate" not in control["capabilities"]
     assert control["artifact_transport"]["upload"] == {
         "method": "POST",
@@ -662,10 +672,8 @@ def test_multiplex_profiles_get_distinct_stores_regardless_of_touch_order(tmp_pa
     assert broker._artifact_store_for_scope(scope_b) is store_b
 
 
-def test_developer_mode_flip_revokes_privileged_selection_live(monkeypatch):
-    """Turning developer_mode off in config revokes CDP/eval from an
-    already-attached controller without a process restart (and on->off
-    the reverse: enabling unlocks selection for a new negotiation)."""
+def test_developer_mode_never_selects_retired_capabilities(monkeypatch):
+    """Developer Mode cannot revive eval/CDP on an already attached controller."""
     import gateway.browser_control_broker as broker_mod
 
     flag = {"on": True}
@@ -678,17 +686,17 @@ def test_developer_mode_flip_revokes_privileged_selection_live(monkeypatch):
     )
     broker.attach(scope, lambda _frame: None)
 
-    assert broker.select(scope, "browser_evaluate") is not None
-    # Revocation: flip the live flag off — the attached controller loses
-    # privileged selection immediately.
+    assert broker.select(scope, "browser_evaluate") is None
+    assert broker.select(scope, "browser_cdp") is None
+    # Flipping the legacy flag cannot revive retired controller actions.
     flag["on"] = False
     assert broker.select(scope, "browser_evaluate") is None
     assert broker.select(scope, "browser_cdp") is None
     # Base capabilities are unaffected by the developer gate.
     assert broker.select(scope, "controller.noop") is not None
-    # And back on: selection resumes without any rebind.
+    # And back on: still retired.
     flag["on"] = True
-    assert broker.select(scope, "browser_cdp") is not None
+    assert broker.select(scope, "browser_cdp") is None
     # Explicit pin still wins over live config (test/multi-tenant contract).
     pinned = BrowserControlBroker(developer_mode=False)
     pinned.attach(scope, lambda _frame: None)

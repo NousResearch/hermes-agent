@@ -49,7 +49,7 @@ def _mock_run_success(monkeypatch):
 def test_blocks_console_on_private_page(monkeypatch):
     _mock_run_success(monkeypatch)
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda tid: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: PRIVATE_URL)
 
     result = json.loads(browser_tool.browser_console(task_id="test"))
     assert result["success"] is False
@@ -60,7 +60,7 @@ def test_blocks_console_on_private_page(monkeypatch):
 def test_allows_console_on_public_page(monkeypatch):
     _mock_run_success(monkeypatch)
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda tid: None)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: None)
 
     result = json.loads(browser_tool.browser_console(task_id="test"))
     assert result["success"] is True
@@ -71,10 +71,23 @@ def test_allows_console_on_public_page(monkeypatch):
 def test_skips_guard_for_local_backend(monkeypatch):
     _mock_run_success(monkeypatch)
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: False)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: None)
 
     result = json.loads(browser_tool.browser_console(task_id="test"))
     assert result["success"] is True
     assert result["total_messages"] == 1
+
+
+def test_metadata_floor_blocks_console_when_private_guard_is_disabled(monkeypatch):
+    _mock_run_success(monkeypatch)
+    metadata_url = "http://169.254.169.254/latest/meta-data/"
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: False)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: metadata_url)
+
+    result = json.loads(browser_tool.browser_console(task_id="test"))
+
+    assert result["success"] is False
+    assert metadata_url in result["error"]
 
 
 def test_skips_guard_when_private_urls_allowed(monkeypatch):
@@ -92,7 +105,7 @@ def test_guard_does_not_block_on_failed_console_command(monkeypatch):
         return {"success": False, "error": "console fetch failed"}
     monkeypatch.setattr(bt_session, "_run_browser_command", _run)
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda tid: True)
-    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda tid: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_blocked_url", lambda tid, *, include_private: PRIVATE_URL)
 
     result = json.loads(browser_tool.browser_console(task_id="test"))
     # When the page is private, the guard checks _current_page_private_url first.

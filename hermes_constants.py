@@ -152,9 +152,24 @@ def get_process_hermes_home() -> Path:
 
     For process-level assets (theme YAML, dashboard plugin manifests) that must stay visible while a
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
+
+    Falls back to ``/proc/self/environ`` on Linux when ``os.environ`` lacks
+    ``HERMES_HOME`` (see #109360).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    if val:
+        return Path(val)
+    if sys.platform != "win32":
+        try:
+            raw = Path("/proc/self/environ").read_bytes()
+            for entry in raw.split(b"\x00"):
+                if entry.startswith(b"HERMES_HOME="):
+                    cand = entry[len(b"HERMES_HOME="):].decode(errors="replace").strip()
+                    if cand:
+                        return Path(cand)
+        except Exception:
+            pass
+    return _get_platform_default_hermes_home()
 
 
 # get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays

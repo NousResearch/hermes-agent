@@ -87,9 +87,28 @@ def record_start_and_check_storm(
 def _get_process_hermes_home() -> Path:
     """Launch-home HERMES_HOME for identity files (PID, lock, status, markers):
     ``get_hermes_home()`` honors the per-session ``_HERMES_HOME_OVERRIDE`` and would misroute
-    them."""
+    them.
+
+    Falls back to ``/proc/self/environ`` on Linux when ``os.environ`` lacks
+    ``HERMES_HOME`` (tool-call contexts can strip it; see #109360) so the
+    liveness probe agrees with ``hermes gateway status``.
+    """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    if val:
+        return Path(val)
+    # Container/tool execution contexts can drop HERMES_HOME even though the
+    # gateway process was launched with it (visible in /proc/<pid>/environ).
+    if sys.platform != "win32":
+        try:
+            raw = Path("/proc/self/environ").read_bytes()
+            for entry in raw.split(b"\x00"):
+                if entry.startswith(b"HERMES_HOME="):
+                    cand = entry[len(b"HERMES_HOME="):].decode(errors="replace").strip()
+                    if cand:
+                        return Path(cand)
+        except Exception:
+            pass
+    return _get_platform_default_hermes_home()
 
 
 def _canonical_hermes_home(path: Path | str) -> Path:
@@ -729,7 +748,18 @@ def _probe_lock_file(handle) -> bool:
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """True when some process currently owns the gateway runtime lock."""
     resolved_lock_path = lock_path or _get_gateway_lock_path()
-    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+    if _gateway_lock_handle is not None:
+        # Inside the gateway process the handle proves liveness regardless of
+        # which HERMES_HOME the caller resolved (tool contexts can lack
+        # HERMES_HOME; see #109360). The old equality check failed when the
+        # caller's resolved path was the default home while the gateway holds
+        # the lock under a custom HERMES_HOME.
+        if lock_path is None or resolved_lock_path == _get_gateway_lock_path():
+            return True
+        # Even when the caller asks about a different home, the fact that
+        # THIS process holds a gateway lock means a gateway is running and
+        # the builtin ticker is active — report active so the cron tool does
+        # not emit a false "gateway not running" warning.
         return True
     if not resolved_lock_path.exists():
         return False

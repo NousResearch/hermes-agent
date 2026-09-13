@@ -308,6 +308,8 @@ class StreamTransportMixin:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
+        if self._delivery_ambiguous:
+            return False
         text = self._clean_for_display(text)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
@@ -443,6 +445,13 @@ class StreamTransportMixin:
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
+            self._track_preview_ids_from_result(result)
+            if result.message_id:
+                self._adopt_message_id(result.message_id)
+                self._already_sent = True
+            raw_response = getattr(result, "raw_response", None)
+            if isinstance(raw_response, dict) and raw_response.get("_delivery_uncertain"):
+                return await self._on_edit_failure(result, text, finalize=finalize, is_turn_final=True)
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -537,7 +546,18 @@ class StreamTransportMixin:
         # content IS this finalize payload (#71643). Record it on split turns too: post-#78541 an unrecorded
         # split reads as a mismatch and would re-send this already-visible answer, reintroducing the
         # duplicate #45517 fixed (#36965 / #25349).
+        self._track_preview_ids_from_result(result)
         raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("_delivery_uncertain"):
+            # A continuation may already be visible. Neither a further edit nor
+            # the tail fallback can safely replay it; retain every known receipt.
+            self._delivery_ambiguous = True
+            self._final_content_delivered = True
+            self._fallback_final_send = False
+            self._edit_supported = False
+            self._already_sent = True
+            self._adopt_message_id(result.message_id or self._message_id)
+            return False
         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
             # Some overflow chunks landed but not the whole response: preserve the
             # visible prefix so got_done sends the missing tail.

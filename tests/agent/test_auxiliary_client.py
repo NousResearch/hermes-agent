@@ -257,6 +257,18 @@ def test_auxiliary_binding_uses_sdk_url_objects_for_egress_identity():
     assert route.base_url == "https://aux.example/v1"
 
 
+def test_auxiliary_binding_preserves_copilot_acp_marker_url(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    client = SimpleNamespace(base_url="acp://copilot")
+
+    agent, route = _auxiliary_egress_binding(
+        client, provider="copilot-acp", model="copilot-model", api_mode="chat_completions"
+    )
+
+    assert agent.base_url == "acp://copilot"
+    assert route.base_url == "acp://copilot"
+
+
 def test_only_compression_auxiliary_binding_gets_larger_exact_grant_caps():
     client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex")
     compression_token = _RELAY_AUX_CALL_CONTEXT.set({"task": "compression"})

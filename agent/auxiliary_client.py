@@ -2431,10 +2431,15 @@ def _auxiliary_egress_binding(
         or raw_runtime.get("llm_egress_policy_digest")
         or DEFAULT_POLICY_DIGEST
     )
-    base_url = str(getattr(client, "base_url", "") or "")
-    if not base_url.startswith(("http://", "https://")):
+    client_base_url = str(getattr(client, "base_url", "") or "")
+    preserve_local_marker = (
+        normalized_provider == "copilot-acp"
+        and client_base_url.strip().lower().startswith("acp://")
+    )
+    base_url = client_base_url
+    if not base_url.startswith(("http://", "https://")) and not preserve_local_marker:
         base_url = str(raw_runtime.get("base_url") or "")
-    if not base_url.startswith(("http://", "https://")):
+    if not base_url.startswith(("http://", "https://")) and not preserve_local_marker:
         base_url = {
             "openai-codex": "https://chatgpt.com/backend-api/codex",
             "anthropic": "https://api.anthropic.com/v1",

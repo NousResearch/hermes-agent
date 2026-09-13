@@ -21,6 +21,21 @@ def test_every_required_binary_maps_to_an_installed_package(pm):
     assert not {"xorg-x11-server-utils", "xorg-x11-utils"} & set(runtime.PACKAGES["dnf"]), "retired on Fedora"
 
 
+def test_privileged_executable_resolution_ignores_inherited_path(tmp_path, monkeypatch):
+    attacker = tmp_path / "attacker"
+    system = tmp_path / "system"
+    attacker.mkdir()
+    system.mkdir()
+    for directory in (attacker, system):
+        executable = directory / "sudo"
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(attacker))
+    monkeypatch.setattr(runtime, "_SYSTEM_PATH", str(system))
+
+    assert runtime._system_executable("sudo") == str(system / "sudo")
+
+
 def test_no_running_screen_returns_none_without_grabbing(monkeypatch):
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":99"})
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
@@ -60,6 +75,69 @@ def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypa
     live.clear()
     assert runtime._allocate_display() == 37, "a free recorded number is reclaimed"
 
+
+def test_desktop_launcher_does_not_inherit_credentials(tmp_path, monkeypatch):
+    """The graphical session keeps benign host settings but never receives Hermes credentials."""
+    import os
+
+    from tools.bot_desktop import browser
+
+    captured: dict[str, str] = {}
+
+    class FakeProcess:
+        pid = os.getpid()
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_popen(*_args, **kwargs):
+        captured.update(kwargs["env"])
+        Path(captured["HERMES_BD_ENV_FILE"]).write_text("DISPLAY=:44\n", encoding="utf-8")
+        Path(captured["HERMES_BD_SOCKET"]).touch()
+        return FakeProcess()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+    aws_credentials = {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_ROLE_SESSION_NAME",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    }
+    for key in aws_credentials:
+        monkeypatch.setenv(key, "aws-secret")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    monkeypatch.setenv("BOT_DESKTOP_BENIGN", "keep-me")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(runtime.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runtime, "geometry", lambda: "800x600")
+    monkeypatch.setattr(runtime, "status", lambda: "ready")
+    monkeypatch.setattr(browser, "dock_launch", lambda: None)
+
+    assert runtime._spawn_and_wait(tmp_path, 44, 0.1) == "ready"
+    assert captured["BOT_DESKTOP_BENIGN"] == "keep-me"
+    assert "DISPLAY" not in captured
+    assert "OPENAI_API_KEY" not in captured
+    assert "ANTHROPIC_API_KEY" not in captured
+    assert "GITHUB_TOKEN" not in captured
+    assert aws_credentials.isdisjoint(captured)
+    assert captured["AWS_REGION"] == "us-east-1"
+    assert captured["AWS_DEFAULT_REGION"] == "us-west-2"
 
 
 _FAKE_LAUNCHER = """#!/usr/bin/env bash

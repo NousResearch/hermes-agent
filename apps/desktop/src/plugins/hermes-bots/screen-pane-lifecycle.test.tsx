@@ -117,7 +117,12 @@ beforeEach(() => {
   retention.held = 0
   vi.mocked(displayRequest)
     .mockReset()
-    .mockResolvedValue({ ...status, ticket: 'test-ticket', viewer_id: 'this-viewer' })
+    .mockResolvedValue({
+      ...status,
+      ticket: 'test-ticket',
+      viewer_id: 'this-viewer',
+      resume_token: 'resume-token-with-at-least-thirty-two-characters'
+    })
   vi.stubGlobal(
     'WebSocket',
     class {

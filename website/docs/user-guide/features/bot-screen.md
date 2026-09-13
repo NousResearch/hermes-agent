@@ -77,8 +77,9 @@ Every bot's computer is one click away in three places of Hermes Desktop:
    connection is different: if your laptop lid closes or Wi-Fi drops while you
    hold control, you keep it — the bot stays locked out of a screen you may be
    mid-login on — until you reconnect and hand back. If you come back after a
-   reload and the pane still says a human holds control, a **Hand back (force)**
-   button appears to clear it.
+   reload, the pane uses a client-only recovery capability to reconnect as the
+   same viewer so you can hand control back normally. If that browser storage
+   was cleared, use the explicit CLI recovery command below.
 
 While you hold control, the bot's `computer_use` and browser tools are refused
 with `human_has_control`, captures included. This is a tool-level fence, not an
@@ -91,8 +92,9 @@ shows **Bot needs you**, the bot tells you in its reply what it needs (so the
 ask reaches you in whatever chat you are on), and it blocks in
 `action: "wait_for_human"` until you hand back.
 
-Two viewers on one screen: the most recent **Take over** wins; the previous
-controller drops back to watching.
+Only one viewer stream is kept per bot. A normal reconnect replaces the stale
+stream. Once a viewer has private control, a different session cannot watch,
+take over or force-release its lease.
 
 ## Browser sessions that survive the handoff
 
@@ -162,7 +164,7 @@ Xauthority, launcher log, per-profile xfconf).
 - **Typing produces wrong characters** — the screen uses a US keymap so RFB
   keysyms and cua-driver agree; change it with `setxkbmap` on that `DISPLAY`
   if you need another layout.
-- **Bot says `human_has_control` after you left** — click **Hand back** in the
-  pane (or **Hand back (force)** after a reload). From a shell,
+- **Bot says `human_has_control` after you left** — reconnect and click **Hand
+  back** in the pane. If the viewer recovery capability was lost, from a shell
   `hermes computer-use screen stop` releases the lease and stops the screen;
   `hermes computer-use screen start` brings it back with the bot in control.

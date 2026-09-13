@@ -15,7 +15,20 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isDisplayUnavailable, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, retainBotScreen, viewerHash } from './screen-connection'
+import {
+  type DisplayLease,
+  type DisplayObserveResult,
+  displayRequest,
+  type DisplayStatus,
+  isDisplayUnavailable,
+  isEventForBotScreen,
+  leaseHeldBy,
+  rememberScreenViewerCapability,
+  resolveScreenWsUrl,
+  retainBotScreen,
+  storedScreenViewerCapability,
+  viewerHash
+} from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenUnavailable, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
@@ -131,8 +144,21 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       }
 
       retention.current = retain
-      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
-      const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
+      const recovery = viewer ?? storedScreenViewerCapability(bot)
+
+      const observe = await displayRequest<DisplayObserveResult>(
+        bot,
+        'display.observe',
+        recovery ? { viewer_id: recovery.id, resume_token: recovery.resumeToken } : {}
+      )
+
+      const minted = {
+        id: observe.viewer_id,
+        hash: await viewerHash(observe.viewer_id),
+        resumeToken: observe.resume_token
+      }
+
+      rememberScreenViewerCapability(bot, minted)
       setScreenStatus(bot, observe)
       const url = await resolveScreenWsUrl(bot, observe.ticket)
 
@@ -194,7 +220,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         setError(err instanceof Error ? err.message : String(err))
       }
     }
-  }, [bot, detach, refresh, t.screen.streamLost])
+  }, [bot, detach, refresh, t.screen.streamLost, viewer])
 
   // Visibility is not lifecycle: the stream stays attached while the pane is
   // hidden; only unmount tears it down (and hands control back server-side).
@@ -234,7 +260,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer?.id })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', {
+        viewer_id: viewer?.id
+      })
+
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -247,25 +276,21 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [attach, bot, conn, viewer?.id])
 
-  // `force` is the escape hatch for a lease this window no longer owns (a reload
-  // minted a fresh viewer id; the old one still holds): the server refuses a
-  // plain release from anyone but the holder.
-  const handBack = useCallback(
-    async (force = false) => {
-      setBusy(true)
+  const handBack = useCallback(async () => {
+    setBusy(true)
 
-      try {
-        const params = force ? { force: true } : { viewer_id: viewer?.id }
-        const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', params)
-        setScreenLease(bot, result.lease)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setBusy(false)
-      }
-    },
-    [bot, viewer?.id]
-  )
+    try {
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', {
+        viewer_id: viewer?.id
+      })
+
+      setScreenLease(bot, result.lease)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [bot, viewer?.id])
 
   if (state?.unavailable) {
     return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
@@ -325,13 +350,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           <Button disabled={busy} onClick={() => void handBack()} size="sm" variant="secondary">
             <Codicon name="debug-continue" /> {t.screen.handBack}
           </Button>
-        ) : (
+        ) : humanOther ? null : (
           <>
-            {humanOther ? (
-              <Button disabled={busy} onClick={() => void handBack(true)} size="sm" title={t.screen.handBackForceHint} variant="secondary">
-                <Codicon name="debug-continue" /> {t.screen.handBackForce}
-              </Button>
-            ) : null}
             <Button disabled={busy || conn === 'attaching'} onClick={() => void takeOver()} size="sm">
               <Codicon name="record-keys" /> {t.screen.takeOver}
             </Button>

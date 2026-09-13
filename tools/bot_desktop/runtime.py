@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -35,6 +36,32 @@ _LAUNCHER = Path(__file__).with_name("launcher.sh")
 # Display numbers below 10 collide with real seats and default Xvfb recipes (:99 is popular too); scan a
 # private band and record the choice so restarts reuse it.
 _DISPLAY_MIN, _DISPLAY_MAX = 20, 89
+
+# Package installation is privileged. Never resolve sudo or a package manager through the gateway's
+# inherited PATH, which commonly contains user-writable directories such as ~/.local/bin.
+_SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+_PACKAGE_MANAGER_BINARIES = {"apt": "apt-get", "dnf": "dnf", "pacman": "pacman"}
+
+# ``hermes_subprocess_env(inherit_credentials=False)`` intentionally preserves the standard AWS
+# credential chain for ordinary terminal children. A graphical desktop is a less trusted boundary:
+# Xfce applications and browser extensions must not inherit credentials or paths to credential files.
+_DESKTOP_AWS_CREDENTIAL_ENV = frozenset({
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+})
 
 # Binaries the launcher execs; the package hint is per distro family.
 REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd", "dbus-run-session",
@@ -81,22 +108,32 @@ def missing_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if shutil.which(b) is None]
 
 
+def _system_executable(name: str) -> Optional[str]:
+    """Absolute executable resolved only from root-managed system directories."""
+    executable = shutil.which(name, path=_SYSTEM_PATH)
+    return str(Path(executable).resolve()) if executable else None
+
+
 def package_manager() -> Optional[str]:
-    for pm in ("apt-get", "dnf", "pacman"):
-        if shutil.which(pm):
-            return "apt" if pm == "apt-get" else pm
+    for pm, executable in _PACKAGE_MANAGER_BINARIES.items():
+        if _system_executable(executable):
+            return pm
     return None
 
 
 def install_command() -> Optional[str]:
     pm = package_manager()
-    if pm is None:
+    sudo = _system_executable("sudo")
+    package_manager_executable = _system_executable(_PACKAGE_MANAGER_BINARIES[pm]) if pm else None
+    if pm is None or sudo is None or package_manager_executable is None:
         return None
     pkgs = " ".join(PACKAGES[pm])
     return {
-        "apt": f"sudo apt-get install -y --no-install-recommends {pkgs}",
-        "dnf": f"sudo dnf install -y {pkgs}",
-        "pacman": f"sudo pacman -S --needed --noconfirm {pkgs}",
+        "apt": f"{shlex.quote(sudo)} {shlex.quote(package_manager_executable)} "
+               f"install -y --no-install-recommends {pkgs}",
+        "dnf": f"{shlex.quote(sudo)} {shlex.quote(package_manager_executable)} install -y {pkgs}",
+        "pacman": f"{shlex.quote(sudo)} {shlex.quote(package_manager_executable)} "
+                  f"-S --needed --noconfirm {pkgs}",
     }[pm]
 
 
@@ -316,8 +353,14 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     env_file = sd / "env"
     env_file.unlink(missing_ok=True)
 
-    child_env = {k: v for k, v in os.environ.items() if k not in {
-        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"}}
+    # Xfce, its terminal, and browser extensions are untrusted subprocess surfaces. Keep benign host
+    # settings, but do not expose provider, plugin, gateway, or internal Hermes credentials to them.
+    from tools.environments.local import hermes_subprocess_env
+    child_env = hermes_subprocess_env(inherit_credentials=False)
+    for key in _DESKTOP_AWS_CREDENTIAL_ENV | {
+        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER",
+    }:
+        child_env.pop(key, None)
     child_env.update({
         "HERMES_BD_PROFILE": _profile_name(),
         "HERMES_BD_DISPLAY_NUM": str(num),

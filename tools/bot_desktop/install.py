@@ -77,9 +77,9 @@ def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str]
             release(key)
 
 
-def _sudo_nopasswd() -> bool:
+def _sudo_nopasswd(sudo: str) -> bool:
     try:
-        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=3,
+        return subprocess.run([sudo, "-n", "true"], capture_output=True, timeout=3,
                               stdin=subprocess.DEVNULL).returncode == 0
     except Exception:
         return False
@@ -88,21 +88,27 @@ def _sudo_nopasswd() -> bool:
 def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], None],
          timeout_seconds: float) -> int:
     argv = shlex.split(cmd)
-    assert argv[0] == "sudo", cmd
+    sudo = runtime._system_executable("sudo")
+    package_managers = {
+        path for name in runtime._PACKAGE_MANAGER_BINARIES.values()
+        if (path := runtime._system_executable(name)) is not None
+    }
+    if sudo is None or len(argv) < 2 or argv[0] != sudo or argv[1] not in package_managers:
+        raise RuntimeError("refusing untrusted Bot Desktop install command")
     stdin_payload: Optional[str] = None
-    if not _sudo_nopasswd():
+    if not _sudo_nopasswd(sudo):
         password = ask_password() or ""
         if not password:
             on_line("install cancelled: no sudo password provided")
             return -1
         # -S: read the password from stdin; -p '': no prompt text mixed into the streamed output.
-        argv = ["sudo", "-S", "-p", "", *argv[1:]]
+        argv = [sudo, "-S", "-p", "", *argv[1:]]
         stdin_payload = password + "\n"
     on_line(f"$ {cmd}")
-    env = {"DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
+    env = {"PATH": runtime._SYSTEM_PATH, "DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only (is_supported_host)
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        env={**os.environ, **env}, text=True, encoding="utf-8", errors="replace", start_new_session=True)
+        env=env, text=True, encoding="utf-8", errors="replace", start_new_session=True)
     try:
         if stdin_payload is not None:
             proc.stdin.write(stdin_payload)  # type: ignore[union-attr]

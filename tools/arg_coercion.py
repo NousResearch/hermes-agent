@@ -40,13 +40,29 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
+        union_accepts_string = False
+        if not expected:
+            # Unions carry their types inside anyOf/oneOf variants; resolve
+            # them so the repairs below also apply to union-typed properties
+            # (e.g. terminal's notify, the #23129 read_url shape).
+            expected = _union_schema_types(prop_schema)
+            if isinstance(expected, list) and "string" in expected:
+                # A string branch accepts any string, so scalar repairs are
+                # ambiguous ("42"/"true" are legitimate strings); keep only
+                # the container/null branches so a JSON-encoded array/object
+                # string still parses.
+                union_accepts_string = True
+                expected = [t for t in expected if t in ("array", "object", "null")] or None
         is_container = isinstance(value, (list, tuple))
 
         # Bare non-list value for an array schema. Strings go through
         # _coerce_value first so a JSON-encoded array is parsed and a nullable
         # "null" becomes None (not ["null"]). None itself is preserved: the tool's
         # own default handling decides between "omit" and "empty list".
-        if expected == "array" and value is not None and not is_container:
+        # Unions only get the wrap when no string branch exists: a value that
+        # is already a legal string is never unambiguously "meant as a list".
+        if ((expected == "array" or (isinstance(expected, list) and "array" in expected))
+                and not union_accepts_string and value is not None and not is_container):
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
@@ -60,13 +76,22 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
                 continue
-            args[key] = [value]
-            logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
+            if not isinstance(expected, list):
+                # Plain array schemas keep the historical bare-scalar wrap.
+                # Unions must not: a non-string value that a scalar branch
+                # already accepts carries its own meaning. Wrapping terminal's
+                # notify=true into [true] silently flipped completion
+                # notification to watch-pattern mode (dispatch maps a list to
+                # watch_patterns and forces notify_on_complete=False).
+                args[key] = [value]
+                logger.info("coerce_tool_args: wrapped bare %s in list for %s.%s", type(value).__name__, tool_name, key)
             continue
 
         if not isinstance(value, str):
             # Native container: still normalize JSON-encoded elements/sub-fields.
-            if (expected == "array" and is_container) or (expected == "object" and isinstance(value, dict)):
+            if ((expected == "array" and is_container)
+                    or (expected == "object" and isinstance(value, dict))
+                    or (isinstance(expected, list) and (is_container or isinstance(value, dict)))):
                 args[key] = _normalize_json_strings_for_schema(value, prop_schema)
             continue
         if not expected and not _schema_allows_null(prop_schema):
@@ -80,6 +105,30 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return args
 
 
+def _union_schema_types(prop_schema: dict) -> str | list[str] | None:
+    """Concrete type name(s) declared by anyOf/oneOf variants, in schema order.
+
+    Returns a plain string when the variants agree on a single non-null type
+    (nullable unions like ``[{integer}, {null}]`` collapse to ``"integer"``),
+    a list when several concrete types appear, and None when the union carries
+    no usable ``type`` information. allOf is intentionally skipped: it is an
+    intersection, so per-branch types cannot be tried independently.
+    """
+    for union_key in ("anyOf", "oneOf"):
+        variants = prop_schema.get(union_key)
+        if isinstance(variants, list) and variants:
+            types = [v.get("type") for v in variants
+                     if isinstance(v, dict) and isinstance(v.get("type"), str)]
+            if types:
+                concrete = [t for t in types if t != "null"]
+                if not concrete:
+                    return "null"
+                if len(concrete) == 1:
+                    return concrete[0]
+                return concrete
+    return None
+
+
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:
     """True when *schema* permits JSON type *kind* via ``type`` or any anyOf/oneOf/allOf branch."""
     if not isinstance(schema, dict):
@@ -89,6 +138,23 @@ def _schema_accepts_kind(schema: Any, kind: str) -> bool:
         return True
     return any(isinstance(branches := schema.get(union_key), list) and any(_schema_accepts_kind(b, kind) for b in branches)
                for union_key in ("anyOf", "oneOf", "allOf"))
+
+
+def _branch_accepting(schema: Any, kind: str) -> Any:
+    """Narrow a union schema to its first branch that accepts *kind*.
+
+    Plain (non-union) schemas pass through unchanged, so callers can keep
+    reading ``items``/``properties`` off the result either way. Returns the
+    original *schema* when no branch matches — repairs then simply find no
+    nested schema and keep the value as-is.
+    """
+    if isinstance(schema, dict):
+        for union_key in ("anyOf", "oneOf"):
+            branches = schema.get(union_key)
+            if isinstance(branches, list):
+                return next((b for b in branches
+                             if isinstance(b, dict) and _schema_accepts_kind(b, kind)), schema)
+    return schema
 
 
 def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
@@ -118,14 +184,14 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         value = parsed
 
     if isinstance(value, list):
-        items_schema = schema.get("items")
+        items_schema = _branch_accepting(schema, "array").get("items")
         if not isinstance(items_schema, dict):
             return value
         out = [_normalize_json_strings_for_schema(item, items_schema) for item in value]
         return out if any(n is not o for n, o in zip(out, value)) else value
 
     if isinstance(value, dict):
-        props = schema.get("properties")
+        props = _branch_accepting(schema, "object").get("properties")
         if not isinstance(props, dict):
             return value
         out = dict(value)

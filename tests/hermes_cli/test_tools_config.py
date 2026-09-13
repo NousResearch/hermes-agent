@@ -848,38 +848,18 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
 
 
 
-# ── Checklist diff scope: non-configurable toolsets (kanban) must not be
-#    reported as added/removed by `hermes tools` ──────────────────────────
-
-
-
-
-def test_kanban_not_reported_as_removed_in_diff():
-    """Reproduces the false-signal bug: `hermes tools` printed ``- kanban``
-    when saving a platform that resolves kanban as enabled, even though the
-    checklist never offered kanban as a toggle.
-
-    The printed diff must be scoped to ``_checklist_toolset_keys`` so a tool
-    the user could not deselect is never reported as removed. The persisted
-    config still keeps kanban (verified separately by _save_platform_tools).
-    """
+# Kanban now participates in the checklist: an explicit deselection must be
+# both visible in the diff and durable in the platform selection.
+def test_kanban_checklist_reports_and_persists_explicit_removal():
     config = {"platform_toolsets": {"telegram": ["kanban", "web", "terminal"]}}
     current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
-    assert "kanban" in current  # resolved as enabled at read time
-
-    # The checklist can only return configurable keys it was shown; kanban
-    # is never one of them.
     universe = _checklist_toolset_keys("telegram")
-    new_enabled = {t for t in current if t != "kanban"}
-
-    # Unscoped (old, buggy) diff would surface kanban.
-    assert (current - new_enabled) == {"kanban"}
-    # Scoped (fixed) diff drops it.
-    assert ((current - new_enabled) & universe) == set()
-
-
-
-
+    new_enabled = current - {"kanban"}
+    assert ((current - new_enabled) & universe) == {"kanban"}
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", new_enabled)
+    assert "kanban" not in _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+    assert {"web", "terminal"} <= set(config["platform_toolsets"]["telegram"])
 
 
 def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):

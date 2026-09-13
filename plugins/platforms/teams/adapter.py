@@ -492,7 +492,8 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
-            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id)
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            message_id=msg_id)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)

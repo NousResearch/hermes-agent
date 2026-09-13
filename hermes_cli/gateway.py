@@ -3234,9 +3234,12 @@ def systemd_install(
         else:
             print(f"Service already installed at: {unit_path}")
             print("Use --force to reinstall")
+        # Same post-install guarantee as a fresh install: a repaired user unit must survive logout too.
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
             _ensure_system_service_linger(configured_user)
+        elif not system:
+            _ensure_linger_enabled()
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4033,6 +4036,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             "launchd reload of %s failed — service not registered after %ds of retries; see %s",
             target, int(_reload_budget), _launchd_reload_log_path(),
         )
+        return False
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -4043,8 +4047,17 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+            if refresh_launchd_plist_if_needed():
+                print("✓ Service definition updated")
+            else:
+                # The plist was rewritten but launchd never registered it (or the write was refused):
+                # a success line here would hide an unloaded service with no KeepAlive.
+                from hermes_constants import display_hermes_home
+                print(
+                    "⚠ Service definition could not be reloaded with launchd. "
+                    "Run 'hermes gateway install --force' or check "
+                    f"{display_hermes_home()}/logs/launchd-reload.log for details."
+                )
             return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")
@@ -4730,7 +4743,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     from gateway.run import start_gateway
     print("┌─────────────────────────────────────────────────────────┐")
-    print("│           ⚕ Hermes Gateway Starting...                 │")
+    print("│           ☤ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
     print("│  Messaging platforms + cron scheduler                    │")
     print("│  Press Ctrl+C to stop                                   │")
@@ -5637,7 +5650,7 @@ def _setup_service_action(
 
 _WIZARD_BANNER = (
     "┌─────────────────────────────────────────────────────────┐",
-    "│             ⚕ Gateway Setup                            │",
+    "│             ☤ Gateway Setup                            │",
     "├─────────────────────────────────────────────────────────┤",
     "│  Configure messaging platforms and the gateway service. │",
     "│  Press Ctrl+C at any time to exit.                     │",

@@ -964,7 +964,7 @@ def build_welcome_banner(
             right_lines.append(_format_update_notice(behind))
     _quiet(_update_line)  # Never break the banner over an update check
     layout_table = Table.grid(padding=(0, 2))
-    layout_table.add_column("left", justify="center")
+    layout_table.add_column("left", justify="left")
     layout_table.add_column("right", justify="left")
     layout_table.add_row("\n".join(left_lines), "\n".join(right_lines))
     version_label = format_banner_version_label()

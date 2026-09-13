@@ -1135,19 +1135,36 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
 
 
 def _convert_vendor_colon_slug(st: _Switch) -> None:
-    """Step c: on an aggregator, ``vendor:model`` -> ``vendor/model``. Only without a slash: with
-    one, the colon is a variant tag (:free, :extended, :fast) that must be preserved."""
+    """Step c: ``vendor:model`` -> ``vendor/model``. Only without a slash: with one, the colon is
+    a variant tag (:free, :extended, :fast) that must be preserved.
+
+    On an aggregator every ``left:right`` is a slug. Elsewhere the colon is converted only when
+    ``left`` names a provider Hermes knows, so ``/model alibaba:qwen3.6-plus`` routes like
+    ``alibaba/qwen3.6-plus`` (#9748) while Ollama-style tags (``qwen3.5:4b``) stay intact."""
     raw_input = st.raw_input
     colon_pos = raw_input.find(":")
     cur_norm = str(st.current_provider).strip().lower()
-    if (
-        colon_pos > 0 and "/" not in raw_input and is_aggregator(st.current_provider)
-        and not cur_norm.startswith("custom") and cur_norm != "ollama"):
-        left = raw_input[:colon_pos].strip().lower()
-        right = raw_input[colon_pos + 1:].strip()
-        if left and right:
-            st.new_model = f"{left}/{right}"
-            logger.debug("Converted vendor:model '%s' to aggregator slug '%s'", raw_input, st.new_model)
+    if colon_pos <= 0 or "/" in raw_input or cur_norm.startswith("custom") or cur_norm == "ollama":
+        return
+    left = raw_input[:colon_pos].strip().lower()
+    right = raw_input[colon_pos + 1:].strip()
+    if not left or not right:
+        return
+    if not is_aggregator(st.current_provider) and not _names_known_provider(left, st):
+        return
+    st.new_model = f"{left}/{right}"
+    logger.debug("Converted vendor:model '%s' to slug '%s'", raw_input, st.new_model)
+
+
+def _names_known_provider(name: str, st: _Switch) -> bool:
+    """Whether ``name`` is a built-in provider id/alias or a provider the user configured."""
+    from hermes_cli.providers import get_provider
+    if resolve_provider_full(name, st.user_providers, st.custom_providers) is not None:
+        return True
+    try:
+        return get_provider(name, allow_network=False) is not None
+    except Exception:
+        return False
 
 
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
@@ -1374,9 +1391,18 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
         headers = st.validation_headers or (
             _extra_headers_from_config(st.user_providers.get(st.target_provider))
             if st.user_providers and st.target_provider in st.user_providers else None)
+    # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
+    # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
+    # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
+    # branch and hard-rejected the very model the user selected.
+    validate_as = st.target_provider
+    if not validate_as.lower().startswith("custom"):
+        pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
+        if pdef is not None and pdef.source == "user-config":
+            validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(
-            st.new_model, st.target_provider, api_key=st.api_key, base_url=st.base_url,
+            st.new_model, validate_as, api_key=st.api_key, base_url=st.base_url,
             api_mode=st.api_mode or None, headers=headers)
     except Exception as e:
         validation = {"accepted": False, "persist": False, "recognized": False,
@@ -1389,7 +1415,6 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
                 validation.get("message", "Invalid model"),
                 new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
         validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
-    st.new_model = validation.get("corrected_model") or st.new_model
     st.validation = validation
     return None
 

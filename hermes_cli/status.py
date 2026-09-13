@@ -137,7 +137,7 @@ def _banner(lines, *styles) -> None:
 
 def _render_header(ctx):
     _banner(("┌─────────────────────────────────────────────────────────┐",
-             "│                 ⚕ Hermes Agent Status                  │",
+             "│                 ☤ Hermes Agent Status                  │",
              "└─────────────────────────────────────────────────────────┘"), Colors.CYAN)
     paused = _estop_status_line()
     if paused:

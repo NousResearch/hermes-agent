@@ -266,11 +266,14 @@ class ProfileEnvBoundary:
         return str(self.target_home)
 
     def sanitize(self, env: Mapping[str, str]) -> dict[str, str]:
-        """Replace source-owned names with target values; drop their transport aliases."""
+        """Remove source/target ambient collisions; only replace shared source names.
+
+        Target-only declarations need the child policy's explicit forwarding grant.
+        """
         result = dict(env)
         if self.source_home == self.target_home:
             return result
-        owned = {profile_env_name(name) for name in self.source_owned_names}
+        owned = {profile_env_name(name) for name in self.source_owned_names | self.target_values.keys()}
         for name in tuple(result):
             effective = profile_env_name(name)
             if effective in owned and (name != effective or not _is_global_env(effective)):

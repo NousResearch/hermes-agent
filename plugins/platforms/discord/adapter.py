@@ -5367,13 +5367,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         def _build(_channel):
             default_hint = f" (default: {default})" if default else ""
             embed = discord.Embed(
-                title="⚕ Update Needs Your Input", description=f"{prompt}{default_hint}", color=discord.Color.gold(),
+                title="☤ Update Needs Your Input", description=f"{prompt}{default_hint}", color=discord.Color.gold(),
             )
             view = UpdatePromptView(
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content("⚕ **Update Needs Your Input**", f"{prompt}{default_hint}")
+            content = self._self_contained_prompt_content("☤ **Update Needs Your Input**", f"{prompt}{default_hint}")
             return {"content": content, "embed": embed, "view": view}, view
         result = await self._send_prompt(chat_id, metadata, _build)
         if result.success and _metadata_marks_nonconversational(metadata):

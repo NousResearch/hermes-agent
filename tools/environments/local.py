@@ -254,7 +254,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
-    plugin_strip: frozenset = frozenset()) -> None:
+    plugin_strip: frozenset = frozenset(), profile_values: Mapping[str, str] | None = None) -> None:
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
@@ -264,22 +264,28 @@ def _filter_secret_env(
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
+    from agent.secret_scope import _is_global_env, profile_env_name
+
     for key, value in items.items():
+        policy_key = profile_env_name(key) if profile_values is not None else key
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
-            if not unwrap_force:
+            if not unwrap_force or (profile_values is not None and key in profile_values):
                 continue
             key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key):
+            policy_key = profile_env_name(key) if profile_values is not None else key
+            if not _is_hermes_internal_secret(policy_key) and policy_key not in plugin_strip:
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key in plugin_strip:
+        if _is_hermes_internal_secret(policy_key) or policy_key in plugin_strip:
             continue
-        first_party = _is_terminal_first_party_env(key)
+        first_party = _is_terminal_first_party_env(policy_key)
         passthrough = is_env_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
+        if policy_key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (first_party or (passthrough and key == policy_key)):
             continue
         if passthrough and not first_party:
-            value = resolve_passthrough_value(key, value)
+            value = (profile_values.get(key)
+                     if profile_values is not None and not _is_global_env(key)
+                     else resolve_passthrough_value(key, value))
         if value is not None:
             out[key] = value
 
@@ -314,14 +320,30 @@ def _scrubbed_env(
             boundary = build_profile_env_boundary(source_profile_home, profile_home)
         except Exception as exc:
             raise RuntimeError("profile environment boundary could not be constructed; refusing to spawn") from exc
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.env_passthrough import is_env_passthrough
+
+    cross_profile = boundary is not None and boundary.source_home != boundary.target_home
+    profile_values = boundary.target_values if boundary is not None and cross_profile else None
+    # Config-based grants belong to the explicit target, even when the dispatcher
+    # is still scoped to its source. Never replace the caller's secret scope.
+    token = set_hermes_home_override(boundary.target_home) if boundary is not None else None
     out: dict[str, str] = {}
-    for items, unwrap_force in parts:
-        # Provenance precedes policy. The target overlay must NOT regrant a
-        # credential after filtering; source-owned force/transport aliases are
-        # removed before explicit force unwrapping can bypass the boundary.
-        if boundary is not None:
-            items = boundary.sanitize(items)
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+    try:
+        for items, unwrap_force in parts:
+            if boundary is not None:
+                items = boundary.sanitize(items)
+            _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip,
+                               profile_values=profile_values)
+        if profile_values is not None:
+            forwarded = {key: value for key, value in profile_values.items() if is_env_passthrough(key)}
+            # Profile declarations are not per-call force grants. The same deny
+            # policy applies after materialization, including wrapped credentials.
+            _filter_secret_env(forwarded, out, unwrap_force=False, plugin_strip=plugin_strip,
+                               profile_values=profile_values)
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment

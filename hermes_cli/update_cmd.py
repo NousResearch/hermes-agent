@@ -588,9 +588,9 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
         print("✓ Already up to date.")
         return
     if behind is not None:
-        print(f"⚕ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
+        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
     else:
-        print(f"⚕ Update available (behind {compare_branch}).")
+        print(f"☤ Update available (behind {compare_branch}).")
     from hermes_cli.config import recommended_update_command
     print(f"  Run '{recommended_update_command()}' to install.")
 
@@ -1282,7 +1282,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
-    print("⚕ Updating Hermes Agent...")
+    print("☤ Updating Hermes Agent...")
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)

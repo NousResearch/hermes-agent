@@ -875,8 +875,10 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
+  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -1910,6 +1912,10 @@ export interface StatusResponse {
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
+  /** Every profile the gateway process serves when the managed profile is carried by the
+   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
+   * gateway or an older backend. */
+  gateway_shared_with?: string[] | null;
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;

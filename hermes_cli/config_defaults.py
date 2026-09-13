@@ -1381,8 +1381,8 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "interval_hours": 24 * 7,  # hours between runs
         "min_idle_hours": 2,  # only run after the agent has been idle this long
-        "stale_after_days": 30,  # mark "stale" after this many unused days
-        "archive_after_days": 90,  # move to skills/.archive/ (recoverable) after this many
+        "stale_after_days": 14,  # mark "stale" after this many unused days
+        "archive_after_days": 30,  # move to skills/.archive/ (recoverable) after this many
         # LLM consolidation (umbrella-building) pass. OFF = deterministic inactivity prune only, no
         # aux-model cost. `hermes curator run --consolidate` overrides once.
         "consolidate": False,
@@ -1493,7 +1493,7 @@ DEFAULT_CONFIG = {
     },
 
     "whatsapp": {
-        # reply_prefix: None = built-in "⚕ *Hermes Agent*" header; "" disables; \n allowed.
+        # reply_prefix: None = built-in "☤ *Hermes Agent*" header; "" disables; \n allowed.
     },
 
     "telegram": {
@@ -1705,6 +1705,10 @@ DEFAULT_CONFIG = {
         # (long TTS audio, big exports) need more than 30s. Env: HERMES_CRON_MEDIA_SEND_TIMEOUT.
         # Keep in sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
         "media_send_timeout_seconds": 300,
+        # Managed systemd gateway with no user session (containers, no linger): false runs
+        # cron jobs as a direct external subprocess (warns once; no cgroup isolation), true
+        # fails closed with the enable-linger remedy. Kanban always requires a scope.
+        "require_restart_safe_scope": False,
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
@@ -2380,7 +2384,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 43,  # Config schema version - bump this when adding new required fields
+    "_config_version": 44,  # Config schema version - bump this when adding new required fields
 }
 
 

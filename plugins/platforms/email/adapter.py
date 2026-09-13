@@ -644,7 +644,8 @@ class EmailAdapter(BasePlatformAdapter):
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
-            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
+            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
+                                     message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -702,9 +703,11 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
-        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         reply_to_msg_id: Optional[str] = None) -> str:
+        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
+        An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
+        msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -754,11 +757,14 @@ class EmailAdapter(BasePlatformAdapter):
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name), "[Email] Send document failed: %s")
+        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to),
+                                    "[Email] Send document failed: %s")
 
-    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
+    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
+                                    reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False,
+                                     reply_to_msg_id=reply_to_msg_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""

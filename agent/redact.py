@@ -159,7 +159,10 @@ _PREFIX_PATTERNS = [
     r"pypi-[A-Za-z0-9_-]{10,}",         # PyPI API token
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
-    r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
+    # AgentMail API key: ``am_`` / ``am_org_`` + an opaque alphanumeric body. The body has no ``_``/``-``,
+    # which is what separates it from ``am_example_identifier_123`` (#10983); public docs pin only the
+    # prefix, so the charset stays broad and the length floor does the discriminating.
+    r"am_(?:org_)?[A-Za-z0-9]{20,}",
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key

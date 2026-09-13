@@ -97,6 +97,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -17015,6 +17016,16 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
 
   return writeComposerImage(buffer, payload?.ext || '.png', payload?.name)
+})
+
+ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
+  const text = typeof payload?.text === 'string' ? payload.text : ''
+
+  if (!text) {
+    throw new Error('savePastedText: missing text')
+  }
+
+  return writeComposerPaste(app.getPath('userData'), text)
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {

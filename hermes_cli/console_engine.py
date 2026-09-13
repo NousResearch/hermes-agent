@@ -292,7 +292,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
     "memory": (_sub("memory", "build_memory_parser", "cmd_memory"), "status, *off, *reset"),
     "auth": (
         _sub("auth", "build_auth_parser", "cmd_auth"),
-        "list, status, *reset, *add, *remove, *logout, spotify status, *spotify login, "
+        "list, status, *reset, *priority, *refresh, *add, *remove, *logout, spotify status, *spotify login, "
         "*spotify logout"),
     "pairing": (
         _sub("pairing", "build_pairing_parser", "cmd_pairing"),
@@ -705,7 +705,7 @@ def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 
 @_captured
-def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> None:
+def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> int | None:
     ns = _parse(
         "sessions repair", args, (("--check-only",), dict(action="store_true")),
         (("--no-backup",), dict(action="store_true")))
@@ -721,7 +721,7 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> None:
         return
     print(f"{db_path} does not open cleanly: {reason}")
     if ns.check_only:
-        return
+        return 1  # _capture_output turns a non-zero status into a ConsoleCommandError carrying the printed reason
     report = repair_state_db_schema(db_path, backup=not ns.no_backup)
     if not report.get("repaired"):
         raise ConsoleCommandError(f"Repair failed: {report.get('error')}")

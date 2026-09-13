@@ -868,6 +868,83 @@ def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     assert resolved["api_key"] == "or-test-key"
 
 
+def test_explicit_openrouter_honors_config_base_url_mirror(monkeypatch):
+    """requested='openrouter' + config provider='openrouter' + config base_url must
+    resolve to that mirror AND still select OPENROUTER_API_KEY for it — a
+    config-sourced mirror is an OpenRouter context for credential selection just
+    like the OPENROUTER_BASE_URL env path already is.  Regression test for #10622."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://openrouter-mirror.example.com/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["base_url"] == "https://openrouter-mirror.example.com/api/v1"
+    assert resolved["api_key"] == "router-key"
+
+
+def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
+    """A config.yaml mirror under provider='openrouter' is a custom endpoint: the
+    OpenRouter credential pool must be skipped rather than silently routing the
+    request to openrouter.ai with a pooled key (#10622)."""
+    class _Entry:
+        access_token = "pool-key"
+        source = "manual"
+        base_url = "https://openrouter.ai/api/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://openrouter-mirror.example.com/api/v1",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["base_url"] == "https://openrouter-mirror.example.com/api/v1"
+    assert resolved["api_key"] == "router-key"
+    assert resolved.get("credential_pool") is None
+
+    # The canonical URL that `hermes setup` persists is NOT a mirror: the pool must still serve it.
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"})
+    canonical = rp.resolve_runtime_provider(requested="openrouter")
+    assert canonical["api_key"] == "pool-key" and canonical.get("credential_pool") is not None
+
+    # An unrelated CUSTOM_BASE_URL outranks the mirror and must not receive the OpenRouter key.
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openrouter", "base_url": "https://openrouter-mirror.example.com/api/v1"})
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.setenv("CUSTOM_BASE_URL", "http://localhost:11434/v1")
+    custom = rp.resolve_runtime_provider(requested="openrouter")
+    assert custom["base_url"] == "http://localhost:11434/v1" and custom["api_key"] != "router-key"
+
+
 
 
 

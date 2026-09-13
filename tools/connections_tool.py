@@ -16,20 +16,15 @@ lifecycle:
   so guidance produced a burst of polls rather than a paced one. Waiting
   inside the call cannot be skipped and works the same on every platform.
 
-Scope: gateway connectors ONLY. Local MCP servers stay with ``setup_mcp``,
-which still exists and still works. An earlier draft folded ``install`` /
-``enable`` / ``authorize`` in here, but the desktop consent card arrives
-through a per-tool interception branch keyed on the name ``setup_mcp``
-(agent/tool_executor.py, agent/agent_runtime_helpers.py) and
-``registry.dispatch`` never forwards a ``callback``. So the fold could only
-ever return the "use the terminal" fallback while its schema advertised the
-consent flow — a promise with no delivery path.
+Scope: managed connectors AND local MCP servers. ``{"name": ..., "mcp": true}`` targets take
+``install`` / ``enable`` / ``authorize`` through one connection operation
+(``connections_tool_operation.py``, ``connections_tool_mcp.py``); the approval card is reached
+only via the inline executor, so non-GUI surfaces get ``unavailable`` for MCP targets.
 
 De-authentication is deliberately NOT exposed to the model: disconnecting
 an account is a user decision, made in the portal dashboard.
 
-Availability: gated by the portal sign-in the managed tools already use
-(``check_fn``), so signed-out sessions see exactly today's behavior.
+Availability: the managed leg is portal-gated in the handler; MCP targets need no sign-in.
 """
 
 import json
@@ -38,6 +33,13 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from tools.connections_tool_mcp import (
+    ALL_ACTIONS,
+    MCP_ACTIONS,
+    normalize_targets,
+    run_mcp_operation,
+    validate_action,
+)
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -299,27 +301,29 @@ def manage_connections(
     seen_instructions: Optional[set] = None,
     rendered_links: Optional[Dict[str, Dict[str, float]]] = None,
     session_id: Optional[str] = None,
+    connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+    connectors_available: Optional[Callable[[], bool]] = None,
+    wait_seconds: Optional[float] = None,
 ) -> str:
     """Dispatch one ``manage_connections`` action. Returns a JSON string."""
     action = str(args.get("action") or "status").strip().lower()
+    managed, mcp_targets, target_error = normalize_targets(args.get("connectors"))
+    if target_error:
+        return tool_error(target_error)
+    action_error = validate_action(action, managed, mcp_targets)
+    if action_error:
+        return tool_error(action_error)
 
-    if action not in _CONNECTOR_ACTIONS:
-        return tool_error(
-            f"action must be one of {', '.join(_CONNECTOR_ACTIONS)}. "
-            "Local MCP servers are set up with setup_mcp, not here. "
-            "Disconnecting an account is done by the user in the Nous Portal "
-            "dashboard, not through this tool."
+    if action in MCP_ACTIONS:
+        return run_mcp_operation(
+            mcp_targets, action, str(args.get("reason") or "").strip(),
+            connection_callback=connection_callback, session_id=session_id, wait_seconds=wait_seconds,
         )
 
-    raw_connectors = args.get("connectors")
-    if isinstance(raw_connectors, str):
-        raw_connectors = [raw_connectors]
-    connectors: List[str] = []
-    if isinstance(raw_connectors, list):
-        for c in raw_connectors:
-            c = str(c or "").strip().lower()
-            if c and c not in connectors:
-                connectors.append(c)
+    # Managed leg: portal-gated when a gate is passed (registry handler, inline executor).
+    if connectors_available is not None and not connectors_available():
+        return tool_error("Connectors are not available in this session.")
+    connectors: List[str] = managed
 
     try:
         client = (client_factory or _default_client)()
@@ -442,9 +446,11 @@ def manage_connections(
 MANAGE_CONNECTIONS_SCHEMA = {
     "name": "manage_connections",
     "description": (
-        "Manage remote connector accounts (Gmail, Linear, Notion, ...) served "
-        "through the tool gateway. Actions: "
-        "'status' lists connectors and whether each is connected; 'connect' "
+        "Connect the user to apps: managed connector accounts (Gmail, Notion, ...) served "
+        "through the tool gateway, and local MCP servers from the catalog. Targets go in "
+        "'connectors': a bare slug or {\"name\": \"gmail\"} is a managed connector; "
+        "{\"name\": \"linear\", \"mcp\": true} is a local MCP server. "
+        "Managed actions: 'status' lists connectors and whether each is connected; 'connect' "
         "starts an authorization for the given connectors and returns a link "
         "for the USER to open in a browser (never open it yourself); "
         "'reconnect' restarts a broken authorization; "
@@ -461,7 +467,14 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "count). A 'timeout' or 'interrupted' result is NOT an "
         "error: the user has not finished connecting, so ask them whether to "
         "keep waiting, continue without those apps, or get fresh links. "
-        "Local MCP servers are configured separately. "
+        "MCP actions (targets must carry \"mcp\": true): 'install' adds a catalog entry, "
+        "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. "
+        "They show the user an approval card and block until it settles; the result lists "
+        "each target as connected / skipped / not_connected. Never hand-edit mcp_servers "
+        "config — always use this tool. Never re-ask after a skip or timeout: continue "
+        "without the server or ask in chat. A newly installed or authorized server's tools "
+        "arrive on your next turn. Off the desktop app the MCP targets come back "
+        "'unavailable' with the terminal commands to give the user. "
         "This tool can NOT disconnect, delete, or revoke an account — that is "
         "deliberately user-only. When asked, say so and direct the user to "
         "the Nous Portal (their org's Connectors page) or the desktop app."
@@ -471,16 +484,33 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": list(_CONNECTOR_ACTIONS),
-                "description": "Defaults to status.",
+                "enum": list(ALL_ACTIONS),
+                "description": "Defaults to status. install/enable/authorize need mcp:true targets.",
             },
             "connectors": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "mcp": {"type": "boolean", "description": "true = local MCP server."},
+                            },
+                            "required": ["name"],
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
                 "description": (
-                    "Connector slugs. REQUIRED for connect, reconnect and wait "
-                    "(e.g. [\"gmail\", \"linear\"]); optional filter for status."
+                    "Targets. REQUIRED for every action but status "
+                    "(e.g. [\"gmail\", {\"name\": \"linear\", \"mcp\": true}]); optional filter for status."
                 ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "MCP actions: one sentence on the approval card — why this helps right now.",
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -502,13 +532,10 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # Registry dispatch does not re-run check_fn: enforce the off switch for
-    # stale schemas without rebuilding a conversation's cached tool list.
-    handler=lambda args, **kw: (
-        manage_connections(args, session_id=kw.get("session_id"))
-        if _connectors_available()
-        else tool_error("Connectors are not available in this session.")
+    # No GUI callback on the registry path; the portal gate lives in the handler, not check_fn,
+    # so signed-out sessions still see the tool for MCP approvals.
+    handler=lambda args, **kw: manage_connections(
+        args, session_id=kw.get("session_id"), connectors_available=_connectors_available,
     ),
-    check_fn=_connectors_available,
     emoji="🔗",
 )

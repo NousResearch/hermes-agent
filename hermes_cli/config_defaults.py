@@ -1838,6 +1838,10 @@ DEFAULT_CONFIG = {
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
+    # manage_connections operation deadline; fixed at creation, floor 5s, no ceiling.
+    "connections": {
+        "wait_timeout_seconds": 120,
+    },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation
@@ -2397,7 +2401,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 44,  # Config schema version - bump this when adding new required fields
+    "_config_version": 45,  # Config schema version - bump this when adding new required fields
 }
 
 

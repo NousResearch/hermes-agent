@@ -24,6 +24,35 @@ export function latestConnectorPart(messages: ChatMessage[]) {
     .at(-1)
 }
 
+/** A `manage_connections` target of the local-MCP kind: `{name, mcp: true}`. */
+export interface McpTarget {
+  name: string
+  action: 'authorize' | 'enable' | 'install'
+}
+
+const MCP_ACTIONS: readonly McpTarget['action'][] = ['install', 'enable', 'authorize']
+
+/** MCP targets of a `manage_connections` call ([] for managed); read from args so live and
+ *  settled rows classify alike. */
+export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']): McpTarget[] {
+  if (toolName !== 'manage_connections') {
+    return []
+  }
+
+  const input = recordOf(args)
+  const action = MCP_ACTIONS.find(a => a === input.action) ?? 'install'
+
+  if (!Array.isArray(input.connectors)) {
+    return []
+  }
+
+  return input.connectors.flatMap(entry => {
+    const name = isRecord(entry) && entry.mcp === true ? connectorText(entry.name)?.trim() : undefined
+
+    return name ? [{ action, name: name.toLowerCase() }] : []
+  })
+}
+
 /** Connector names and statuses from the tool payload, for display only. No field here grants access. */
 export interface ConnectorRow {
   connector: string

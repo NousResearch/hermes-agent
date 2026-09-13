@@ -786,7 +786,9 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
 # spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
 # one run).
-_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task"})
+# ``manage_connections`` owns its wait (connections.wait_timeout_seconds); the generic
+# deadline would report tool_timeout while the card is still on screen.
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
 
 
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:

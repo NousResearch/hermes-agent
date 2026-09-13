@@ -87,9 +87,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  // `server` is setup_mcp's identifying arg, for the identical reason.
+  // `reason` is a connection request's identifying arg (op_id is not in the model's args).
   const query =
-    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
+    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'reason', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''

@@ -30,7 +30,7 @@ def _effective_mode() -> str:
     return _get_approval_mode()
 
 
-def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResult:
+def run_approval_mode_command(requested_mode: Optional[str], *, proof=None, session_id: str = "local") -> ApprovalModeResult:
     """Inspect or persist ``approvals.mode`` through canonical config APIs."""
     current = _effective_mode()
     requested = (requested_mode or "").strip().lower()
@@ -48,11 +48,17 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     output = StringIO()
     try:
         with redirect_stdout(output), redirect_stderr(output):
-            set_config_value("approvals.mode", requested)
+            set_config_value("approvals.mode", requested, proof=proof, session_id=session_id)
     except SystemExit:
         detail = output.getvalue().strip() or "Approval mode is managed and cannot be changed."
         return ApprovalModeResult(False, current, False, detail)
     except Exception as exc:
+        from hermes_cli.policy_mutation import PolicyMutationDenied
+        if isinstance(exc, PolicyMutationDenied):
+            return ApprovalModeResult(
+                False, current, False,
+                "Persistent approval changes require operator confirmation; use the gateway /approvals confirm surface.",
+            )
         return ApprovalModeResult(False, current, False, f"Failed to save approval mode: {exc}")
 
     effective = _effective_mode()

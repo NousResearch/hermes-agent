@@ -1674,8 +1674,10 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         logger.debug("failed to persist model switch marker", exc_info=True)
 
 
-def _write_config_key(key_path: str, value):
-    # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
+def _write_config_key(key_path: str, value, *, proof=None, session_id: str = "local"):
+    from hermes_cli.policy_mutation import require_policy_proof
+    require_policy_proof(key_path, "set", proof, session_id=session_id)
+    # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist.
     cfg = current = _load_cfg_raw()
     *parents, leaf = key_path.split(".")
     for key in parents:

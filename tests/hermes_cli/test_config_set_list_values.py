@@ -112,7 +112,15 @@ def test_string_typed_key_bracket_value_stays_string(user_home):
     even when the value looks like a list literal."""
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("approvals.mode", "[off]")
+    from hermes_cli.policy_mutation import PolicyMutationBroker
+    broker = PolicyMutationBroker()
+    request = broker.request("local", "approvals.mode", "set")
+    from hermes_cli.policy_mutation import _operator_settlement_scope
+    confirmation_id = f"test-confirm-{request.request_id}"
+    broker.record_settlement(request.request_id, confirmation_id)
+    with _operator_settlement_scope(request.request_id, confirmation_id):
+        proof = broker.operator_confirm(request.request_id)
+    set_config_value("approvals.mode", "[off]", proof=proof)
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "[off]"
     assert isinstance(raw["approvals"]["mode"], str)
@@ -122,7 +130,15 @@ def test_string_typed_key_negative_number_stays_string(user_home):
     """'-5' for a string-typed key must remain the string '-5'."""
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("approvals.mode", "-5")
+    from hermes_cli.policy_mutation import PolicyMutationBroker
+    broker = PolicyMutationBroker()
+    request = broker.request("local", "approvals.mode", "set")
+    from hermes_cli.policy_mutation import _operator_settlement_scope
+    confirmation_id = f"test-confirm-{request.request_id}"
+    broker.record_settlement(request.request_id, confirmation_id)
+    with _operator_settlement_scope(request.request_id, confirmation_id):
+        proof = broker.operator_confirm(request.request_id)
+    set_config_value("approvals.mode", "-5", proof=proof)
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "-5"
 

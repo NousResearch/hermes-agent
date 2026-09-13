@@ -82,7 +82,9 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
     if not handler:
         return None
     try:
-        result = await handler(choice)
+        from hermes_cli.policy_mutation import _operator_settlement_scope
+        with _operator_settlement_scope():
+            result = await handler(choice)
     except Exception as exc:
         logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
         return f"❌ Error handling confirmation: {exc}"

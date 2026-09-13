@@ -2312,44 +2312,70 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    proof=None, session_id: str = "local"):
     """Save configuration to ~/.hermes/config.yaml.
+
+    Ordinary configuration remains writable. Any policy-class leaf whose value changes
+    is authorized here, below every full-document caller, before bytes are written.
+
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
     would hide future default changes. ``merge_existing`` deep-merges the on-disk raw config
-    under *config* so partial callers cannot drop sections they omitted."""
+    under *config* so partial callers cannot drop sections they omitted.
+    """
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
             return
 
         config = _strip_managed_keys_for_save(config)
+        from hermes_cli.policy_mutation import (
+            PolicyMutationBroker, policy_changed_keys, require_policy_proof_for_payload,
+        )
+        existing_for_policy = read_raw_config()
+        changed_policy_keys = policy_changed_keys(existing_for_policy, config)
+        broker = PolicyMutationBroker() if changed_policy_keys else None
+        if changed_policy_keys:
+            require_policy_proof_for_payload(
+                config, proof, session_id=session_id, before=existing_for_policy, consume=False
+            )
 
-        ensure_hermes_home()
-        config_path = get_config_path()
-        require_readable_config_before_write(config_path)
-        # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
-        # agent.max_turns) so _strip_default_values keeps exactly what the user set.
-        _raw_for_paths = read_raw_config()
-        if merge_existing and _raw_for_paths:
-            config = _merge_partial_save(_raw_for_paths, config)
+        def _write_config() -> None:
+            ensure_hermes_home()
+            config_path = get_config_path()
+            require_readable_config_before_write(config_path)
+            # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
+            # agent.max_turns) so _strip_default_values keeps exactly what the user set.
+            _raw_for_paths = read_raw_config()
+            save_config_payload = config
+            if merge_existing and _raw_for_paths:
+                save_config_payload = _merge_partial_save(_raw_for_paths, save_config_payload)
 
-        current_normalized = _canonicalize_config(config)
-        normalized = current_normalized
-        if _raw_for_paths:
-            normalized = _preserve_env_ref_templates(
-                normalized, _canonicalize_config(_raw_for_paths),
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
+            current_normalized = _canonicalize_config(save_config_payload)
+            normalized = current_normalized
+            if _raw_for_paths:
+                normalized = _preserve_env_ref_templates(
+                    normalized, _canonicalize_config(_raw_for_paths),
+                    _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
-        if strip_defaults:
-            # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
-            normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
+            if strip_defaults:
+                # ``_strip_default_values`` always preserves ``_config_version`` itself.
+                effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+                normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
-        _secure_file(config_path)
-        _RAW_CONFIG_CACHE.pop(str(config_path), None)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+            atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+            _secure_file(config_path)
+            _LOAD_CONFIG_CACHE.pop(str(config_path), None)
+            _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+
+        if changed_policy_keys:
+            broker.consume_for_write(
+                proof, changed_policy_keys[0], "set", session_id, _write_config,
+            )
+        else:
+            _write_config()
 
 
 def _parse_env_value(raw_value: str) -> str:
@@ -3432,11 +3458,13 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "this notice.)", Colors.DIM))
 
 
-def set_config_value(key: str, value: str, force: bool = False):
-    """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
-    scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
-    to ``model.default``."""
+def set_config_value(key: str, value: str, force: bool = False, *, proof=None, session_id: str = "local"):
+    """Set a configuration value at a dotted key.
+
+    Policy-class keys additionally require a one-shot operator confirmation proof.
+    """
+    from hermes_cli.policy_mutation import require_policy_proof
+    require_policy_proof(key, "set", proof, session_id=session_id)
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3534,8 +3562,10 @@ def get_config_value(key: str, *, as_json: bool = False):
     print(_format_config_get_value(value, as_json=as_json))
 
 
-def unset_config_value(key: str):
+def unset_config_value(key: str, *, proof=None, session_id: str = "local"):
     """Remove a user-set configuration or .env value."""
+    from hermes_cli.policy_mutation import require_policy_proof
+    require_policy_proof(key, "unset", proof, session_id=session_id)
     if is_managed():
         managed_error("unset configuration values")
         return

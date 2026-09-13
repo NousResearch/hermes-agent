@@ -299,6 +299,16 @@ def _sync_session_key_after_compress(
             if approval.is_session_yolo_enabled(old_key):
                 approval.enable_session_yolo(new_session_id)
                 approval.disable_session_yolo(old_key)
+                # Carry the PERSISTED flag onto the continuation row too, same as
+                # the CLI's rotation path: the in-memory swap above alone leaves
+                # a later `--resume <new_id>` without the bypass, because the
+                # toggle-time persist wrote the now-ended parent row.
+                try:
+                    with _session_db(session) as db:
+                        if db is not None:
+                            db.set_session_yolo(new_session_id, True)
+                except Exception:
+                    logger.debug("failed to carry session yolo flag", exc_info=True)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
     # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced

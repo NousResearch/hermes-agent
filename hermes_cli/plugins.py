@@ -131,6 +131,10 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
+    # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
+    # platform, reason, invalidation_reason. Return values are ignored.
+    "agent_loop_stopped",
     # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
     # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
     # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|

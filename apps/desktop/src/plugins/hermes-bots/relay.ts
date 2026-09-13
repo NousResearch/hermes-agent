@@ -258,6 +258,7 @@ async function syncRelayRosters() {
     const connections = await relayConnections()
 
     if (connections.length < 2) {
+      relay.rosterBusy = false
       return
     }
 

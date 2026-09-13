@@ -361,11 +361,12 @@ def auth_add_command(args) -> None:
         requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
-    if not is_custom:
-        _unsuppress_provider_sources(provider)
-
     wanted_priority = getattr(args, "priority", None)
     entry = _add_credential(args, provider, pool, requested_type)
+    if not is_custom:
+        # Re-enable external seed sources only after the requested credential
+        # was durably added. Cancellation/failure must leave removal sticky.
+        _unsuppress_provider_sources(provider)
     if wanted_priority is not None:
         placed_pool = load_pool(provider)
         moved = placed_pool.move_entry(entry.id, int(wanted_priority))

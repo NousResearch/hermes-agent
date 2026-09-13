@@ -1,6 +1,65 @@
 """Tests for Anthropic OAuth setup flow behavior."""
 
+import shutil
+import subprocess
+
+import pytest
+
 from hermes_cli.config import load_env, save_env_value
+
+
+def test_explicit_claude_setup_reenables_suppressed_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent import anthropic_credentials as ac
+    from hermes_cli.auth import is_source_suppressed, suppress_credential_source
+
+    suppress_credential_source("anthropic", "claude_code")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/fake/claude")
+    monkeypatch.setattr(ac.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0))
+    reads = iter([
+        {"accessToken": "old-access", "refreshToken": "old-refresh", "expiresAt": 9_999_999_999_999},
+        {"accessToken": "fresh-access", "refreshToken": "fresh-refresh", "expiresAt": 9_999_999_999_999},
+    ])
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_keychain", lambda: next(reads))
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_file", lambda: None)
+
+    assert ac.run_oauth_setup_token() == "fresh-access"
+    assert is_source_suppressed("anthropic", "claude_code") is False
+
+
+def test_failed_claude_setup_keeps_suppression(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent import anthropic_credentials as ac
+    from hermes_cli.auth import is_source_suppressed, suppress_credential_source
+
+    suppress_credential_source("anthropic", "claude_code")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/fake/claude")
+    monkeypatch.setattr(ac.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1))
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_keychain", lambda: {
+        "accessToken": "old-access", "refreshToken": "old-refresh", "expiresAt": 9_999_999_999_999,
+    })
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_file", lambda: None)
+
+    assert ac.run_oauth_setup_token() is None
+    assert is_source_suppressed("anthropic", "claude_code") is True
+
+
+def test_corrupt_auth_store_blocks_setup_before_external_access(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text("{not-json")
+    from agent import anthropic_credentials as ac
+
+    monkeypatch.setattr(shutil, "which", lambda _name: "/fake/claude")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("corrupt auth state allowed Claude setup or credential access")
+
+    monkeypatch.setattr(ac.subprocess, "run", forbidden)
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_keychain", forbidden)
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_file", forbidden)
+
+    assert ac.run_oauth_setup_token() is None
+    assert (tmp_path / "auth.json").read_text() == "{not-json"
 
 
 def test_run_anthropic_oauth_flow_prefers_claude_code_credentials(tmp_path, monkeypatch, capsys):

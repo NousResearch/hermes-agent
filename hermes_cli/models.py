@@ -1617,8 +1617,19 @@ def _credential_fingerprint(provider: str) -> str:
             _mtime_part(rel, get_hermes_home() / rel)
     except Exception:
         pass
-    for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
+    external_credentials = [
+        "~/.codex/auth.json",
+        "~/.config/github-copilot/hosts.json",
+        "~/.minimax/credentials.json",
+    ]
+    try:
+        from agent.anthropic_credentials import claude_code_source_is_suppressed
+        if not claude_code_source_is_suppressed():
+            external_credentials.insert(1, "~/.claude/.credentials.json")
+    except Exception:
+        # A failed suppression check must not become an external-file probe.
+        pass
+    for rel in external_credentials:
         path = os.path.expanduser(rel)
         _mtime_part(path, path)
 

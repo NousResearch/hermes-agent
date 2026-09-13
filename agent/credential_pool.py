@@ -74,6 +74,14 @@ def _is_source_suppressed_fn() -> Callable[[str, str], bool]:
         return lambda _p, _s: False
 
 
+def _source_is_suppressed(provider: str, source: str) -> bool:
+    """Suppression gate; Claude Code fails closed when auth state is unreadable."""
+    if provider == "anthropic" and source == "claude_code":
+        from agent.anthropic_credentials import claude_code_source_is_suppressed
+        return claude_code_source_is_suppressed()
+    return _is_source_suppressed_fn()(provider, source)
+
+
 # --- Status and type constants ---
 
 STATUS_OK = "ok"
@@ -1353,6 +1361,12 @@ class CredentialPool(CredentialPoolAdminMixin):
     # ---- refresh -----------------------------------------------------------
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+        if _source_is_suppressed(self.provider, entry.source):
+            logger.debug(
+                "credential pool: refusing refresh of suppressed source %s/%s",
+                self.provider, entry.source,
+            )
+            return None
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -1368,6 +1382,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         # cross-process auth-store flock; a waiter's in-lock re-sync picks up
         # the winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+            # A removal may commit after the optimistic pre-lock check above.
+            # Re-read while holding the same auth lock used by suppression.
+            if _source_is_suppressed(self.provider, entry.source):
+                return None
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
@@ -1813,6 +1831,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         pending_refresh: List[PooledCredential] = []
         sole_credential = self._is_sole_credential()
         for entry in self._entries:
+            # Pools are long-lived. A source removed after pool construction
+            # must stop being selectable without requiring a reload.
+            if _source_is_suppressed(self.provider, entry.source):
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.
@@ -2719,6 +2741,13 @@ def load_pool(provider: str) -> CredentialPool:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
         changed |= singleton_changed or env_changed
+        # Suppression is authoritative over local rows and rows borrowed from
+        # the global-root fallback. Seeders skip suppressed sources, but a
+        # persisted/root row may predate the marker.
+        retained = [entry for entry in entries if not _source_is_suppressed(provider, entry.source)]
+        if len(retained) != len(entries):
+            entries[:] = retained
+            changed = True
         # ``load_pool()`` is a non-destructive read for env-seeded entries
         # (#9331); file-backed singletons still prune when their file is gone.
         borrowing_root_grant = (
@@ -2754,5 +2783,5 @@ def load_pool(provider: str) -> CredentialPool:
     # Remember the root's borrowed rows so a later ``add_entry`` in this
     # profile leaves them out of the profile's own store (#100339).
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
-        pool._borrowed_root_ids = set(disk_ids)
+        pool._borrowed_root_ids = {entry_id for entry_id in disk_ids if isinstance(entry_id, str)}
     return pool

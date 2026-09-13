@@ -791,6 +791,54 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         _clone_file(source_dir, profile_dir, relpath)
 
 
+def _default_suppression_snapshot() -> Dict[str, List[str]]:
+    """Read root source suppressions before profile creation starts."""
+    from hermes_cli import auth as auth_mod
+
+    root_auth = _get_default_hermes_home() / "auth.json"
+    with auth_mod._auth_store_lock(target_path=root_auth):
+        root_store = auth_mod._load_auth_store_strict(root_auth)
+    root_suppressed = root_store.get("suppressed_sources")
+    snapshot: Dict[str, List[str]] = {}
+    for provider, raw_sources in (
+        root_suppressed.items() if isinstance(root_suppressed, dict) else ()
+    ):
+        sources = raw_sources if isinstance(raw_sources, list) else (
+            list(raw_sources) if isinstance(raw_sources, dict) else [])
+        normalized = list(dict.fromkeys(
+            source for source in sources if isinstance(source, str) and source
+        ))
+        if normalized:
+            snapshot[str(provider)] = normalized
+    return snapshot
+
+
+def _inherit_default_suppressions(
+    profile_dir: Path, snapshot: Dict[str, List[str]],
+) -> None:
+    """Write a root suppression snapshot into a new profile, without credentials."""
+    if not snapshot:
+        return
+    from hermes_cli import auth as auth_mod
+
+    target_auth = profile_dir / "auth.json"
+    with auth_mod._auth_store_lock(target_path=target_auth):
+        target_store = auth_mod._load_auth_store(target_auth)
+        target_suppressed = auth_mod._store_section(target_store, "suppressed_sources")
+        changed = False
+        for provider, sources in snapshot.items():
+            current = auth_mod._suppressed_source_list(target_suppressed, provider)
+            if current is None:
+                current = target_suppressed[provider] = []
+            for source in sources:
+                if source not in current:
+                    current.append(source)
+                    changed = True
+        if changed:
+            auth_mod._bump_suppression_generation(target_store)
+            auth_mod._save_auth_store(target_store, target_path=target_auth)
+
+
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
@@ -823,6 +871,9 @@ def create_profile(
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+    # Read the root policy before creating anything, so an unreadable auth
+    # store cannot strand a half-created profile directory.
+    suppression_snapshot = _default_suppression_snapshot()
     clear_named_profile_deleted(profile_dir)
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
@@ -842,6 +893,11 @@ def create_profile(
     # had no file until first write and the profile silently inherited shell API keys —
     # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
     _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+
+    # Preserve the default profile's external-source opt-outs as a creation-time
+    # snapshot. This copies only suppression metadata — never providers, pool
+    # rows, tokens, or singleton credential files.
+    _inherit_default_suppressions(profile_dir, suppression_snapshot)
 
     # Default SOUL.md to customize immediately (skipped when a clone already provided one).
     with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this

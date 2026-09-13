@@ -266,6 +266,40 @@ def test_borrowing_profile_load_pool_does_not_materialize_local_copy(fleet):
     assert fleet["rows"](fresh) is None
 
 
+def test_suppressed_profile_cannot_borrow_root_claude_code_row(fleet):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    root_row = root_store["credential_pool"]["anthropic"][0]
+    root_row["source"] = "claude_code"
+    (fleet["root"] / "auth.json").write_text(json.dumps(root_store))
+
+    kid = _profile(fleet, "isolated")
+    (kid / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"anthropic": ["claude_code"]},
+    }))
+    fleet["use"](kid)
+
+    pool = load_pool("anthropic")
+
+    assert pool.entries() == []
+    assert pool._borrowed_root_ids == {"abc123"}
+    assert fleet["server"]["log"] == []
+    assert fleet["rows"](fleet["root"])[0]["source"] == "claude_code"
+
+    # A later explicit profile credential must claim local ownership instead
+    # of disappearing into the root borrower's update-only persistence path.
+    pool.add_entry(PooledCredential(
+        provider="anthropic", id="local", label="local", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:hermes_pkce", access_token="local-access",
+        refresh_token="local-refresh",
+    ))
+    assert [row["id"] for row in fleet["rows"](kid)] == ["local"]
+    assert fleet["rows"](fleet["root"])[0]["id"] == "abc123"
+
+
 def test_borrower_prune_never_deletes_root_singleton_grant(fleet, tmp_path):
     """Root's hermes_pkce row is seeded from ROOT's .anthropic_oauth.json; a
     profile without that file must not prune (and write-through-delete) it."""

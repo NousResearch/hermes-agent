@@ -647,6 +647,68 @@ def _empty_auth_store() -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
+def _validate_suppressed_sources(store: Dict[str, Any]) -> None:
+    """Validate canonical and legacy source-suppression shapes."""
+    generation = store.get("suppression_generation", 0)
+    if type(generation) is not int or generation < 0:
+        raise ValueError("suppression_generation must be a non-negative integer")
+    if "suppressed_sources" not in store:
+        return
+    suppressed = store["suppressed_sources"]
+    if not isinstance(suppressed, dict):
+        raise ValueError("suppressed_sources must be a mapping")
+    for provider, sources in suppressed.items():
+        if not isinstance(provider, str) or not provider:
+            raise ValueError("suppressed source provider names must be non-empty strings")
+        if isinstance(sources, list):
+            if any(not isinstance(source, str) or not source for source in sources):
+                raise ValueError(f"suppressed sources for {provider} must be non-empty strings")
+        elif isinstance(sources, dict):
+            if any(not isinstance(source, str) or not source for source in sources):
+                raise ValueError(f"legacy suppressed sources for {provider} must use string keys")
+        else:
+            raise ValueError(f"suppressed sources for {provider} must be a list or mapping")
+
+
+def _bump_suppression_generation(store: Dict[str, Any]) -> int:
+    """Advance the monotonic policy revision after a real suppression change."""
+    generation = store.get("suppression_generation", 0)
+    if type(generation) is not int or generation < 0:
+        raise ValueError("suppression_generation must be a non-negative integer")
+    generation += 1
+    store["suppression_generation"] = generation
+    return generation
+
+
+def _load_auth_store_strict(auth_file: Optional[Path] = None) -> Dict[str, Any]:
+    """Load an auth store without converting corruption into an empty store.
+
+    Security gates use this reader because ``_load_auth_store`` deliberately
+    recovers corrupt JSON as an empty store for general CLI availability.
+    """
+    auth_file = auth_file or _auth_file_path()
+    if not auth_file.exists():
+        return _empty_auth_store()
+    raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
+    if isinstance(raw, dict) and (
+        isinstance(raw.get("providers"), dict)
+        or isinstance(raw.get("credential_pool"), dict)
+        or isinstance(raw.get("suppressed_sources"), dict)
+    ):
+        _validate_suppressed_sources(raw)
+        raw.setdefault("providers", {})
+        if isinstance(raw.get("providers"), dict):
+            _migrate_stale_nous_portal_url(raw["providers"])
+        return raw
+    if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
+        _validate_suppressed_sources(raw)
+        systems = raw["systems"]
+        providers = {"nous": systems["nous_portal"]} if "nous_portal" in systems else {}
+        return {**_empty_auth_store(), "providers": providers,
+                "active_provider": "nous" if providers else None}
+    raise ValueError(f"Invalid auth store structure: {auth_file}")
+
+
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
@@ -987,6 +1049,7 @@ def suppress_credential_source(provider_id: str, source: str) -> None:
             provider_list = suppressed[provider_id] = []
         if source not in provider_list:
             provider_list.append(source)
+            _bump_suppression_generation(auth_store)
         _save_auth_store(auth_store)
 
 
@@ -1001,7 +1064,7 @@ def is_source_suppressed(provider_id: str, source: str) -> bool:
 def unsuppress_credential_source(provider_id: str, source: str) -> bool:
     """Clear a suppression marker so the source will be re-seeded on the next load."""
     with _auth_store_lock():
-        auth_store = _load_auth_store()
+        auth_store = _load_auth_store_strict()
         suppressed = auth_store.get("suppressed_sources")
         if not isinstance(suppressed, dict):
             return False
@@ -1013,6 +1076,7 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
             suppressed.pop(provider_id, None)
         if not suppressed:
             auth_store.pop("suppressed_sources", None)
+        _bump_suppression_generation(auth_store)
         _save_auth_store(auth_store)
         return True
 

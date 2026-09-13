@@ -54,6 +54,34 @@ def _first_env(*names: str) -> str:
     return next((v for v in (_getenv(n).strip() for n in names) if v), "")
 
 
+def claude_code_source_policy_state() -> tuple[bool, int]:
+    """Return (suppressed, monotonic policy revision), failing closed.
+
+    Fail closed when the auth store cannot be read: an I/O failure must not
+    silently restore access to an external credential source.
+    """
+    try:
+        from hermes_cli.auth import _load_auth_store_strict
+        store = _load_auth_store_strict()
+        suppressed = store.get("suppressed_sources", {})
+        if not isinstance(suppressed, dict):
+            raise ValueError("suppressed_sources must be a mapping")
+        raw_sources = suppressed.get("anthropic", [])
+        if isinstance(raw_sources, (list, dict)):
+            is_suppressed = "claude_code" in raw_sources
+        else:
+            raise ValueError("anthropic suppressed sources must be a list or mapping")
+        return is_suppressed, int(store.get("suppression_generation", 0))
+    except Exception:
+        logger.warning("Could not read Claude Code source suppression; refusing external credential access")
+        return True, -1
+
+
+def claude_code_source_is_suppressed() -> bool:
+    """Whether Hermes must refuse the borrowed Claude Code credential source."""
+    return claude_code_source_policy_state()[0]
+
+
 def _is_oauth_token(key: str) -> bool:
     """True for Anthropic OAuth/setup tokens (sk-ant-*, eyJ JWTs, cc-); False for sk-ant-api* Console keys."""
     if not key or key.startswith("sk-ant-api"):
@@ -234,10 +262,8 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
     return _claude_oauth_record(data, "claude_code_credentials_file") if data is not None else None
 
 
-def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
-    non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
-    refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded."""
+def _read_claude_code_credentials_unchecked() -> Optional[Dict[str, Any]]:
+    """Read both Claude Code stores after the caller has cleared the suppression gate."""
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()
     if not (kc_creds and file_creds):
@@ -246,6 +272,28 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     if kc_valid != file_valid:
         return kc_creds if kc_valid else file_creds
     return kc_creds if (kc_creds.get("expiresAt", 0) or 0) >= (file_creds.get("expiresAt", 0) or 0) else file_creds
+
+
+def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
+    """Read refreshable Claude Code OAuth credentials unless this source was removed.
+
+    When both Keychain and file stores exist, prefer the only non-expired one,
+    else the later ``expiresAt``. ``~/.claude.json`` is deliberately excluded.
+    """
+    before_policy = claude_code_source_policy_state()
+    if before_policy[0]:
+        logger.debug("Claude Code credential source is suppressed — skipping Keychain and file reads")
+        return None
+    creds = _read_claude_code_credentials_unchecked()
+    # Do not take the auth lock here: this reader can run while CredentialPool
+    # holds its RLock, while refresh commits in auth-lock -> pool-lock order.
+    # Compare a monotonic policy revision after the read, so even a transient
+    # suppress -> unsuppress ABA transition causes the credential to be discarded.
+    after_policy = claude_code_source_policy_state()
+    if after_policy[0] or after_policy != before_policy:
+        logger.debug("Claude Code credential policy changed during read — discarding credentials")
+        return None
+    return creds
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
@@ -305,12 +353,25 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     Claude Code refreshes on its own schedule, so we first re-read the live sources and adopt an already-rotated
     token instead of racing it into ``invalid_grant``. Read, decision, POST and write-back share the pool's
     path-keyed cross-process lock (else two profiles can spend one refresh token)."""
+    if claude_code_source_is_suppressed():
+        logger.debug("Claude Code credential source is suppressed — refusing refresh")
+        return None
     try:
         from hermes_cli.auth import AUTH_LOCK_TIMEOUT_SECONDS, _auth_store_lock, env_float
         refresh_timeout_seconds = env_float("HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS", 20)
         lock_timeout_seconds = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(refresh_timeout_seconds) + 5.0)
         cred_path = claude_code_credentials_path()
-        with _auth_store_lock(timeout_seconds=lock_timeout_seconds, target_path=cred_path):
+        with contextlib.ExitStack() as stack:
+            # Hold the active Hermes auth-store lock for the whole operation so
+            # a concurrent suppression cannot land between the check and POST.
+            stack.enter_context(_auth_store_lock(timeout_seconds=lock_timeout_seconds))
+            if claude_code_source_is_suppressed():
+                logger.debug("Claude Code credential source became suppressed — refusing refresh")
+                return None
+            # Only create/take the external credential lock after the in-lock
+            # suppression check has passed.
+            stack.enter_context(_auth_store_lock(
+                timeout_seconds=lock_timeout_seconds, target_path=cred_path))
             # Adopt only a DIFFERENT token with a real future expiry (0/absent expiresAt = managed key/unknown).
             current = read_claude_code_credentials() or {}
             current_token = current.get("accessToken", "")
@@ -364,6 +425,9 @@ def _write_claude_code_credentials(
     corrupt existing file included). *scopes* (or the previously stored scopes) are persisted because Claude Code
     >=2.1.81 gates on ``"user:inference"`` being present."""
     cred_path = claude_code_credentials_path()
+    if claude_code_source_is_suppressed():
+        raise CredentialPersistError(
+            cred_path, PermissionError("Claude Code credential source is suppressed"))
     try:
         existing = json.loads(cred_path.read_text(encoding="utf-8")) if cred_path.exists() else {}
     except (OSError, ValueError) as e:
@@ -461,13 +525,36 @@ def run_oauth_setup_token() -> Optional[str]:
     claude_path = shutil.which("claude")
     if not claude_path:
         raise FileNotFoundError("The 'claude' CLI is not installed. Install it with: npm install -g @anthropic-ai/claude-code")
-    # Interactive: stdio inherited so the user can complete the OAuth prompt.  noqa: subprocess-stdin
+    # A corrupt/unreadable policy store is not equivalent to an intentional
+    # suppression marker. Do not use the explicit-setup escape hatch unless
+    # the store can be validated first.
     try:
-        subprocess.run([claude_path, "setup-token"])
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store_strict
+        with _auth_store_lock():
+            _load_auth_store_strict()
+    except Exception:
+        logger.warning("Could not validate auth state; refusing Claude setup-token access")
+        return None
+    # Interactive: stdio inherited so the user can complete the OAuth prompt.  noqa: subprocess-stdin
+    was_suppressed = claude_code_source_is_suppressed()
+    before = _read_claude_code_credentials_unchecked() if was_suppressed else None
+    try:
+        result = subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
         return None
-    creds = read_claude_code_credentials()
+    if getattr(result, "returncode", 0) != 0:
+        return None
+    # Reaching this point required a successful user-launched Claude setup flow.
+    # Inspect its result once without the pre-existing suppression gate, then
+    # lift that marker only when a usable replacement credential actually changed.
+    creds = _read_claude_code_credentials_unchecked()
     if creds and is_claude_code_token_valid(creds):
+        fields = ("accessToken", "refreshToken", "expiresAt")
+        if was_suppressed and before and all(creds.get(field) == before.get(field) for field in fields):
+            return None
+        if was_suppressed:
+            from hermes_cli.auth import unsuppress_credential_source
+            unsuppress_credential_source("anthropic", "claude_code")
         return creds["accessToken"]
     return _first_env("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN") or None
 

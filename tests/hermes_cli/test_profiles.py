@@ -114,6 +114,66 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
 
+    def test_fresh_profile_inherits_only_default_suppressions(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {"anthropic": {"access_token": "root-secret"}},
+            "credential_pool": {"anthropic": [{
+                "id": "root-row", "source": "claude_code", "access_token": "root-secret",
+            }]},
+            "suppressed_sources": {
+                "anthropic": ["claude_code"],
+                "copilot": {"gh_cli": True},
+            },
+        }))
+
+        profile_dir = create_profile("coder", no_alias=True)
+        profile_auth = json.loads((profile_dir / "auth.json").read_text())
+
+        assert profile_auth["suppressed_sources"] == {
+            "anthropic": ["claude_code"],
+            "copilot": ["gh_cli"],
+        }
+        assert profile_auth.get("providers", {}) == {}
+        assert profile_auth.get("credential_pool", {}) == {}
+
+
+    def test_root_auth_read_failure_does_not_strand_profile(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "auth.json").mkdir()
+
+        with pytest.raises(OSError):
+            create_profile("coder", no_alias=True)
+
+        assert not (default_home / "profiles" / "coder").exists()
+
+    def test_corrupt_root_auth_does_not_create_unsuppressed_profile(self, profile_env):
+        default_home = profile_env / ".hermes"
+        root_auth = default_home / "auth.json"
+        root_auth.write_text("{not-json")
+
+        with pytest.raises(ValueError):
+            create_profile("coder", no_alias=True)
+
+        assert root_auth.read_text() == "{not-json"
+        assert not (default_home / "profiles" / "coder").exists()
+
+    def test_malformed_nested_suppressions_do_not_create_profile(self, profile_env):
+        default_home = profile_env / ".hermes"
+        root_auth = default_home / "auth.json"
+        root_auth.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {"anthropic": [{"source": "claude_code"}]},
+        }))
+
+        with pytest.raises(ValueError):
+            create_profile("coder", no_alias=True)
+
+        assert not (default_home / "profiles" / "coder").exists()
+
+
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through

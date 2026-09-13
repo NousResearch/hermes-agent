@@ -25,7 +25,7 @@ def write_allowlist(home, entries):
 
 
 def disk_allowlist(home):
-    return set(yaml.safe_load((home / "config.yaml").read_text())["command_allowlist"])
+    return set(yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["command_allowlist"])
 
 
 @pytest.fixture

@@ -74,7 +74,8 @@ _STATIC_FEATURE_FLAGS = {
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key",
     "delegation_delivery": {
-        "supported": True, "modes": ["background", "join"], "default": "background"}}
+        "supported": True, "modes": ["background", "join"], "default": "background",
+        "join_timeout_seconds": {"default": 1800, "minimum": 30, "maximum": 86400}}}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),

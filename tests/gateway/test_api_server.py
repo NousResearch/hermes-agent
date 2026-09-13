@@ -978,6 +978,7 @@ class TestCapabilitiesEndpoint:
                 "supported": True,
                 "modes": ["background", "join"],
                 "default": "background",
+                "join_timeout_seconds": {"default": 1800, "minimum": 30, "maximum": 86400},
             }
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"

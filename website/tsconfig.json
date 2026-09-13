@@ -1,5 +1,14 @@
 {
   // This file is not used in compilation. It is here just for a nice editor experience.
   "extends": "@docusaurus/tsconfig",
+  "compilerOptions": {
+    // Docusaurus 3.10.2 still publishes `baseUrl`; keep typechecking on
+    // TypeScript 6 until upstream migrates its generated aliases.
+    "ignoreDeprecations": "6.0",
+    // The inherited baseUrl resolves relative to the package in node_modules;
+    // re-anchor Docusaurus @site/* aliases to this website.
+    "baseUrl": ".",
+    "resolveJsonModule": true
+  },
   "exclude": [".docusaurus", "build"]
 }

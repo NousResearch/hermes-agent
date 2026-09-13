@@ -7,10 +7,10 @@ and can execute commands in Modal sandboxes.
 
 Usage:
     # Run with Modal backend
-    TERMINAL_ENV=modal python tests/test_modal_terminal.py
+    TERMINAL_ENV=modal python tests/integration/test_modal_terminal.py
 
     # Or run directly (will use whatever TERMINAL_ENV is set in .env)
-    python tests/test_modal_terminal.py
+    python tests/integration/test_modal_terminal.py
 """
 
 import pytest

@@ -8,7 +8,7 @@ or a running terminal backend. They verify the core sandbox mechanics:
 UDS socket lifecycle, hermes_tools generation, timeout enforcement,
 output capping, tool call counting, and error propagation.
 
-Run with:  python -m pytest tests/test_code_execution.py -v
+Run with:  python -m pytest tests/tools/test_code_execution.py -v
    or:     python tests/test_code_execution.py
 """
 

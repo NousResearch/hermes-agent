@@ -307,6 +307,8 @@ def _edited_update(
     m.message_thread_id = None
     m.is_topic_message = False
     m.edit_date = None
+    m.location = None
+    m.venue = None
     m.from_user.id = user_id
     m.from_user.username = "editor"
     m.from_user.full_name = "Editor"

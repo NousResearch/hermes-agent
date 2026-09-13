@@ -886,6 +886,12 @@ class _Runtime:
             started_ns=monotonic_ns(),
         )
 
+    def _tool_call_end_payload(self, fields: dict[str, str]) -> Any:
+        """Return the ``call_end`` result shape required by the active Relay binding."""
+        if getattr(self.relay, "_native", None) is not None:
+            return self.relay.ToolExecutionResult(fields)
+        return fields
+
     def _finish_tool_call(
         self,
         task: _TaskRun,
@@ -906,7 +912,7 @@ class _Runtime:
                 task,
                 self.relay.tools.call_end,
                 tool_call.handle,
-                fields,
+                self._tool_call_end_payload(fields),
                 metadata=self._event_metadata(),
             )
         except Exception:

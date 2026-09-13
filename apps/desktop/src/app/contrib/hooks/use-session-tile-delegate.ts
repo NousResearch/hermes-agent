@@ -453,15 +453,10 @@ export function useSessionTileDelegate({
 
             return {
               ...state,
-              ...(typeof info?.branch === 'string' ? { branch: info.branch } : {}),
-              ...(typeof info?.cwd === 'string' ? { cwd: info.cwd } : {}),
               ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
               ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-              ...(typeof info?.personality === 'string' ? { personality: info.personality } : {}),
               ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
               ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
-              ...(typeof info?.service_tier === 'string' ? { serviceTier: info.service_tier } : {}),
-              ...(typeof info?.yolo === 'boolean' ? { yolo: info.yolo } : {}),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
               messages

@@ -226,7 +226,7 @@ describe('useSessionTileDelegate resumeTile', () => {
     $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
     stashSessionDraft('stored-tile', 'unsent tile draft', [])
     vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
-      info: { model: 'snapshot-model', yolo: true },
+      info: { model: 'snapshot-model' },
       message_count: 2,
       messages: [
         { content: 'new prompt', role: 'user', timestamp: 1 },
@@ -252,7 +252,7 @@ describe('useSessionTileDelegate resumeTile', () => {
       session_id: 'stored-tile'
     })
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
-    expect(states.current.get('runtime-tile')).toMatchObject({ busy: true, model: 'snapshot-model', yolo: true })
+    expect(states.current.get('runtime-tile')).toMatchObject({ busy: true, model: 'snapshot-model' })
     expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
     expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
     expect($activeSessionId.get()).toBe('runtime-foreground')

@@ -26,6 +26,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
+import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -179,7 +180,7 @@ import {
   SidebarPinnedEmptyState,
   SidebarSessionSkeletons
 } from './section-states'
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions, withSessionDescendants } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
@@ -194,6 +195,12 @@ const NON_SESSION_LOAD_STEP = 10
 // the grouped view. Long enough that the flat list — the thing actually on
 // screen — has the connection to itself first.
 const PROJECT_TREE_WARM_MS = 2_000
+
+const sessionTreeIdentity = (session: SessionInfo, id = session.id): string => {
+  const connection = session.connection_id?.trim()
+
+  return `${!connection || connection === 'local' ? 'local' : connection}::${session.profile || 'default'}::${id}`
+}
 
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
@@ -592,7 +599,7 @@ export function ChatSidebar({
   // local set doesn't know about — a backend `pinned=1` row must never be
   // invisible just because localStorage is cold or was clobbered (#85969) —
   // minus the rows whose flag our own in-flight pin write already contradicts.
-  const pinnedSessions = useMemo(
+  const pinnedSessionRoots = useMemo(
     () =>
       resolvePinnedSessions(
         pinnedSessionIds,
@@ -601,6 +608,11 @@ export function ChatSidebar({
         unconfirmedPinWrites
       ),
     [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
+  )
+
+  const pinnedSessions = useMemo(
+    () => withSessionDescendants(pinnedSessionRoots, [...visibleSessions, ...cronSessions, ...messagingSessions]),
+    [pinnedSessionRoots, visibleSessions, cronSessions, messagingSessions]
   )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
@@ -613,7 +625,7 @@ export function ChatSidebar({
   const pinnedIdentitySet = useMemo(() => {
     const ids = new Set(pinnedSessionIds)
 
-    for (const session of pinnedSessions) {
+    for (const session of pinnedSessionRoots) {
       ids.add(session.id)
 
       if (session._lineage_root_id) {
@@ -622,7 +634,21 @@ export function ChatSidebar({
     }
 
     return ids
-  }, [pinnedSessionIds, pinnedSessions])
+  }, [pinnedSessionIds, pinnedSessionRoots])
+
+  const pinnedTreeIdentitySet = useMemo(() => {
+    const ids = new Set<string>()
+
+    for (const session of pinnedSessions) {
+      ids.add(sessionTreeIdentity(session))
+
+      for (const id of session._lineage_ids ?? []) {
+        ids.add(sessionTreeIdentity(session, id))
+      }
+    }
+
+    return ids
+  }, [pinnedSessions])
 
   // A pinned session belongs to the Pinned section and nowhere else, so every
   // other list filters it out. Match on either identity the row carries — a
@@ -634,12 +660,20 @@ export function ChatSidebar({
     [pinnedIdentitySet]
   )
 
+  const isInPinnedTree = useCallback(
+    (session: SessionInfo) =>
+      pinnedTreeIdentitySet.has(sessionTreeIdentity(session)) ||
+      (session._lineage_root_id != null &&
+        pinnedTreeIdentitySet.has(sessionTreeIdentity(session, session._lineage_root_id))),
+    [pinnedTreeIdentitySet]
+  )
+
   // What the project tree drops: pins (they live in their own section) plus
   // anything the active filters exclude, so filtering works the same whether
   // you're looking at the flat list or the lanes.
   const isHiddenFromProjects = useCallback(
-    (session: SessionInfo) => isPinnedSession(session) || (filtersNarrow && !sessionMatchesFilters(session)),
-    [isPinnedSession, filtersNarrow, sessionMatchesFilters]
+    (session: SessionInfo) => isInPinnedTree(session) || (filtersNarrow && !sessionMatchesFilters(session)),
+    [isInPinnedTree, filtersNarrow, sessionMatchesFilters]
   )
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
@@ -704,8 +738,8 @@ export function ChatSidebar({
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(
-    () => sortedSessions.filter(s => !isPinnedSession(s)),
-    [sortedSessions, isPinnedSession]
+    () => sortedSessions.filter(s => !isInPinnedTree(s)),
+    [sortedSessions, isInPinnedTree]
   )
 
   useEffect(() => {
@@ -1239,15 +1273,23 @@ export function ChatSidebar({
     // promises rows that will never appear.
     const pinnedBySource = new Map<string, number>()
 
-    for (const session of visibleMessagingSessions) {
-      const sourceId = normalizeSessionSource(session.source)
+    let sourceId: null | string = null
+
+    for (const entry of flattenSessionsWithBranches(visibleMessagingSessions, { preserveOrder: true })) {
+      const session = entry.session
+
+      if (!entry.branchStem) {
+        sourceId = normalizeSessionSource(session.source)
+      }
 
       if (!sourceId) {
         continue
       }
 
-      if (isPinnedSession(session)) {
-        pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
+      if (isInPinnedTree(session)) {
+        if (isPinnedSession(session)) {
+          pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
+        }
 
         continue
       }
@@ -1276,7 +1318,14 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
+  }, [
+    visibleMessagingSessions,
+    messagingPlatformTotals,
+    messagingTruncated,
+    isInPinnedTree,
+    isPinnedSession,
+    messagingProfile
+  ])
 
   const profileGroups = useGatewaySessionGroups(agentSessions, profileScope === ALL_PROFILES && grouping === 'profile')
 
@@ -1655,10 +1704,12 @@ export function ChatSidebar({
                 contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
+                isSessionPinned={isPinnedSession}
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
+                onPinUnpinnedSession={pinSession}
                 onReorderSessions={reorderPinned}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}

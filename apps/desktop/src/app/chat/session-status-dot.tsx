@@ -106,7 +106,7 @@ export interface SessionStatusDotProps {
    *  project color even for a session older than the paginated recents page
    *  (which has no `$sessionColorById` entry). */
   session?: null | SessionInfo
-  /** TUI-style tree stem for a branched session (`└─ ` / `├─ `). */
+  /** TUI-style tree stem for a nested branch or spawned session (`└─ ` / `├─ `). */
   branchStem?: string
   /** Applied to the OUTER wrapper (stem + dot) — e.g. hover-fade on the
    *  reorder handle. */

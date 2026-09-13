@@ -114,11 +114,13 @@ interface SidebarSessionsSectionProps {
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
+  onPinUnpinnedSession?: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
+  isSessionPinned?: (session: SessionInfo) => boolean
   rootClassName?: string
   contentClassName?: string
   emptyState: React.ReactNode
@@ -194,10 +196,12 @@ export function SidebarSessionsSection({
   onArchiveSession,
   onBranchSession,
   onTogglePin,
+  onPinUnpinnedSession,
   onToggleUnread,
   onNewSessionInWorkspace,
   onNewSessionSplit,
   pinned,
+  isSessionPinned,
   rootClassName,
   contentClassName,
   emptyState,
@@ -264,16 +268,22 @@ export function SidebarSessionsSection({
   )
 
   const renderRow = useCallback(
-    (session: SessionInfo, draggable: boolean, branchStem?: string) => {
+    (session: SessionInfo, draggable: boolean, branchStem?: string, branchDepth?: number) => {
+      const rowPinned = isSessionPinned?.(session) ?? pinned
+
       const rowProps = {
+        branchDepth,
         branchStem,
         card,
-        isPinned: pinned,
+        isPinned: rowPinned,
         isSelected: session.id === activeSessionId,
         onArchive: () => onArchiveSession(session.id),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
         onDelete: () => onDeleteSession(session.id),
-        onPin: () => onTogglePin(sessionPinId(session)),
+        onPin: () =>
+          rowPinned || !onPinUnpinnedSession
+            ? onTogglePin(sessionPinId(session))
+            : onPinUnpinnedSession(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),
         onResume: () => onResumeSession(session.id, session),
         reorderable: draggable && !branchStem,
@@ -294,11 +304,13 @@ export function SidebarSessionsSection({
     [
       activeSessionId,
       card,
+      isSessionPinned,
       onArchiveSession,
       onBranchSession,
       onDeleteSession,
       onResumeSession,
       onTogglePin,
+      onPinUnpinnedSession,
       onToggleUnread,
       pinned,
       showProfileTags
@@ -345,7 +357,7 @@ export function SidebarSessionsSection({
   const renderListRow = useCallback(
     (row: SidebarListRow, draggable: boolean, action?: React.ReactNode) => {
       if (row.kind === 'session') {
-        return renderRow(row.entry.session, draggable, row.entry.branchStem)
+        return renderRow(row.entry.session, draggable, row.entry.branchStem, row.entry.branchDepth)
       }
 
       const label = 'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)
@@ -370,7 +382,9 @@ export function SidebarSessionsSection({
   // Sessions inside repos/worktrees are date-ordered and static.
   const renderRows = useCallback(
     (items: SessionInfo[]) =>
-      flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
+      flattenSessionsWithBranches(items).map(({ branchDepth, branchStem, session }) =>
+        renderRow(session, false, branchStem, branchDepth)
+      ),
     [renderRow]
   )
 

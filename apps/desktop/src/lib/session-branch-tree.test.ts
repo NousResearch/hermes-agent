@@ -17,8 +17,8 @@ describe('flattenSessionsWithBranches', () => {
 
     expect(flattenSessionsWithBranches([parent, branchA, branchB])).toEqual([
       { session: parent },
-      { branchStem: '├─ ', session: branchA },
-      { branchStem: '└─ ', session: branchB }
+      { branchDepth: 1, branchStem: '├─ ', session: branchA },
+      { branchDepth: 1, branchStem: '└─ ', session: branchB }
     ])
   })
 
@@ -28,7 +28,38 @@ describe('flattenSessionsWithBranches', () => {
 
     expect(flattenSessionsWithBranches([tip, branch])).toEqual([
       { session: tip },
-      { branchStem: '└─ ', session: branch }
+      { branchDepth: 1, branchStem: '└─ ', session: branch }
+    ])
+  })
+
+  it('nests provider-neutral spawned sessions to arbitrary depth within their profile', () => {
+    const parent = session('parent', { profile: 'work' })
+
+    const child = session('child-tip', {
+      _lineage_ids: ['child-root', 'child-tip'],
+      profile: 'work',
+      spawned_by_session_id: 'parent'
+    })
+
+    const grandchild = session('grandchild', { profile: 'work', spawned_by_session_id: 'child-root' })
+
+    const sameIdOtherProfile = session('child-tip', {
+      profile: 'personal',
+      spawned_by_session_id: 'parent'
+    })
+
+    const otherConnection = session('remote-child', {
+      connection_id: 'remote',
+      profile: 'work',
+      spawned_by_session_id: 'parent'
+    })
+
+    expect(flattenSessionsWithBranches([parent, child, grandchild, sameIdOtherProfile, otherConnection])).toEqual([
+      { session: parent },
+      { branchDepth: 1, branchStem: '└─ ', session: child },
+      { branchDepth: 2, branchStem: '└─ ', session: grandchild },
+      { session: sameIdOtherProfile },
+      { session: otherConnection }
     ])
   })
 

@@ -18,6 +18,7 @@ import { SidebarSessionRow } from './session-row'
 import { sessionRowEstimate } from './session-row-details'
 
 interface SessionRowCommonProps {
+  branchDepth?: number
   branchStem?: string
   card?: boolean
   isPinned: boolean
@@ -155,10 +156,11 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       )
     }
 
-    const { branchStem, session } = row.entry
+    const { branchDepth, branchStem, session } = row.entry
     const reorderable = sortable && !branchStem
 
     const commonProps: SessionRowCommonProps = {
+      branchDepth,
       branchStem,
       card,
       isPinned: pinned,

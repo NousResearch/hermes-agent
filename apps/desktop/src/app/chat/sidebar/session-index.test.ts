@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { buildSessionByAnyId, resolvePinnedSessions, withSessionDescendants } from './session-index'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -153,5 +153,26 @@ describe('resolvePinnedSessions', () => {
     const index = buildSessionByAnyId(sessions, [], [])
 
     expect(resolvePinnedSessions([], index, sessions, settled)).toEqual([])
+  })
+})
+
+describe('withSessionDescendants', () => {
+  it('moves a pinned root and its full unpinned descendant closure as one tree', () => {
+    const parent = row('parent', { pinned: true })
+    const child = row('child', { spawned_by_session_id: 'parent' })
+    const grandchild = row('grandchild', { spawned_by_session_id: 'child' })
+    const other = row('other')
+
+    const otherConnectionChild = row('remote-child', {
+      connection_id: 'remote',
+      spawned_by_session_id: 'parent'
+    })
+
+    expect(withSessionDescendants([parent], [other, grandchild, otherConnectionChild, parent, child])).toEqual([
+      parent,
+      child,
+      grandchild
+    ])
+    expect(child.pinned).not.toBe(true)
   })
 })

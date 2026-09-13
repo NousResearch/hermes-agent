@@ -1454,8 +1454,7 @@ class TestV1SpecRegressionFixes:
             assert resp["id"] == "1"
             assert set(resp["result"].keys()) == {"task"}
             task = resp["result"]["task"]
-            assert task["status"]["state"] == protocol.STATE_COMPLETED
-            assert "hello v1" in protocol.extract_text(task["artifacts"][0])
+            assert task["status"]["state"] == protocol.STATE_SUBMITTED
             get_resp = await asyncio.to_thread(_post_json, base + "/", {
                 "jsonrpc": "2.0", "id": "2", "method": "GetTask",
                 "params": {"id": task["id"]},

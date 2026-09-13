@@ -14,7 +14,10 @@ Covers:
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
+import secrets
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -120,6 +123,84 @@ class TestDeliverOnlyBypassesAgent:
         chat_id_arg, content_arg = call_args.args[0], call_args.args[1]
         assert chat_id_arg == "12345"
         assert content_arg == "alice matched with bob!"
+
+
+class TestDirectDeliverySkills:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", [None, False])
+    async def test_signed_agent_delivery_still_loads_skills(self, mode):
+        secret = secrets.token_hex(32)
+        route = {"secret": secret, "prompt": "Alert: {message}",
+                 "skills": ["synthetic"]}
+        if mode is not None:
+            route["deliver_only"] = mode
+        adapter = _make_adapter({"r": route})
+        adapter.handle_message = AsyncMock()
+        body = json.dumps({"message": "hello"}).encode()
+        signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        with patch("agent.skill_commands.get_skill_commands", return_value={
+            "/synthetic": {"skill_dir": "synthetic"},
+        }) as discovery, patch(
+            "agent.skill_commands.build_skill_invocation_message",
+            side_effect=lambda command, user_instruction: "SKILL INSTRUCTIONS\n" + user_instruction,
+        ) as loader:
+            async with TestClient(TestServer(_create_app(adapter))) as client:
+                response = await client.post("/webhooks/r", data=body, headers={
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": "sha256=" + signature,
+                })
+                assert response.status == 202
+                assert (await response.json())["status"] == "accepted"
+                if adapter._background_tasks:
+                    await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+            discovery.assert_called_once_with()
+            loader.assert_called_once_with("/synthetic", user_instruction="Alert: hello")
+            adapter.handle_message.assert_awaited_once()
+            assert adapter.handle_message.await_args.args[0].text == "SKILL INSTRUCTIONS\nAlert: hello"
+
+    @pytest.mark.asyncio
+    async def test_signed_direct_delivery_ignores_skills(self):
+        secret = secrets.token_hex(32)
+        adapter = _make_adapter({"r": {
+            "secret": secret,
+            "deliver": "telegram",
+            "deliver_only": True,
+            "deliver_extra": {"chat_id": "synthetic-chat"},
+            "prompt": "Alert: {message}",
+            "skills": ["synthetic"],
+        }})
+        target = _wire_mock_target(adapter)
+        adapter.handle_message = AsyncMock()
+        body = json.dumps({"message": "hello"}).encode()
+        signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        headers = {"Content-Type": "application/json",
+                   "X-GitHub-Delivery": "signed-direct"}
+        with patch("agent.skill_commands.get_skill_commands", return_value={
+            "/synthetic": {"skill_dir": "synthetic"},
+        }) as discovery, patch(
+            "agent.skill_commands.build_skill_invocation_message",
+            side_effect=lambda command, user_instruction: "SKILL INSTRUCTIONS\n" + user_instruction,
+        ) as loader:
+            async with TestClient(TestServer(_create_app(adapter))) as client:
+                headers["X-Hub-Signature-256"] = "sha256=" + "0" * 64
+                rejected = await client.post("/webhooks/r", data=body, headers=headers)
+                await rejected.read()
+                assert rejected.status == 401
+                target.send.assert_not_awaited()
+                discovery.assert_not_called()
+                loader.assert_not_called()
+                adapter.handle_message.assert_not_called()
+
+                headers["X-Hub-Signature-256"] = "sha256=" + signature
+                response = await client.post("/webhooks/r", data=body, headers=headers)
+                assert response.status == 200
+                assert (await response.json())["status"] == "delivered"
+
+            target.send.assert_awaited_once()
+            assert target.send.await_args.args[:2] == ("synthetic-chat", "Alert: hello")
+            discovery.assert_not_called()
+            loader.assert_not_called()
+            adapter.handle_message.assert_not_called()
 
 
 # ===================================================================

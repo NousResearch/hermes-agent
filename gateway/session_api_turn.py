@@ -144,19 +144,17 @@ def owns_api_run(adapter, run_id, owner_scope):
     """Match a caller scope against one canonical API admission, failing closed."""
     if not _valid_owner_scope(owner_scope):
         return False
-    from gateway.session_authorities import active_authority
-    authority = active_authority(adapter.gateway_runner)
-    if authority is None:
+    from gateway.platforms.api_server_authority_runs import run_admission
+    try:
+        owned = run_admission(adapter, run_id)
+    except RuntimeStoreError:
+        # Duplicate admissions for one run are an unanswered ownership question.
         return False
-    with authority.db._read_ctx() as conn:
-        rows = conn.execute(
-            "SELECT payload_json FROM session_admissions "
-            "WHERE principal_id='api' AND request_id=?", (run_id,)).fetchall()
-    if len(rows) != 1:
+    if owned is None:
         return False
     try:
-        stored = json.loads(rows[0][0])['api_turn_v1']['run_owner_scope']
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        stored = owned[1]['payload']['api_turn_v1']['run_owner_scope']
+    except (KeyError, TypeError):
         return False
     return _valid_owner_scope(stored) and hmac.compare_digest(stored, owner_scope)
 

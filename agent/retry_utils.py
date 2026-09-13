@@ -79,6 +79,19 @@ def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float 
     return delay + random.Random(seed).uniform(0, jitter_ratio * delay)
 
 
+def jitter_retry_after(seconds: float, *, max_jitter: float = 30.0, jitter_ratio: float = 0.2) -> float:
+    """Add bounded, positive-only jitter to a provider-mandated cooldown."""
+    global _jitter_counter
+    with _jitter_lock:
+        _jitter_counter += 1
+        tick = _jitter_counter
+
+    # Seed from time + counter so coarse clocks still decorrelate.
+    seed = (time.time_ns() ^ (tick * 0x9E3779B9)) & 0xFFFFFFFF
+    extra_delay = min(jitter_ratio * seconds, max_jitter)
+    return seconds + random.Random(seed).uniform(0, extra_delay)
+
+
 def _error_text(error: Any) -> str:
     """Best-effort flattened provider error text for retry classification."""
     parts = [error, getattr(error, "message", None), getattr(error, "body", None), getattr(error, "response", None)]

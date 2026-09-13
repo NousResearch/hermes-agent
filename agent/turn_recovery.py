@@ -1027,7 +1027,7 @@ def compute_error_backoff(
     buffered; long Z.AI Coding waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.retry_utils import adaptive_rate_limit_backoff, jitter_retry_after, jittered_backoff, parse_retry_after_seconds
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
@@ -1047,13 +1047,18 @@ def compute_error_backoff(
     if _retry_after is not None:
         # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
         # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
-        # realistic provider reset windows while still rejecting pathological values. (#26293)
+        # realistic provider reset windows while still rejecting pathological values. Add up to 20%
+        # positive-only jitter (at most 30s) after that cap: during the Sep 8 incident, concurrent
+        # Anthropic retries nearly all waited the same 600s and retried together. The small tail
+        # keeps 600s the practical ceiling without re-synchronizing capped callers. (#26293)
         _retry_after = min(_retry_after, 600)
         if _retry_after <= 0:
             # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
             # past, which the parser clamps to 0.0) carries no usable wait —
             # treat it as absent so we never hot-loop the provider.
             _retry_after = None
+        else:
+            _retry_after = jitter_retry_after(_retry_after)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload

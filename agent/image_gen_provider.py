@@ -52,7 +52,9 @@ class ImageGenProvider(CatalogProviderBase):
         style/composition refs, clamped to ``max_reference_images``); any source image
         routes to the edit endpoint. Return :func:`success_response` / :func:`error_response`.
         Unknown ``kwargs`` MUST be ignored (forward compat); ``upscale`` (bool) is a
-        post-generation high-res pass, reported as ``upscaled: True`` in ``extra``."""
+        post-generation high-res pass, reported as ``upscaled: True`` in ``extra``;
+        ``model`` (str) is a per-call backend model id overriding the configured default
+        — providers without per-call model selection ignore it silently."""
 
 
 def resolve_aspect_ratio(value: Optional[str]) -> str:

@@ -1058,6 +1058,58 @@ class TestBuildSkillsSystemPromptConditional:
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
 
+    @pytest.mark.parametrize("unknown_first", [True, False])
+    def test_unknown_and_explicitly_empty_toolsets_cache_separately(
+        self, monkeypatch, tmp_path, unknown_first
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "iot" / "terminal-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: terminal-only\ndescription: Needs terminal\nmetadata:\n  hermes:\n"
+            "    requires_toolsets: [terminal]\n---\n"
+        )
+        calls = (
+            [(None, None), (None, set())]
+            if unknown_first
+            else [(None, set()), (None, None)]
+        )
+
+        prompts = [
+            build_skills_system_prompt(available_tools=tools, available_toolsets=toolsets)
+            for tools, toolsets in calls
+        ]
+        unknown_prompt, empty_prompt = prompts if unknown_first else reversed(prompts)
+
+        assert "terminal-only" in unknown_prompt
+        assert "terminal-only" not in empty_prompt
+
+    @pytest.mark.parametrize("unknown_first", [True, False])
+    def test_unknown_and_explicitly_empty_tools_cache_separately(
+        self, monkeypatch, tmp_path, unknown_first
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "needs-terminal"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: needs-terminal\ndescription: Needs terminal\nmetadata:\n  hermes:\n"
+            "    requires_tools: [terminal]\n---\n"
+        )
+        calls = (
+            [(None, None), (set(), None)]
+            if unknown_first
+            else [(set(), None), (None, None)]
+        )
+
+        prompts = [
+            build_skills_system_prompt(available_tools=tools, available_toolsets=toolsets)
+            for tools, toolsets in calls
+        ]
+        unknown_prompt, empty_prompt = prompts if unknown_first else reversed(prompts)
+
+        assert "needs-terminal" in unknown_prompt
+        assert "needs-terminal" not in empty_prompt
+
 
 
 

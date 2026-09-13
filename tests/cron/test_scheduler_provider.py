@@ -914,3 +914,42 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     assert recovery_homes == [str(failing_home), str(healthy_home)]
     # The failing profile stays in rotation: its ledger may still hold jobs.
     assert set(tick_homes) == {str(failing_home), str(healthy_home)}
+
+
+def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
+    """Hot-serve: with a callable ``profile_homes`` the ticker re-reads the served set every cycle,
+    so a profile created after the multiplexer started gets its jobs fired without a restart."""
+    import threading
+    from unittest.mock import patch
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    alpha = tmp_path / "alpha"
+    gamma = tmp_path / "gamma"
+    (alpha / "cron").mkdir(parents=True)
+    homes = [("alpha", alpha)]
+    stop = threading.Event()
+    ticked: list[str] = []
+
+    def _tick(*args, **kwargs):
+        ticked.append(str(get_hermes_home()))
+        if len(ticked) == 1:  # "hermes profile create gamma" happens between two cycles
+            (gamma / "cron").mkdir(parents=True)
+            homes.append(("gamma", gamma))
+        if len(ticked) >= 4:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start, args=(stop,),
+            kwargs={"interval": 0, "profile_homes": lambda: list(homes)}, daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert str(gamma) in ticked, ticked

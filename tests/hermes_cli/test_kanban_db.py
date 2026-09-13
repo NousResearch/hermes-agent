@@ -24,6 +24,14 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 
 
+def test_normalize_task_skills_points_to_platform_toolset_configuration():
+    with pytest.raises(ValueError) as exc_info:
+        kb._normalize_task_skills(["kanban"])
+    message = str(exc_info.value)
+    assert "hermes tools enable kanban --platform <platform>" in message
+    assert "platform_toolsets.<platform>" in message
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""

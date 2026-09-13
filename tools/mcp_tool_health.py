@@ -127,7 +127,7 @@ class MCPServerHealthMixin:
         from tools.registry import registry
         for tool_name in tool_names:
             if registry.get_toolset_for_tool(tool_name) == f"mcp-{self.name}":
-                _registration._deregister_mcp_tool_all_scopes(self._registry_key, tool_name)
+                _registration._deregister_mcp_tool_all_scopes(self, tool_name)
 
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire
@@ -144,12 +144,7 @@ class MCPServerHealthMixin:
             # Re-register; a raw name can become ambiguous after normalization without changing
             # its normalized name, so also drop old entries the final registration no longer owns.
             self._tools = new_mcp_tools
-            if self._registry_key == self.name:
-                registered_names = _registration._register_server_tools(
-                    self.name, self, self._config)
-            else:
-                registered_names = _registration._register_server_tools(
-                    self.name, self, self._config, connection_name=self._registry_key)
+            registered_names = _registration._register_server_tools(self.name, self, self._config)
             self._deregister_owned(old_tool_names - set(registered_names))
             self._registered_tool_names = registered_names
             new_tool_names = set(registered_names)

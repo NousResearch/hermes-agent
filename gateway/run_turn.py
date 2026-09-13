@@ -2293,6 +2293,7 @@ class GatewayTurnMixin:
                 _servers, _lock, _mcp_tool_server_names_by_scope, _server_public_names,
                 _server_visible_in_scope,
             )
+            from tools.mcp_tool_scope import _key_name
             from tools.mcp_tool_agent import reprobe_tool_availability
             from tools.registry import registry
 
@@ -2301,12 +2302,12 @@ class GatewayTurnMixin:
             def _scoped_server_names() -> set:
                 with _lock:
                     names = {
-                        _server_public_names.get(name, name) for name in _servers
+                        _server_public_names.get(name, _key_name(name)) for name in _servers
                         if _server_visible_in_scope(name, reload_scope)
                     }
                     if reload_scope is not None:
                         names.update(
-                            _server_public_names.get(owner, owner)
+                            _server_public_names.get(owner, _key_name(owner))
                             for owner in _mcp_tool_server_names_by_scope.get(reload_scope, {}).values()
                         )
                     return names
@@ -2325,7 +2326,9 @@ class GatewayTurnMixin:
                     provenance = _mcp_tool_server_names_by_scope.get(reload_scope, {})
                     new_tools = [
                         n for n in new_tools
-                        if _server_public_names.get(provenance.get(n), provenance.get(n)) in connected_servers
+                        if _server_public_names.get(
+                            provenance.get(n), _key_name(provenance.get(n)) if provenance.get(n) is not None else n
+                        ) in connected_servers
                     ]
             # (label, i18n key, names); i18n lines list reconnected first, the injected note added first.
             changes = (

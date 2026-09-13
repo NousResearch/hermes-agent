@@ -8,7 +8,7 @@ import math
 import os
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Mapping
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -73,7 +73,7 @@ def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
     return normalized
 
 
-def _env_multiplex_profiles_override() -> "bool | None":
+def _env_multiplex_profiles_override(environ: Optional[Mapping[str, str]] = None) -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
     ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml
@@ -81,7 +81,7 @@ def _env_multiplex_profiles_override() -> "bool | None":
     a provisioned-but-unpopulated Fly secret arrives as ``""`` and must NOT shadow
     a config.yaml opt-in.
     """
-    raw = os.getenv("GATEWAY_MULTIPLEX_PROFILES")
+    raw = (environ or os.environ).get("GATEWAY_MULTIPLEX_PROFILES")
     if not (raw or "").strip():
         return None
     parsed = _bool_token(raw)

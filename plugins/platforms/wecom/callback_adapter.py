@@ -81,6 +81,8 @@ def _ack():
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}

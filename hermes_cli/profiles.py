@@ -748,6 +748,28 @@ def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     return source_dir
 
 
+def _refuse_clone_channels_from_live_multiplexer(source_dir: Path, source_label: str) -> None:
+    """Reject a cross-surface channel clone when the live multiplexer already serves its source."""
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from hermes_cli.profile_channels import channel_platforms_configured
+    if live_default_gateway_pid() is None:
+        return
+    served = recorded_served_profiles()
+    if served is None:
+        return
+    source_name = normalize_profile_name(source_label)
+    if source_name not in {normalize_profile_name(name) for name in served}:
+        return
+    platforms = channel_platforms_configured(source_dir)
+    if platforms:
+        raise ValueError(
+            f"--clone-channels would copy {', '.join(platforms)} from '{source_label}', which the running "
+            "multiplexed gateway already serves: the bot can only belong to one profile, so the copy would be "
+            "parked as a duplicate credential. Clone without --clone-channels and give the new profile its own bot "
+            "(hermes -p <name> setup), or route its chats with gateway.profile_routes instead."
+        )
+
+
 def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> None:
     """Best-effort: write *text* to *path* unless it already exists; never raises."""
     if path.exists():
@@ -776,6 +798,14 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    env_path = profile_dir / ".env"
+    if env_path.is_symlink():
+        # copytree(..., symlinks=True) preserves a managed source link. Materialize the clone before
+        # channel stripping so write_text cannot follow the link back into the source profile.
+        data = env_path.read_bytes()
+        env_path.unlink()
+        env_path.write_bytes(data)
+        os.chmod(str(env_path), 0o600)
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
@@ -813,11 +843,16 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    clone_channels: bool = False,
 ) -> Path:
     """Create a new profile directory and return its path.
 
     ``clone_from`` defaults to the active profile when cloning. ``clone_all`` copies all state;
     ``clone_config`` copies config.yaml/.env/SOUL.md, installed skills, and identity files.
+    Either clone strips the source's messaging channels — bot tokens, allowlists, platform
+    sections, pairing/session state — unless ``clone_channels`` opts in: a copied bot credential
+    makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
+    was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills."""
     if no_skills and (clone_from is not None or clone_config or clone_all):
@@ -841,10 +876,19 @@ def create_profile(
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
         source_dir = _resolve_clone_source(clone_from)
+        if clone_channels:
+            _refuse_clone_channels_from_live_multiplexer(
+                source_dir, clone_from or get_active_profile_name()
+            )
     if clone_all and source_dir:
         _clone_all_into(source_dir, profile_dir, canon)
     else:
         _bootstrap_profile_dir(profile_dir, source_dir)
+    if source_dir is not None and not clone_channels:
+        from hermes_cli.profile_channels import strip_channel_settings
+        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
+        if stripped:
+            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
 
     # Seed an empty .env so the profile owns a credentials file from day one. Without it,
     # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
@@ -881,7 +925,15 @@ def create_profile(
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
+    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+    # rescans periodically, so a missed signal only delays serving).
+    _notify_multiplexer(canon)
     return profile_dir
+
+
+def _notify_multiplexer(canon: str) -> None:
+    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    notify_multiplexer_profiles_changed(canon)
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
@@ -1007,7 +1059,13 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
     except Exception:
         current_user = None
     pids: list[int] = []
-    for proc in psutil.process_iter(["pid", "name", "username", "cmdline"]):
+    try:
+        processes = list(psutil.process_iter(["pid", "name", "username", "cmdline"]))
+    except Exception:
+        # Process enumeration itself can be denied on macOS hardened hosts. The caller
+        # can still remove the profile after the best-effort backend cleanup.
+        return []
+    for proc in processes:
         try:
             info = proc.info
             pid = info.get("pid")
@@ -1166,6 +1224,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
+    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
+    # into the directory before we remove it.
+    _notify_multiplexer(canon)
 
     # Release this process's holographic memory-store connections into the profile. The
     # Desktop's main serve process opens memory_store.db for every profile and is

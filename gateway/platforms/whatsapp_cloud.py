@@ -155,6 +155,8 @@ def check_whatsapp_cloud_requirements() -> bool:
 class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Outbound: Graph ``/<api_version>/<phone_id>/messages``; inbound: aiohttp webhook
     server. The mixin comes first so its ``format_message`` overrides the base one."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     splits_long_messages = True  # send() chunks via truncate_message()
 

@@ -108,6 +108,8 @@ def _ok():
 
 
 class BlueBubblesAdapter(BasePlatformAdapter):
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
     platform = Platform.BLUEBUBBLES
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH

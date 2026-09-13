@@ -1310,8 +1310,10 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
         noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
         raise ValueError(
             f"{quoted} {noun}, not skill name(s). "
-            "Put toolsets in the assignee profile's `toolsets:` config "
-            "instead of per-task skills. Skills are named skill bundles "
+            "Enable toolsets for the assignee's platform with "
+            "`hermes tools enable kanban --platform <platform>` or add "
+            "`kanban` to the appropriate `platform_toolsets.<platform>` entry "
+            "instead of putting toolsets in per-task skills. Skills are named skill bundles "
             "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
             "capabilities (e.g. `web`, `browser`, `terminal`)."
         )

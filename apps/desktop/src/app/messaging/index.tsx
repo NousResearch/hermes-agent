@@ -171,6 +171,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [m, scopeProfile]
   )
 
+  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
+  // banner; re-read status once the adapter had a moment to connect. Anything else keeps the restart
+  // action on the success toast.
+  const settleAfterUpdate = useCallback(
+    (hotServed: boolean | undefined) => {
+      if (hotServed) {
+        window.setTimeout(() => void refreshPlatforms(true), 4000)
+      }
+    },
+    [refreshPlatforms]
+  )
+
   // Pairing has its own signal. platforms.changed tracks connect/disconnect
   // health via gateway_state.json, which a new pairing request never moves —
   // riding it would leave a pending row invisible until something unrelated
@@ -297,7 +309,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
       setPlatforms(
         current =>
           current?.map(row =>
@@ -310,11 +322,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply,
-        action: restartGatewayAction
+        message: result.hot_served ? m.appliedLive : m.restartToApply,
+        action: result.hot_served ? undefined : restartGatewayAction
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -333,14 +346,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: m.restartToReconnect,
-        action: restartGatewayAction
+        message: result.hot_served ? m.connectingLive : m.restartToReconnect,
+        action: result.hot_served ? undefined : restartGatewayAction
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -353,7 +367,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
+      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -362,6 +376,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
+      settleAfterUpdate(result.hot_served)
       notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
       notifyError(err, m.failedClear(key))

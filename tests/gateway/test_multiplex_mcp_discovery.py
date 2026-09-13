@@ -343,6 +343,53 @@ def test_scoped_teardown_restores_alias_from_surviving_profile(
     assert registry.get_toolset_alias_target("shared") == "mcp-shared"
 
 
+@pytest.mark.asyncio
+async def test_reload_mcp_projects_scoped_connection_keys_to_public_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tuple connection keys stay server names in the public reload summary."""
+    from gateway.run import GatewayRunner
+    from tools import mcp_tool
+    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+
+    worker_home = tmp_path / "profiles" / "worker"
+    worker_home.mkdir(parents=True)
+    worker_scope = hermes_home_key(worker_home)
+    launch_scope = hermes_home_key(tmp_path / "default")
+    connection_key = (launch_scope, "shared")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner._resolve_profile_home_for_source = MagicMock(return_value=worker_home)
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner._async_session_store = SimpleNamespace(
+        get_or_create_session=MagicMock(side_effect=RuntimeError("skip transcript")),
+    )
+
+    live_server = SimpleNamespace(session=object(), _config={}, _tools=[], tool_timeout=30,
+                                  initialize_result=None, _registered_tool_names=[])
+    monkeypatch.setattr(mcp_tool, "_servers", {connection_key: live_server})
+    monkeypatch.setattr(mcp_tool, "_server_scope_keys", {connection_key: launch_scope})
+    monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {connection_key: {worker_scope}})
+    monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: worker_scope)
+    monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda **_kwargs: None)
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: [])
+
+    event = MessageEvent(
+        text="/reload-mcp", message_id="m1",
+        source=SessionSource(
+            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            chat_type="dm", profile="worker",
+        ),
+    )
+
+    result = await runner._execute_mcp_reload(event)
+
+    assert "shared" in result
+
+
 @pytest.mark.parametrize("worker_cfg", [
     {"url": "https://worker.example/mcp"},                                   # different route
     {"url": "https://default.example/mcp", "headers": {"Authorization": "Bearer worker"}},  # same route, other credentials

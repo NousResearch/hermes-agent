@@ -117,7 +117,7 @@ class MCPServerTransportMixin:
         await self._discover_tools()
         self._ready.set()
         self._ever_connected = True
-        _core._reset_server_error(self._registry_key)
+        _core._reset_server_error(self.name)
         # Session is live again: clear any breaker state from a prior outage so the first call after
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # A completed handshake alone is NOT proof of health: a flapping transport can handshake fine and
@@ -213,7 +213,13 @@ class MCPServerTransportMixin:
         command = config.get("command")
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
-        command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
+        command, safe_env = _config._resolve_stdio_command(
+            command,
+            _config._build_safe_env(
+                config.get("env"),
+                external_env=config.get(_config._CONNECTION_EXTERNAL_ENV_KEY),
+            ),
+        )
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
         server_params = _core.StdioServerParameters(
@@ -449,15 +455,11 @@ class MCPServerTransportMixin:
         if self._registered_tool_names:
             return
         with _core._lock:
-            owned = _core._servers.get(self._registry_key) is self
+            owned = [key for key, live in _core._servers.items() if live is self]
         if not owned and not self._ready.is_set():
             return
-        if self._registry_key == self.name:
-            self._registered_tool_names = _registration._register_server_tools(
-                self.name, self, self._config)
-        else:
-            self._registered_tool_names = _registration._register_server_tools(
-                self.name, self, self._config, connection_name=self._registry_key)
+        self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)
         with _core._lock:  # a retained initial-failure server that just published tools has recovered
-            if _core._servers.get(self._registry_key) is self:
-                _core._server_connect_errors.pop(self._registry_key, None)
+            for key in owned:
+                if _core._servers.get(key) is self:
+                    _core._server_connect_errors.pop(key, None)

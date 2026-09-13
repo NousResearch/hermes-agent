@@ -380,6 +380,18 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
     return profile_home.name if profile_home.parent.name == "profiles" else None
 
 
+def profile_flag_value(command: str) -> Optional[str]:
+    """The ``-p``/``--profile`` argument of a command line, or None. Token equality is the only safe
+    profile match: a substring test lets ``-p ops`` claim (and ``gateway stop`` SIGTERM) ``-p ops-2``."""
+    tokens = command.split()
+    for i, tok in enumerate(tokens):
+        if tok.startswith("--profile="):
+            return tok.partition("=")[2]
+        if tok in ("-p", "--profile") and i + 1 < len(tokens):
+            return tokens[i + 1]
+    return None
+
+
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """True when a gateway command line belongs to ``profile_home`` (mirrors
     ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
@@ -389,10 +401,7 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/")
     if profile_name is not None and profile_name != "default":
-        profile_lc = profile_name.lower()
-        return any(needle in command_lc for needle in (
-            f"--profile {profile_lc}", f"-p {profile_lc}", f"hermes_home={home_lc}"
-        ))
+        return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
     # Default profile: accept unless argv names another profile or a conflicting explicit
     # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
     if "--profile " in command_lc or " -p " in command_lc:
@@ -441,13 +450,15 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
-def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:
+def _pid_record_belongs_to_current_profile(
+    record: Optional[dict[str, Any]], *, expected_home: Optional[Path] = None
+) -> bool:
     """True when the record's ``hermes_home`` matches the current process (legacy records: True);
     another HERMES_HOME's record must be ignored or the default gateway assumes its identity."""
     if not isinstance(record, dict):
         return False
     record_home = record.get("hermes_home")
-    return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
+    return not record_home or _same_hermes_home(record_home, expected_home or _get_process_hermes_home())
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
@@ -795,20 +806,24 @@ def write_runtime_status(
     active_agents: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    clear_profile_platforms: bool = False,
+    ingress_url: Any = _UNSET, clear_profile_platforms: bool = False,
+    drop_profile_platforms: Optional[str] = None,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
+    removes one deleted profile's ``<profile>:<platform>`` entries (hot unroute)."""
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
     payload.setdefault("platforms", {})
-    if clear_profile_platforms:
+    if clear_profile_platforms or drop_profile_platforms:
         # Secondary-profile entries are keyed ``<profile>:<platform>``. A fresh process must not
         # inherit them or /api/status stays degraded until every old adapter re-emits.
         platforms = payload["platforms"] if isinstance(payload["platforms"], dict) else {}
+        drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
         payload["platforms"] = {
-            k: v for k, v in platforms.items() if not isinstance(k, str) or ":" not in k
+            k: v for k, v in platforms.items()
+            if not isinstance(k, str) or ":" not in k or (drop_prefix is not None and not k.startswith(drop_prefix))
         }
     # Re-stamp identity + code fields on every write: the file can outlive its creator and the
     # top-level record must describe the CURRENT writer.
@@ -833,6 +848,8 @@ def write_runtime_status(
             ("needs_attention", needs_attention, bool),
             # ISO start of the current retry episode; None clears it.
             ("retrying_since", retrying_since, None),
+            # Shared-listener secondaries: the /p/<profile>/ callback URL the vendor console must target.
+            ("ingress_url", ingress_url, None),
         ))
         # Per-entry writer provenance: top-level pid/start_time only identify the most recent
         # writer; /api/status tells "live" from "preserved" by exact (pid, start_time) equality.
@@ -1442,7 +1459,8 @@ def planned_stop_marker_targets_self() -> bool:
 
 
 def get_running_pid(
-    pid_path: Optional[Path] = None, *, cleanup_stale: bool = True
+    pid_path: Optional[Path] = None, *, cleanup_stale: bool = True,
+    expected_home: Optional[Path] = None,
 ) -> Optional[int]:
     """PID of a running gateway (lock + PID file verified against the live process), or None."""
     resolved_pid_path = pid_path or _get_pid_path()
@@ -1453,12 +1471,12 @@ def get_running_pid(
         )
         for record in records:
             pid = _live_pid_from_record(record)
-            if pid is None or not _pid_record_belongs_to_current_profile(record):
+            if pid is None or not _pid_record_belongs_to_current_profile(record, expected_home=expected_home):
                 continue
-            if _record_matches_live_gateway_pid(record, pid):
+            if _record_matches_live_gateway_pid(record, pid, expected_home=expected_home):
                 return pid
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
-        return get_runtime_status_running_pid() if pid_path is None else None
+        return get_runtime_status_running_pid(expected_home=expected_home) if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
     runtime_pid = get_runtime_status_running_pid() if pid_path is None else None
     if runtime_pid is None:

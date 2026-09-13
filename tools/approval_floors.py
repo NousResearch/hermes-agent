@@ -20,6 +20,63 @@ from tools.approval_detection import (
 logger = logging.getLogger("tools.approval")
 
 
+_TOKEN_SEP = frozenset(" \t;&|()")
+_LEFT_BOUND = "\x00"
+_RIGHT_BOUND = "\x01"
+
+
+def _is_word_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _is_token_sep(char: str | None) -> bool:
+    return char is None or char in _TOKEN_SEP
+
+
+def _token_boundary_fnmatch(candidate: str, pattern: str) -> bool:
+    """Match a glob without letting ``*`` split a shell token.
+
+    Boundaries are whitespace and ``;|&()`` — not ``\\w``. A ``*`` next to a
+    literal word only pins that word when the other side is a token
+    separator, so ``*rm *`` rejects ``confirm`` / ``foo-rm`` while
+    ``*-*r*.hermes/org*`` can still match ``-rf /home/me/.hermes/org``.
+    """
+    decorated: list[str] = []
+    in_class = False
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "[" and not in_class:
+            in_class = True
+            decorated.append(char)
+            index += 1
+            continue
+        if char == "]" and in_class:
+            in_class = False
+            decorated.append(char)
+            index += 1
+            continue
+        if not in_class and _is_word_char(char):
+            start = index
+            while index < len(pattern) and _is_word_char(pattern[index]):
+                index += 1
+            word = pattern[start:index]
+            prev = pattern[start - 1] if start else None
+            nxt = pattern[index] if index < len(pattern) else None
+            if prev == "*" and _is_token_sep(nxt):
+                decorated.append(_LEFT_BOUND)
+            decorated.append(word)
+            if nxt == "*" and _is_token_sep(prev):
+                decorated.append(_RIGHT_BOUND)
+            continue
+        decorated.append(char)
+        index += 1
+    translated = fnmatch.translate("".join(decorated))
+    translated = translated.replace(_LEFT_BOUND, r"(?<![^ \t;&|()])")
+    translated = translated.replace(_RIGHT_BOUND, r"(?![^ \t;&|()])")
+    return re.match(translated, candidate) is not None
+
+
 def _match_user_deny_rule(command: str) -> str | None:
     """Return the matching ``approvals.deny`` glob, or None. User-defined fnmatch
     globs that block unconditionally — like the hardline floor, a match fires
@@ -37,7 +94,7 @@ def _match_user_deny_rule(command: str) -> str | None:
     for command_variant in _deny_command_variants(command):
         candidate = command_variant.lower().strip()
         for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
+            if _token_boundary_fnmatch(candidate, pattern.lower()):
                 return pattern
     return None
 

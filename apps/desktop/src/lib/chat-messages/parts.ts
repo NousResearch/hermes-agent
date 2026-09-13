@@ -34,8 +34,6 @@ export function renderMediaTags(text: string): string {
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
     )
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
@@ -303,4 +301,12 @@ export function appendAssistantTextPart(
   }
 
   return next
+}
+
+/** True when a visible user message follows `messageId` — the reader has moved
+ *  on, so a question card at `messageId` counts as answered. */
+export function answeredAfter(messages: ChatMessage[], messageId: string): boolean {
+  const at = messages.findIndex(message => message.id === messageId)
+
+  return at !== -1 && messages.slice(at + 1).some(message => message.role === 'user' && !message.hidden)
 }

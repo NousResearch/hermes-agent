@@ -33,6 +33,22 @@ class TestReadFileHandler:
 
 
     @patch("tools.file_tools._get_file_ops")
+    def test_dispatch_without_limit_uses_schema_default(self, mock_get):
+        """The model omits ``limit`` on most reads; the dispatch handler must fall
+        back to the SAME default the schema advertises (drifted to 500 vs 2000)."""
+        from tools.file_tools import READ_FILE_SCHEMA, _handle_read_file
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x"
+        result_obj.to_dict.return_value = {"content": "x", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        _handle_read_file({"path": "/tmp/test.txt"}, task_id="t-default")
+        schema_default = READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"]
+        assert mock_ops.read_file.call_args.args[2] == schema_default
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
@@ -404,8 +420,10 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=0, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=50" in raw
+        # The hint rides inside the payload as a structured field — the tool
+        # result must stay pure JSON (#90322).
+        parsed = json.loads(raw)
+        assert "offset=50" in parsed["_hint"]
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -422,8 +440,8 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=50, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=100" in raw
+        parsed = json.loads(raw)
+        assert "offset=100" in parsed["_hint"]
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@ ARE wire-replayed on every retained turn and stay charged unconditionally
 (#55572) — including native compaction checkpoints (#81747).
 """
 
+import pytest
+
 from agent.context_compressor import (
     _ALWAYS_REPLAYED_BUDGET_KEYS,
     _NEWEST_TURN_ONLY_BUDGET_KEYS,
@@ -19,10 +21,44 @@ from agent.context_compressor import (
     _estimate_msg_budget_tokens,
     _last_assistant_index,
 )
+from agent.model_metadata import estimate_tokens_rough
+from agent.turn_context import substitute_api_content
 
 
 BIG_THINKING = "deliberation " * 400  # ~1.3K tokens of stale thinking text
 BIG_BLOB = [{"type": "reasoning", "encrypted_content": "x" * 4000}]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "user", "content": "clean", "api_content": "wire user"},
+        {"role": "assistant", "content": "clean", "api_content": "wire assistant"},
+        {"role": "system", "content": "clean", "api_content": "ignored"},
+        {"role": "tool", "content": "clean", "api_content": "ignored"},
+        {"role": "user", "content": "clean", "api_content": ""},
+        {"role": "user", "content": "clean", "api_content": ["ignored"]},
+    ],
+    ids=[
+        "user-sidecar",
+        "assistant-sidecar",
+        "system-role",
+        "tool-role",
+        "empty-sidecar",
+        "non-string-sidecar",
+    ],
+)
+def test_api_content_matches_wire_substitution_without_mutation(message):
+    """Tail budgeting must mirror ``substitute_api_content`` exactly."""
+    original = dict(message)
+    wire_message = dict(message)
+    substitute_api_content(wire_message)
+
+    tokens = _estimate_msg_budget_tokens(message)
+
+    expected_content = wire_message.get("content") or ""
+    assert tokens == estimate_tokens_rough(expected_content) + 10
+    assert message == original
 
 
 def _assistant(thinking=False, codex=False):
@@ -44,9 +80,9 @@ class TestChargeStaleThinking:
         # The delta is the thinking text — a substantial chunk, not noise.
         assert full - stale > 300
 
-    def test_codex_sidecar_always_charged(self):
-        """Wire-replayed Codex blobs (incl. native compaction checkpoints)
-        must stay in the budget even for stale turns — #55572's invariant."""
+    def test_codex_sidecar_is_not_thinking_text(self):
+        """The Codex sidecar is not stale thinking: the stale path drops nothing from it. Its
+        ciphertext is priced only by real usage (#104462), so the row costs the same as a bare one."""
         msg = _assistant(codex=True)
         full = _estimate_msg_budget_tokens(msg, charge_stale_thinking=True)
         stale = _estimate_msg_budget_tokens(msg, charge_stale_thinking=False)
@@ -54,7 +90,7 @@ class TestChargeStaleThinking:
         bare = _estimate_msg_budget_tokens(
             {"role": "assistant", "content": "done"}, charge_stale_thinking=False
         )
-        assert stale > bare + 500  # blob still charged on the stale path
+        assert stale < bare + 100
 
     def test_default_is_conservative_full_charge(self):
         msg = _assistant(thinking=True)

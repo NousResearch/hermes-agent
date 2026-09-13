@@ -206,6 +206,7 @@ class LSPClient:
             raise
 
     async def _spawn(self) -> None:
+        from agent.delegation_context import delegated_child_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
             cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
@@ -217,7 +218,7 @@ class LSPClient:
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0], *cmd[1:],
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, **(self._env or {})}, cwd=self._cwd,
+                env=delegated_child_subprocess_env({**os.environ, **(self._env or {})}), cwd=self._cwd,
                 start_new_session=True, creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as e:
@@ -500,12 +501,16 @@ class LSPClient:
         if self._sync_kind == 2:
             change["range"] = {"start": {"line": 0, "character": 0}, "end": _end_position(doc.text)}
         new_version = doc.version + 1
+        # Bumping the version is the whole invalidation story (see _DocState).  It happens
+        # BEFORE the send: the write awaits, and a versionless publishDiagnostics read during
+        # that await is credited with doc.version -- tagged with the old number it would be
+        # judged stale the moment the send resumes.  A failed send is swallowed by
+        # _send_notification, leaving a version nothing ever satisfies (= "no verdict").
+        doc.version, doc.text = new_version, text
         await self._send_notification(
             "textDocument/didChange",
             {"textDocument": {"uri": uri, "version": new_version}, "contentChanges": [change]},
         )
-        # Bumping the version is the whole invalidation story (see _DocState).
-        doc.version, doc.text = new_version, text
         return new_version
 
     async def save_file(self, path: str) -> None:

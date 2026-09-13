@@ -177,7 +177,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 | `append_to_transcript(session_id, message, skip_db=False)` | Append a message to SQLite transcript. `skip_db=True` prevents duplicate writes when the agent already persisted. |
 | `rewrite_transcript(session_id, messages)` | Full replacement of session transcript (used by `/retry`, `/undo`, `/compress`). |
 | `load_transcript(session_id)` | Load all messages from a session's SQLite transcript. |
-| `rewind_session(session_id, n=1)` | Back up `n` user turns via soft-delete (keeps audit trail). Returns `{rewound_count, turns_undone, target_text}`. |
+| `rewind_session(session_id, n=1)` | Back up `n` user turns via soft-delete (keeps audit trail); thin wrapper over `SessionDB.rewind_user_turn` (`hermes_state_rewind.py`), the one rewind shared with CLI `/undo`/`/retry` and the TUI. Returns `{rewound_count, turns_undone, target_text}`. |
 
 ### Internal Helpers
 

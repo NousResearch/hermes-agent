@@ -1207,6 +1207,60 @@ def terminal_tool(
     children (kept in a separate env cache from the configured backend).
     """
     try:
+        # Credential-leakage guard: same denylist read_file enforces, applied
+        # to the literal paths/basenames in the command string. Runs even
+        # when force=True — force only pre-confirms the dangerous-command
+        # check below, it isn't a secret-access override. Defense-in-depth,
+        # not a real boundary — see get_terminal_secret_access_error's
+        # docstring (#57698 follow-up). Deliberately ahead of
+        # ``_plan_execution()`` (which calls ``_get_env_config()``/enforces
+        # the refusal scope) — a blocked command must not pay for either.
+        #
+        # cwd resolution mirrors _plan_execution's own priority (explicit
+        # workdir > live session cwd from a prior `cd` > the task/config
+        # default) using only cheap, side-effect-free primitives (env reads,
+        # resolve_task_overrides, a lock-free peek at any already-running
+        # environment) rather than _plan_execution's own cwd (which isn't
+        # resolved yet at this point). Without this, a bare `cat .env` (no
+        # explicit workdir) after the model already `cd`ed elsewhere in this
+        # session would be checked against the wrong directory -- either the
+        # Python process's own cwd or a stale task default, never the
+        # directory the command actually runs in.
+        from agent.file_safety import get_terminal_secret_access_error
+
+        _guard_effective_task_id = _resolve_container_task_id(task_id)
+        if _host_local:
+            _guard_effective_task_id = f"host-local-{_guard_effective_task_id}"
+        _existing_env_for_guard = (
+            _active_environments.get(_guard_effective_task_id)
+            or (_active_environments.get(task_id) if task_id else None)
+        )
+        _live_cwd_for_guard = getattr(_existing_env_for_guard, "cwd", None)
+        _guard_env_type = _tenv("TERMINAL_ENV", "local")
+        if _guard_env_type == "local":
+            _guard_default_cwd = _safe_getcwd()
+        else:
+            _guard_default_cwd = _DEFAULT_CWD_BY_BACKEND.get(_guard_env_type, "/root")
+        _guard_overrides = resolve_task_overrides(task_id)
+        _guard_default_cwd = _guard_overrides.get("cwd") or _tenv("TERMINAL_CWD", _guard_default_cwd)
+        _guard_cwd = (
+            workdir
+            or (_live_cwd_for_guard if isinstance(_live_cwd_for_guard, str) and _live_cwd_for_guard.strip() else None)
+            or _guard_default_cwd
+        )
+        _secret_block = get_terminal_secret_access_error(command, cwd=_guard_cwd)
+        if _secret_block:
+            logger.warning(
+                "Blocked terminal command referencing a denied secret path: %s",
+                _safe_command_preview(command),
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": _secret_block,
+                "status": "error",
+            }, ensure_ascii=False)
+
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
         )

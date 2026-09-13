@@ -686,6 +686,105 @@ def test_scan_lock_rejects_a_concurrent_scan_for_the_same_control_home(
         assert after_release is True
 
 
+def test_retry_deployment_recovers_completed_merge_without_receipt_and_holds_scan_lock(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from github_pr_feedback import cli
+    from github_pr_feedback.cli import _retry_deployment
+
+    merge = SimpleNamespace(pr_number=17)
+    policy = SimpleNamespace(
+        merge_policy_for=lambda _repository: SimpleNamespace(post_merge=object())
+    )
+    state = {"entered": False, "exited": False}
+
+    class Lock:
+        def __enter__(self):
+            state["entered"] = True
+            return True
+
+        def __exit__(self, *_args):
+            state["exited"] = True
+
+    class Ledger:
+        def failed_deployment_merge_receipts(self, _repository):
+            assert state["entered"] and not state["exited"]
+            return ()
+
+        def latest_deployment_receipt(self, _repository, _pr_number):
+            assert state["entered"] and not state["exited"]
+            return None
+
+        def completed_merge_receipt(self, _repository, _pr_number):
+            assert state["entered"] and not state["exited"]
+            return merge
+
+        def close(self):
+            assert state["entered"] and not state["exited"]
+
+    class Deployment:
+        status = "completed"
+
+        def to_payload(self):
+            return {"status": self.status}
+
+    class Executor:
+        def __init__(self, _policy, _ledger):
+            assert state["entered"] and not state["exited"]
+
+        def run(self, candidate):
+            assert candidate is merge
+            assert state["entered"] and not state["exited"]
+            return Deployment()
+
+    monkeypatch.setattr(cli, "_load_policy_from_context", lambda _ctx: policy)
+    monkeypatch.setattr(cli, "_exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr(cli.FeedbackLedger, "for_current_profile", lambda: Ledger())
+    monkeypatch.setattr("github_pr_feedback.post_merge.PostMergeExecutor", Executor)
+
+    assert _retry_deployment(
+        None, SimpleNamespace(repository="acme/widgets", pr_number=17)
+    ) == 0
+    assert state == {"entered": True, "exited": True}
+    assert json.loads(capsys.readouterr().out) == {"status": "completed"}
+
+
+def test_retry_deployment_defers_when_scan_lock_is_held(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from github_pr_feedback import cli
+    from github_pr_feedback.cli import _retry_deployment
+
+    class Lock:
+        def __enter__(self):
+            return False
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "_load_policy_from_context",
+        lambda _ctx: SimpleNamespace(
+            merge_policy_for=lambda _repository: SimpleNamespace(post_merge=object())
+        ),
+    )
+    monkeypatch.setattr(cli, "_exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr(
+        cli.FeedbackLedger,
+        "for_current_profile",
+        lambda: pytest.fail("lock contention must stop before opening the ledger"),
+    )
+
+    assert _retry_deployment(
+        None, SimpleNamespace(repository="acme/widgets", pr_number=17)
+    ) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "blocker": "scan_in_progress",
+        "status": "blocked",
+    }
+
+
 def test_cli_exposes_status_doctor_and_an_exact_immutable_retry_identity() -> None:
     context = RecordingContext()
     _plugin_module().register(context)

@@ -1,6 +1,8 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 import pytest
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from github_pr_feedback.ci_runner import CompletedCommand
@@ -12,6 +14,8 @@ from github_pr_feedback.post_merge import (
     PostMergeExecutor,
     ProcessRecord,
     _require_package_provenance,
+    _require_runtime_absent,
+    _wait_for_process_to_appear,
     _wait_for_processes_to_exit,
 )
 from github_pr_feedback.policy import PostMergePolicy
@@ -80,7 +84,7 @@ def test_post_merge_rechecks_runtime_before_shutdown_and_waits_for_verified_proc
         None,
     )
     processes = Mock()
-    processes.census.side_effect = [(), (application,), (), ()]
+    processes.census.side_effect = [(), (application,), (), (application,)]
     repository = Mock()
     repository.prepare.return_value = merge_sha
     commands = Mock()
@@ -151,3 +155,109 @@ def test_post_merge_rejects_an_advanced_remote_base_before_fast_forward():
         repository.prepare(_merge_receipt(merge_sha), policy)
 
     assert not any("merge" in call.args for call in repository._run.call_args_list)
+
+
+def test_post_merge_executor_passes_processes_before_controller_to_shutdown_wait(monkeypatch, tmp_path):
+    bundle = tmp_path / "Hermes.app"
+    executable = bundle / "Contents" / "MacOS" / "Hermes"
+    process = ProcessRecord(123, executable, (str(executable),), None)
+    policy = PostMergePolicy(
+        deployment_path=tmp_path,
+        protected_runtime_entry="main.py",
+        package_argv=("package",),
+        bundle_path="Hermes.app",
+        bundle_identifier="com.example.hermes",
+        relaunch_argv=("open",),
+    )
+    merge = MergeReceipt(
+        repository="mrkillbob/hermes-agent",
+        pr_number=83,
+        author_login="mrkillbob",
+        base_branch="main",
+        tested_head_sha="a" * 40,
+        ci_receipt_id="b" * 64,
+        snapshot_digest="c" * 64,
+        method="squash",
+        merge_commit_oid="d" * 40,
+        merged_at=datetime(2026, 9, 12, tzinfo=UTC),
+        executor="test",
+    )
+
+    class Processes:
+        def __init__(self):
+            self.censuses = [(), (process,), (), (process,)]
+            self.terminated = []
+
+        def census(self):
+            return tuple(self.censuses.pop(0))
+
+        def terminate(self, pid):
+            self.terminated.append(pid)
+
+    class Repository:
+        def prepare(self, _merge, _policy):
+            return "e" * 40
+
+        def require_clean(self, _root):
+            return None
+
+    class Commands:
+        def run(self, argv, **_kwargs):
+            if argv == policy.package_argv:
+                return CompletedCommand(0, json.dumps({"source_sha": "e" * 40}), "", 1, False)
+            return CompletedCommand(0, "", "", 1, False)
+
+    class Bundles:
+        def inspect(self, _bundle):
+            return BundleIdentity(policy.bundle_identifier, executable)
+
+    waited = []
+
+    def wait(processes, controller):
+        waited.append((processes, controller))
+
+    monkeypatch.setattr("github_pr_feedback.post_merge._wait_for_processes_to_exit", wait)
+    processes = Processes()
+    ledger = SimpleNamespace(record_deployment_receipt=lambda _receipt: None)
+    receipt = PostMergeExecutor(
+        policy,
+        ledger,
+        processes=processes,
+        repository=Repository(),
+        command_runner=Commands(),
+        bundle_inspector=Bundles(),
+        now=lambda: datetime(2026, 9, 12, tzinfo=UTC),
+    ).run(merge)
+
+    assert receipt.status == "completed"
+    assert processes.terminated == [123]
+    assert waited == [([process], processes)]
+
+
+def test_absolute_nonmatching_runtime_argument_is_not_ambiguous(tmp_path):
+    policy = PostMergePolicy(
+        deployment_path=tmp_path,
+        protected_runtime_entry="main.py",
+        package_argv=("package",),
+        bundle_path="Hermes.app",
+        bundle_identifier="com.example.hermes",
+        relaunch_argv=("open",),
+    )
+
+    _require_runtime_absent(
+        (ProcessRecord(123, Path("/usr/bin/python"), ("/other/project/main.py",), None),),
+        policy,
+    )
+
+
+def test_relaunch_wait_fails_when_the_bundle_process_never_appears():
+    class Controller:
+        def census(self):
+            return ()
+
+    with pytest.raises(DeploymentError, match="relaunched_bundle_missing"):
+        _wait_for_process_to_appear(
+            Path("/Applications/Hermes.app/Contents/MacOS/Hermes"),
+            Controller(),
+            timeout=0,
+        )

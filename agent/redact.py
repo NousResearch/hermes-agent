@@ -124,9 +124,10 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # provider payloads, where a line-start anchor is unavailable. Require a
 # structural delimiter before the key so prose, dotted technical settings,
 # relative URLs, and form bodies remain available to their dedicated passes.
+_INLINE_SECRET_KEY_NAMES = r"(?:token|secret|password|passwd|credential|auth|api[_-]?key)"
 _INLINE_SECRET_ASSIGN_RE = re.compile(
-    r"(^|[{[(,;:]\s*|\s+(?=(?:token|auth|key)\s*=)|[\"'])"
-    r"(token|secret|password|passwd|credential|auth|api[_-]?key)"
+    rf"(^|[{{[(,;:]\s*|\s+(?={_INLINE_SECRET_KEY_NAMES}\s*=)|[\"'])"
+    rf"({_INLINE_SECRET_KEY_NAMES})"
     r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
     r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&\"')\]}]+))",
     re.IGNORECASE | re.MULTILINE,
@@ -514,7 +515,7 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
-def _redact_assignments(text: str) -> str:
+def _redact_assignments(text: str, *, force: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
     params are intentionally passed through, see redact_sensitive_text)."""
@@ -527,16 +528,20 @@ def _redact_assignments(text: str) -> str:
             # handles the opt-in case). The uppercase regex above is all-caps-only, so it never matches URL
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
-            text = _INLINE_SECRET_ASSIGN_RE.sub(
-                lambda match: (
-                    match.group(0)
-                    if not _should_redact_assignment(
-                        match.group(2), match.group(4), check_keyword=True
-                    )
-                    else f"{match.group(1)}{match.group(2)}{match.group(3)}***"
-                ),
-                text,
-            )
+            def _redact_inline_assignment(match):
+                if (
+                    match.group(1).isspace()
+                    and match.group(2).casefold() == "token"
+                    and not force
+                ):
+                    return match.group(0)
+                if not _should_redact_assignment(
+                    match.group(2), match.group(4), check_keyword=True
+                ):
+                    return match.group(0)
+                return f"{match.group(1)}{match.group(2)}{match.group(3)}***"
+
+            text = _INLINE_SECRET_ASSIGN_RE.sub(_redact_inline_assignment, text)
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
         # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
         # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are
@@ -623,7 +628,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     if not code_file:
-        text = _redact_assignments(text)
+        text = _redact_assignments(text, force=force)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)

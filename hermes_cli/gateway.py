@@ -6231,6 +6231,13 @@ def _restart_all(system: bool) -> None:
 
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
+    # The startup warning points users here after an interrupted update. That
+    # recovery must restart the whole tracked fleet before discharging its
+    # marker, rather than letting this profile-only command hide stale siblings.
+    from hermes_cli.update_cmd import _apply_pending_fleet_restart_catchup
+
+    if _apply_pending_fleet_restart_catchup():
+        return
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)

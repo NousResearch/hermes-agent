@@ -214,6 +214,7 @@ _DARWIN_FD_DEV_OFFSET = 24
 _DARWIN_FD_INO_OFFSET = 32
 _DARWIN_FD_PATH_OFFSET = 176
 _DARWIN_LIBPROC = None
+_DARWIN_LAYOUT_OK: Optional[bool] = None  # result of the one-time offset self-check
 
 
 def _darwin_libproc():
@@ -253,6 +254,43 @@ def _darwin_all_pids(lib) -> List[int]:
         size *= 2
 
 
+def _darwin_fd_record(lib, pid: int, fd: int) -> Optional[Tuple[str, Tuple[int, int]]]:
+    """Decode one descriptor's ``(last pathname, (st_dev, st_ino))``; ``None`` when it is not a
+    vnode, not inspectable, or the kernel returned a record of a size we did not pin the offsets
+    against (a short record would otherwise decode as garbage identities)."""
+    import ctypes
+
+    record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
+    if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,
+                          _DARWIN_FD_RECORD_SIZE) != _DARWIN_FD_RECORD_SIZE:
+        return None
+    raw = record.raw
+    identity = (struct.unpack_from("<I", raw, _DARWIN_FD_DEV_OFFSET)[0],
+                struct.unpack_from("<Q", raw, _DARWIN_FD_INO_OFFSET)[0])
+    target = raw[_DARWIN_FD_PATH_OFFSET:].split(b"\x00", 1)[0].decode("utf-8", "replace")
+    return target, identity
+
+
+def _darwin_layout_verified(lib) -> bool:
+    """Pin the hard-coded record offsets against a descriptor WE own before trusting them on
+    anyone else's: decode a temp file's fd and compare with ``fstat``.  Checked once per process;
+    a mismatch (a future libproc layout) disables the darwin leg -- fail-open, as before it
+    existed -- rather than letting garbage identities refuse or admit an open."""
+    global _DARWIN_LAYOUT_OK
+    if _DARWIN_LAYOUT_OK is None:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile() as probe:
+            st = os.fstat(probe.fileno())
+            decoded = _darwin_fd_record(lib, os.getpid(), probe.fileno())
+            expected = (os.path.realpath(probe.name), (st.st_dev, st.st_ino))
+        _DARWIN_LAYOUT_OK = decoded == expected
+        if not _DARWIN_LAYOUT_OK:
+            logger.debug("libproc fd record self-check failed (%r != %r); darwin holder scan disabled",
+                         decoded, expected)
+    return _DARWIN_LAYOUT_OK
+
+
 def _iter_darwin_fd_targets():
     """Yield ``(pid, last pathname, (st_dev, st_ino))`` for every vnode fd libproc reports.
 
@@ -262,6 +300,8 @@ def _iter_darwin_fd_targets():
     import ctypes
 
     lib = _darwin_libproc()
+    if not _darwin_layout_verified(lib):
+        return
     for pid in _darwin_all_pids(lib):
         size = 4096
         while True:
@@ -276,15 +316,9 @@ def _iter_darwin_fd_targets():
             continue
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
             fd = struct.unpack_from("<i", listing.raw, offset)[0]
-            record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
-            if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,
-                                  _DARWIN_FD_RECORD_SIZE) <= 0:
-                continue
-            raw = record.raw
-            identity = (struct.unpack_from("<I", raw, _DARWIN_FD_DEV_OFFSET)[0],
-                        struct.unpack_from("<Q", raw, _DARWIN_FD_INO_OFFSET)[0])
-            target = raw[_DARWIN_FD_PATH_OFFSET:].split(b"\x00", 1)[0].decode("utf-8", "replace")
-            yield pid, target, identity
+            decoded = _darwin_fd_record(lib, pid, fd)
+            if decoded is not None:
+                yield pid, decoded[0], decoded[1]
 
 
 def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:

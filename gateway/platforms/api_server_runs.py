@@ -74,6 +74,58 @@ def _run_not_found(_openai_error, run_id: str) -> "web.Response":
     return _json_error(_openai_error, f"Run not found: {run_id}", code="run_not_found", status=404)
 
 
+def _workspace_contained_in_root(candidate: str, root: str) -> Optional[str]:
+    """Return the canonical *candidate* only when it is *root* itself or beneath it.
+
+    A lexical ``startswith`` is not a containment check: it accepts sibling prefixes
+    (``/workspace-other``) and ``..`` traversal, and a symlink inside the tree can point
+    anywhere. Require an absolute candidate, realpath both sides, then require equality
+    or descent. Resolution failures fail closed (``None``).
+    """
+    try:
+        candidate = str(candidate or "").strip()
+        if not candidate or not os.path.isabs(candidate):
+            return None
+        root_real = os.path.realpath(root)
+        cand_real = os.path.realpath(candidate)
+        if cand_real == root_real or cand_real.startswith(root_real + os.sep):
+            return cand_real
+    except Exception:
+        return None
+    return None
+
+
+def _request_run_workspace(body: Any) -> str:
+    """Validated per-run working directory from a ``/v1/runs`` body; empty when absent or rejected.
+
+    A client (Hermes WebUI gateway mode) may ask for its session's canonical workspace;
+    the gateway is the final filesystem authority and honors the request only when the
+    path resolves inside its OWN working tree (the configured ``terminal.cwd`` / launch
+    dir, per the active profile, via ``resolve_agent_cwd()``) and exists as a directory
+    here. Anything else — a sibling prefix, a ``..`` or symlink escape, or a path from
+    the client's mount namespace that does not exist on this host — is ignored with a
+    warning, leaving default cwd behavior. Never raises: the run itself is still admitted.
+    """
+    if not isinstance(body, dict):
+        return ""
+    raw = body.get("workspace")
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    try:
+        from agent.runtime_cwd import resolve_agent_cwd
+        root = str(resolve_agent_cwd())
+    except Exception:
+        logger.warning("[api_server] run workspace %r ignored: gateway cwd root unresolvable", raw)
+        return ""
+    contained = _workspace_contained_in_root(raw, root)
+    if contained is None or not os.path.isdir(contained):
+        logger.warning(
+            "[api_server] run workspace %r ignored: not an existing directory at/under "
+            "the gateway working root %r", raw, root)
+        return ""
+    return contained
+
+
 def _uses_room_run_auth(self, request: "web.Request") -> bool:
     return request.path.endswith("/v1/runs") and bool(self._room_grant_token(request))
 
@@ -332,6 +384,9 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    # Validated client-requested working directory (``""`` = gateway default); already
+    # contained under this gateway's own working root by ``_request_run_workspace``.
+    workspace: str = ""
 
     @property
     def approval_session_key(self) -> str:
@@ -421,6 +476,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
         return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
+    # Revalidated HERE, in the gateway's own filesystem: the client's containment check
+    # cannot prove mount equivalence or preempt filesystem races at this receiver.
+    workspace = _request_run_workspace(body)
     conversation_history, instructions, stored_session_id, history_err = (
         _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
     if history_err is not None:
@@ -498,7 +556,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, workspace=workspace)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -521,10 +579,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     # accumulate until the OS refuses new process spawns.
     from tools.approval import register_gateway_notify, unregister_gateway_notify
     from tools.approval_context import reset_current_session_key, set_current_session_key
+    from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
     session_id = run.session_id
     effective_task_id = session_id or run.run_id
     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
     resets: list[tuple[Any, Callable]] = []
+    workspace_registered = False
     with self._profile_scope(run.request_profile):
         try:
             # Contextvars, not process env: concurrent runs must not share identity.
@@ -545,9 +605,19 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 # so it stays default-denied until a merge contract exists for that chain;
                 # likewise a caller-supplied conversation_history is authoritative for the
                 # turn and never reads the delivery row, so it is denied the same way.
-                session_history_delivery="1" if run.session_history_delivery else "")
+                session_history_delivery="1" if run.session_history_delivery else "",
+                # Pin the logical cwd so the system prompt, context-file discovery, and
+                # coding context agree with the task-scoped tool cwd bound below.
+                cwd=run.workspace)
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
+            if run.workspace:
+                # Task-scoped tool cwd binding (the seam ACP uses for editor workspaces):
+                # the terminal and file layers resolve a registered per-task cwd override
+                # before any env-side cwd, so tool execution lands in the validated
+                # session workspace. Cleared in the finally on every terminal path.
+                register_task_env_overrides(effective_task_id, {"cwd": run.workspace})
+                workspace_registered = True
             if run.agent_kwargs["room_dispatch"] is not None:
                 policy = RoomExecutionPolicy.from_mapping(run.agent_kwargs["room_execution_policy"] or {})
                 resets.append((bind_room_execution_policy(policy), reset_room_execution_policy))
@@ -563,6 +633,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
+            if workspace_registered:
+                with suppress(Exception):
+                    clear_task_env_overrides(effective_task_id)
             # Declared-conversation binding, same precedence gate as _run_agent.
             if run.declared_selected:
                 self._bind_declared_conversation(

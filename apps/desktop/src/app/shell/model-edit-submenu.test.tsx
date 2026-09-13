@@ -128,4 +128,12 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
   })
+
+  it('heads the controls with the edited model identity', () => {
+    renderSubmenu({ fastControl: { kind: 'none' }, onSetOptions: vi.fn(), reasoning: true })
+
+    // Pretty name plus exact id — duplicate names across upstreams stay distinct.
+    expect(screen.getByText('M1')).toBeDefined()
+    expect(screen.getByText('m1')).toBeDefined()
+  })
 })

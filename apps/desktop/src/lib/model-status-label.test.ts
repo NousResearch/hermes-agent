@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  compareModelIds,
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
@@ -85,6 +86,18 @@ describe('model-status-label', () => {
 
     it('falls back to the store while options are still loading', () => {
       expect(currentPickerSelection(store, undefined)).toEqual(store)
+    })
+  })
+
+  describe('compareModelIds', () => {
+    it('orders A–Z by display name, id breaking ties', () => {
+      const ids = ['cmd/deepseek/deepseek-v4-flash', 'auto/best-coding', 'cbai/deepseek-v4-flash']
+
+      expect([...ids].sort(compareModelIds)).toEqual([
+        'auto/best-coding',
+        'cbai/deepseek-v4-flash',
+        'cmd/deepseek/deepseek-v4-flash'
+      ])
     })
   })
 })

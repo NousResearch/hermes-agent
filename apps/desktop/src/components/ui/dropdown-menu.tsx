@@ -42,6 +42,16 @@ function DropdownMenuSearch({
 }: Omit<React.ComponentProps<'input'>, 'type'> & {
   onValueChange?: (value: string) => void
 }) {
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  // Radix focuses the first menuitem on open, beating the input's autoFocus —
+  // reclaim focus a frame later so typing filters immediately, no click needed.
+  React.useEffect(() => {
+    const frame = requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
+
+    return () => cancelAnimationFrame(frame)
+  }, [])
+
   return (
     <div className="px-2.5 py-1.5" data-slot="dropdown-menu-search">
       <input
@@ -61,6 +71,7 @@ function DropdownMenuSearch({
 
           onKeyDown?.(event)
         }}
+        ref={inputRef}
         // Search fields here filter ids, slugs, and model names — dictionary
         // squiggles under them are noise (matching the composer/settings
         // inputs, which already disable spellcheck).

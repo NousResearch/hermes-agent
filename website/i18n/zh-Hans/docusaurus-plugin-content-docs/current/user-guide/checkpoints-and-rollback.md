@@ -52,8 +52,14 @@ Agent 每个目录每轮**最多创建一个检查点**，因此长时间运行�
 | `hermes checkpoints status` | 与裸 `checkpoints` 相同 |
 | `hermes checkpoints list` | `status` 的别名 |
 | `hermes checkpoints prune` | 强制执行清理：删除孤立/过期条目、GC、强制大小上限 |
+| `hermes checkpoints repair` | 修复指向缺失对象的引用（它们会让 GC 与大小上限彻底失效） |
 | `hermes checkpoints clear` | 清除整个检查点库（会先询问确认） |
 | `hermes checkpoints clear-legacy` | 仅删除 v1 迁移留下的 `legacy-*` 归档 |
+
+如果 `hermes checkpoints status` 报告存在「指向缺失对象的引用」，请执行
+`hermes checkpoints repair`。这类引用会让**每一次** `git gc` 失败，导致存储永远无法回收、
+始终超出大小上限。修复是无损的：只处理解析不到任何对象的引用（若存在有效的 packed-ref
+孪生条目，仅删除遮蔽它的 loose 文件），且正常的检查点写入会自动完成修复。
 
 ## 检查点的工作原理
 

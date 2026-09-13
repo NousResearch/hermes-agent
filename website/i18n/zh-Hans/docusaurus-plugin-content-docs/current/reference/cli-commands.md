@@ -638,6 +638,7 @@ hermes checkpoints [COMMAND]
 | `status`（默认） | 显示总大小、项目数量和每个项目的详情。裸 `hermes checkpoints` 等同于此。 |
 | `list` | `status` 的别名。 |
 | `prune` | 强制执行清理——删除孤立和过期项目，GC 存储，强制执行大小上限。忽略 24 小时幂等性标记。 |
+| `repair` | 删除指向缺失对象的引用。这类引用会让每一次 `git gc` 失败（"does not point to a valid object!"），存储因此永远无法收缩回大小上限之下。无损：只处理解析不到任何对象的引用；若存在有效的 packed-ref 孪生条目则保留该条目。 |
 | `clear` | 删除整个 checkpoint 基础存储。不可逆；除非使用 `-f` 否则要求确认。 |
 | `clear-legacy` | 仅删除 v1→v2 迁移产生的 `legacy-<timestamp>/` 归档。 |
 

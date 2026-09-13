@@ -319,7 +319,7 @@ _CLI_FAMILIES: dict[str, tuple[_CliSurface, str]] = {
         "diagnose, *link, *unlink, *claim, *comment, *complete, *edit, *block, *schedule, "
         "*unblock, *promote, *archive, stats, runs, heartbeat, assignments, context"),
     "bundles": (_reg("bundles", "bundles_command"), "list, show, *create, *delete, *reload"),
-    "checkpoints": (_reg("checkpoints"), "status, list, *prune, *clear, *clear-legacy"),
+    "checkpoints": (_reg("checkpoints"), "status, list, *prune, *repair, *clear, *clear-legacy"),
     "curator": (
         _reg("curator"),
         "status, *run, *pause, *resume, *pin, *unpin, *restore, list-archived, *archive, *prune, "

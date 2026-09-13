@@ -174,6 +174,7 @@ EXPECTED_CONSOLE_COMMANDS = {
     ("checkpoints", "status"),
     ("checkpoints", "list"),
     ("checkpoints", "prune"),
+    ("checkpoints", "repair"),
     ("checkpoints", "clear"),
     ("checkpoints", "clear-legacy"),
     ("curator", "status"),

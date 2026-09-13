@@ -10,6 +10,7 @@ repo with per-project ``refs/hermes/<hash16>``, ``indexes/<hash16>``, ``projects
 with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE so nothing leaks into the user's project.
 """
 
+import contextlib
 import hashlib
 import itertools
 import json
@@ -23,6 +24,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
+
+try:  # POSIX only: flock() serialises the shared object database across processes.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no flock; locking degrades to no-op.
+    fcntl = None  # type: ignore[assignment]
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -61,6 +67,7 @@ DEFAULT_EXCLUDES = [
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 _MAX_FILES = 50_000  # skip huge directories to avoid slowdowns
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')  # short or full SHA-1/SHA-256
+_SHA_RE = re.compile(r'^[0-9a-fA-F]{40,64}$')  # full SHA-1/SHA-256 (loose ref contents)
 _MB = 1024 * 1024
 # Inherited GIT_* vars that would redirect the shadow store's git calls.
 _GIT_LEAK_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
@@ -68,6 +75,20 @@ _GIT_LEAK_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE",
 _STORE_GIT_CONFIG = (("user.email", "hermes@local"), ("user.name", "Hermes Checkpoint"),
                      ("commit.gpgsign", "false"), ("tag.gpgSign", "false"), ("gc.auto", "0"))
 _PROJECT_MARKERS = {".git", "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
+
+# --- shared-store maintenance coordination -------------------------------------------
+# One store is shared by every project AND every concurrent Hermes process, so object
+# creation and `git gc --prune=now` must be serialised between processes: a gc whose
+# reachability snapshot predates a checkpoint's `update-ref` deletes the commit that ref
+# just moved to, leaving a ref that points at nothing.  Such a ref makes *every* later gc
+# fail ("does not point to a valid object!"), which pins the store above its size cap
+# forever and turns each write tool call into another doomed maintenance pass.
+_STORE_LOCK_NAME = "maintenance.lock"
+_CAP_RETRY_MARKER_NAME = ".cap_maintenance_retry"
+_CAP_RETRY_COOLDOWN_S = 600  # backoff after a maintenance pass that could not converge
+_SHRINK_MAX_ROUNDS = 20  # bound on drop-oldest rounds against pathological loops
+_LOCK_WAIT_S = 5.0  # bounded wait for an in-flight maintenance pass (never unbounded)
+_GC_LOCK_WAIT_S = 5.0  # gc waits this long for writers to finish, then skips this round
 
 _SHORTSTAT_FIELDS = (("files_changed", r'(\d+) file'), ("insertions", r'(\d+) insertion'),
                      ("deletions", r'(\d+) deletion'))
@@ -305,6 +326,274 @@ def _delete_ref(store: Path, ref: str) -> bool:
     return ok
 
 
+# --- shared-store lock -----------------------------------------------------------------
+
+def _store_lock_path(store: Path) -> Path:
+    return store / _STORE_LOCK_NAME
+
+
+@contextlib.contextmanager
+def _store_lock(store: Path, *, exclusive: bool, blocking: bool = True, timeout: float = 0.0) -> Iterator[bool]:
+    """Interprocess lock over the shared store's object database.
+
+    Writers hold it SHARED across the whole object-creation -> ref-update window, so a
+    concurrent ``git gc --prune=now`` can never delete blobs/commits that are still in
+    flight (the race that leaves refs pointing at missing objects).  Maintenance takes it
+    EXCLUSIVE and non-blocking: when a writer or another maintenance pass is active the
+    pass is *skipped*, not queued — a concurrent gc is a safe maintenance skip (upstream
+    issue #65349).
+
+    Yields True when the lock is held, False when it could not be acquired: callers fail
+    open, because a checkpoint must never block the tool call that triggered it.  Platforms
+    without ``flock`` (Windows) behave as if the lock were always available.
+    """
+    if fcntl is None:  # pragma: no cover - Windows
+        yield True
+        return
+    try:
+        fd = os.open(_store_lock_path(store), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        logger.debug("Checkpoint store lock unavailable for %s: %s", store, exc)
+        yield False
+        return
+    # LOCK_NB is always set: a blocking flock() would sit inside the syscall forever and
+    # ignore the deadline below — and a maintenance pass that holds the lock while wanting
+    # it again (different fd, same process) would deadlock instead of skipping.
+    flags = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    deadline = time.monotonic() + max(0.0, timeout)
+    acquired = False
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, flags)
+                acquired = True
+                break
+            except OSError:
+                if not blocking or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+        yield acquired
+    finally:
+        if acquired:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _object_present(store: Path, working_dir: str, sha: str) -> bool:
+    """Whether ``sha`` resolves to an object in the store."""
+    ok, _, _ = _run_git(["cat-file", "-e", sha], store, working_dir, allowed_returncodes={1, 128})
+    return ok
+
+
+# --- unresolvable-ref detection + repair -----------------------------------------------
+
+def _loose_ref_names(store: Path) -> List[str]:
+    """Every ref present as a loose *file* under ``refs/``, as ``refs/...`` names.
+
+    Reads the filesystem instead of ``git for-each-ref``: a ref whose tip object is
+    missing is exactly the ref ``for-each-ref`` may omit, and a ref git can never resolve
+    is a ref no cleanup path would otherwise see.
+    """
+    root = store / "refs"
+    names: List[str] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in filenames:
+                if name.endswith(".lock"):
+                    continue
+                full = Path(dirpath) / name
+                try:
+                    names.append(full.relative_to(store).as_posix())
+                except ValueError:
+                    continue
+    except OSError as exc:
+        logger.debug("Could not scan loose refs in %s: %s", store, exc)
+    return sorted(names)
+
+
+def _packed_refs_map(store: Path) -> Dict[str, str]:
+    """``{refname: sha}`` from ``packed-refs`` (comments and ``^`` tag lines skipped)."""
+    out: Dict[str, str] = {}
+    try:
+        text = (store / "packed-refs").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        if not line or line.startswith(("#", "^")):
+            continue
+        sha, _, ref = line.partition(" ")
+        if ref.strip():
+            out[ref.strip()] = sha.strip()
+    return out
+
+
+def _rewrite_packed_refs(store: Path, drop: Set[str]) -> bool:
+    """Rewrite ``packed-refs`` without ``drop`` (atomic replace, comments/tags preserved)."""
+    path = store / "packed-refs"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True  # nothing to rewrite
+    kept: List[str] = []
+    dropping_prev = False
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            kept.append(line)
+            dropping_prev = False
+            continue
+        if line.startswith("^"):  # peeled tag target of the previous ref
+            if not dropping_prev:
+                kept.append(line)
+            continue
+        ref = line.partition(" ")[2].strip()
+        dropping_prev = ref in drop
+        if not dropping_prev:
+            kept.append(line)
+    try:
+        tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+        tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except OSError as exc:
+        logger.warning("Could not rewrite %s: %s", path, exc)
+        return False
+
+
+def _remove_ref_everywhere(store: Path, ref: str) -> bool:
+    """Delete ``ref`` whether it lives in a loose file, ``packed-refs``, or both."""
+    _unlink_quiet(store / ref)
+    _unlink_quiet(store / "logs" / ref)
+    if ref in _packed_refs_map(store):
+        return _rewrite_packed_refs(store, {ref})
+    return not (store / ref).exists()
+
+
+def _candidate_refs(store: Path) -> List[str]:
+    """Refs under the hermes prefix that can be inspected (loose files + packed entries)."""
+    prefix = _REFS_PREFIX + "/"
+    names = set(_loose_ref_names(store)) | set(_packed_refs_map(store))
+    return sorted(r for r in names if r.startswith(prefix))
+
+
+def _objects_missing(store: Path, working_dir: str, shas: Set[str]) -> Set[str]:
+    """Subset of ``shas`` absent from the object database (one batched git call)."""
+    if not shas:
+        return set()
+    wd = _normalize_path(working_dir)
+    if not wd.is_dir():
+        return set()
+    try:
+        result = subprocess.run(["git", "cat-file", "--batch-check"],
+                                input="\n".join(sorted(shas)) + "\n", capture_output=True, text=True,
+                                timeout=_GIT_TIMEOUT, env=_git_env(store, str(wd)), cwd=str(wd),
+                                creationflags=windows_hide_flags())
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("Checkpoint store: could not verify objects: %s", exc)
+        return set()
+    if result.returncode != 0:
+        logger.warning("Checkpoint store: 'git cat-file --batch-check' failed: %s", result.stderr.strip()[:200])
+        return set()
+    gone = {line.split()[0] for line in result.stdout.splitlines() if line.endswith("missing")}
+    return {sha for sha in shas if sha in gone}
+
+
+def _missing_tips(store: Path, working_dir: str, refs: List[str]) -> List[Tuple[str, str]]:
+    """``[(ref, sha)]`` for refs whose *stored* tip object is absent from the store.
+
+    The sha stored in the ref is checked directly (loose file wins over ``packed-refs``,
+    exactly like git), so a loose ref shadowing a valid packed-ref is caught either way,
+    and refs ``for-each-ref`` silently skips are still inspected.
+    """
+    packed = _packed_refs_map(store)
+    pairs: List[Tuple[str, str]] = []
+    for ref in refs:
+        loose = store / ref
+        if loose.is_file():
+            try:
+                value = loose.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            if not _SHA_RE.match(value):
+                continue  # symbolic or corrupt loose file: not a tip we can reason about
+            pairs.append((ref, value))
+        elif ref in packed:
+            pairs.append((ref, packed[ref]))
+    missing = _objects_missing(store, working_dir, {sha for _, sha in pairs})
+    return [(ref, sha) for ref, sha in pairs if sha in missing]
+
+
+def _apply_ref_repair(store: Path, working_dir: str, broken: List[Tuple[str, str]],
+                      result: Dict[str, int]) -> Dict[str, int]:
+    """Heal the ``[(ref, sha)]`` set produced by ``_missing_tips`` (caller holds the lock)."""
+    packed = _packed_refs_map(store)
+    for ref, sha in broken:
+        twin = packed.get(ref)
+        if twin and twin != sha and not _objects_missing(store, working_dir, {twin}):
+            # The loose file shadows a *valid* packed-ref: drop only the shadow, so the
+            # packed value (the real history) becomes effective again.
+            _unlink_quiet(store / ref)
+            logger.warning("Checkpoint store: removed unresolvable loose ref %s (%s) shadowing the "
+                           "valid packed-ref %s — history kept", ref, sha[:12], twin[:12])
+            result["repaired"] += 1
+            continue
+        if _remove_ref_everywhere(store, ref):
+            logger.warning("Checkpoint store: dropped ref %s — it points at the missing object %s",
+                           ref, sha[:12])
+            result["deleted"] += 1
+        else:
+            logger.warning("Checkpoint store: could not remove unresolvable ref %s (%s)", ref, sha[:12])
+            result["errors"] += 1
+    return result
+
+
+def _repair_unresolvable_refs(store: Path, working_dir: str, *, locked: bool = False) -> Dict[str, int]:
+    """Remove refs whose tip object no longer exists.
+
+    This is the corruption that makes every later ``git gc`` fail with "does not point to a
+    valid object!" and therefore pins the store above its size cap forever.  Ref removal is
+    lossless: a ref that resolves to nothing cannot be restored to, and a loose ref that
+    shadows a valid packed-ref only loses its shadow.  Returns
+    ``{"scanned", "repaired", "deleted", "errors"}``; never raises.
+    """
+    result = {"scanned": 0, "repaired": 0, "deleted": 0, "errors": 0}
+    try:
+        refs = _candidate_refs(store)
+        result["scanned"] = len(refs)
+        broken = _missing_tips(store, working_dir, refs)
+        if not broken:
+            return result
+        if locked:
+            return _apply_ref_repair(store, working_dir, broken, result)
+        with _store_lock(store, exclusive=True, blocking=True, timeout=_LOCK_WAIT_S) as held:
+            if not held:
+                logger.warning("Checkpoint store repair deferred: maintenance lock busy (%d unresolvable ref(s))",
+                               len(broken))
+                result["errors"] += 1
+                return result
+            return _apply_ref_repair(store, working_dir, broken, result)
+    except Exception as exc:  # never propagate into a checkpoint
+        logger.warning("Checkpoint store repair failed: %s", exc, exc_info=True)
+        result["errors"] += 1
+        return result
+
+
+def _rollback_ref(store: Path, working_dir: str, ref: str, previous: Optional[str], bad_sha: str) -> None:
+    """Undo an ``update-ref`` that moved ``ref`` onto a missing object.
+
+    Compare-and-swap on ``bad_sha``, so a concurrent writer's newer value is never
+    clobbered.
+    """
+    if previous and _object_present(store, working_dir, previous):
+        cmd = ["update-ref", ref, previous, bad_sha]
+    else:
+        cmd = ["update-ref", "-d", ref, bad_sha]
+    ok, _, _ = _run_git(cmd, store, working_dir, allowed_returncodes={128})
+    if not ok:
+        logger.warning("Checkpoint store: could not roll %s off the missing object %s", ref, bad_sha[:12])
+
+
 def _commit_tree_args(tree_sha: str, message: str, parent: Optional[str]) -> List[str]:
     return ["commit-tree", tree_sha, *(["-p", parent] if parent is not None else []), "-m", message, "--no-gpg-sign"]
 
@@ -325,21 +614,64 @@ def _rebuild_linear_chain(store: Path, working_dir: str, shas: List[str]) -> Opt
 
 
 def _rewrite_ref_to(store: Path, working_dir: str, ref: str, commits: List[str]) -> bool:
-    """Point ``ref`` at a freshly rebuilt linear chain of ``commits``; False if nothing was rewritten."""
+    """Point ``ref`` at a freshly rebuilt linear chain of ``commits``; False if nothing was rewritten.
+
+    The rebuild creates commit objects that only become reachable at the ``update-ref``, so
+    the whole sequence runs under the store's shared lock (see :func:`_store_lock`).
+    """
     if not commits:
         return False
-    tip = _rebuild_linear_chain(store, working_dir, commits)
-    if tip is None:
+    with _store_lock(store, exclusive=False, blocking=True, timeout=_LOCK_WAIT_S) as _locked:
+        tip = _rebuild_linear_chain(store, working_dir, commits)
+        if tip is None:
+            return False
+        ok, _, _ = _run_git(["update-ref", ref, tip], store, working_dir)
+        if ok and not _object_present(store, working_dir, tip):
+            # Only a foreign gc (another build, a hand-run `git gc`) can land here; the
+            # shared lock keeps our own maintenance out.  Never leave the ref on a
+            # missing object — that is the state that breaks every later gc.
+            _remove_ref_everywhere(store, ref)
+            logger.warning("Checkpoint store: rebuilt tip %s vanished before the ref update — ref %s "
+                           "dropped instead of left dangling", tip[:12], ref)
+            return False
+        return ok
+
+
+def _gc_store(store: Path, working_dir: str) -> bool:
+    """Reclaim objects unreachable from the (rewritten/deleted) refs.
+
+    Runs under the store's exclusive maintenance lock: checkpoint writers hold that lock
+    shared across their object-creation -> ref-update window, so ``--prune=now`` can never
+    delete an object a writer is about to reference.  Acquisition waits a bounded
+    ``_GC_LOCK_WAIT_S`` for writers to finish (a non-blocking attempt would starve
+    maintenance entirely under continuous concurrent writes, which is how a store grows
+    unbounded) and then skips the round rather than queueing behind it (a concurrent gc is
+    a safe maintenance skip).  A gc failure is visible at warning level and triggers an
+    unresolvable-ref repair + one retry.
+    Returns True when the store was maintained or the skip was deliberate.
+    """
+    with _store_lock(store, exclusive=True, blocking=True, timeout=_GC_LOCK_WAIT_S) as held:
+        if not held:
+            logger.info("Checkpoint store maintenance skipped: another process is writing to or "
+                        "maintaining %s", store)
+            return False
+        _run_git(["reflog", "expire", "--expire=now", "--all"], store, working_dir)
+        ok, _, err = _run_git(["gc", "--prune=now", "--quiet"], store, working_dir, timeout=_GIT_TIMEOUT * 3)
+        _repair_bare_repo_dirs(store)
+        if ok:
+            return True
+        logger.warning("Checkpoint store gc failed (rc!=0) — repairing unresolvable refs and retrying: %s",
+                       err or "no stderr")
+        healed = _repair_unresolvable_refs(store, working_dir, locked=True)
+        if healed["repaired"] or healed["deleted"]:
+            ok, _, err = _run_git(["gc", "--prune=now", "--quiet"], store, working_dir, timeout=_GIT_TIMEOUT * 3)
+            if ok:
+                logger.warning("Checkpoint store gc recovered after repairing %d unresolvable ref(s) "
+                               "(%d restored, %d dropped)", healed["repaired"] + healed["deleted"],
+                               healed["repaired"], healed["deleted"])
+                return True
+        logger.error("Checkpoint store left unmaintained: gc keeps failing (%s)", err or "rc!=0")
         return False
-    _run_git(["update-ref", ref, tip], store, working_dir)
-    return True
-
-
-def _gc_store(store: Path, working_dir: str) -> None:
-    """Reclaim objects unreachable from the (rewritten/deleted) refs."""
-    _run_git(["reflog", "expire", "--expire=now", "--all"], store, working_dir)
-    _run_git(["gc", "--prune=now", "--quiet"], store, working_dir, timeout=_GIT_TIMEOUT * 3)
-    _repair_bare_repo_dirs(store)
 
 
 def _drop_oldest_commit(store: Path, working_dir: str, ref: str) -> bool:
@@ -350,17 +682,60 @@ def _drop_oldest_commit(store: Path, working_dir: str, ref: str) -> bool:
 
 
 def _shrink_store_to_cap(store: Path, working_dir: str, cap_bytes: int) -> bool:
-    """Round-robin-drop the oldest commit per project ref until the store fits (bounded to 20
-    rounds against pathological loops).  False when there are no project refs."""
-    for _ in range(20):
+    """Drop the oldest commit per project ref, reclaiming between rounds, until the store fits.
+
+    Returns True only when the store is *observably* under ``cap_bytes`` afterwards.
+    Unconvergeable stores (nothing left to drop, gc unavailable) report False so callers
+    stop claiming success — the previous version returned True unconditionally, which let a
+    store 55x over its cap report healthy maintenance on every single tool call.
+    """
+    _repair_unresolvable_refs(store, working_dir)  # unresolvable refs fail every gc
+    for _ in range(_SHRINK_MAX_ROUNDS):
         if _dir_size_bytes(store) <= cap_bytes:
-            break
+            return True
         refs = _list_project_refs(store, working_dir)
-        if not refs:
-            return False
-        if not any([_drop_oldest_commit(store, working_dir, ref) for ref in refs]):
+        # Drop from every project (round-robin) before reclaiming: `git gc` is what makes
+        # the space observable, so without a pass the loop would shred history for nothing.
+        dropped = any([_drop_oldest_commit(store, working_dir, ref) for ref in refs]) if refs else False
+        if not _gc_store(store, working_dir):
             break
-    return True
+        if not dropped:
+            break
+    size = _dir_size_bytes(store)
+    if size <= cap_bytes:
+        return True
+    logger.warning("Checkpoint store did not converge under its %.2f MB cap (actual %.2f MB)",
+                   cap_bytes / _MB, size / _MB)
+    return False
+
+
+def _cap_retry_marker(store: Path) -> Path:
+    return store / _CAP_RETRY_MARKER_NAME
+
+
+def _cap_retry_cooling_down(store: Path) -> bool:
+    """True while a size-cap pass that could not converge is inside its backoff window.
+
+    Without this backoff the whole (expensive) sequence — size walk, repair, ref rewrites,
+    gc — ran on *every* write tool call, which is what turned one broken ref into 100+
+    doomed gc attempts a minute.
+    """
+    try:
+        stamp = float(_cap_retry_marker(store).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    return 0 <= time.time() - stamp < _CAP_RETRY_COOLDOWN_S
+
+
+def _arm_cap_retry_marker(store: Path) -> None:
+    try:
+        _cap_retry_marker(store).write_text(str(time.time()), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write checkpoint cap retry marker: %s", exc)
+
+
+def _clear_cap_retry_marker(store: Path) -> None:
+    _unlink_quiet(_cap_retry_marker(store))
 
 
 def _migrate_legacy_store(base: Path) -> Optional[Path]:
@@ -540,8 +915,10 @@ def _locate(working_dir: str, commit_hash: str,
 
 
 def _stage_all(p: _ProjectRefs) -> Tuple[bool, str, str]:
-    """``git add -A`` into the per-project index."""
-    return _run_git(["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file)
+    """``git add -A`` into the per-project index, under the store's shared lock so a
+    concurrent ``git gc`` cannot prune the freshly written blobs while they are unreferenced."""
+    with _store_lock(p.store, exclusive=False, blocking=True, timeout=_LOCK_WAIT_S):
+        return _run_git(["add", "-A"], p.store, p.abs_dir, timeout=_GIT_TIMEOUT * 2, index_file=p.index_file)
 
 
 def _diff_staged_tree(p: _ProjectRefs, *diff_args: List[str]) -> List[Tuple[bool, str, str]]:
@@ -823,9 +1200,27 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
         ref_commit = _ref_tip(p.store, working_dir, p.ref)
-        _seed_project_index(p, ref_commit)
+        # The shared lock spans object creation -> ref update: a concurrent
+        # `git gc --prune=now` from another Hermes process must not delete the blobs or the
+        # commit we are about to reference (that race leaves a ref pointing at a missing
+        # object, which then fails every later gc).  Bounded and fail-open: a checkpoint
+        # must never stall the tool call that triggered it.
+        with _store_lock(p.store, exclusive=False, blocking=True, timeout=_LOCK_WAIT_S) as locked:
+            if not locked:
+                logger.warning("Checkpoint %s: store maintenance lock busy — snapshotting without "
+                               "gc exclusion", working_dir)
+            if not self._commit_snapshot(p, working_dir, reason, ref_commit):
+                return False
 
-        # Broad patterns come from the exclude file; oversize paths are dropped post-stage.
+        self._prune(p.store, working_dir, p.ref)
+        self._enforce_size_cap(p.store)
+        return True
+
+    def _commit_snapshot(self, p: _ProjectRefs, working_dir: str, reason: str,
+                         ref_commit: Optional[str]) -> bool:
+        """Stage, commit and move the ref.  Called with the store's shared lock held (when the
+        lock could be acquired); returns False on any failed step (never raises)."""
+        _seed_project_index(p, ref_commit)
         ok, _, err = _stage_all(p)
         if not ok:
             return _step_failed("git-add", err)
@@ -848,10 +1243,16 @@ class CheckpointManager:
         ok, _, err = _run_git(update_args, p.store, working_dir)
         if not ok:
             return _step_failed("update-ref", err)
+        if not _object_present(p.store, working_dir, new_sha):
+            # A foreign gc (another build, a hand-run `git gc`) pruned the object between
+            # commit-tree and update-ref.  Undo the ref move rather than leave a ref that
+            # points at nothing and blocks every future gc.
+            _rollback_ref(p.store, working_dir, p.ref, ref_commit, new_sha)
+            logger.warning("Checkpoint %s: object %s vanished before the ref update "
+                           "(concurrent gc?) — snapshot skipped", working_dir, new_sha[:12])
+            return False
 
         logger.debug("Checkpoint taken in %s: %s (%s)", working_dir, reason, new_sha[:8])
-        self._prune(p.store, working_dir, p.ref)
-        self._enforce_size_cap(p.store)
         return True
 
     def _exceeds_size_cap(self, path: Path) -> bool:
@@ -892,15 +1293,32 @@ class CheckpointManager:
             _gc_store(store, working_dir)
 
     def _enforce_size_cap(self, store: Path) -> None:
-        """Drop oldest checkpoints across ALL projects until under ``max_total_size_mb``."""
+        """Drop oldest checkpoints across ALL projects until under ``max_total_size_mb``.
+
+        Reports honestly: when the store cannot be brought under the cap the failure is a
+        warning (with the actionable next step) and the pass backs off, instead of silently
+        re-running — and silently succeeding — on every write tool call.
+        """
         cap_bytes = self.max_total_size_mb * _MB
-        size = _dir_size_bytes(store) if cap_bytes > 0 else 0
+        if cap_bytes <= 0:
+            return
+        if _cap_retry_cooling_down(store):
+            logger.debug("Checkpoint store over cap; maintenance in backoff for %ds", int(_CAP_RETRY_COOLDOWN_S))
+            return
+        size = _dir_size_bytes(store)
         if size <= cap_bytes:
+            _clear_cap_retry_marker(store)
             return
         logger.info("Checkpoint store exceeded %d MB (actual %d MB) — pruning oldest",
                     self.max_total_size_mb, size // _MB)
         if _shrink_store_to_cap(store, str(store.parent), cap_bytes):
-            _gc_store(store, str(store.parent))
+            _clear_cap_retry_marker(store)
+            return
+        _arm_cap_retry_marker(store)
+        logger.warning("Checkpoint store is still over its %d MB cap (actual %d MB) after maintenance; "
+                       "next attempt in %ds — run 'hermes checkpoints status' / 'hermes checkpoints repair' "
+                       "to diagnose", self.max_total_size_mb, _dir_size_bytes(store) // _MB,
+                       int(_CAP_RETRY_COOLDOWN_S))
 
 
 def _step_failed(step: str, err: str) -> bool:
@@ -1083,12 +1501,40 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     if _store_has_head(store):
         _prune_v2_projects(store, cutoff, delete_orphans, orphan_allowlist, result)
         _gc_store(store, str(base))
-        if max_total_size_mb > 0:
-            _shrink_store_to_cap(store, str(base), max_total_size_mb * _MB)
-            _gc_store(store, str(base))
+        if max_total_size_mb > 0 and not _shrink_store_to_cap(store, str(base), max_total_size_mb * _MB):
+            # Reported, not swallowed: a store that could not be brought under the cap is a
+            # failure the operator has to see (it used to read as success every single time).
+            result["errors"] += 1
+            _arm_cap_retry_marker(store)
 
     result["bytes_freed"] = max(result["bytes_freed"], size_before - _dir_size_bytes(base))
     return result
+
+
+def repair_store(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+    """Repair the shared store's refs: drop any ref whose tip object is missing.
+
+    Such a ref (typically a loose ref that shadows a valid packed-ref, left behind by a gc
+    that raced a checkpoint's ``update-ref``) makes every later ``git gc`` fail with
+    "does not point to a valid object!", so the store can never be reclaimed and stays over
+    its size cap.  Only refs that resolve to nothing are touched — a loose ref with a valid
+    packed twin only loses its shadow, so no reachable history is dropped.  Never raises.
+    Returns ``{"scanned", "repaired", "deleted", "errors"}``.
+    """
+    out = {"scanned": 0, "repaired": 0, "deleted": 0, "errors": 0}
+    # ``_store_path().parent`` == the active base on every revision (it resolves the
+    # profile-scoped base where that refactor exists) — an explicit override still wins.
+    base = checkpoint_base or _store_path().parent
+    store = _store_path(base)
+    if not _store_has_head(store):
+        return out
+    healed = _repair_unresolvable_refs(store, str(base))
+    out.update({k: healed.get(k, 0) for k in out})
+    if healed["repaired"] or healed["deleted"]:
+        # The repair only becomes observable space once the objects are reclaimed.
+        _gc_store(store, str(base))
+        _clear_cap_retry_marker(store)
+    return out
 
 
 def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: int = 24, delete_orphans: bool = True,
@@ -1130,13 +1576,16 @@ def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: in
 
 def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     """Summarise the shadow store: ``{"base", "store_size_bytes", "legacy_size_bytes",
-    "total_size_bytes", "project_count", "projects", "pre_v2_projects", "legacy_archives"}``.
-    ``pre_v2_projects`` are repos still on the pre-v2 layout, distinct from the migrated
-    ``legacy_archives``; an orphan-deletion preview must include both ``projects`` and
-    ``pre_v2_projects`` since ``prune_checkpoints`` sweeps both."""
+    "total_size_bytes", "project_count", "projects", "pre_v2_projects", "legacy_archives",
+    "unresolvable_refs"}``.  ``pre_v2_projects`` are repos still on the pre-v2 layout, distinct
+    from the migrated ``legacy_archives``; an orphan-deletion preview must include both
+    ``projects`` and ``pre_v2_projects`` since ``prune_checkpoints`` sweeps both.
+    ``unresolvable_refs`` are refs whose tip object is missing — they block every ``git gc``
+    until ``repair_store`` / ``hermes checkpoints repair`` removes them."""
     base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict = {"base": str(base), "store_size_bytes": 0, "legacy_size_bytes": 0, "total_size_bytes": 0,
-                 "project_count": 0, "projects": [], "pre_v2_projects": [], "legacy_archives": []}
+                 "project_count": 0, "projects": [], "pre_v2_projects": [], "legacy_archives": [],
+                 "unresolvable_refs": []}
     if not base.exists():
         return out
 
@@ -1150,6 +1599,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
                 "created_at": meta.get("created_at"), "last_touch": meta.get("last_touch"),
                 "commits": _ref_commit_count(store, str(base), _ref_name(meta.get("_hash") or "")),
             } for meta in _list_projects(store)]
+            out["unresolvable_refs"] = [ref for ref, _ in _missing_tips(store, str(base), _candidate_refs(store))]
     out["project_count"] = len(out["projects"])
     out["pre_v2_projects"] = [{"path": str(r["path"]), "workdir": r["workdir"], "exists": r["exists"]}
                               for r in _pre_v2_shadow_repos(base)]

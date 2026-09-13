@@ -4139,6 +4139,53 @@ describe('openNewSessionTile workspace target', () => {
 
     expect(createParams).not.toHaveProperty('cwd')
   })
+
+  it('creates a bots-workspace tile as a visible session — the scope is placement, not plumbing', async () => {
+    // Regression: a generic New-session tab opened while the Bots workspace is
+    // active is an ordinary user conversation. It used to be persisted with
+    // `hidden: true` purely because of its workspace scope, so it disappeared
+    // from the Sessions sidebar and its search once persisted. Canonical Bot
+    // Chats and group-member rooms keep their own hidden flags, set by the
+    // hermes-bots plugin in its own session.create calls.
+    let createParams: Record<string, unknown> | undefined
+
+    // A route rides along, so the create goes through the routed gateway
+    // (requestGatewayForAgent), not the harness's ambient requestGateway.
+    const routedCreate = vi.mocked(requestGatewayForAgent)
+
+    routedCreate.mockImplementation(async (_connectionId: null | string, _profile: string, method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-bots-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={vi.fn(async () => ({}) as never)} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', {
+        listed: false,
+        route: {
+          connectionId: 'connection-a',
+          mode: 'local',
+          profile: 'default',
+          targetProfile: 'default'
+        },
+        workspaceScope: { workspaceMode: 'bots', workspaceOwnerKey: 'bot:connection-a::default' }
+      })
+    })
+
+    expect(createParams).not.toHaveProperty('hidden')
+  })
 })
 describe('selectSidebarItem', () => {
   it('fronts the workspace pane when navigating to a sidebar route (issue #72602)', async () => {

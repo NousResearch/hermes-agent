@@ -1,7 +1,8 @@
 """Matrix gateway adapter (any homeserver, via mautrix; optional E2EE with ``mautrix[encryption]``).
 
 Env vars (config.yaml ``matrix:`` keys alias several — env wins):
-  MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN (preferred) | MATRIX_USER_ID + MATRIX_PASSWORD;
+  MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN + MATRIX_REFRESH_TOKEN (preferred)
+  | MATRIX_USER_ID + MATRIX_PASSWORD;
   MATRIX_E2EE_MODE off|optional|required (legacy MATRIX_ENCRYPTION=true => required);
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
@@ -20,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import array
 import inspect
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -28,6 +31,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
@@ -359,9 +363,155 @@ def _resolve_max_message_length(config) -> int:
 # the multiplex gateway imports this once and a module constant would collide every profile's Olm
 # identity in one crypto.db.
 # Store directory for E2EE keys and sync state. Mirrors the pairing-store fix (a6397c379). See #89168.
-from hermes_constants import get_hermes_dir as _get_hermes_dir
+from hermes_constants import get_hermes_dir as _get_hermes_dir, get_hermes_home
+from utils import atomic_json_write
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
+
+
+class _MatrixRefreshError(RuntimeError):
+    """Raw Matrix refresh failure, including logout semantics."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        errcode: str = "",
+        message: str = "Matrix token refresh failed",
+        soft_logout: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.errcode = errcode
+        self.soft_logout = soft_logout
+
+
+class _MatrixTokenPersistenceError(RuntimeError):
+    """Raised when a rotated Matrix token pair cannot be stored safely."""
+
+
+def _matrix_token_bootstrap_fingerprint(
+    *,
+    homeserver: str,
+    user_id: str,
+    device_id: str,
+    access_token: str,
+    refresh_token: str,
+) -> str:
+    """Return a non-reversible identity for the static bootstrap authority."""
+    raw = json.dumps(
+        {
+            "homeserver": homeserver,
+            "user_id": user_id,
+            "device_id": device_id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+class _MatrixTokenStore:
+    """Profile-scoped, locked store for one active Matrix token pair."""
+
+    _process_locks: dict[str, threading.Lock] = {}
+    _process_locks_guard = threading.Lock()
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock_path = path.with_suffix(".lock")
+
+    def _process_lock(self) -> threading.Lock:
+        key = str(self.lock_path.resolve(strict=False))
+        with self._process_locks_guard:
+            return self._process_locks.setdefault(key, threading.Lock())
+
+    @contextmanager
+    def _locked(self):
+        """Serialize reads and writes across threads and processes."""
+        with self._process_lock():
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.lock_path.open("a+b") as handle:
+                try:
+                    os.chmod(self.lock_path, 0o600)
+                except OSError:
+                    pass
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    if self.lock_path.stat().st_size == 0:
+                        handle.write(b" ")
+                        handle.flush()
+                        handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    if os.name == "nt":
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def load(self, bootstrap_fingerprint: str) -> Optional[Dict[str, str]]:
+        with self._locked():
+            try:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return None
+            except Exception:
+                logger.warning(
+                    "Matrix: ignoring unreadable runtime token state at %s",
+                    self.path,
+                )
+                return None
+
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != 1:
+            return None
+        if payload.get("bootstrap_fingerprint") != bootstrap_fingerprint:
+            logger.info(
+                "Matrix: static bootstrap credentials changed; ignoring saved runtime tokens"
+            )
+            return None
+        access_token = str(payload.get("access_token", "") or "")
+        refresh_token = str(payload.get("refresh_token", "") or "")
+        if not access_token:
+            return None
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+
+    def save(
+        self,
+        *,
+        bootstrap_fingerprint: str,
+        homeserver: str,
+        user_id: str,
+        device_id: str,
+        access_token: str,
+        refresh_token: str,
+    ) -> None:
+        payload = {
+            "version": 1,
+            "bootstrap_fingerprint": bootstrap_fingerprint,
+            "homeserver": homeserver,
+            "user_id": user_id,
+            "device_id": device_id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+        with self._locked():
+            atomic_json_write(self.path, payload, mode=0o600, sort_keys=True)
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -823,12 +973,37 @@ class MatrixAdapter(BasePlatformAdapter):
         # default's E2EE device id).
         self._homeserver: str = (config.extra.get("homeserver", "") or _startup_env_secret("MATRIX_HOMESERVER")).rstrip("/")
         self._access_token: str = config.token or _startup_env_secret("MATRIX_ACCESS_TOKEN")
+        self._refresh_token: str = config.extra.get(
+            "refresh_token", ""
+        ) or _startup_env_secret("MATRIX_REFRESH_TOKEN")
         self._user_id: str = config.extra.get("user_id", "") or _startup_env_secret("MATRIX_USER_ID")
         self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
         self._device_id: str = config.extra.get("device_id", "") or _startup_env_secret("MATRIX_DEVICE_ID")
         self._device_id_unverified: bool = False
+        self._bootstrap_access_token = self._access_token
+        self._credential_identity = self._bootstrap_access_token or (
+            f"{self._homeserver}\0{self._user_id}"
+            if self._homeserver and self._user_id
+            else ""
+        )
+
+        # Static config/.env/vault values bootstrap the first login. Thereafter
+        # the profile-scoped runtime pair is authoritative until an operator
+        # changes the account/device identity or a bootstrap token, which
+        # changes this fingerprint and explicitly invalidates the saved pair.
+        self._bootstrap_fingerprint = _matrix_token_bootstrap_fingerprint(
+            homeserver=self._homeserver,
+            user_id=self._user_id,
+            device_id=self._device_id,
+            access_token=self._access_token,
+            refresh_token=self._refresh_token,
+        )
+        self._token_store = _MatrixTokenStore(
+            get_hermes_home() / "platforms" / "matrix" / "session_tokens.json"
+        )
+        self._runtime_tokens_loaded = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._store_dir: Optional[Path] = None  # pinned per profile in connect()
@@ -1101,6 +1276,243 @@ class MatrixAdapter(BasePlatformAdapter):
             client.device_id)
 
     @staticmethod
+    def _is_unknown_token_error(error: Any) -> bool:
+        """Return whether Matrix explicitly rejected the access token."""
+        return str(getattr(error, "errcode", "") or "").upper() == "M_UNKNOWN_TOKEN"
+
+    async def _load_runtime_tokens(self) -> None:
+        """Load the authoritative runtime pair without blocking the event loop."""
+        if self._runtime_tokens_loaded:
+            return
+        runtime_tokens = await asyncio.to_thread(
+            self._token_store.load,
+            self._bootstrap_fingerprint,
+        )
+        self._runtime_tokens_loaded = True
+        if runtime_tokens:
+            self._access_token = runtime_tokens["access_token"]
+            self._refresh_token = runtime_tokens["refresh_token"]
+
+    async def _persist_token_response(
+        self, api: Any, resp: Dict[str, Any], source: str
+    ) -> None:
+        """Persist a Matrix token response before making its access token active."""
+        access_token = str(resp.get("access_token", "") or "")
+        if not access_token:
+            raise _MatrixTokenPersistenceError(
+                f"{source} response did not include an access token"
+            )
+        refresh_token = str(resp.get("refresh_token", "") or self._refresh_token)
+
+        try:
+            await asyncio.to_thread(
+                self._token_store.save,
+                bootstrap_fingerprint=self._bootstrap_fingerprint,
+                homeserver=self._homeserver,
+                user_id=self._user_id,
+                device_id=str(
+                    getattr(self._client, "device_id", "") or self._device_id
+                ),
+                access_token=access_token,
+                refresh_token=refresh_token,
+            )
+        except Exception as exc:
+            raise _MatrixTokenPersistenceError(
+                "could not persist the Matrix runtime token pair"
+            ) from exc
+
+        self._refresh_token = refresh_token
+        self._access_token = access_token
+        api.token = access_token
+
+    async def _request_refresh_token(self, api: Any) -> Dict[str, Any]:
+        """Call Matrix /refresh while retaining raw logout response fields."""
+        url = urljoin(
+            f"{self._homeserver.rstrip('/')}/",
+            "_matrix/client/v3/refresh",
+        )
+        async with api.session.request(
+            "POST",
+            url,
+            json={"refresh_token": self._refresh_token},
+        ) as response:
+            try:
+                payload = await response.json(content_type=None)
+            except TypeError:
+                payload = await response.json()
+            except Exception:
+                payload = {}
+
+            if not isinstance(payload, dict):
+                payload = {}
+            status = int(getattr(response, "status", 0) or 0)
+            if 200 <= status < 300:
+                return payload
+            raise _MatrixRefreshError(
+                status=status,
+                errcode=str(payload.get("errcode", "") or ""),
+                message=str(payload.get("error", "") or "Matrix token refresh failed"),
+                soft_logout=payload.get("soft_logout") is True,
+            )
+
+    async def _refresh_access_token(self, api: Any) -> None:
+        """Refresh and persist the Matrix token pair before using it."""
+        if not self._refresh_token:
+            raise ValueError("no Matrix refresh token is configured")
+
+        resp = await self._request_refresh_token(api)
+        await self._persist_token_response(api, resp, "refresh")
+
+    async def _login_with_password(self, api: Any, client: Any) -> None:
+        """Log in with the configured password while preserving the device ID."""
+        from mautrix.api import HTTPAPI
+
+        login_content = {
+            "type": "m.login.password",
+            "identifier": {
+                "type": "m.id.user",
+                "user": self._user_id,
+            },
+            "password": self._password,
+            "initial_device_display_name": "Hermes Agent",
+            "refresh_token": True,
+        }
+        live_device_id = str(getattr(client, "device_id", "") or self._device_id)
+        if live_device_id:
+            login_content["device_id"] = live_device_id
+
+        # A live reauthentication starts with an expired bearer token. Use a
+        # tokenless wrapper over the same session so /login cannot inherit it.
+        login_api = HTTPAPI(
+            base_url=self._homeserver,
+            token="",
+            client_session=api.session,
+        )
+        resp = await login_api.request(
+            "POST",
+            "_matrix/client/v3/login",
+            login_content,
+            sensitive=True,
+        )
+        resolved_user_id = str(resp.get("user_id", "") or self._user_id)
+        resolved_device_id = str(resp.get("device_id", "") or live_device_id)
+        self._user_id = resolved_user_id
+        client.mxid = UserID(resolved_user_id)
+        if resolved_device_id:
+            client.device_id = resolved_device_id
+        await self._persist_token_response(api, resp, "login")
+
+    @staticmethod
+    def _refresh_error_retryable(exc: BaseException) -> bool:
+        if isinstance(exc, _MatrixRefreshError):
+            return exc.status == 429 or exc.status >= 500
+        status = getattr(exc, "http_status", None)
+        if isinstance(status, int):
+            return status == 429 or status >= 500
+        if isinstance(exc, (asyncio.TimeoutError, OSError)):
+            return True
+        try:
+            from mautrix.errors import MatrixConnectionError
+
+            if isinstance(exc, MatrixConnectionError):
+                return True
+        except ImportError:
+            pass
+        try:
+            import aiohttp
+
+            return isinstance(exc, aiohttp.ClientError)
+        except ImportError:
+            return False
+
+    async def _fail_token_recovery(
+        self,
+        exc: BaseException,
+        *,
+        notify: bool,
+        reauthentication: bool = False,
+    ) -> bool:
+        retryable = self._refresh_error_retryable(exc)
+        if isinstance(exc, _MatrixTokenPersistenceError):
+            code = "matrix_token_persist_failed"
+            message = "Matrix rotated tokens could not be persisted safely"
+            retryable = False
+        elif reauthentication:
+            code = "matrix_reauthentication_failed"
+            message = "Matrix password reauthentication failed"
+        elif isinstance(exc, _MatrixRefreshError) and not retryable:
+            code = "matrix_refresh_token_rejected"
+            message = "Matrix refresh token was rejected"
+        else:
+            code = "matrix_token_refresh_failed"
+            message = "Matrix access-token refresh failed"
+
+        logger.error("%s — stopping sync", message, exc_info=True)
+        self._set_fatal_error(code, message, retryable=retryable)
+        if notify:
+            await self._notify_fatal_error()
+        return False
+
+    async def _recover_expired_access_token(
+        self,
+        api: Any,
+        client: Any,
+        *,
+        notify: bool,
+    ) -> bool:
+        if not self._refresh_token:
+            message = "Matrix access token expired and no refresh token is configured"
+            logger.error("%s — stopping sync", message)
+            self._set_fatal_error(
+                "matrix_refresh_token_missing", message, retryable=False
+            )
+            if notify:
+                await self._notify_fatal_error()
+            return False
+
+        try:
+            await self._refresh_access_token(api)
+            return True
+        except _MatrixRefreshError as exc:
+            if exc.soft_logout:
+                if not (self._password and self._user_id):
+                    message = "Matrix requires password reauthentication after soft logout"
+                    self._set_fatal_error(
+                        "matrix_reauthentication_required",
+                        message,
+                        retryable=False,
+                    )
+                    if notify:
+                        await self._notify_fatal_error()
+                    return False
+                try:
+                    await self._login_with_password(api, client)
+                    logger.info(
+                        "Matrix: refresh token soft-logged out; password reauthentication succeeded"
+                    )
+                    return True
+                except Exception as login_exc:
+                    return await self._fail_token_recovery(
+                        login_exc,
+                        notify=notify,
+                        reauthentication=True,
+                    )
+            return await self._fail_token_recovery(exc, notify=notify)
+        except Exception as exc:
+            return await self._fail_token_recovery(exc, notify=notify)
+
+    async def _refresh_sync_access_token(self, api: Any) -> bool:
+        """Refresh an expired sync token, returning whether sync may resume."""
+        if not await self._recover_expired_access_token(
+            api,
+            self._client,
+            notify=True,
+        ):
+            return False
+        logger.info("Matrix: refreshed expired access token; resuming sync")
+        return True
+
+    @staticmethod
     async def _abort_connect(api: Any, crypto_db: Any = None) -> bool:
         """Close what connect() opened so far; always False so callers can ``return await``."""
         if crypto_db is not None:
@@ -1113,7 +1525,19 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._access_token:
             api.token = self._access_token
             try:
-                resp = await client.whoami()
+                try:
+                    resp = await client.whoami()
+                except Exception as exc:
+                    if not self._is_unknown_token_error(exc):
+                        raise
+                    if not await self._recover_expired_access_token(
+                        api,
+                        client,
+                        notify=False,
+                    ):
+                        return await self._abort_connect(api)
+                    resp = await client.whoami()
+                    logger.info("Matrix: recovered expired access token")
                 resolved_user_id = getattr(resp, "user_id", "") or self._user_id
                 resolved_device_id = str(getattr(resp, "device_id", "") or "")
                 if resolved_user_id:
@@ -1158,11 +1582,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 return await self._abort_connect(api)
         elif self._password and self._user_id:
             try:
-                resp = await client.login(
-                    identifier=self._user_id, password=self._password, device_name="Hermes Agent",
-                    device_id=self._device_id or None)
-                if resp and hasattr(resp, "device_id"):
-                    client.device_id = resp.device_id
+                # mautrix's typed LoginResponse drops the refresh_token field,
+                # so the helper uses the raw response and persists the pair.
+                await self._login_with_password(api, client)
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
                 logger.error("Matrix: login failed — %s", exc)
@@ -1305,18 +1727,43 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: initial sync error: %s", exc)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Acquire the credential lock, then connect to the Matrix homeserver."""
         self._device_id_unverified = False
+        await self._load_runtime_tokens()
         if self._client is not None:
             try:
                 await self.disconnect()
             except Exception as exc:
                 logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
-        from mautrix.api import HTTPAPI
-        from mautrix.client import Client
-        from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
         if not self._homeserver:
             logger.error("Matrix: homeserver URL not configured")
             return False
+
+        lock_identity = self._credential_identity or self._bootstrap_fingerprint
+        if not self._acquire_platform_lock(
+            "matrix-credential", lock_identity, "Matrix credential"
+        ):
+            return False
+
+        try:
+            connected = await self._connect_after_platform_lock(
+                is_reconnect=is_reconnect
+            )
+        except BaseException:
+            self._release_platform_lock()
+            raise
+        if not connected:
+            self._release_platform_lock()
+        return connected
+
+    async def _connect_after_platform_lock(
+        self, *, is_reconnect: bool = False
+    ) -> bool:
+        """Connect after ``connect`` has reserved this Matrix credential."""
+        from mautrix.api import HTTPAPI
+        from mautrix.client import Client
+        from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
+
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
         self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
         client_session = _create_matrix_session(self._proxy_url)
@@ -1353,6 +1800,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        self._release_platform_lock()
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -1818,10 +2266,18 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 # 45s outer cap guards TCP-level hangs the 30s long-poll timeout can't catch.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
-                # Auth failures (M_UNKNOWN_TOKEN) arrive as SyncError objects, not exceptions.
+                # Some sync auth failures are returned as error objects rather
+                # than raised. Handle both forms before the generic retry path.
                 _sync_msg = getattr(sync_data, "message", None)
-                if isinstance(_sync_msg, str) and "unknown_token" in _sync_msg.lower():
-                    logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
+                _sync_unknown_token = self._is_unknown_token_error(sync_data)
+                if _sync_msg and isinstance(_sync_msg, str):
+                    _lower = _sync_msg.lower()
+                    _sync_unknown_token = _sync_unknown_token or (
+                        "m_unknown_token" in _lower or "unknown_token" in _lower
+                    )
+                if _sync_unknown_token:
+                    if await self._refresh_sync_access_token(client.api):
+                        continue
                     return
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
@@ -1830,6 +2286,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 return
             except Exception as exc:
                 if self._closing:
+                    return
+                if self._is_unknown_token_error(exc):
+                    if await self._refresh_sync_access_token(client.api):
+                        continue
                     return
                 if any(k in str(exc).lower() for k in ("401", "403", "unauthorized", "forbidden")):
                     logger.error("Matrix: permanent auth error: %s — stopping sync", exc)

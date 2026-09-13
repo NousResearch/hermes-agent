@@ -1457,6 +1457,10 @@ class GatewayAdapterLifecycleMixin:
         # Many adapters (Discord) keep the token on `config`; without that fallback the check is skipped.
         candidates = [
             (adapter, attr) for attr in (
+                # Adapters with non-token authentication expose a stable external
+                # account identity so multiplex preflight can reject duplicates.
+                # The value is hashed below and never logged.
+                "_credential_identity",
                 "token", "bot_token", "_token", "api_token", "_bot_token",
                 "_project_secret",  # Photon/Spectrum: project credentials, not a bot token
                 "_app_id",  # Feishu/Lark app_id — stable, log-safe, already the _app_lock_identity

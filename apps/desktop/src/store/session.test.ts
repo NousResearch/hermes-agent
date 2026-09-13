@@ -49,6 +49,7 @@ import {
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  runtimeBelongsToComposerScope,
   sessionBelongsToProfile,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
@@ -392,6 +393,37 @@ describe('resolveComposerSessionKey', () => {
 
   it('falls back to the live id when the tip row is not loaded yet', () => {
     expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
+  })
+})
+
+describe('runtimeBelongsToComposerScope', () => {
+  it('keeps historical steer when either id is missing', () => {
+    expect(runtimeBelongsToComposerScope(null, 'root-b', [])).toBe(true)
+    expect(runtimeBelongsToComposerScope('root-a', null, [])).toBe(true)
+  })
+
+  it('keeps historical steer when the session list has not loaded yet', () => {
+    // Both ids present but no lineage evidence available — treat as unknown
+    // rather than declaring a mismatch and dropping into a real submit.
+    expect(runtimeBelongsToComposerScope('root-a', 'root-b', [])).toBe(true)
+    expect(runtimeBelongsToComposerScope('tip-a', 'root-a', [])).toBe(true)
+  })
+
+  it('allows the same conversation across compression tip rotation', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(runtimeBelongsToComposerScope('tip-a', 'root-a', sessions)).toBe(true)
+    expect(runtimeBelongsToComposerScope('root-a', 'tip-a', sessions)).toBe(true)
+  })
+
+  it('refuses to treat a leftover busy runtime as the composer that already moved', () => {
+    const sessions = [
+      session({ id: 'tip-a', _lineage_root_id: 'root-a' }),
+      session({ id: 'tip-b', _lineage_root_id: 'root-b' })
+    ]
+
+    expect(runtimeBelongsToComposerScope('tip-a', 'root-b', sessions)).toBe(false)
+    expect(runtimeBelongsToComposerScope('root-a', 'root-b', sessions)).toBe(false)
   })
 })
 

@@ -110,6 +110,30 @@ def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: An
     return pop(handle, **kwargs)
 
 
+def _handle_still_on_stack(relay: Any, handle: Any) -> bool | None:
+    """Whether *handle* is still present on the relay's scope stack.
+
+    Returns:
+        ``True``  — present, so a failed pop is a genuine LIFO violation, not a stale handle.
+        ``False`` — provably absent, so treating the pop as already-done is safe.
+        ``None``  — the stack cannot be inspected, so absence is **not** proven.
+
+    ``get_scope_stack()`` returns the live stack as a list on some builds and only the top handle on
+    others (see ``_current_top``), so both shapes are handled. With only the top handle exposed, a
+    different handle is indistinguishable from "ours is buried beneath it", hence ``None`` rather
+    than ``False``.
+    """
+    try:
+        stack = relay.get_scope_stack()
+    except Exception:  # noqa: BLE001 — an inspection failure must not read as absence
+        return None
+    if stack is None:
+        return False
+    if isinstance(stack, (list, tuple)):
+        return any(_same_handle(entry, handle) for entry in stack)
+    return True if _same_handle(stack, handle) else None
+
+
 def safe_pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: Any = None, timestamp: Any = None) -> Any:
     """Like :func:`pop_relay_scope`, but tolerant of a stale/already-popped handle.
 
@@ -133,11 +157,17 @@ def safe_pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadat
     except RuntimeError as exc:
         if "scope handle is not at the top of the stack" not in str(exc):
             raise
-        # Handle was already popped by an earlier drain / interrupt path.
-        # The scope is gone; treat the pop as successful and log for forensics.
+        # That message is the vendor's generic LIFO complaint, not a stale-handle diagnosis: it
+        # fires both when our handle is already gone AND when it is still live but buried under a
+        # nested model/tool scope. Treating the second case as success would let the caller forget a
+        # task whose scope is still on the stack, leaving later cleanup to orphan-cancel it and lose
+        # the completion metrics. So swallow ONLY when the handle is provably absent; an
+        # uninspectable stack re-raises rather than guessing.
+        if _handle_still_on_stack(relay, handle) is not False:
+            raise
         import logging
         logging.getLogger(__name__).info(
-            "safe_pop_relay_scope: handle %r already drained; treating as success.",
+            "safe_pop_relay_scope: handle %r is no longer on the scope stack; treating as popped.",
             handle,
         )
         return None

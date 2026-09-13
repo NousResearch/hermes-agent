@@ -47,14 +47,25 @@ if str(REPO_ROOT) not in sys.path:
 from agent import relay_runtime
 
 
-def _make_relay(raises: Exception | None):
-    """Build a mock relay whose scope.pop raises the given exception (or not)."""
+def _make_relay(raises: Exception | None, *, stack=None, stack_raises: Exception | None = None):
+    """Build a mock relay whose scope.pop raises the given exception (or not).
+
+    ``stack`` is what ``get_scope_stack()`` reports, so tests can express the two situations the
+    vendor message conflates: our handle is genuinely gone, or it is still live but not on top.
+    """
     relay = MagicMock()
     if raises is None:
         relay.scope.pop.return_value = None
     else:
         relay.scope.pop.side_effect = raises
+    if stack_raises is not None:
+        relay.get_scope_stack.side_effect = stack_raises
+    else:
+        relay.get_scope_stack.return_value = stack
     return relay
+
+
+_VENDOR_ERROR = RuntimeError("invalid argument: scope handle is not at the top of the stack")
 
 
 # ---- strict pop_relay_scope: drain contract preserved -----------------------
@@ -92,23 +103,68 @@ def test_safe_pop_relay_scope_returns_none_on_clean_pop():
     assert result is None
 
 
-def test_safe_pop_relay_scope_swallows_vendor_runtime_error():
-    """Finalization/cleanup callers use the safe helper so a stale handle
-    is treated as a no-op success."""
-    relay = _make_relay(
-        RuntimeError("invalid argument: scope handle is not at the top of the stack")
-    )
+def test_safe_pop_relay_scope_swallows_when_handle_is_provably_gone():
+    """Finalization/cleanup callers use the safe helper, and the handle is absent from the stack.
+
+    Absence is what makes this a stale-handle case. The vendor message alone does not establish it —
+    see the live-but-buried case below.
+    """
+    relay = _make_relay(_VENDOR_ERROR, stack=["h-other"])
     result = relay_runtime.safe_pop_relay_scope(relay, handle="h-stale")
     assert result is None
 
 
+def test_safe_pop_relay_scope_swallows_when_the_stack_is_empty():
+    relay = _make_relay(_VENDOR_ERROR, stack=[])
+    assert relay_runtime.safe_pop_relay_scope(relay, handle="h-stale") is None
+
+
+def test_safe_pop_relay_scope_reraises_when_handle_is_live_but_not_top():
+    """The reviewers' case, and the one that used to be silently mishandled.
+
+    'not at the top of the stack' also fires when our handle is still live beneath a nested
+    model/tool scope. Swallowing that makes the caller forget a task whose scope is still on the
+    stack, so it must propagate instead.
+    """
+    relay = _make_relay(_VENDOR_ERROR, stack=["h-child", "h-ours"])
+    with pytest.raises(RuntimeError, match="scope handle is not at the top of the stack"):
+        relay_runtime.safe_pop_relay_scope(relay, handle="h-ours")
+
+
+def test_safe_pop_relay_scope_reraises_when_absence_cannot_be_proven():
+    """An uninspectable stack must not read as 'already popped'."""
+    relay = _make_relay(_VENDOR_ERROR, stack_raises=RuntimeError("stack unavailable"))
+    with pytest.raises(RuntimeError, match="scope handle is not at the top of the stack"):
+        relay_runtime.safe_pop_relay_scope(relay, handle="h-ours")
+
+
+def test_safe_pop_relay_scope_reraises_when_only_the_top_handle_is_exposed():
+    """Single-handle builds cannot distinguish 'gone' from 'buried', so they must fail closed."""
+    relay = _make_relay(_VENDOR_ERROR, stack="h-someone-else")
+    with pytest.raises(RuntimeError, match="scope handle is not at the top of the stack"):
+        relay_runtime.safe_pop_relay_scope(relay, handle="h-ours")
+
+
+def test_safe_pop_relay_scope_tolerates_same_handle_matched_by_uuid():
+    """Stack entries may be distinct Python objects wrapping the same native scope."""
+
+    class _Handle:
+        def __init__(self, uuid):
+            self.uuid = uuid
+
+    ours = _Handle("u-1")
+    relay = _make_relay(_VENDOR_ERROR, stack=[_Handle("u-other"), _Handle("u-1")])
+    with pytest.raises(RuntimeError, match="scope handle is not at the top of the stack"):
+        relay_runtime.safe_pop_relay_scope(relay, handle=ours)
+
+
 def test_safe_pop_relay_scope_propagates_unrelated_errors():
-    relay = _make_relay(ValueError("something completely different"))
+    relay = _make_relay(ValueError("something completely different"), stack=[])
     with pytest.raises(ValueError, match="something completely different"):
         relay_runtime.safe_pop_relay_scope(relay, handle="h-x")
 
 
 def test_safe_pop_relay_scope_propagates_keyerror():
-    relay = _make_relay(KeyError("nope"))
+    relay = _make_relay(KeyError("nope"), stack=[])
     with pytest.raises(KeyError):
         relay_runtime.safe_pop_relay_scope(relay, handle="h-x")

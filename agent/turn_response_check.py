@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.turn_api_call import stop_thinking_spinner
+from agent.turn_context import note_completed_api_call
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
 from agent.turn_usage import record_response_usage
 
@@ -109,6 +110,7 @@ def check_api_response(
         )
 
     api_duration = time.time() - api_start_time
+    note_completed_api_call(agent, api_duration)
 
     # Silent stop: the response box / tool messages that follow are more informative.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)

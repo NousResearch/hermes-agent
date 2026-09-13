@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import _IngressAuthorizationFacts, _ingress_snapshot
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
@@ -155,6 +156,51 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
         chat_type="dm",
     )
     assert runner._is_user_authorized(source) is True
+
+
+def test_ingress_snapshot_simplex_display_name_auth_matches_live_predicate(monkeypatch):
+    """The public snapshot omits display-name PII while private auth parity remains exact."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
+
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+    event = MessageEvent(
+        text="private",
+        message_id="simplex-observer-1",
+        source=SessionSource(
+            platform=simplex,
+            user_id="4",
+            chat_id="hujikuji",
+            user_name="hujikuji",
+            chat_type="dm",
+        ),
+    )
+    snapshot = _ingress_snapshot(event)
+
+    assert not hasattr(snapshot.source, "user_name")
+    assert runner._is_user_authorized_for_source(event.source) is True
+    assert runner._ingress_authorization_verdict(
+        snapshot,
+        authorization_facts=_IngressAuthorizationFacts(user_name="hujikuji"),
+    ) is True
+    assert runner._ingress_authorization_verdict(
+        snapshot,
+        authorization_facts=_IngressAuthorizationFacts(user_name="someone-else"),
+    ) is False
 
 
 def test_telegram_group_users_legacy_chat_ids_still_authorize(monkeypatch):

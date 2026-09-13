@@ -32,6 +32,53 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True, slots=True)
+class IngressSourceSnapshot:
+    """Detached, scalar-only source facts exposed to ingress observers.
+
+    This is intentionally not a :class:`SessionSource`: plugin code cannot mutate
+    live routing/authentication state through it. Only fields needed to identify
+    and scope an intake are represented; core-only auth inputs stay private.
+    """
+
+    platform: str
+    chat_id: str
+    chat_type: str
+    user_id: Optional[str]
+    user_id_alt: Optional[str]
+    chat_id_alt: Optional[str]
+    thread_id: Optional[str]
+    scope_id: Optional[str]
+    parent_chat_id: Optional[str]
+    message_id: Optional[str]
+    profile: Optional[str]
+    is_bot: bool
+    role_authorized: bool
+    delivered_via_upstream_relay: bool
+    profile_route_rejected: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IngressEventSnapshot:
+    """Immutable, body-free adapter-ingress observation payload.
+
+    Raw SDK objects, message/reply bodies, metadata, local media paths, and all
+    mutable collections are deliberately omitted. ``observation_id`` is a
+    process-local nonce for adapters without a stable transport receipt.
+    """
+
+    observation_id: str
+    source: IngressSourceSnapshot
+    message_type: str
+    message_id: Optional[str]
+    platform_update_id: Optional[int]
+    media_count: int
+    media_types: tuple[str, ...]
+    internal: bool
+    allow_gateway_control: bool
+    timestamp_iso: str
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""

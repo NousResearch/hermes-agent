@@ -24,12 +24,16 @@ explicitly declares the flag; every direct network-exposed adapter leaves it
 ``False`` and the env-allowlist default-deny is unchanged.
 """
 
+import dataclasses
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import _IngressAuthorizationFacts, _ingress_snapshot
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -147,6 +151,47 @@ def test_relay_message_with_underlying_discord_platform_authorized(monkeypatch):
     assert runner._is_user_authorized(src) is True
 
 
+def test_ingress_snapshot_relay_trust_matches_live_predicate_without_side_effects(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    runner, adapter = _make_runner(
+        platform=Platform.RELAY, authorization_is_upstream=True
+    )
+    runner._sessions = {}
+    runner._hm_offer_pairing_code = lambda *_a, **_kw: pytest.fail(
+        "authorization peek must not offer pairing"
+    )
+    event = MessageEvent(
+        text="private",
+        message_id="relay-observer-1",
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            user_id="267171776755269633",
+            chat_id="1400724139874058314",
+            chat_type="dm",
+            delivered_via_upstream_relay=True,
+        ),
+    )
+    snapshot = _ingress_snapshot(event)
+    facts = _IngressAuthorizationFacts(user_name=None)
+
+    assert runner._is_user_authorized_for_source(event.source) is True
+    assert runner._ingress_authorization_verdict(
+        snapshot, authorization_facts=facts
+    ) is True
+    untrusted = dataclasses.replace(
+        snapshot,
+        source=dataclasses.replace(
+            snapshot.source, delivered_via_upstream_relay=False
+        ),
+    )
+    assert runner._ingress_authorization_verdict(
+        untrusted, authorization_facts=facts
+    ) is False
+    assert adapter.send.await_count == 0
+    assert runner._sessions == {}
+    runner.pairing_store._is_rate_limited.assert_not_called()
+
+
 def test_event_from_wire_stamps_routed_profile():
     """A connector-routed profile on the wire source lands on SessionSource.
 
@@ -171,5 +216,3 @@ def test_event_from_wire_stamps_routed_profile():
         }
     )
     assert event.source.profile == "reviewer"
-
-

@@ -44,6 +44,11 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "pre_verify", "on_session_start", "on_session_end",
 }
 
+# Adapter ingress is before queue/drop and must never wait on an untrusted plugin
+# for the general 30-second hook timeout. Snapshot immutability makes abandoning a
+# timed-out worker routing-safe; the running-callback guard prevents thread pileup.
+_GATEWAY_INGRESS_OBSERVER_TIMEOUT_SECS = 0.05
+
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
@@ -149,25 +154,26 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 class PluginDispatchMixin:
     @staticmethod
-    def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
-        """Invoke a hook while withholding additive fields from narrow legacy callbacks.
-
-        An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
-        are (loop-safe), otherwise the bare coroutine object is appended to the results and the
-        plugin's body never runs (#12449).
-        """
-        from hermes_cli.plugins import resolve_plugin_command_result
+    def _call_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Call a hook while withholding additive fields from narrow callbacks."""
         try:
             parameters = inspect.signature(callback).parameters
         except (TypeError, ValueError):
-            return resolve_plugin_command_result(callback(**payload))  # no introspectable signature
+            return callback(**payload)  # no introspectable signature
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-            return resolve_plugin_command_result(callback(**payload))
+            return callback(**payload)
         keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        return resolve_plugin_command_result(callback(**{
+        return callback(**{
             name: value for name, value in payload.items()
             if name in parameters and parameters[name].kind in keyword_kinds
-        }))
+        })
+
+    @classmethod
+    def _invoke_hook_callback(cls, callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Invoke a hook and resolve legacy async callback results loop-safely."""
+        from hermes_cli.plugins import resolve_plugin_command_result
+
+        return resolve_plugin_command_result(cls._call_hook_callback(callback, payload))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
@@ -185,7 +191,11 @@ class PluginDispatchMixin:
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
-        use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
+        if hook_name == "gateway_ingress_observed":
+            timeout = _GATEWAY_INGRESS_OBSERVER_TIMEOUT_SECS
+            use_timeout = True
+        else:
+            use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
@@ -196,12 +206,32 @@ class PluginDispatchMixin:
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    # This observer is strictly synchronous. Registration rejects
+                    # async functions; a sync function returning an awaitable is
+                    # handed back to the runner, which closes/cancels it safely.
+                    if hook_name == "gateway_ingress_observed":
+                        ret = self._call_hook_callback(cb, kwargs)
+                    else:
+                        ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                if hook_name == "gateway_ingress_observed":
+                    # This pre-routing observer must not turn arbitrary plugin
+                    # exception text/reprs into a private-data logging channel.
+                    logger.warning(
+                        "Hook '%s' callback %s raised (%s)",
+                        hook_name,
+                        getattr(cb, "__name__", type(cb).__name__),
+                        type(exc).__name__,
+                    )
+                else:
+                    logger.warning(
+                        "Hook '%s' callback %s raised: %s",
+                        hook_name,
+                        getattr(cb, "__name__", repr(cb)),
+                        exc,
+                    )
         return results
 
     def _run_hook_callback_bounded(
@@ -210,7 +240,11 @@ class PluginDispatchMixin:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
         suppressed, still running, timed out (worker abandoned, never joined), or the worker
         could not be started. Exceptions propagate."""
-        callback_name = getattr(cb, "__name__", repr(cb))
+        callback_name = (
+            getattr(cb, "__name__", type(cb).__name__)
+            if hook_name == "gateway_ingress_observed"
+            else getattr(cb, "__name__", repr(cb))
+        )
         callback_key = (hook_name, id(cb))
         token = object()
         with self._hook_timeout_lock:
@@ -237,7 +271,12 @@ class PluginDispatchMixin:
 
         def _runner() -> None:
             try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                invoke = (
+                    self._call_hook_callback
+                    if hook_name == "gateway_ingress_observed"
+                    else self._invoke_hook_callback
+                )
+                outcome["value"] = context.run(invoke, cb, kwargs)
             except Exception as exc:
                 failure["exc"] = exc
             finally:

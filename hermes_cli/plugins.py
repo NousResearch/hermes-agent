@@ -131,6 +131,11 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # gateway_ingress_observed: observer-only adapter boundary for every normalized MessageEvent,
+    # including internal and active-session busy traffic, BEFORE queue/drop. Kwargs: snapshot
+    # (detached frozen scalar-only, body/raw payload/metadata/media paths omitted), session_key,
+    # authorized (True/False/None; None = internal or auth unavailable). Return values are ignored.
+    "gateway_ingress_observed",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
     # platform, reason, invalidation_reason. Return values are ignored.
@@ -903,6 +908,13 @@ class PluginContext:
 
     def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
+        if hook_name == "gateway_ingress_observed" and (
+            inspect.iscoroutinefunction(callback)
+            or inspect.iscoroutinefunction(getattr(callback, "__call__", None))
+        ):
+            raise ValueError(
+                "gateway_ingress_observed requires a fast synchronous callback"
+            )
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
 
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:

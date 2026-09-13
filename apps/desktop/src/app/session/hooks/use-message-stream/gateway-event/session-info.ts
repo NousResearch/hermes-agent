@@ -255,10 +255,33 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }
     }
 
-    if (sessionId && hasStatePatch) {
+    if (sessionId && (hasStatePatch || payload?.usage)) {
       updateSessionState(
         sessionId,
-        state => applySessionInfoStatePatch(state, statePatch),
+        state => {
+          const nextState = hasStatePatch ? applySessionInfoStatePatch(state, statePatch) : state
+
+          if (!payload?.usage) {
+            return nextState
+          }
+
+          const previousUsage = nextState.usage
+
+          return {
+            ...nextState,
+            usage: {
+              ...previousUsage,
+              ...payload.usage,
+              calls: payload.usage.calls ?? previousUsage?.calls ?? 0,
+              // session.info is authoritative: omission means unavailable, not
+              // "reuse the previous runtime's compression count".
+              compressions: payload.usage.compressions,
+              input: payload.usage.input ?? previousUsage?.input ?? 0,
+              output: payload.usage.output ?? previousUsage?.output ?? 0,
+              total: payload.usage.total ?? previousUsage?.total ?? 0
+            }
+          }
+        },
         payload?.stored_session_id || undefined
       )
     }
@@ -400,7 +423,11 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (payload?.usage && (!explicitSid || isActiveEvent)) {
-      setCurrentUsage(current => ({ ...current, ...payload.usage }))
+      setCurrentUsage(current => ({
+        ...current,
+        ...payload.usage,
+        compressions: payload.usage.compressions
+      }))
     }
 
     requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)

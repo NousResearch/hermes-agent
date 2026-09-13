@@ -1594,7 +1594,16 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'usage'
+    | 'yolo'
   >
 >
 
@@ -1726,11 +1735,28 @@ export function applyRuntimeInfo(
     sessionState.yolo = info.yolo
   }
 
+  if (info.usage) {
+    // Runtime info is an authoritative snapshot. Keep a complete per-runtime
+    // usage object so a secondary tile can render immediately after create/resume;
+    // an omitted compression count intentionally clears a stale tile value.
+    sessionState.usage = {
+      ...info.usage,
+      calls: info.usage.calls ?? 0,
+      compressions: info.usage.compressions,
+      input: info.usage.input ?? 0,
+      output: info.usage.output ?? 0,
+      total: info.usage.total ?? 0
+    }
+  }
+
   if (foreground) {
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      setCurrentUsage(current => ({ ...current, ...info.usage }))
+      // session.info/session.resume is an authoritative session snapshot, not a
+      // partial live tick. Clear a missing compression count so switching from
+      // a counted session to an older/cold runtime cannot leak the old value.
+      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
     }
   }
 
@@ -1741,6 +1767,10 @@ export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
   storedSessionId: null | string
 ) {
+  // Compression count is live runtime state, not part of a durable session row.
+  // Drop the previous session's value immediately while the selected runtime
+  // resumes; the authoritative usage snapshot will repopulate it when present.
+  setCurrentUsage(current => ({ ...current, compressions: undefined }))
   setCurrentModel(stored?.model || '')
   setCurrentProvider('')
   setCurrentReasoningEffort('')

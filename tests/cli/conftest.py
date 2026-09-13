@@ -24,7 +24,83 @@ is a no-op when prompt_toolkit isn't importable and cheap otherwise (the
 property re-creates lazily).
 """
 
+import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from threading import Thread
+from types import SimpleNamespace
+
 import pytest
+
+
+@dataclass
+class LiveTui:
+    """Reusable real prompt-toolkit application harness for worker-stream tests."""
+
+    app: object
+    pipe: object
+    editor: object
+
+    async def run_worker(self, callback, *args) -> None:
+        errors = []
+
+        def run():
+            try:
+                callback(*args)
+            except BaseException as error:  # propagate worker failures to the test loop
+                errors.append(error)
+
+        worker = Thread(target=run, daemon=True)
+        worker.start()
+        while worker.is_alive():
+            await asyncio.sleep(.01)
+        if errors:
+            raise errors[0]
+
+
+@pytest.fixture
+def live_tui():
+    @asynccontextmanager
+    async def start(cli, *, preview_window):
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.layout import HSplit, Layout
+        from prompt_toolkit.output import DummyOutput
+        from prompt_toolkit.widgets import TextArea
+
+        with create_pipe_input() as pipe:
+            editor = TextArea(prompt='> ')
+            app = Application(layout=Layout(HSplit([preview_window(cli), editor]),
+                                             focused_element=editor),
+                              input=pipe, output=DummyOutput())
+            cli._app = app
+            task = asyncio.create_task(app.run_async(set_exception_handler=False))
+            try:
+                while not app.is_running:
+                    if task.done():
+                        await task
+                    await asyncio.sleep(0)
+                yield LiveTui(app, pipe, editor)
+            finally:
+                if app.is_running:
+                    app.exit()
+                await task
+
+    return start
+
+
+@pytest.fixture
+def codex_bridge():
+    """Build the Codex event adapter against a test CLI's real callbacks."""
+    from agent.codex_runtime import make_codex_app_server_event_bridge
+
+    def build(cli):
+        return make_codex_app_server_event_bridge(SimpleNamespace(
+            _fire_stream_delta=cli._stream_delta,
+            tool_progress_callback=cli._on_tool_progress,
+        ))
+
+    return build
 
 
 @pytest.fixture(autouse=True)

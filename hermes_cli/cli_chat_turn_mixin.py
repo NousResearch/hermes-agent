@@ -47,7 +47,7 @@ class CLIChatTurnMixin:
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
-        if self.agent is None:
+        if self.agent is None and getattr(self, "final_response_markdown", "strip") != "render":
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
                                 request_overrides=turn_route.get("request_overrides")):
@@ -69,8 +69,9 @@ class CLIChatTurnMixin:
         if isinstance(message, SubagentNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        print(flush=True)
+        if getattr(self, "final_response_markdown", "strip") != "render":
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            print(flush=True)
 
         turn = _ChatTurn()
         try:
@@ -182,8 +183,9 @@ class CLIChatTurnMixin:
                     _cprint(f"  {_DIM}⚠ skipped {len(_skipped)} unreadable image path(s){_RST}")
                 if any(p.get("type") == "image_url" for p in _parts):
                     _img_names = ", ".join(Path(p).name for p in _img_str_paths)
-                    _cprint(f"  {_DIM}📎 attaching {len(images)} image(s) natively "
-                            f"(model supports vision): {_img_names}{_RST}")
+                    if getattr(self, "final_response_markdown", "strip") != "render":
+                        _cprint(f"  {_DIM}📎 attaching {len(images)} image(s) natively "
+                                f"(model supports vision): {_img_names}{_RST}")
                     return _parts
                 # All images unreadable — fall back to text enrichment.
             except Exception as _img_exc:
@@ -527,17 +529,19 @@ class CLIChatTurnMixin:
                     break
             combined = "\n".join(all_parts)
             preview = combined[:50] + ("..." if len(combined) > 50 else "")
-            if len(all_parts) > 1:
-                print(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
-            else:
-                print(f"\n⚡ Sending after interrupt: '{preview}'")
+            from hermes_cli.cli_conversation_display import print_notification
+            label = f"Sending {len(all_parts)} messages after interrupt" if len(all_parts) > 1 else "Sending after interrupt"
+            if not print_notification(self, label, preview):
+                print(f"\n⚡ {label}: '{preview}'")
             self._pending_input.put(combined)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None
         if _leftover_steer:
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-            print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+            from hermes_cli.cli_conversation_display import print_notification
+            if not print_notification(self, "Steering queued for next turn", preview):
+                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
             self._pending_input.put(_leftover_steer)
 
         return response
@@ -624,6 +628,9 @@ class CLIChatTurnMixin:
                 _post_stream_text = _post_stream_transform_output(response, turn.result)
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
+            elif self.final_response_markdown == "render":
+                from hermes_cli.cli_markdown_stream import print_markdown
+                print_markdown(response, label=True)
             else:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),

@@ -58,6 +58,20 @@ hermes -w                         # Interactive mode in worktree
 hermes -w -z "Fix issue #123"     # Single query in worktree
 ```
 
+### Readable Markdown
+
+To render Markdown responses live in the classic Python CLI, merge this under
+`display` in `~/.hermes/config.yaml`, then restart Hermes:
+
+```yaml
+display:
+  final_response_markdown: render
+  streaming: true
+```
+
+The default `strip` mode remains unchanged. This setting does not affect
+`hermes --tui` or gateway responses.
+
 ### Worktree cleanup
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.

@@ -385,7 +385,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         }
       })
 
-      if (result?.applied?.display_name !== true || result.applied.ui_meta !== true) {
+      if (result?.applied?.display_name === false || result?.applied?.ui_meta === false) {
         throw new Error('Gateway did not persist the bot title.')
       }
 
@@ -400,7 +400,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
       saveBotMeta(draft, { title: meta.title })
     ])
 
-    if (profileResult?.applied?.display_name !== true || botResult.serverOutcome === 'failed') {
+    if (profileResult?.applied?.display_name === false || botResult.serverOutcome === 'failed') {
       throw new Error('Gateway did not persist the bot title.')
     }
   }
@@ -538,7 +538,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     setError(null)
 
     try {
-      const draftAlreadyCreated = Boolean(createdRef.current)
+      const draftMaterializationStarted = Boolean(createdRef.current || flightRef.current)
       const slugCreated = await ensureAgentCreated()
 
       if (!slugCreated) {
@@ -548,7 +548,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return
       }
 
-      if (draftAlreadyCreated) {
+      if (draftMaterializationStarted) {
         await reconcileDraftIdentity(slugCreated)
       }
 

@@ -18,6 +18,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '../../test/deferred'
 import type * as DataModule from './data'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
@@ -36,7 +37,7 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   notifyError: vi.fn(),
   request: vi.fn(),
-  requestProfile: vi.fn(async () => ({})),
+  requestProfile: vi.fn(async (..._args: unknown[]) => ({})),
   saveBotMeta: vi.fn(),
   skillsView: [] as SkillsViewProps[]
 }))
@@ -144,6 +145,7 @@ beforeEach(() => {
   mocks.skillsView.length = 0
   mocks.connections.mockResolvedValue([])
   mocks.requestProfile.mockResolvedValue({})
+  mocks.saveBotMeta.mockResolvedValue({ serverOutcome: 'persisted', serverPersisted: true })
   mocks.request.mockImplementation(async (method: string) => {
     switch (method) {
       case 'mcp.catalog':
@@ -218,20 +220,45 @@ describe('materializing the draft profile', () => {
 
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
     expect(createCalls()).toHaveLength(1)
-    expect(configureCalls()).toEqual(
-      expect.arrayContaining([
-        ['profiles.configure', { display_name: 'Inbox Captain', name: 'inbox-triage' }],
-        [
-          'profiles.configure',
-          expect.objectContaining({
-            name: 'inbox-triage',
-            ui_meta: expect.objectContaining({
-              'hermes-bots': expect.objectContaining({ title: 'Inbox Captain' })
-            })
-          })
-        ]
-      ])
-    )
+    expect(configureCalls()).toContainEqual([
+      'profiles.configure',
+      { display_name: 'Inbox Captain', name: 'inbox-triage' }
+    ])
+    expect(mocks.saveBotMeta).toHaveBeenLastCalledWith('inbox-triage', { title: 'Inbox Captain' })
+  })
+
+  it('reconciles a title changed while local draft materialization is in flight', async () => {
+    const creation = deferred<Record<string, never>>()
+    mocks.saveBotMeta.mockResolvedValue({ serverOutcome: 'persisted', serverPersisted: true })
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === 'profiles.create') {
+        return creation.promise
+      }
+
+      if (method === 'profiles.describe') {
+        return { mcp_servers: [], skills: [], toolsets: [] }
+      }
+
+      return {}
+    })
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Inbox Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    expect(createCalls()).toHaveLength(1)
+
+    creation.resolve({})
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(createCalls()).toHaveLength(1)
+    expect(configureCalls()).toContainEqual([
+      'profiles.configure',
+      { display_name: 'Inbox Captain', name: 'inbox-triage' }
+    ])
+    expect(mocks.saveBotMeta).toHaveBeenLastCalledWith('inbox-triage', { title: 'Inbox Captain' })
   })
 
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {
@@ -239,8 +266,8 @@ describe('materializing the draft profile', () => {
       { id: 'local', label: 'This Mac' },
       { id: 'studio', label: 'Studio' }
     ])
-    mocks.requestProfile.mockImplementation(async (_route, method) =>
-      method === 'profiles.configure' ? { applied: { display_name: true, ui_meta: true } } : {}
+    mocks.requestProfile.mockImplementation(async (...args: unknown[]) =>
+      args[1] === 'profiles.configure' ? { applied: { display_name: true, ui_meta: true } } : {}
     )
 
     await renderDialog(true)
@@ -281,6 +308,49 @@ describe('materializing the draft profile', () => {
         })
       )
     )
+  })
+
+  it('reconciles a title changed while remote draft materialization is in flight', async () => {
+    const creation = deferred<Record<string, never>>()
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+    mocks.requestProfile.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === 'profiles.create') {
+        return creation.promise
+      }
+
+      return {}
+    })
+    await renderDialog(true)
+
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() =>
+      expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1)
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Remote Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    creation.resolve({})
+
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'profiles.configure',
+        expect.objectContaining({
+          display_name: 'Remote Captain',
+          name: 'inbox-triage',
+          ui_meta: expect.objectContaining({
+            'hermes-bots': expect.objectContaining({ title: 'Remote Captain' })
+          })
+        })
+      )
+    )
+    expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1)
   })
 
   it('creates it on the first MCP setup click, then adds the server to it', async () => {

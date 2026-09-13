@@ -59,11 +59,20 @@ _ROLES = frozenset({"leaf", "orchestrator"})
 # Nested delegation is granted by depth/role in _build_child_agent, never by the
 # model naming toolsets (there is no model-facing toolsets argument).
 def _normalize_role(r: Optional[str]) -> str:
-    """'leaf' | 'orchestrator'; None/empty/unknown -> 'leaf' (unknown warns)."""
+    """'leaf' | 'orchestrator' | a configured bounded role name
+    (delegation.roles in config.yaml); None/empty/unknown -> 'leaf' (unknown warns).
+
+    Configured bounded roles pass through unchanged; _build_child_agent
+    resolves them via tools.agent_roles.resolve_role. Unknown strings still
+    degrade to 'leaf' with a warning (bounded-override invariant).
+    """
     r_norm = str(r).strip().lower() if r else "leaf"
     if r_norm not in _ROLES:
-        logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
-        return "leaf"
+        from tools.agent_roles import get_agent_roles
+
+        if r_norm not in get_agent_roles():
+            logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
+            return "leaf"
     return r_norm
 
 DEFAULT_MAX_ITERATIONS = 250
@@ -188,6 +197,16 @@ def _build_child_agent(
     max_spawn = _get_max_spawn_depth()
     effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
 
+    # ── Bounded custom roles (Codex agent_roles semantic) ────────────────
+    # A configured role may customize the child's instructions, point it at
+    # a model, or trim its toolsets — but never raise it above the parent's
+    # authority.  Instructions are appended (never replace), the model
+    # override only picks a string (credentials stay inherited), and
+    # enabled_toolsets are intersected below with the parent-derived set.
+    from tools.agent_roles import resolve_role
+
+    custom_role = resolve_role(role)
+
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
@@ -202,6 +221,14 @@ def _build_child_agent(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
+    # Bounded role override: append role instructions (never replace the
+    # base child prompt) and intersect the role's enabled_toolsets with the
+    # parent-derived set (never widen).
+    if custom_role is not None:
+        from tools.agent_roles import apply_role_instructions, apply_role_toolsets
+
+        child_prompt = apply_role_instructions(child_prompt, custom_role)
+        child_toolsets = apply_role_toolsets(child_toolsets, custom_role)
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
@@ -214,8 +241,19 @@ def _build_child_agent(
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
     )
+    # Bounded role model override sits between the caller-supplied model and
+    # the parent inherit (a role may point the child at a cheaper/faster
+    # model, but can never mint credentials the parent lacks).
+    # _resolve_child_runtime applies `model or parent_agent.model`, so
+    # resolving caller > role > parent here preserves that precedence at the
+    # (Sep-2026 decomposition) credential-resolution site.
+    child_model = model
+    if custom_role is not None:
+        from tools.agent_roles import apply_role_model
+
+        child_model = apply_role_model(custom_role, model, parent_agent.model) or ""
     rt = _resolve_child_runtime(
-        parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
+        parent_agent, delegation_cfg, parent_api_key, model=child_model, override_provider=override_provider,
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,

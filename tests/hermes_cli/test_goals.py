@@ -926,3 +926,207 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     finally:
         goals._DB_CACHE.clear()
         registry.release_or_close(db)
+# ──────────────────────────────────────────────────────────────────────
+# Typed landing data model + bounded change receipts
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalLanding:
+    def test_old_json_without_landing_loads_clean(self):
+        from hermes_cli.goals import GoalState
+
+        state = GoalState.from_json('{"goal": "old goal", "turns_used": 1}')
+        assert state.contract.landing is None
+        assert state.receipts == []
+
+    def test_valid_landing_roundtrips_through_goal_state(self):
+        from hermes_cli.goals import GoalState, GoalContract, GoalLanding
+
+        state = GoalState(
+            goal="ship it",
+            contract=GoalContract(
+                outcome="released",
+                landing=GoalLanding(
+                    required_state="LIVE_ACCEPTED",
+                    targets=["https://example.com/health", "prod release tag v2"],
+                    live_probe="curl -fsS https://example.com/health",
+                    restart_required=True,
+                ),
+            ),
+        )
+        restored = GoalState.from_json(state.to_json())
+        assert restored.contract.landing == GoalLanding(
+            required_state="LIVE_ACCEPTED",
+            targets=["https://example.com/health", "prod release tag v2"],
+            live_probe="curl -fsS https://example.com/health",
+            restart_required=True,
+        )
+        block = restored.contract.render_block()
+        assert "LIVE_ACCEPTED" in block and "health" in block
+        assert not restored.contract.is_empty()
+
+    def test_landing_from_dict_strips_and_uppercases_state(self):
+        from hermes_cli.goals import GoalLanding
+
+        landing = GoalLanding.from_dict({"required_state": " committed "})
+        assert landing.required_state == "COMMITTED"
+
+    def test_bad_enum_rejected(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding.from_dict({"required_state": "MAYBE"})
+
+    def test_unknown_key_rejected(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding.from_dict({"targets": ["a"], "shell": "rm -rf /"})
+
+    def test_non_string_targets_rejected(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding.from_dict({"targets": [1, None]})
+
+    def test_non_bool_restart_rejected(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding.from_dict({"restart_required": "yes"})
+
+    def test_direct_constructor_rejects_bad_enum(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding(required_state="MAYBE")
+
+    def test_direct_constructor_rejects_non_string_targets(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding(targets=[42, "ok"])
+
+    def test_direct_constructor_rejects_bad_live_probe(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding(live_probe="   ")
+
+    def test_direct_constructor_rejects_non_bool_restart(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding(restart_required="yes")
+
+    def test_direct_constructor_normalizes_like_from_dict(self):
+        from hermes_cli.goals import GoalLanding
+
+        landing = GoalLanding(required_state=" committed ", targets=[" a ", "a"], live_probe=" curl ")
+        assert landing == GoalLanding.from_dict(
+            {"required_state": " committed ", "targets": [" a ", "a"], "live_probe": " curl "}
+        )
+        assert landing.required_state == "COMMITTED"
+        assert landing.targets == ["a"]
+        assert landing.live_probe == "curl"
+
+
+class TestChangeReceipt:
+    def test_receipt_roundtrips_through_goal_state(self):
+        from hermes_cli.goals import GoalState, ChangeReceipt
+
+        receipt = ChangeReceipt(
+            receipt_id="rc-1",
+            target="prod",
+            scope="deploy",
+            source_reference="git rev bf6762e",
+            state="COMMITTED",
+            issued_at=1234.5,
+            mutation_generation=3,
+            verification_generation=2,
+            runtime_issued=True,
+        )
+        restored = GoalState.from_json(GoalState(goal="g", receipts=[receipt]).to_json())
+        assert restored.receipts == [receipt]
+
+    def test_unknown_receipt_key_rejected(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        with pytest.raises(ValueError):
+            ChangeReceipt.from_dict({
+                "receipt_id": "rc-1", "target": "prod", "scope": "x",
+                "source_reference": "s", "state": "COMMITTED", "issued_at": 1.0,
+                "hack": True,
+            })
+
+    def test_bad_receipt_state_rejected(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        with pytest.raises(ValueError):
+            ChangeReceipt.from_dict({
+                "receipt_id": "rc-1", "target": "prod", "scope": "x",
+                "source_reference": "s", "state": "DONE", "issued_at": 1.0,
+            })
+
+    def test_direct_constructor_rejects_invalid_state(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        with pytest.raises(ValueError):
+            ChangeReceipt(
+                receipt_id="rc-1", target="prod", scope="deploy",
+                source_reference="s", state="MAYBE", issued_at=1.0,
+            )
+
+    def test_direct_constructor_rejects_bad_values(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        with pytest.raises(ValueError):
+            ChangeReceipt(
+                receipt_id="rc-1", target="prod", scope="deploy",
+                source_reference="s", state="COMMITTED", issued_at="soon",
+            )
+        with pytest.raises(ValueError):
+            ChangeReceipt(
+                receipt_id="rc-1", target="prod", scope="deploy",
+                source_reference="s", state="COMMITTED", issued_at=1.0,
+                mutation_generation=-1,
+            )
+        with pytest.raises(ValueError):
+            ChangeReceipt(
+                receipt_id="rc-1", target="prod", scope="deploy",
+                source_reference="s", state="COMMITTED", issued_at=1.0,
+                verification_generation=True,
+            )
+        with pytest.raises(ValueError):
+            ChangeReceipt(
+                receipt_id="rc-1", target="prod", scope="deploy",
+                source_reference="s", state="COMMITTED", issued_at=1.0,
+                runtime_issued="yes",
+            )
+
+    def test_receipts_bounded_to_32_via_add_receipt(self):
+        from hermes_cli.goals import GoalState, ChangeReceipt, MAX_CHANGE_RECEIPTS
+
+        assert MAX_CHANGE_RECEIPTS == 32
+        state = GoalState(goal="g")
+        for i in range(40):
+            state.add_receipt(ChangeReceipt(
+                receipt_id=f"rc-{i}", target="prod", scope="deploy",
+                source_reference="s", state="COMMITTED", issued_at=float(i),
+            ))
+        assert len(state.receipts) == 32
+        assert [r.receipt_id for r in state.receipts] == [f"rc-{i}" for i in range(8, 40)]
+
+    def test_receipts_bounded_to_32_on_load(self):
+        from hermes_cli.goals import GoalState, ChangeReceipt, MAX_CHANGE_RECEIPTS
+
+        receipts = [
+            ChangeReceipt(
+                receipt_id=f"rc-{i}", target="prod", scope="deploy",
+                source_reference="s", state="COMMITTED", issued_at=float(i),
+            )
+            for i in range(40)
+        ]
+        restored = GoalState.from_json(GoalState(goal="g", receipts=receipts).to_json())
+        assert len(restored.receipts) == MAX_CHANGE_RECEIPTS
+        assert restored.receipts[0].receipt_id == "rc-8"

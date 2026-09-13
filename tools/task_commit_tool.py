@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Optional
 
-from hermes_cli.goals import GoalContract, GoalManager
+from hermes_cli.goals import GoalContract, GoalLanding, GoalManager, LANDING_STATES
 from tools.registry import registry
 
 
@@ -54,6 +54,35 @@ TASK_COMMIT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Conditions that require BLOCKED/human intervention, never DONE.",
             },
+            "landing": {
+                "type": ["object", "null"],
+                "properties": {
+                    "required_state": {
+                        "type": "string",
+                        "enum": list(LANDING_STATES),
+                        "description": "The deployment state the deliverable must reach before the goal counts as landed.",
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Concrete landing targets (URLs, hosts, release tags). Must be non-empty.",
+                    },
+                    "live_probe": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Optional opaque reference or description for verifying the target is "
+                            "live (e.g. a probe name, URL, or check description). It is metadata "
+                            "only — task_commit never executes it."
+                        ),
+                    },
+                    "restart_required": {
+                        "type": "boolean",
+                        "description": "Whether a service restart is required for the landing to take effect.",
+                    },
+                },
+                "additionalProperties": False,
+                "description": "Typed landing metadata for the deliverable. Reject unknown keys; shell/command execution is never admitted here.",
+            },
         },
         "required": ["operation"],
         "additionalProperties": False,
@@ -95,6 +124,19 @@ def _items(value: Any, field: str) -> Optional[list[str]]:
     return cleaned
 
 
+def _landing(value: Any) -> Optional[GoalLanding]:
+    """Admit a typed landing object; reject unknown keys, invalid states, and empty/non-string
+    targets. Shell/command keys are unknown keys here — execution is never admitted."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("landing must be an object or null")
+    landing = GoalLanding.from_dict(value)
+    if not landing.targets:
+        raise ValueError("landing targets cannot be empty")
+    return landing
+
+
 def _field_items(value: str) -> list[str]:
     """Recover V1 list semantics while preserving legacy one-line GoalContract values."""
     if not value or not value.strip():
@@ -113,13 +155,14 @@ def _join_items(items: Iterable[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
-def _contract(outcome: str, verification: str, constraints, boundaries, stop_when) -> GoalContract:
+def _contract(outcome: str, verification: str, constraints, boundaries, stop_when, landing: Optional[GoalLanding] = None) -> GoalContract:
     return GoalContract(
         outcome=outcome,
         verification=verification,
         constraints=_join_items(constraints or []),
         boundaries=_join_items(boundaries or []),
         stop_when=_join_items(stop_when or []),
+        landing=landing,
     )
 
 
@@ -162,6 +205,7 @@ def task_commit(
     constraints: Optional[list[str]] = None,
     boundaries: Optional[list[str]] = None,
     stop_when: Optional[list[str]] = None,
+    landing: Optional[dict] = None,
 ) -> str:
     """Create, amend, or replace one session's persistent GoalContract."""
     try:
@@ -171,6 +215,10 @@ def task_commit(
         operation = str(operation or "").strip().lower()
         if operation not in {"create", "amend", "replace"}:
             raise ValueError("operation must be create, amend, or replace")
+
+        # Admission runs up front for every operation: a malformed landing payload is rejected
+        # even on amend, before any merge/persist logic runs.
+        landing_obj = _landing(landing)
 
         manager = GoalManager(session_id=sid)
         current = manager.state
@@ -187,6 +235,7 @@ def task_commit(
             proposed = _contract(
                 values["outcome"], values["verification"],
                 list_values["constraints"], list_values["boundaries"], list_values["stop_when"],
+                landing_obj,
             )
 
             if operation == "create" and has_goal:
@@ -234,6 +283,7 @@ def task_commit(
             constraints=_join_items(merged["constraints"]),
             boundaries=_join_items(merged["boundaries"]),
             stop_when=_join_items(merged["stop_when"]),
+            landing=landing_obj if landing is not None else old.landing,
         )
         if _same_contract(old, proposed):
             return json.dumps({"success": True, "result": "idempotent_noop", "goal": _snapshot(manager)}, ensure_ascii=False)
@@ -259,6 +309,7 @@ registry.register(
         constraints=args.get("constraints"),
         boundaries=args.get("boundaries"),
         stop_when=args.get("stop_when"),
+        landing=args.get("landing"),
     ),
     check_fn=check_task_commit_requirements,
 )

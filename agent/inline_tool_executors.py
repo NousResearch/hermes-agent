@@ -160,7 +160,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.task_commit_tool", "task_commit",
         ("operation", "operation", ""), ("objective", "objective"), ("outcome", "outcome"),
         ("verification", "verification"), ("constraints", "constraints"),
-        ("boundaries", "boundaries"), ("stop_when", "stop_when"),
+        ("boundaries", "boundaries"), ("stop_when", "stop_when"), ("landing", "landing"),
         session_id=lambda agent, ctx: getattr(agent, "session_id", "") or "",
     ),
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot

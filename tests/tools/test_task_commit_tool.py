@@ -410,3 +410,123 @@ def test_21_tui_stale_completion_emits_status_without_claiming_agent_turn(monkey
     ) is True
     claim_turn.assert_not_called()
     assert any(args[0] == "status.update" for args in emitted)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Typed landing admission
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_22_landing_create_persists_typed_contract():
+    result = call(
+        "landing-session", operation="create",
+        objective="Ship the landing page", outcome="Landing page is live",
+        verification="curl probe passes",
+        landing={
+            "required_state": "LIVE_ACCEPTED",
+            "targets": ["https://example.com/health", "release tag v2"],
+            "live_probe": "curl -fsS https://example.com/health",
+            "restart_required": True,
+        },
+    )
+    assert result["success"] and result["result"] == "created"
+    contract = GoalManager("landing-session").state.contract
+    assert contract.landing is not None
+    assert contract.landing.required_state == "LIVE_ACCEPTED"
+    assert contract.landing.targets == ["https://example.com/health", "release tag v2"]
+    assert contract.landing.live_probe.startswith("curl")
+    assert contract.landing.restart_required is True
+    assert result["goal"]["contract"]["landing"]["required_state"] == "LIVE_ACCEPTED"
+
+
+def test_23_landing_rejects_shell_and_command_keys():
+    for key in ("shell", "command"):
+        result = call(
+            "landing-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            landing={"required_state": "COMMITTED", "targets": ["a"], key: "rm -rf /"},
+        )
+        assert not result["success"], key
+        assert "landing" in result["error"]
+
+
+def test_24_landing_rejects_invalid_state():
+    result = call(
+        "landing-bad", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        landing={"required_state": "MAYBE", "targets": ["a"]},
+    )
+    assert not result["success"]
+    assert "landing" in result["error"]
+
+
+def test_25_landing_rejects_empty_and_non_string_targets():
+    for bad_targets in ([], [42], [None], "path"):
+        result = call(
+            "landing-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            landing={"required_state": "COMMITTED", "targets": bad_targets},
+        )
+        assert not result["success"], bad_targets
+        assert "landing" in result["error"]
+
+
+def test_26_landing_rejects_non_object():
+    result = call(
+        "landing-bad", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        landing="COMMITTED",
+    )
+    assert not result["success"]
+    assert "landing" in result["error"]
+
+
+def test_27_landing_unknown_key_rejected():
+    result = call(
+        "landing-bad", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        landing={"required_state": "COMMITTED", "targets": ["a"], "warp": True},
+    )
+    assert not result["success"]
+    assert "warp" in result["error"]
+
+
+def test_28_landing_amend_preserves_when_omitted_and_replaces_when_given():
+    call(
+        "landing-amend", operation="create",
+        objective="Ship it", outcome="Live", verification="Probe",
+        landing={"required_state": "STAGED", "targets": ["prod"]},
+    )
+    noop = call("landing-amend", operation="amend", constraints=["keep"])
+    assert noop["success"] and noop["result"] == "amended"
+    assert GoalManager("landing-amend").state.contract.landing.required_state == "STAGED"
+    replaced = call(
+        "landing-amend", operation="amend",
+        landing={"required_state": "DEPLOYED", "targets": ["prod", "staging"]},
+    )
+    assert replaced["success"] and replaced["result"] == "amended"
+    contract = GoalManager("landing-amend").state.contract
+    assert contract.landing.required_state == "DEPLOYED"
+    assert contract.landing.targets == ["prod", "staging"]
+    assert "keep" in contract.constraints
+
+
+def test_29_inline_executor_persists_landing():
+    agent = SimpleNamespace(session_id="inline-landing-session")
+    ctx = InlineToolContext(effective_task_id="turn")
+    result = json.loads(INLINE_TOOL_EXECUTORS["task_commit"](agent, {
+        "operation": "create", "objective": "Inline landing", "outcome": "Landed",
+        "verification": "Probe passes", "constraints": None, "boundaries": None, "stop_when": None,
+        "landing": {
+            "required_state": "LIVE_ACCEPTED",
+            "targets": ["https://example.com/health"],
+            "live_probe": "curl -fsS https://example.com/health",
+            "restart_required": True,
+        },
+    }, ctx))
+    assert result["success"] and result["result"] == "created"
+    landing = GoalManager("inline-landing-session").state.contract.landing
+    assert landing is not None
+    assert landing.required_state == "LIVE_ACCEPTED"
+    assert landing.targets == ["https://example.com/health"]
+    assert landing.restart_required is True

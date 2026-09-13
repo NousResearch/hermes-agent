@@ -277,6 +277,182 @@ _CONTRACT_ALIASES = {
 }
 
 
+# ── Typed landing + change receipts ──────────────────────────────────
+
+# Ordered lifecycle states for where a goal's deliverable must land and how recently it was
+# accepted there. States are validated UPPER-case; old rows without a landing stay None (backward
+# compatible). The judge / verification ledger live in later passes — here we only model + persist.
+LANDING_STATES: Tuple[str, ...] = (
+    "PLANNED",
+    "WRITTEN",
+    "STAGED",
+    "COMMITTED",
+    "DEPLOYED",
+    "LOADED",
+    "LIVE_ACCEPTED",
+    "REGRESSION_OBSERVED",
+)
+_LANDING_STATE_SET = frozenset(LANDING_STATES)
+
+# Change receipts are a bounded audit tail — keep only the newest ones on both load and append.
+MAX_CHANGE_RECEIPTS = 32
+
+
+@dataclass
+class GoalLanding:
+    """Typed landing metadata: the required deployment state, concrete targets, and live probe.
+
+    ``from_dict`` is strict — unknown keys, invalid states, non-string targets and non-bool
+    restart flags are rejected with ValueError. ``None`` input returns ``None`` so old persisted
+    JSON without a landing loads unchanged. Direct construction goes through the same canonical
+    rules via ``__post_init__``, so invalid enums, targets, probe, or restart flags can never be
+    instantiated and then persisted.
+    """
+
+    required_state: str = "PLANNED"
+    targets: List[str] = field(default_factory=list)
+    live_probe: Optional[str] = None
+    restart_required: bool = False
+
+    def _coerce_and_validate(self) -> None:
+        """Canonical rules shared by ``__post_init__`` and ``from_dict`` (which constructs via ``cls``)."""
+        if not isinstance(self.targets, list):
+            raise ValueError("landing targets must be an array")
+        state = str(self.required_state or "PLANNED").strip().upper()
+        if state not in _LANDING_STATE_SET:
+            raise ValueError(f"invalid landing required_state: {state!r}")
+        targets: List[str] = []
+        for raw in self.targets:
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError("landing targets must be non-empty strings")
+            item = raw.strip()
+            if item not in targets:
+                targets.append(item)
+        live_probe = self.live_probe
+        if live_probe is not None:
+            if not isinstance(live_probe, str) or not live_probe.strip():
+                raise ValueError("landing live_probe must be a string or null")
+            live_probe = live_probe.strip()
+        if not isinstance(self.restart_required, bool):
+            raise ValueError("landing restart_required must be a boolean")
+        self.required_state = state
+        self.targets = targets
+        self.live_probe = live_probe
+
+    def __post_init__(self) -> None:
+        self._coerce_and_validate()
+
+    def is_empty(self) -> bool:
+        return (
+            self.required_state == "PLANNED"
+            and not self.targets
+            and not self.live_probe
+            and not self.restart_required
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "required_state": self.required_state,
+            "targets": list(self.targets),
+            "live_probe": self.live_probe,
+            "restart_required": self.restart_required,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> Optional["GoalLanding"]:
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError("goal landing must be an object")
+        unknown = set(data) - {"required_state", "targets", "live_probe", "restart_required"}
+        if unknown:
+            raise ValueError(f"unknown goal landing key(s): {sorted(unknown)}")
+        # Value validation/normalization is owned by __post_init__ so direct
+        # construction and from_dict can never diverge.
+        return cls(
+            required_state=data.get("required_state") or "PLANNED",
+            targets=data.get("targets") or [],
+            live_probe=data.get("live_probe"),
+            restart_required=data.get("restart_required", False),
+        )
+
+
+@dataclass
+class ChangeReceipt:
+    """A dated record of one landing-state transition (data model only in this pass).
+
+    Trusted issuance and judge consumption land in a later pass; here the receipt is validated,
+    persisted with ``GoalState``, and bounded to ``MAX_CHANGE_RECEIPTS``. Direct construction
+    goes through the same canonical rules via ``__post_init__`` as ``from_dict``.
+    """
+
+    receipt_id: str
+    target: str
+    scope: str
+    source_reference: str
+    state: str
+    issued_at: float
+    mutation_generation: int = 0
+    verification_generation: int = 0
+    runtime_issued: bool = False
+
+    def _coerce_and_validate(self) -> None:
+        """Canonical rules shared by ``__post_init__`` and ``from_dict`` (which constructs via ``cls``)."""
+        for field in ("receipt_id", "target", "scope", "source_reference"):
+            raw = getattr(self, field)
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(f"change receipt {field} must be a non-empty string")
+            setattr(self, field, raw.strip())
+        state = self.state
+        if not isinstance(state, str) or not state.strip():
+            raise ValueError("change receipt state must be a non-empty string")
+        state = state.strip().upper()
+        if state not in _LANDING_STATE_SET:
+            raise ValueError(f"invalid change receipt state: {state!r}")
+        self.state = state
+        issued_at = self.issued_at
+        if isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)) or issued_at < 0:
+            raise ValueError("change receipt issued_at must be a non-negative number")
+        self.issued_at = float(issued_at)
+        for field in ("mutation_generation", "verification_generation"):
+            raw = getattr(self, field)
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                raise ValueError(f"change receipt {field} must be a non-negative integer")
+        if not isinstance(self.runtime_issued, bool):
+            raise ValueError("change receipt runtime_issued must be a boolean")
+
+    def __post_init__(self) -> None:
+        self._coerce_and_validate()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChangeReceipt":
+        if not isinstance(data, dict):
+            raise ValueError("change receipt must be an object")
+        allowed = {
+            "receipt_id", "target", "scope", "source_reference", "state",
+            "issued_at", "mutation_generation", "verification_generation", "runtime_issued",
+        }
+        unknown = set(data) - allowed
+        if unknown:
+            raise ValueError(f"unknown change receipt key(s): {sorted(unknown)}")
+        # Value validation/normalization is owned by __post_init__ so direct
+        # construction and from_dict can never diverge.
+        return cls(
+            receipt_id=data.get("receipt_id", ""),
+            target=data.get("target", ""),
+            scope=data.get("scope", ""),
+            source_reference=data.get("source_reference", ""),
+            state=data.get("state", ""),
+            issued_at=data.get("issued_at", 0),
+            mutation_generation=data.get("mutation_generation", 0),
+            verification_generation=data.get("verification_generation", 0),
+            runtime_issued=data.get("runtime_issued", False),
+        )
+
+
 @dataclass
 class GoalContract:
     """Optional structured completion contract; empty fields are omitted everywhere."""
@@ -285,22 +461,40 @@ class GoalContract:
     constraints: str = ""
     boundaries: str = ""
     stop_when: str = ""
+    landing: Optional[GoalLanding] = None
 
     def is_empty(self) -> bool:
-        return not any(getattr(self, f).strip() for f in _CONTRACT_FIELDS)
+        return not any(getattr(self, f).strip() for f in _CONTRACT_FIELDS) and (
+            self.landing is None or self.landing.is_empty()
+        )
 
-    def to_dict(self) -> Dict[str, str]:
-        return {f: getattr(self, f) for f in _CONTRACT_FIELDS}
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {f: getattr(self, f) for f in _CONTRACT_FIELDS}
+        data["landing"] = self.landing.to_dict() if self.landing is not None else None
+        return data
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalContract":
         if not isinstance(data, dict):
             return cls()
-        return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS})
+        landing = GoalLanding.from_dict(data.get("landing")) if data.get("landing") else None
+        return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS}, landing=landing)
 
     def render_block(self) -> str:
         """Non-empty fields as a labelled block; empty contract → empty string."""
-        return "\n".join(f"- {_CONTRACT_LABELS[f]}: {getattr(self, f).strip()}" for f in _CONTRACT_FIELDS if getattr(self, f).strip())
+        lines = [
+            f"- {_CONTRACT_LABELS[f]}: {getattr(self, f).strip()}"
+            for f in _CONTRACT_FIELDS
+            if getattr(self, f).strip()
+        ]
+        if self.landing is not None and not self.landing.is_empty():
+            lines.append(f"- Landing state: {self.landing.required_state}")
+            lines.append(f"- Landing targets: {', '.join(self.landing.targets)}")
+            if self.landing.live_probe:
+                lines.append(f"- Live probe: {self.landing.live_probe}")
+            if self.landing.restart_required:
+                lines.append("- Restart required: yes")
+        return "\n".join(lines)
 
 
 def parse_contract(text: str) -> Tuple[str, GoalContract]:
@@ -448,6 +642,9 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # Bounded audit tail of landing-state transitions; only the newest MAX_CHANGE_RECEIPTS are kept,
+    # both on load (from_json) and on append (add_receipt).
+    receipts: List[ChangeReceipt] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -474,11 +671,21 @@ class GoalState:
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            receipts=[
+                ChangeReceipt.from_dict(r) for r in (data.get("receipts") or [])
+                if isinstance(r, dict)
+            ][-MAX_CHANGE_RECEIPTS:],
             **ints, **floats,
         )
 
     def has_contract(self) -> bool:
         return self.contract is not None and not self.contract.is_empty()
+
+    def add_receipt(self, receipt: ChangeReceipt) -> None:
+        """Append a change receipt, keeping only the newest ``MAX_CHANGE_RECEIPTS``."""
+        self.receipts.append(receipt)
+        if len(self.receipts) > MAX_CHANGE_RECEIPTS:
+            del self.receipts[: len(self.receipts) - MAX_CHANGE_RECEIPTS]
 
     def render_subgoals_block(self) -> str:
         """Numbered ``- N. text`` block; empty when there are no subgoals."""

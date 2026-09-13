@@ -749,6 +749,16 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True,
         install_cmd = _unattended_installer_preflight(install_cmd, is_windows)
         if install_cmd is None:
             return False
+    task_xml = None
+    if is_windows and installer_timeout is not None and _cua_driver_autostart_registered_windows():
+        try:
+            res = subprocess.run(["schtasks.exe", "/Query", "/TN", "cua-driver-serve", "/XML"],
+                                 capture_output=True, text=True)
+            if res.returncode == 0:
+                task_xml = res.stdout
+        except Exception:
+            pass
+
     popen_kwargs = _installer_popen_kwargs(is_windows, verbose, installer_env)
     try:
         proc = subprocess.Popen(install_cmd, **popen_kwargs)
@@ -762,9 +772,19 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True,
             _record_installer_output(out, proc.returncode)
         installed_binary = _resolved_cua_driver_cmd()
         if proc.returncode == 0 and installed_binary:
-            if is_windows and not _repair_cua_driver_autostart_windows(installed_binary,
-                                                                        verbose=verbose):
-                _print_warning("    cua-driver installed, but auto-start was not registered.")
+            if is_windows:
+                if task_xml:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".xml", encoding="utf-16") as f:
+                        f.write(task_xml)
+                        tmp_name = f.name
+                    try:
+                        subprocess.run(["schtasks.exe", "/Create", "/TN", "cua-driver-serve", "/XML", tmp_name, "/F"],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    finally:
+                        _remove_quietly(tmp_name)
+                elif not _repair_cua_driver_autostart_windows(installed_binary, verbose=verbose):
+                    _print_warning("    cua-driver installed, but auto-start was not registered.")
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
                 _print_cua_platform_notes(is_windows, is_linux, fresh_install=True)

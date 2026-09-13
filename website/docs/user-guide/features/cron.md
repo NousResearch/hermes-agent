@@ -358,7 +358,10 @@ The lasting fix is a user session for the gateway user: `sudo loginctl enable-li
 Hermes records each claimed cron attempt in the profile-local
 `~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
 move through `claimed`, `running`, and one immutable terminal state:
-`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
+`completed`, `failed`, `superseded`, or `unknown`. `superseded` marks an attempt
+whose outcome the job record does not carry — a later fire for the same job, or an
+attempt that already completed the same scheduled occurrence, owns it, so a
+delivered or inconclusive attempt is never reported as a plain error. After restart, Hermes marks an abandoned
 attempt `unknown` only when the original PID and process-start fingerprint prove
 that its owner is gone. Unknown attempts are audit records and are never
 automatically rerun.

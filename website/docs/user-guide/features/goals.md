@@ -117,6 +117,18 @@ The first non-field line(s) are the goal headline; recognized field prefixes (`v
 
 Use `/goal show` to review the active contract. Contracts persist in `SessionDB.state_meta` alongside the goal, so they survive `/resume`. Old goals from before this feature load unchanged (no contract). Contracts and `/subgoal` criteria compose: subgoals fold into the contract as extra criteria the judge must also satisfy.
 
+## Agent-managed task admission (`task_commit`)
+
+For work that spans multiple tool calls, background operations, or turns, Hermes can use the `task_commit` model tool to put a structured task into the same persistent Goal lifecycle. The tool records the task contract; it does not plan or execute the work itself. Short questions and one-turn tasks do not need it.
+
+`task_commit` supports three explicit operations:
+
+- `create` starts a new goal and rejects a conflicting active or paused goal;
+- `amend` tightens the same goal without changing its objective;
+- `replace` starts a deliberately different objective and resets its generation boundary.
+
+The base contract carries `objective`, `outcome`, `verification`, `constraints`, `boundaries`, and `stop_when`.
+
 ## Adding criteria mid-goal: `/subgoal`
 
 While a goal is active you can append extra acceptance criteria with `/subgoal <text>` without resetting the loop. Each call adds one numbered item to the goal's subgoal list; the **continuation prompt** the agent sees on the next turn includes the original goal plus an "Additional criteria the user added mid-loop" block, and the **judge prompt** is rewritten so the verdict must consider every subgoal — the goal isn't marked done until the original objective **and** every subgoal are met.

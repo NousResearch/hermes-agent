@@ -22,16 +22,23 @@ from typing import Any, Optional
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
 
-def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
+def is_opencode_target(
+    provider: Optional[str],
+    base_url: Optional[str],
+    requested_provider: Optional[str] = None,
+) -> bool:
     """True when *provider* or *base_url* addresses the OpenCode relay.
 
-    Matches the built-in opencode-zen/go/free providers, custom
+    Matches the built-in opencode-zen/go/free providers, resolved or requested custom
     ``opencode-<family>-*`` providers, and any base_url hosted on opencode.ai.
     """
     try:
         from hermes_cli.models import opencode_provider_family
 
-        if opencode_provider_family(provider) is not None:
+        if any(
+            opencode_provider_family(candidate) is not None
+            for candidate in (provider, requested_provider)
+        ):
             return True
     except Exception:
         pass
@@ -47,9 +54,10 @@ def opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    requested_provider: Optional[str] = None,
 ) -> dict[str, str]:
     """Return ``{"x-opencode-session": <key>}`` for OpenCode targets, else ``{}``."""
-    if not is_opencode_target(provider, base_url):
+    if not is_opencode_target(provider, base_url, requested_provider):
         return {}
     try:
         from agent.portal_tags import get_affinity_scope, get_conversation_context
@@ -80,13 +88,14 @@ def merge_opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    requested_provider: Optional[str] = None,
 ) -> dict[str, Any]:
     """Merge the affinity header into ``kwargs["extra_headers"]`` (in place).
 
     Existing per-request headers win, so a caller-pinned value is preserved.
     Non-OpenCode targets are left untouched.
     """
-    headers = opencode_session_headers(provider, base_url, session_id)
+    headers = opencode_session_headers(provider, base_url, session_id, requested_provider)
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}

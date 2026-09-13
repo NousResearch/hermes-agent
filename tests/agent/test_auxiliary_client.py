@@ -269,6 +269,33 @@ def test_auxiliary_binding_preserves_copilot_acp_marker_url(monkeypatch):
     assert route.base_url == "acp://copilot"
 
 
+def test_external_process_registry_metadata_preserves_out_of_tree_acp_marker(monkeypatch):
+    import providers
+    from providers.base import ProviderProfile
+    from agent.llm_egress_firewall import DestinationClass, classify_destination
+
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    providers.register_provider(
+        ProviderProfile(
+            name="seam-acp",
+            base_url="acp://seam-acp",
+            auth_type="external_process",
+        )
+    )
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    client = SimpleNamespace(base_url="acp://seam-acp")
+
+    agent, route = _auxiliary_egress_binding(
+        client, provider="seam-acp", model="seam-model", api_mode="chat_completions"
+    )
+
+    assert agent.base_url == "acp://seam-acp"
+    assert route.base_url == "acp://seam-acp"
+    assert classify_destination("seam-acp", route.base_url, route.api_mode) is DestinationClass.LOCAL_PROCESS
+
+
 def test_only_compression_auxiliary_binding_gets_larger_exact_grant_caps():
     client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex")
     compression_token = _RELAY_AUX_CALL_CONTEXT.set({"task": "compression"})

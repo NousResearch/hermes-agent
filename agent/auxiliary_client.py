@@ -2432,8 +2432,10 @@ def _auxiliary_egress_binding(
         or DEFAULT_POLICY_DIGEST
     )
     client_base_url = str(getattr(client, "base_url", "") or "")
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
     preserve_local_marker = (
-        normalized_provider == "copilot-acp"
+        _is_external_process_provider(normalized_provider)
         and client_base_url.strip().lower().startswith("acp://")
     )
     base_url = client_base_url

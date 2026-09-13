@@ -11,6 +11,7 @@ method: ``config`` (PlatformConfig), ``name``, ``_dm_policy`` / ``_group_policy`
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -309,6 +310,54 @@ class WhatsAppBehaviorMixin:
             for i, original in enumerate(saved):
                 result = result.replace(f"\x00{tag}{i}\x00", original)
         return result
+
+
+_WHATSAPP_DEPENDENCY_STAMP = ".hermes-pkg-hash"
+
+
+def whatsapp_bridge_dependency_fingerprint(bridge_dir: Path) -> str:
+    """Return a stable fingerprint for the checked-in bridge manifests."""
+    digest = hashlib.sha256()
+    for name in ("package.json", "package-lock.json"):
+        path = bridge_dir / name
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return ""
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def whatsapp_bridge_dependencies_fresh(bridge_dir: Path) -> bool:
+    """Return whether installed bridge dependencies match both manifests."""
+    node_modules = bridge_dir / "node_modules"
+    fingerprint = whatsapp_bridge_dependency_fingerprint(bridge_dir)
+    if not node_modules.is_dir() or not fingerprint:
+        return False
+    try:
+        recorded = (node_modules / _WHATSAPP_DEPENDENCY_STAMP).read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return False
+    return recorded == fingerprint
+
+
+def record_whatsapp_bridge_dependency_fingerprint(bridge_dir: Path) -> bool:
+    """Stamp a successful explicit install with its manifest fingerprint."""
+    fingerprint = whatsapp_bridge_dependency_fingerprint(bridge_dir)
+    if not fingerprint:
+        return False
+    try:
+        (bridge_dir / "node_modules" / _WHATSAPP_DEPENDENCY_STAMP).write_text(
+            fingerprint, encoding="utf-8"
+        )
+    except OSError:
+        return False
+    return True
 
 
 def resolve_whatsapp_bridge_dir() -> Path:

@@ -99,6 +99,10 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
         patch("builtins.open", return_value=mock_fh),
         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
+        patch(
+            "plugins.platforms.whatsapp.adapter.whatsapp_bridge_dependencies_fresh",
+            return_value=True,
+        ),
     ]
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
@@ -158,7 +162,7 @@ class TestDataInitialized:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8], \
+             patches[5], patches[6], patches[7], patches[8], patches[9], \
              patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
             # Must NOT raise NameError
             result = await adapter.connect()
@@ -188,7 +192,7 @@ class TestFileHandleClosedOnError:
         patches = _connect_patches(mock_proc, mock_fh)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+             patches[5], patches[6], patches[7], patches[8]:
             result = await adapter.connect()
 
         assert result is False
@@ -196,31 +200,49 @@ class TestFileHandleClosedOnError:
         assert adapter._bridge_log_fh is None
 
 
-class TestConnectCleanup:
-    """Verify failure paths release the scoped session lock."""
+class TestConnectPreflight:
+    """Gateway startup verifies bridge dependencies without mutating them."""
 
-    @pytest.mark.asyncio
-    async def test_releases_lock_when_npm_install_fails(self):
-        adapter = _make_adapter()
+    def test_dependency_check_is_read_only_and_actionable(self, tmp_path):
+        bridge_dir = tmp_path / "bridge"
+        (bridge_dir / "node_modules").mkdir(parents=True)
+        (bridge_dir / "bridge.js").write_text("// bridge", encoding="utf-8")
+        (bridge_dir / "package.json").write_text(
+            '{"dependencies": {}}', encoding="utf-8"
+        )
+        (bridge_dir / "package-lock.json").write_text(
+            '{"lockfileVersion": 3}', encoding="utf-8"
+        )
+        session_path = tmp_path / "session"
+        session_path.mkdir()
+        (session_path / "creds.json").write_text("{}", encoding="utf-8")
 
-        def _path_exists(path_obj):
-            return not str(path_obj).endswith("node_modules")
+        stale_adapter = _make_adapter()
+        stale_adapter._bridge_script = str(bridge_dir / "bridge.js")
+        stale_adapter._session_path = session_path
+        fresh_adapter = _make_adapter()
+        fresh_adapter._bridge_script = str(bridge_dir / "bridge.js")
+        fresh_adapter._session_path = session_path
 
-        install_result = MagicMock(returncode=1, stderr="install failed")
+        with (
+            patch(
+                "plugins.platforms.whatsapp.adapter.check_whatsapp_requirements",
+                return_value=True,
+            ),
+            patch("subprocess.run") as mock_run,
+        ):
+            assert stale_adapter._preflight() is False
+            from gateway.platforms.whatsapp_common import (
+                record_whatsapp_bridge_dependency_fingerprint,
+            )
 
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
-             patch("subprocess.run", return_value=install_result), \
-             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
-            result = await adapter.connect()
+            assert record_whatsapp_bridge_dependency_fingerprint(bridge_dir) is True
+            assert fresh_adapter._preflight() is True
 
-        assert result is False
-        assert adapter.fatal_error_code == "whatsapp_npm_install_failed"
-        assert adapter.fatal_error_retryable is False
-        assert "npm install failed" in (adapter.fatal_error_message or "")
-        mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
-        assert adapter._platform_lock_identity is None
+        assert stale_adapter.fatal_error_code == "whatsapp_bridge_dependencies_stale"
+        assert stale_adapter.fatal_error_retryable is False
+        assert "hermes whatsapp" in (stale_adapter.fatal_error_message or "")
+        mock_run.assert_not_called()
 
 
 class TestBridgeRuntimeFailure:
@@ -300,7 +322,7 @@ class TestBridgeRuntimeFailure:
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+             patches[5], patches[6], patches[7], patches[8], patches[9]:
             result = await adapter.connect()
 
         assert result is False
@@ -512,11 +534,11 @@ class TestNoCredsPreflight:
         adapter.config = MagicMock()
         adapter._bridge_port = 19877
         bridge = tmp_path / "bridge.js"
-        bridge.write_text("// stub")
+        bridge.write_text("// stub", encoding="utf-8")
         adapter._bridge_script = str(bridge)
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}")
+        (session_dir / "creds.json").write_text("{}", encoding="utf-8")
         adapter._session_path = session_dir
         adapter._bridge_log_fh = None
         adapter._fatal_error_code = None

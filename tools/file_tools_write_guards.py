@@ -379,8 +379,15 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
     """
-    if has_opaque_document_extension(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
+    resolution_failed = False
+    try:
+        effective_path = str(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        effective_path = filepath
+        resolution_failed = True
+
+    if has_opaque_document_extension(effective_path):
+        ext = effective_path[effective_path.rfind("."):].lower()
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -388,11 +395,8 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
-    if is_pdf_path(filepath):
-        try:
-            resolved = Path(_resolve_path_for_task(filepath, task_id))
-        except Exception:
-            resolved = Path(_expand_tilde(filepath))
+    if is_pdf_path(effective_path):
+        resolved = Path(_expand_tilde(filepath) if resolution_failed else effective_path)
         try:
             if resolved.is_file():
                 return (

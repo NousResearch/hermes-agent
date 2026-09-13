@@ -83,3 +83,13 @@ def test_pass_requires_every_declared_probe() -> None:
     value["probe_manifest"] = ["accuracy", "continuity"]
     errors = validate_report(value)
     assert "missing_probe_scores:continuity" in errors
+
+
+def test_compound_secret_keys_and_nonnumeric_scores_are_rejected():
+    value = report()
+    value["metadata"] = {"credentials": [{"AWS_SECRET_ACCESS_KEY": "fake"}]}
+    assert any("AWS_SECRET_ACCESS_KEY" in error for error in validate_report(value))
+    for score in (None, "1", {}, True):
+        value = report()
+        value["probe_scores"]["accuracy"] = score
+        assert "probe_scores.accuracy_must_be_numeric" in validate_report(value)

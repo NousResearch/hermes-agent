@@ -59,7 +59,6 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    args.output.unlink(missing_ok=True)
     hermes_root = args.hermes_root.expanduser().resolve()
     harness = args.harness.expanduser().resolve()
     command = list(args.command)
@@ -69,11 +68,16 @@ def main() -> int:
         raise SystemExit("--harness, --hermes-root, and a harness command are required")
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         raise SystemExit("--timeout-seconds must be finite and positive")
+    hermes_root, source_sha = _resolve_clean_source(hermes_root)
+    output = args.output.expanduser().resolve()
+    if output == hermes_root or hermes_root in output.parents or output == harness or harness in output.parents:
+        raise SystemExit("--output must be outside the source and harness trees")
+    args.output = output
+    args.output.unlink(missing_ok=True)
     report_path = harness / "results" / "latest" / "report.json"
     if report_path.exists():
         stale = report_path.with_name(f"report.stale.{time.time_ns()}.json")
         report_path.replace(stale)
-    hermes_root, source_sha = _resolve_clean_source(hermes_root)
     process: subprocess.Popen[str] = subprocess.Popen(
         command,
         cwd=harness,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -16,16 +15,17 @@ SCRIPT = Path(__file__).parents[2] / "scripts" / "toolperf_abeval" / "ab_eval.py
 def _write_arm(root: Path, model: str, arm: str, *, tasks: tuple[str, ...], config_digest: str) -> None:
     result_dir = root / "results" / model / arm
     result_dir.mkdir(parents=True)
-    evaluator = {"evaluator_digest": "d" * 64, "battery_digest": "e" * 64}
-    payload = {"model": model, "provider": "configured-default", "model_config": {},
-               "provider_config": {"custom_providers": []}}
-    if config_digest == "c" * 64:
-        config_digest = hashlib.sha256(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
-    model_provenance = {
-        "model": model,
-        "provider": "configured-default",
-        "config_digest": config_digest,
-    }
+    import runpy
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        harness = runpy.run_path(str(SCRIPT))
+    finally:
+        sys.path.pop(0)
+    harness["_model_provenance"].__globals__["HOME"] = root / "home"
+    evaluator = harness["_evaluator_provenance"]()
+    model_provenance = harness["_model_provenance"](model)
+    if config_digest != "c" * 64:
+        model_provenance["config_digest"] = config_digest
     rows = []
     for task in tasks:
         run_id = f"{task}-r0"
@@ -101,7 +101,7 @@ def test_report_returns_failure_for_incomplete_battery(tmp_path: Path) -> None:
 
 def test_report_requires_unique_complete_runs_and_current_provenance(tmp_path: Path) -> None:
     model = "test-model"
-    for defect in ("duplicate", "truncated", "missing_completion", "config_changed"):
+    for defect in ("duplicate", "truncated", "missing_completion", "config_changed", "evaluator_changed"):
         root = tmp_path / defect
         for arm in ("baseline", "fixes"):
             _write_arm(root, model, arm, tasks=("err_python_env",), config_digest="c" * 64)
@@ -117,8 +117,14 @@ def test_report_requires_unique_complete_runs_and_current_provenance(tmp_path: P
         elif defect == "missing_completion":
             trace = mdir / "baseline" / "err_python_env-r0.atof.jsonl"
             trace.write_text("\n".join(trace.read_text().splitlines()[:-1]) + "\n")
+        elif defect == "evaluator_changed":
+            for arm in ("baseline", "fixes"):
+                meta = mdir / arm / "meta.jsonl"
+                row = json.loads(meta.read_text())
+                row["evaluator_provenance"]["evaluator_digest"] = "f" * 64
+                meta.write_text(json.dumps(row) + "\n")
         else:
-            (root / "home").mkdir()
+            (root / "home").mkdir(exist_ok=True)
             (root / "home" / "config.yaml").write_text("model:\n  provider: changed\n")
         result = _run_report(root, model)
         assert result.returncode != 0
@@ -149,6 +155,14 @@ def test_run_validates_source_and_resume_before_execution(tmp_path: Path, monkey
     old = harness["_model_provenance"]("test-model")
     config.write_text(config.read_text().replace("1234", "5678"))
     assert harness["_model_provenance"]("test-model") != old
+    config.write_text("model: {}\n")
+    prior = harness["_model_provenance"]("test-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://endpoint.invalid/v1")
+    assert harness["_model_provenance"]("test-model") != prior
+    (home / ".env").write_text("OPENAI_BASE_URL=https://dotenv.invalid/v1\n")
+    dotenv_provenance = harness["_model_provenance"]("test-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://changed.invalid/v1")
+    assert harness["_model_provenance"]("test-model") == dotenv_provenance
     state["ROOT"] = source / "workspace"
     import pytest
     with pytest.raises(SystemExit, match="outside"):

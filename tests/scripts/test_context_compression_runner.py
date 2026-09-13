@@ -118,3 +118,19 @@ def test_runner_bounds_harness_timeout(tmp_path: Path) -> None:
     assert "timed out" in result.stderr
 
     assert not (tmp_path / "out.json").exists()
+
+
+def test_output_cannot_delete_source_file(tmp_path):
+    root = tmp_path / "source"
+    _git_root(root)
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    output = root / "README.md"
+    before = output.read_bytes()
+    result = subprocess.run(
+        [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", str(root),
+         "--output", str(output), "--", sys.executable, "-c", "pass"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert output.read_bytes() == before

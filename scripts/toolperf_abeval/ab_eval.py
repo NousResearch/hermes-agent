@@ -165,6 +165,25 @@ def _safe_config(value: object) -> object:
     return value
 
 
+def _endpoint_environment_digest() -> str:
+    # Read provider metadata in the evaluation home without changing this process.
+    probe = """
+import hashlib, json, os
+from dotenv import dotenv_values
+from hermes_cli.auth import PROVIDER_REGISTRY
+values = dotenv_values(os.path.join(os.environ["HERMES_HOME"], ".env"))
+keys = {p.base_url_env_var for p in PROVIDER_REGISTRY.values() if p.base_url_env_var}
+keys.update(k for k in set(os.environ) | set(values) if k.endswith(("_BASE_URL", "_ENDPOINT")))
+effective = {k: str(values.get(k) or os.environ.get(k) or "").strip() for k in sorted(keys)}
+print(hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest())
+"""
+    return subprocess.run(
+        [sys.executable, "-c", probe], cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "HERMES_HOME": str(HOME)},
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
 def _model_provenance(model: str) -> dict[str, str]:
     config: object = {}
     config_path = HOME / "config.yaml"
@@ -190,7 +209,7 @@ def _model_provenance(model: str) -> dict[str, str]:
         provider_config = {"custom_providers": config.get("custom_providers", [])}
     payload = _safe_config(
         {"model": model, "provider": provider, "model_config": model_config,
-         "provider_config": provider_config}
+         "provider_config": provider_config, "endpoint_environment_digest": _endpoint_environment_digest()}
     )
     digest = hashlib.sha256(
         json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -508,6 +527,8 @@ def report(models):
             and arm_model_provenance["baseline"] != arm_model_provenance["fixes"]
         ):
             provenance_errors.append("baseline and fixes use different model provenance")
+        if evaluator_provenance != _evaluator_provenance():
+            provenance_errors.append("recorded evaluator differs from current evaluator")
         if provenance_errors:
             raise SystemExit("invalid tool-performance provenance: " + "; ".join(provenance_errors))
         observed = {}

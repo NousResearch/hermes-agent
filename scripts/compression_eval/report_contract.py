@@ -23,7 +23,7 @@ _CREDENTIAL_ASSIGNMENT = re.compile(
 )
 _CREDENTIAL_KEY = re.compile(
     r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
-    r"secret|password|authorization|credential|token)$"
+    r"secret|password|authorization|credential|token)(?:$|[_-])"
 )
 _PROVENANCE_KEYS = {"compression_model", "evaluator_model", "provider", "model_config"}
 
@@ -80,6 +80,9 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
         errors.append("probe_scores_must_be_mapping")
     else:
         errors.extend(_nonfinite_errors(report["probe_scores"], "probe_scores"))
+        for name, score in report["probe_scores"].items():
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                errors.append(f"probe_scores.{name}_must_be_numeric")
     probe_manifest = report.get("probe_manifest")
     if not isinstance(probe_manifest, (list, tuple)) or not probe_manifest:
         errors.append("probe_manifest_must_be_nonempty_list")

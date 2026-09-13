@@ -331,7 +331,8 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     if (browser := dock_launch()) is not None:
         # first-run / default-browser dialogs would sit between the human and the bot's tabs
         child_env["HERMES_BD_BROWSER_EXEC"] = f"{browser[0]} --user-data-dir={browser[1]} --no-first-run --no-default-browser-check"
-    log = open(sd / "launcher.log", "ab")  # noqa: SIM115 — handed to the child, closed by it
+    # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
+    log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
         ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, close_fds=True)

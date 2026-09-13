@@ -32,12 +32,13 @@ from pathlib import Path as _Path
 
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
+from agent.retry_utils import parse_retry_after_seconds
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
@@ -2101,15 +2102,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _retry_after_from_exc(e: BaseException) -> Optional[float]:
-        """``Retry-After`` header (seconds) from an SDK error response, else None."""
-        _resp = getattr(e, "response", None)
-        if _resp is None:
-            return None
-        try:
-            _ra = getattr(_resp, "headers", {}).get("Retry-After")
-            return float(_ra) if _ra is not None else None
-        except (TypeError, ValueError, AttributeError):
-            return None
+        """``Retry-After`` (seconds or HTTP-date) from an SDK error response, else None."""
+        return parse_retry_after_seconds(getattr(getattr(e, "response", None), "headers", None))
 
     async def _send_slash_reply(
         self, chat_id: str, slash_ctx: Dict[str, Any], content: str,
@@ -4588,40 +4582,37 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False) -> SendResult:
-        """Send a Block Kit approval prompt with interactive buttons.
-        The buttons call ``resolve_gateway_approval()`` to unblock the waiting agent thread — same
-        mechanism as the text ``/approve`` flow."""
+    _EA_HEADER = ":warning: *Command Approval Required*\n"
+    _EA_CODE_OPEN = "```"
+    _EA_CODE_CLOSE = "```\n"
+    _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
+    _EA_REASON_BUDGET = 500
+    _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
+    _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
+                      "always": "hermes_approve_always", "deny": "hermes_deny"}
+
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        # execute_code approvals embed the whole script, so budget the preview against the cap.
+        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
+        return max(0, self._EA_SECTION_CAP - fixed)
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Block Kit approval prompt; the buttons call ``resolve_gateway_approval()`` to unblock the
+        waiting agent thread — same mechanism as the text ``/approve`` flow."""
 
         def _build() -> Tuple[str, list]:
-            # Slack caps a section's text at 3000 chars (overflow → invalid_blocks → no buttons);
-            # execute_code approvals embed the whole script, so budget the preview.
-            header = ":warning: *Command Approval Required*\n"
-            if smart_denied:
-                header += "*Smart DENY:* owner override applies to this one operation only.\n"
-            reason = f"Reason: {description[:500]}"
-            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
-            cmd_preview = command[:budget] + "..." if len(command) > budget else command
             actions = [
-                self._button("Allow Once", "hermes_approve_once", session_key, style="primary")]
-            if not smart_denied and allow_session:
-                actions.append(self._button("Allow Session", "hermes_approve_session", session_key))
-                if allow_permanent:
-                    actions.append(
-                        self._button("Always Allow", "hermes_approve_always", session_key))
-            actions.append(self._button("Deny", "hermes_deny", session_key, style="danger"))
+                self._button(label, self._EA_ACTION_IDS[choice], prompt.session_key, style=style)
+                for label, choice, style in prompt.actions]
             blocks = [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"{header}```{cmd_preview}```\n{reason}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": prompt.text}},
                 {"type": "actions", "elements": actions}]
-            return f"⚠️ Command approval required: {cmd_preview[:100]}", blocks
+            return f"⚠️ Command approval required: {prompt.command[:100]}", blocks
 
         return await self._send_interactive_prompt(
-            chat_id, metadata, _build, "send_exec_approval",
+            prompt.chat_id, prompt.metadata, _build, "send_exec_approval",
             resolved=self._approval_resolved, resolved_max=self._APPROVAL_RESOLVED_MAX)
 
     async def send_slash_confirm(
@@ -6174,7 +6165,7 @@ async def _standalone_upload_file(
     result = await client.files_upload_v2(**kwargs)
     payload = _slack_response_payload(result)
     if payload.get("ok") is False:
-        return {"error": f"Slack API error: {payload.get('error', 'unknown')}"}
+        return send_error(f"Slack API error: {payload.get('error', 'unknown')}")
     # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
     message_id = None
     if payload:
@@ -6217,10 +6208,10 @@ async def _standalone_send_media(
             post_payload = await _standalone_post_text(
                 client, chat_id, text_to_send, unfurl_kwargs, thread_id)
             if not post_payload.get("ok", True):
-                return {"error": f"Slack API error: {post_payload.get('error', 'unknown')}"}
+                return send_error(f"Slack API error: {post_payload.get('error', 'unknown')}")
             last_message_id = post_payload.get("ts")
         except Exception as e:
-            return {"error": f"Slack send failed: {e}"}
+            return send_error(f"Slack send failed: {e}")
     caption_pending = caption_as_upload_comment
     uploaded_any = False
     for media_path, _is_voice in media_files:
@@ -6288,7 +6279,7 @@ async def _standalone_send(
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
     tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
-        return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
+        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
     token = tokens[0]
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
@@ -6321,7 +6312,7 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         _sess_kw, _req_kw = _standalone_proxy_kwargs()
         last_error = "unknown"
@@ -6337,9 +6328,9 @@ async def _standalone_send(
                 last_error = data.get("error", "unknown")
                 if last_error not in _WRONG_WORKSPACE_TOKEN_ERRORS:
                     break
-        return {"error": f"Slack API error: {last_error}"}
+        return send_error(f"Slack API error: {last_error}")
     except Exception as e:
-        return {"error": f"Slack send failed: {e}"}
+        return send_error(f"Slack send failed: {e}")
 
 
 _SETUP_STEPS = (

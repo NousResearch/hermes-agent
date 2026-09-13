@@ -31,6 +31,7 @@ from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
+from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -261,14 +262,14 @@ from gateway.platforms.helpers import (
 )
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import send_error, yaml_env_setter as _yaml_env_setter
 
 
 async def _read_url_image_with_redirect_guard(
@@ -1034,8 +1035,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -1910,27 +1909,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     @staticmethod
     def _extract_discord_retry_after(exc: BaseException) -> Optional[float]:
+        """Seconds to wait after a 429: discord.py's ``retry_after`` attribute, else the response's
+        ``Retry-After`` (numeric or HTTP-date) or Discord-specific ``X-RateLimit-Reset-After``
+        header; floored at 1s so a sub-second hint does not hot-loop."""
         value = getattr(exc, "retry_after", None)
         if value is not None:
+            parsed = parse_retry_after_seconds(value)
+            return None if parsed is None else max(1.0, parsed)
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+        if not headers:
+            return None
+        parsed = parse_retry_after_seconds(headers)
+        if parsed is None:
             try:
-                return max(1.0, float(value))
-            except (TypeError, ValueError):
-                return None
-        response = getattr(exc, "response", None)
-        headers = getattr(response, "headers", None)
-        if headers:
-            for key in ("Retry-After", "X-RateLimit-Reset-After"):
-                try:
-                    raw = headers.get(key)
-                except Exception:
-                    raw = None
-                if raw is None:
-                    continue
-                try:
-                    return max(1.0, float(raw))
-                except (TypeError, ValueError):
-                    continue
-        return None
+                parsed = parse_retry_after_seconds(headers.get("X-RateLimit-Reset-After"))
+            except Exception:
+                parsed = None
+        return None if parsed is None else max(1.0, parsed)
 
     @staticmethod
     def _is_discord_rate_limit(exc: BaseException) -> bool:
@@ -5238,47 +5233,44 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Trim to Discord's 4096-char embed description limit (conservatively)."""
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        """Button-based exec approval prompt; buttons call ``resolve_gateway_approval()`` (not /approve)."""
+    # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
+    _EA_HEADER = ("⚠️ **Command Approval Required**\n\n"
+                  "Do you want Hermes to run this command?\n\n"
+                  "**Requested command:**\n")
+    _EA_CODE_OPEN = "```bash\n"
+    _EA_CODE_CLOSE = "\n```\n"
+    _EA_REASON_LABEL = "**Reason:** "
+    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    _EA_REASON_BUDGET = 300
+
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        # Mentions ride in front of the content and count against the 2000-char message cap too.
+        fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
+                 + len(self._approval_mention_content() or "") + 1)
+        return max(0, self.MAX_MESSAGE_LENGTH - fixed)
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Button view + embed mirror; buttons call ``resolve_gateway_approval()`` (not /approve)."""
         def _build(_channel):
-            # Payload in plain content: embeds can be invisible/detached on web/mobile.
-            reason_budget = 300
-            reason_display = str(description or "dangerous command")
-            if len(reason_display) > reason_budget:
-                reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
-            prompt_prefix = (
-                "⚠️ **Command Approval Required**\n\n"
-                "Do you want Hermes to run this command?\n\n"
-                "**Requested command:**\n```bash\n"
-            )
-            if smart_denied:
-                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
+            content = prompt.text
             mention_content = self._approval_mention_content()
             if mention_content:
-                prompt_prefix = f"{mention_content}\n{prompt_prefix}"
-            prompt_tail = f"\n```\n**Reason:** {reason_display}"
-            truncated_suffix = "\n... [truncated]"
-            command_budget = max(0, self.MAX_MESSAGE_LENGTH - len(prompt_prefix) - len(prompt_tail))
-            content_cmd_display = str(command or "")
-            if len(content_cmd_display) > command_budget:
-                content_cmd_display = content_cmd_display[: max(0, command_budget - len(truncated_suffix))] + truncated_suffix
-            content = f"{prompt_prefix}{content_cmd_display}{prompt_tail}"
+                content = f"{mention_content}\n{content}"
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{self._embed_body(str(command or ''))}\n```",
+                description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=reason_display, inline=False)
+            embed.add_field(name="Reason", value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+            choices = set(prompt.choices)
             view = ExecApprovalView(
-                session_key=session_key, allowed_user_ids=self._allowed_user_ids,
+                session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent=allow_permanent,
-                allow_session=allow_session, smart_denied=smart_denied,
+                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
+                allow_session="session" in choices, smart_denied=prompt.smart_denied,
             )
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
@@ -5288,7 +5280,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         users=True, roles=False, everyone=False, replied_user=False,
                     )
             return send_kwargs, view
-        return await self._send_prompt(chat_id, metadata, _build)
+        return await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -5867,36 +5859,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
         return True
-
-    # ------------------------------------------------------------------
-    # Text message aggregation (handles Discord client-side splits)
-    # ------------------------------------------------------------------
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch; longer delay when the chunk is
-        near Discord's 2000-char split point (continuation almost certain)."""
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            if last_len >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[Discord] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            # Shield the dispatch: _enqueue_text_event cancels the prior flush task on each new chunk;
-            # without the shield CancelledError would abort the in-flight agent turn.
-            await asyncio.shield(self.handle_message(event))
-        except asyncio.CancelledError:
-            # Cancel landed before the pop; shielded handle_message unaffected.
-            pass
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -6579,13 +6541,6 @@ def _derive_forum_thread_name(message: str) -> str:
     return first_line[:100]
 
 
-def _standalone_sanitize_error(text) -> str:
-    """Local copy of tools.send_message_tool._sanitize_error_text (strips bot tokens); avoids hard dep."""
-    s = str(text)
-    import re as _re_san
-    return _re_san.sub(r"(Authorization:\s*Bot\s+)\S+", r"\1***", s, flags=_re_san.IGNORECASE)
-
-
 def _standalone_close_response(resp: Any) -> None:
     close = getattr(resp, "close", None)
     if callable(close):
@@ -6665,7 +6620,7 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     with the (size-capped) body text appended to ``error_prefix``."""
     if resp.status not in {200, 201}:
         body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
-        return None, {"error": f"{error_prefix} ({resp.status}): {body}"}
+        return None, send_error(f"{error_prefix} ({resp.status}): {body}")
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 
@@ -6707,14 +6662,14 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     token = (getattr(pconfig, "token", None) or "").strip()
     if not token:
         # Profile-scoped read: under multiplex the env may hold another profile's token.
         from agent.secret_scope import get_secret
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
-        return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
+        return send_error("Discord standalone send: DISCORD_BOT_TOKEN is not set")
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -6761,7 +6716,7 @@ async def _standalone_send(
                                 if err:
                                     return err
                         except Exception as e:
-                            return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
+                            return send_error(f"Discord forum thread upload failed: {e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
                         async with session.post(
@@ -6820,20 +6775,18 @@ async def _standalone_send(
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord API error")
                             if err:
-                                warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {err['error']}")
+                                warning = send_error(f"Failed to send media {media_path}: {err['error']}")["error"]
                                 logger.error(warning)
                                 warnings.append(warning)
                                 continue
                             last_data = data
                 except Exception as e:
-                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
+                    warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
                     logger.error(warning)
                     warnings.append(warning)
         if last_data is None:
             error = "No deliverable text or media remained after processing"
-            if warnings:
-                return {"error": error, "warnings": warnings}
-            return {"error": error}
+            return {**send_error(error), **({"warnings": warnings} if warnings else {})}
         result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
         if warnings:
             result["warnings"] = warnings
@@ -6841,7 +6794,7 @@ async def _standalone_send(
     except Exception as e:
         # Include the exception type: str(TimeoutError()) is empty.
         logger.error("Discord standalone send failed", exc_info=True)
-        return {"error": _standalone_sanitize_error(f"Discord send failed: {type(e).__name__}: {e}")}
+        return send_error(f"Discord send failed: {type(e).__name__}: {e}")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

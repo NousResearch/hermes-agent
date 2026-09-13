@@ -1581,6 +1581,27 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
 
 
 @dataclass
+class ExecApprovalPrompt:
+    """One exec-approval prompt, ready for a platform to render natively (see
+    ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
+    with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
+    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
+    ``danger`` / ``""``."""
+    chat_id: str
+    session_key: str
+    text: str
+    actions: List[Tuple[str, str, str]]
+    command: str
+    description: str
+    smart_denied: bool
+    metadata: Optional[Dict[str, Any]] = None
+
+    @property
+    def choices(self) -> List[str]:
+        return [choice for _, choice, _ in self.actions]
+
+
+@dataclass
 class SendResult:
     """Result of sending a message."""
     success: bool
@@ -1867,6 +1888,8 @@ class BasePlatformAdapter(ABC):
         # could drop a newer guard.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
         # Legacy env knob; the runner syncs the busy_input_mode value after construction.
         # Default "interrupt" so a pre-sync read never silently queues.
@@ -2306,8 +2329,15 @@ class BasePlatformAdapter(ABC):
             return None
         return resolved if isinstance(resolved, str) and resolved.strip() else None
 
-    # ── Inbound text batching: subclasses supply ``_pending_text_batches`` /
-    # ``_pending_text_batch_tasks`` dicts and ``_flush_text_batch(key)``.
+    # ── Inbound text batching. Chat clients split one long message into several inbound
+    # chunks; ``_enqueue_text_event`` merges chunks per session key and ``_flush_text_batch``
+    # dispatches after a quiet period (longer when the last chunk sits near the platform's
+    # split point, i.e. a continuation is almost certain). Adapters set the delay attrs and
+    # ``_SPLIT_THRESHOLD``; ``_text_batch_delay_for`` / ``_pop_text_batch`` /
+    # ``_dispatch_text_batch`` are the override seams for platform-specific policy.
+    _SPLIT_THRESHOLD: int = 4000
+    _text_batch_delay_seconds: float = 0.0
+    _text_batch_split_delay_seconds: float = 0.0
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""
@@ -2338,6 +2368,52 @@ class BasePlatformAdapter(ABC):
         if prior_task and not prior_task.done():
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
+
+    def _text_batch_delay_for(self, pending: Optional["MessageEvent"]) -> float:
+        """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""
+        last_len = getattr(pending, "_last_chunk_len", 0) if pending is not None else 0
+        return self._text_batch_split_delay_seconds if last_len >= self._SPLIT_THRESHOLD else self._text_batch_delay_seconds
+
+    def _pop_text_batch(self, key: str) -> Optional["MessageEvent"]:
+        """Remove and return the pending batch for ``key`` (adapters with side tables override)."""
+        return self._pending_text_batches.pop(key, None)
+
+    async def _dispatch_text_batch(self, event: "MessageEvent") -> None:
+        """Hand a flushed batch to the pipeline (adapters with per-chat guards override)."""
+        await self.handle_message(event)
+
+    async def _flush_text_batch_now(self, key: str) -> None:
+        """Dispatch the pending batch for ``key`` immediately (no quiet period)."""
+        event = self._pop_text_batch(key)
+        if event is not None:
+            await self._dispatch_text_batch(event)
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period, then dispatch the batch for ``key``.
+
+        Two races share this body. (1) ``_enqueue_text_event`` cancels the prior flush task
+        on each new chunk; when ``Task.cancel()`` lands after ``sleep()`` already completed,
+        CancelledError is delivered at the *next* await — after a superseded task would have
+        popped the event, so the successor finds nothing and the message is lost. The identity
+        check therefore runs synchronously between the sleep and the pop. (2) A cancel that
+        lands while the dispatch is in flight would abort the agent turn (#12444), so the
+        dispatch is shielded and the outer CancelledError swallowed."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._text_batch_delay_for(self._pending_text_batches.get(key)))
+            owner = self._pending_text_batch_tasks.get(key)
+            if owner is not None and owner is not current_task:
+                return
+            event = self._pop_text_batch(key)
+            if event is None:
+                return
+            logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
+            await asyncio.shield(self._dispatch_text_batch(event))
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session
@@ -2495,6 +2571,7 @@ class BasePlatformAdapter(ABC):
     _EA_REASON_LABEL: str = "Reason: "
     _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
+    _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
 
     @staticmethod
     def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
@@ -2506,15 +2583,67 @@ class BasePlatformAdapter(ABC):
         """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
         return text
 
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        """Chars of command preview that fit; platforms with a hard message cap compute it."""
+        return self._EA_CMD_BUDGET
+
     def _format_exec_approval(
         self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
         """Shared exec-approval prompt text: header + fenced (truncated) command + reason,
         plus the smart-deny line. Buttons/trailing instructions stay platform-local."""
-        cmd_preview = self._truncate_preview(str(command or ""), self._EA_CMD_BUDGET)
+        if self._EA_REASON_BUDGET:
+            description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
+        cmd_preview = self._truncate_preview(
+            str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
                 f"{self._EA_REASON_LABEL}{self._ea_escape(description)}")
         return text + self._EA_SMART_DENY_LINE if smart_denied else text
+
+    # ── Exec-approval prompt (template method). The choice set is one rule for every button
+    # surface — three separate "same fix × N adapters" commits motivated lifting it here.
+    _EA_ACTION_LABELS: Dict[str, str] = {
+        "once": "Allow Once", "session": "Allow Session", "always": "Always Allow", "deny": "Deny"}
+    _EA_ACTION_STYLES: Dict[str, str] = {"once": "primary", "deny": "danger"}
+
+    def _exec_approval_actions(
+            self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
+        """``(label, choice, style)`` rows for the approval buttons. A smart deny is an owner
+        override for one operation only, so it offers neither the session nor the permanent tier;
+        the permanent tier is never offered without the session tier."""
+        choices = ["once"]
+        if not smart_denied and allow_session:
+            choices.append("session")
+            if allow_permanent:
+                choices.append("always")
+        choices.append("deny")
+        return [(self._EA_ACTION_LABELS[c], c, self._EA_ACTION_STYLES.get(c, "")) for c in choices]
+
+    @classmethod
+    def supports_exec_approval_buttons(cls) -> bool:
+        """True when the adapter renders native approval buttons (overrides the prompt hook);
+        the runner otherwise sends the plain-text ``/approve`` prompt."""
+        return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Interactive exec-approval prompt; a press resolves via
+        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
+        render them natively in ``_send_exec_approval_prompt``."""
+        prompt = ExecApprovalPrompt(
+            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
+            description=description, smart_denied=smart_denied,
+            text=self._format_exec_approval(command, description, smart_denied),
+            actions=self._exec_approval_actions(
+                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
+        return await self._send_exec_approval_prompt(prompt)
+
+    async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:
+        """Render ``prompt`` with the platform's native buttons; the default has none."""
+        return SendResult(success=False, error="Not supported")
 
     @staticmethod
     def _format_choice_page(options: list, page: int, per_page: int) -> "tuple[list, Dict[str, Any]]":
@@ -3195,7 +3324,7 @@ class BasePlatformAdapter(ABC):
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
         result = await _send(content)
-        if result.success:
+        if result.success or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
@@ -3241,6 +3370,8 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
+                if self._send_retry_is_final(result):
+                    return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
                 # The failure kind can change between attempts (a transient error may
@@ -3284,10 +3415,23 @@ class BasePlatformAdapter(ABC):
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
-        fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
+        fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
+
+    def _send_retry_is_final(self, result: "SendResult") -> bool:
+        """True when a failed send must be returned as-is: neither a retry nor the plain-text
+        fallback can fix it (a structured auth/target refusal). Default: never."""
+        return False
+
+    async def _send_plain_fallback(
+            self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> "SendResult":
+        """Last-resort send after a non-transient failure; platforms whose markup is not the
+        likely culprit override it (Photon drops rich links instead of adding the banner)."""
+        return await self.send(
+            chat_id=chat_id, content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            reply_to=reply_to, metadata=metadata)
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -425,7 +425,6 @@ class LineAdapter(BasePlatformAdapter):
         self._cache = RequestCache()
         self._dedup = _MessageDeduplicator()
         self._bot_user_id: Optional[str] = None
-        self._lock_key: Optional[str] = None
         self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
         self._media_temp_paths: Set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
@@ -439,14 +438,9 @@ class LineAdapter(BasePlatformAdapter):
         if not self.channel_access_token or not self.channel_secret:
             return self._fail("config_missing", "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set")
         # One profile per channel token; lock on a hash so the secret never hits disk.
-        try:
-            from gateway.status import acquire_scoped_lock
-            tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-            if not acquire_scoped_lock("line", tok_hash):
-                return self._fail("lock_conflict", "LINE channel already in use by another profile")
-            self._lock_key = tok_hash
-        except ImportError:
-            self._lock_key = None
+        tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
+        if not self._acquire_platform_lock("line", tok_hash, "LINE channel"):
+            return False
         self._client = _LineClient(self.channel_access_token)
         try:  # best-effort self-userId for self-echo filtering (LINE rarely echoes anyway)
             self._bot_user_id = await self._client.get_bot_user_id()
@@ -500,11 +494,8 @@ class LineAdapter(BasePlatformAdapter):
             _unlink_quietly(path)
         self._media_temp_paths.clear()
         self._media_tokens.clear()
-        if self._lock_key:
-            with contextlib.suppress(Exception):
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("line", self._lock_key)
-            self._lock_key = None
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
 
     async def _handle_health(self, request) -> Any:
         from aiohttp import web
@@ -959,7 +950,7 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     token = _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")
     if not token or not chat_id:
-        return {"error": "LINE standalone send: missing token or chat_id"}
+        return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]
     if media_files:  # tell the recipient media was generated but not delivered
         messages.append(_text_message(f"[{len(media_files)} attachment(s) generated; not deliverable from cron]"))
@@ -968,7 +959,7 @@ async def _standalone_send(
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
     except Exception as exc:
-        return {"error": str(exc)}
+        return send_error(str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)

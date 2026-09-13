@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import UnscopedSecretError, get_secret
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 
 try:
     from mautrix.types import (
@@ -59,7 +59,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -799,7 +799,7 @@ class MatrixAdapter(BasePlatformAdapter):
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
-    _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -816,7 +816,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
-        self._split_threshold = max(100, self.max_message_length - 100)
+        self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
         # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
         # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
         # secondary's credential sends that credential to the wrong homeserver (or reuses the
@@ -875,8 +875,6 @@ class MatrixAdapter(BasePlatformAdapter):
         # Text batching merges client-side splits (~4000 chars) of one long message.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._approval_reaction_map = {
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
@@ -1623,32 +1621,24 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: failed to add %s reaction %s: %s", label, emoji, exc)
         return result
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+    _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
+    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
+                  "always": "♾️ = approve always", "deny": "❎ = deny"}
+    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
+                      "always": "`!approve always` to approve permanently, "}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if smart_denied:
-            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
-        else:
-            scope_choices = (
-                ("Reply `!approve session` to approve this pattern for the session, " if allow_session else "")
-                + ("`!approve always` to approve permanently, " if allow_permanent else ""))
-        legend = ["✅ = approve once"]
-        reactions = ["✅"]
-        if allow_session:
-            legend.append("🌀 = approve for this session")
-            reactions.append("🌀")
-            if allow_permanent:
-                legend.append("♾️ = approve always")
-                reactions.append("♾️")
-        legend.append("❎ = deny")
-        reactions.append("❌")
+        choices = prompt.choices
+        typed_hints = "" if prompt.smart_denied else "".join(self._EA_TYPED_HINT[c] for c in choices if c in self._EA_TYPED_HINT)
         text = (
-            f"{self._format_exec_approval(command, description)}\n\n"
-            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(legend))
+            f"{prompt.text}\n\n"
+            f"{typed_hints}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
+            "You can also click the reaction to approve:\n" + "\n".join(self._EA_LEGEND[c] for c in choices))
+        reactions = tuple(self._EA_REACTIONS[c] for c in choices)
+        session_key, chat_id = prompt.session_key, prompt.chat_id
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
@@ -1659,7 +1649,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at)
         return await self._send_reaction_prompt(
-            chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
+            chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2481,23 +2471,6 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            near_split = last_len >= self._split_threshold
-            await asyncio.sleep(self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[Matrix] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
-
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 
         async def _send() -> None:
@@ -2929,14 +2902,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
         # homeserver too, so the scoped token is never sent to the default profile's server.
         homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
-            return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
+            return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
         url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
@@ -2955,16 +2928,16 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             async def _do_send():
                 async with session.put(url, headers=headers, json=payload) as resp:
                     if resp.status not in {200, 201}:
-                        return {"error": f"Matrix API error ({resp.status}): {await resp.text()}"}
+                        return send_error(f"Matrix API error ({resp.status}): {await resp.text()}")
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
             try:
                 return await asyncio.wait_for(_do_send(), timeout=30)
             except asyncio.TimeoutError:
-                return {"error": "Matrix API timeout (30s)"}
+                return send_error("Matrix API timeout (30s)")
     except Exception as e:
-        return {"error": f"Matrix send failed: {e}"}
+        return send_error(f"Matrix send failed: {e}")
 
 
 def interactive_setup() -> None:

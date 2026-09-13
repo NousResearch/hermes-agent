@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from urllib.parse import unquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
 from gateway.platforms.event import MessageEvent, MessageType
@@ -122,10 +122,9 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
         self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
-        # Text batching state consumed by BasePlatformAdapter._enqueue_text_event.
-        self._text_batch_delay = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # SimpleX has no client-side split, so the split delay equals the plain one.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
+        self._text_batch_split_delay_seconds = self._text_batch_delay_seconds
         logger.info(
             "SimpleX adapter initialized: url=%s auto_accept=%s groups=%s",
             self.ws_url, self.auto_accept, "enabled" if self.group_allow_from else "disabled")
@@ -381,19 +380,6 @@ class SimplexAdapter(BasePlatformAdapter):
     def _text_batch_key(self, event: MessageEvent) -> str:
         return f"{event.source.platform.value}:{event.source.chat_id}"
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        current_task = asyncio.current_task()
-        try:
-            await asyncio.sleep(self._text_batch_delay)
-            event = self._pending_text_batches.pop(key, None)
-            if event:
-                logger.info("[SimpleX] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-                await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
-
     def _make_corr_id(self) -> str:
         """Mint a correlation ID and remember it for echo-filtering; the set is bounded by
         ``_max_pending_corr`` (overflow evicted in one sweep)."""
@@ -633,11 +619,11 @@ async def _standalone_send(
     try:
         import websockets as _wsclient
     except ImportError:
-        return {"error": "websockets not installed. Run: pip install websockets"}
+        return send_error("websockets not installed. Run: pip install websockets")
     extra = getattr(pconfig, "extra", {}) or {}
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL") or extra.get("ws_url", "ws://127.0.0.1:5225")
     if not ws_url:
-        return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
+        return send_error("SimpleX standalone send: SIMPLEX_WS_URL is required")
     try:
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",
@@ -647,7 +633,7 @@ async def _standalone_send(
             await asyncio.sleep(0.5)  # let the daemon process the command before closing
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
-        return {"error": f"SimpleX send failed: {e}"}
+        return send_error(f"SimpleX send failed: {e}")
 
 
 _SETUP_PROMPTS = (

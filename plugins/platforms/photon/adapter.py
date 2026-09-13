@@ -37,7 +37,7 @@ else:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
@@ -1327,48 +1327,14 @@ class PhotonAdapter(BasePlatformAdapter):
         return (isinstance(raw, dict) and raw.get("retryable") is False
                 and raw.get("error_class") in ("auth_or_config", "target_not_allowed"))
 
-    async def _send_with_retry(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                               metadata: Any = None, max_retries: int = 1, base_delay: float = 2.0) -> SendResult:
-        """Retry sends without the generic Markdown banner (replies are markdown or
-        already-stripped plain text, so it never applies)."""
-        text = self.format_message(content)
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        return self._is_permanent_sidecar_failure(result)  # already carries the user-facing explanation
 
-        async def _send() -> SendResult:
-            return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
-        result = await _send()
-        if result.success:
-            return result
-        if self._is_permanent_sidecar_failure(result):
-            return result  # structured failure already carries the user-facing explanation
-        error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
-        if not is_network and self._is_timeout_error(error_str):
-            return result
-        if is_network:
-            for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning("[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                               attempt, max_retries, delay, error_str)
-                await asyncio.sleep(delay)
-                result = await _send()
-                if result.success:
-                    return result
-                error_str = result.error or ""
-                if self._is_permanent_sidecar_failure(result):
-                    return result
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break
-            else:
-                logger.error("[photon] Failed to deliver response after %d retries: %s", max_retries, error_str)
-                # Fall through to plain text; for URL-only responses this bypasses richlink()
-                # so a rich-link outage doesn't strand a sendable URL.
-        logger.warning("[photon] Send failed: %s - retrying plain-text message", error_str)
-        fallback_result = await self._sidecar_send(
-            chat_id, text[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
-        if not fallback_result.success:
-            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
-        return fallback_result
+    async def _send_plain_fallback(self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> SendResult:
+        """No Markdown banner (replies are markdown or already-stripped plain text); bypass
+        richlink() so a rich-link outage doesn't strand a sendable URL."""
+        return await self._sidecar_send(
+            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
@@ -1508,7 +1474,7 @@ def _standalone_error(resp: Any) -> Dict[str, Any]:
         error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
     else:
         error = str(data.get("error") or "sidecar reported failure")
-    return {"error": error, "error_class": error_class, "retryable": retryable}
+    return {**send_error(error), "error_class": error_class, "retryable": retryable}
 
 
 def _standalone_token_from_record(port: int) -> Tuple[Optional[str], int, str]:
@@ -1535,14 +1501,14 @@ async def _standalone_send(
     force_document: bool = False,  # noqa: ARG001 — iMessage auto-detects file kind
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
-        return {"error": "httpx not installed"}
+        return send_error("httpx not installed")
     port = _coerce_port(
         (pconfig.extra or {}).get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
     token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN")
     if not token:
         token, port, error = _standalone_token_from_record(port)
         if not token:
-            return {"error": error}
+            return send_error(error)
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
@@ -1583,7 +1549,7 @@ async def _standalone_send(
                 last_message_id = data.get("messageId") or last_message_id
         return {"success": True, "message_id": last_message_id}
     except Exception as e:
-        return {"error": f"Photon standalone send failed: {e}"}
+        return send_error(f"Photon standalone send failed: {e}")
 
 
 # -- Plugin entry point ----------------------------------------------------------

@@ -142,7 +142,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, classify_send_error,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
@@ -456,8 +456,6 @@ class TelegramAdapter(BasePlatformAdapter):
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", 0.3, min_value=0.08, max_value=2.0)
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).
@@ -3799,30 +3797,24 @@ class TelegramAdapter(BasePlatformAdapter):
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
-        """Send an inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
+    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
         def build():
-            text = self._format_exec_approval(command, description, smart_denied)
             # Short monotonic ids in callback_data map back to session_key.
             import itertools
             if not hasattr(self, "_approval_counter"):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
-            buttons = [InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")]
-            if not smart_denied and allow_session:
-                buttons.append(InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"))
-                if allow_permanent:
-                    buttons.append(InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"))
-            buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            return text, InlineKeyboardMarkup(
-                self._rows_of_two(buttons)), lambda msg: self._approval_state.__setitem__(approval_id, session_key)
+            buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
+                       for label, choice, _ in prompt.actions]
+            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
+                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
         return await self._send_prompt(
-            "send_exec_approval", chat_id, metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
+            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
+            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
@@ -5809,6 +5801,11 @@ class TelegramAdapter(BasePlatformAdapter):
         event = None
         try:
             await asyncio.sleep(delay)
+            # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
+            # CancelledError only lands at the next await, so check synchronously before the pop.
+            owner = tasks.get(key)
+            if owner is not None and owner is not current_task:
+                return
             event = pending.pop(key, None)
             if not event:
                 return
@@ -5828,23 +5825,26 @@ class TelegramAdapter(BasePlatformAdapter):
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        # Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
-        # short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap).
-        pending = self._pending_text_batches.get(key)
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        """Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
+        short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap)."""
         last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
         total_len = len(getattr(pending, "text", "") or "") if pending else 0
         if last_len >= self._SPLIT_THRESHOLD:
-            delay = self._text_batch_split_delay_seconds
-        elif total_len <= self._TEXT_BATCH_FAST_LEN:
-            delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
-        elif total_len <= self._TEXT_BATCH_SHORT_LEN:
-            delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
-        else:
-            delay = self._text_batch_delay_seconds
+            return self._text_batch_split_delay_seconds
+        if total_len <= self._TEXT_BATCH_FAST_LEN:
+            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
+        if total_len <= self._TEXT_BATCH_SHORT_LEN:
+            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
+        return self._text_batch_delay_seconds
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
+        (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
+        the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
         await self._flush_buffered(
-            self._pending_text_batches, self._pending_text_batch_tasks, key, delay, "text",
+            self._pending_text_batches, self._pending_text_batch_tasks, key,
+            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
 
     # -- Photo batching --

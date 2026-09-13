@@ -28,7 +28,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
-from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
+from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -780,7 +780,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
     if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
@@ -795,7 +795,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             from tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
         except Exception:
-            return {"error": f"Email send failed: {e}"}
+            return send_error(f"Email send failed: {e}")
 
 
 def _is_connected(config) -> bool:

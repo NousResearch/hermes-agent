@@ -27,7 +27,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -355,14 +355,14 @@ async def _standalone_send(
     OR ``pconfig.extra["markdown"]`` is True.
     """
     if not HTTPX_AVAILABLE:
-        return {"error": "ntfy standalone send: httpx not installed"}
+        return send_error("ntfy standalone send: httpx not installed")
     extra = getattr(pconfig, "extra", {}) or {}
     server = _server_url(extra)
     publish_topic = (
         chat_id or extra.get("publish_topic") or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
         or extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "").strip())
     if not publish_topic:
-        return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
+        return send_error("ntfy standalone send: NTFY_TOPIC not configured")
     token = _setting(extra, "token", "NTFY_TOKEN")
     markdown_env = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
     markdown = bool(extra.get("markdown")) or markdown_env in _MARKDOWN_TRUTHY
@@ -372,10 +372,10 @@ async def _standalone_send(
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{server}/{publish_topic}", content=body, headers=headers)
         if resp.status_code >= 300:
-            return {"error": f"ntfy HTTP {resp.status_code}: {resp.text[:200]}"}
+            return send_error(f"ntfy HTTP {resp.status_code}: {resp.text[:200]}")
         return {"success": True, "platform": "ntfy", "chat_id": publish_topic, "message_id": _response_message_id(resp)}
     except Exception as e:
-        return {"error": f"ntfy standalone send failed: {e}"}
+        return send_error(f"ntfy standalone send failed: {e}")
 
 
 def register(ctx) -> None:

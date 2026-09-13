@@ -32,7 +32,7 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -149,8 +149,6 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         self._text_batch_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._attachment_text_merge_delay_seconds = _extra_float("attachment_text_merge_delay_seconds", 0.8)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         # Stream keep-alive config (see streaming.py STREAM_* constants).
         self._stream_safe_duration_seconds = _extra_float("stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS)
         self._stream_keepalive_enabled = bool(extra.get("stream_keepalive_enabled", STREAM_KEEPALIVE_ENABLED_DEFAULT))
@@ -503,29 +501,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
                 existing.reply_to_text = event.reply_to_text
                 existing.reply_to_message_id = event.reply_to_message_id
 
-    async def _flush_text_batch(self, key: str) -> None:
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            if pending and pending.media_urls and not (pending.text or "").strip():
-                delay = self._attachment_text_merge_delay_seconds  # attachment-only: wait for text
-            elif pending and getattr(pending, "_last_chunk_len", 0) >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds  # continuation almost certain
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            # Cancel-delivery race: CancelledError lands at the NEXT await, so this identity check
-            # must stay synchronous (no await between it and the pop).
-            if self._pending_text_batch_tasks.get(key) is not current_task:
-                return
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[WeCom] Flushing batch %s (%d chars, %d media)", key, len(event.text or ""), len(event.media_urls or []))
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        if pending is not None and pending.media_urls and not (pending.text or "").strip():
+            return self._attachment_text_merge_delay_seconds  # attachment-only: wait for the text frame
+        return super()._text_batch_delay_for(pending)
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
@@ -747,10 +726,10 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     try:
         result = await adapter.send(chat_id, message)
     except Exception as e:
-        return {"error": f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}"}
+        return send_error(f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
-    return {"error": f"WeCom send failed: {result.error}"}
+    return send_error(f"WeCom send failed: {result.error}")
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
@@ -766,17 +745,17 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if adapter is not None:
         return await _send_via(adapter, chat_id, message, live=True)
     if not check_wecom_requirements():
-        return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
+        return send_error("WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET.")
     try:
         adapter = WeComAdapter(pconfig)
         if not await adapter.connect():
-            return {"error": f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}"}
+            return send_error(f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}")
         try:
             return await _send_via(adapter, chat_id, message, live=False)
         finally:
             await adapter.disconnect()
     except Exception as e:
-        return {"error": f"WeCom send failed: {e}"}
+        return send_error(f"WeCom send failed: {e}")
 
 
 _MANUAL_SETUP_STEPS = (

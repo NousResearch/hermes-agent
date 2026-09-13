@@ -2178,16 +2178,11 @@ class CLICommandsMixin:
 
     def _heartbeat_set(self, mgr, arg: str) -> None:
         """Set: ``/heartbeat every 10m <prompt>`` (also accepts ``10m <prompt>``)."""
-        from hermes_cli.heartbeat import parse_interval, format_interval
-        tokens = arg.split(None, 2)
-        interval = None
-        prompt = ""
-        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        elif tokens:
-            interval = parse_interval(tokens[0])
-            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
+        from hermes_cli.heartbeat import split_interval_prefix, format_interval
+        # Also accepts the spaced forms `every 90 minutes <prompt>` /
+        # `every 2 hours <prompt>`: the value and the unit are two words there, so a
+        # token split strands the unit at the head of the prompt.
+        interval, prompt = split_interval_prefix(arg)
         if interval is None:
             return _cp(
                 "  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)",

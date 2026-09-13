@@ -99,7 +99,7 @@ class GatewayGoalCommandsMixin:
         """Handle /heartbeat (mirror of the CLI handler): the session's one recurring re-entry
         prompt. The gateway-wide poller injects due heartbeats through the adapter FIFO as
         ordinary user turns, so alternation and caching hold."""
-        from hermes_cli.heartbeat import parse_interval, format_interval, MIN_INTERVAL_SECONDS
+        from hermes_cli.heartbeat import split_interval_prefix, format_interval, MIN_INTERVAL_SECONDS
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
         mgr, _session_entry = await self._get_heartbeat_manager_for_event(event)
@@ -129,14 +129,10 @@ class GatewayGoalCommandsMixin:
             return "✓ Heartbeat cleared." if had else "No heartbeat set."
 
         # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
-        tokens = args.split(None, 2)
-        interval, prompt = None, ""
-        if tokens[0].lower() == "every" and len(tokens) >= 2:
-            interval = parse_interval(f"every {tokens[1]}")
-            prompt = tokens[2] if len(tokens) > 2 else ""
-        else:
-            interval = parse_interval(tokens[0])
-            prompt = args[len(tokens[0]):].strip() if interval and interval > 0 else ""
+        # Also accepts the spaced forms `every 90 minutes <prompt>` /
+        # `every 2 hours <prompt>`: the value and the unit are two words there, so a
+        # token split strands the unit at the head of the prompt.
+        interval, prompt = split_interval_prefix(args)
         if interval is None:
             return (
                 "Usage: /heartbeat every <interval> <prompt>  (e.g. /heartbeat every 10m Check CI)\n"

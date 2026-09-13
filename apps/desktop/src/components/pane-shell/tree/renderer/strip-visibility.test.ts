@@ -9,6 +9,7 @@ const tile = (): StripPane => ({ collapsePane: false, placement: 'main' })
 const workspace = (): StripPane => ({ collapsePane: false, placement: 'main', uncloseable: true })
 const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
+const hideOnlyChrome = (): StripPane => ({ collapsePane: false, hideOnly: true, placement: 'left' })
 
 describe('auto (no stored choice)', () => {
   it('gives a lone workspace no strip and a stack of two a strip', () => {
@@ -30,6 +31,14 @@ describe('the stored choice', () => {
     expect(resolveTabStripVisible({ mode: 'always', shown: [workspace()] })).toBe(true)
     expect(resolveTabStripVisible({ mode: 'never', shown: [workspace(), sideChrome()] })).toBe(false)
   })
+
+  it('does not hide a hide-only mode switcher under never', () => {
+    const sessions = hideOnlyChrome()
+    const bots = hideOnlyChrome()
+
+    expect(resolveTabStripVisible({ all: [sessions, bots], mode: 'never', shown: [sessions, bots] })).toBe(true)
+    expect(resolveTabStripVisible({ all: [sessions, bots], mode: 'never', shown: [sessions] })).toBe(true)
+  })
 })
 
 // THE invariant the old boolean could not hold. `never` used to sit above the
@@ -46,7 +55,7 @@ describe('no dead zone', () => {
 
   it('still hides a zone that cannot strand anything', () => {
     // The workspace is uncloseable, a stack is reachable by tab cycling, and
-    // hide-only chrome (sessions / Bots) keeps its panes + ⌘⌥T — the invariant
+    // ordinary side chrome has no recovery affordance to protect. The invariant
     // protects handles, it does not veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)

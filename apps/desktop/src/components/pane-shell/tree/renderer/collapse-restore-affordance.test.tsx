@@ -135,13 +135,15 @@ describe('Sessions/Bots strip — #91223', () => {
     expect(tabEl('hermes-bots:pane')).toBeTruthy()
   })
 
-  it('an explicit never hides the sessions/Bots strip', () => {
+  it('an explicit never still keeps the sessions/Bots mode switcher reachable', () => {
     setTreeGroupTabStrip('g-side', 'never')
-    expect(tabStripVisibleForGroup(zoneAt(0))).toBe(false)
+    expect(tabStripVisibleForGroup(zoneAt(0))).toBe(true)
 
     render(<LiveTreeGroup parentAxis="row" />)
 
-    expect(tablist()).toBeNull()
+    expect(tablist()).toBeTruthy()
+    expect(tabEl('sessions')).toBeTruthy()
+    expect(tabEl('hermes-bots:pane')).toBeTruthy()
   })
 })
 

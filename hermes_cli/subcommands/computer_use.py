@@ -180,8 +180,31 @@ def build_computer_use_parser(subparsers) -> None:
             return handler(args)
         computer_use_perms.print_help()
 
+    computer_use_bridge = computer_use_sub.add_parser(
+        "bridge", help="Run an authenticated local HTTP bridge for remote Computer Use",
+        description="Expose this machine's local cua-driver as a small authenticated HTTP bridge so a remote\n"
+            "Hermes backend can forward computer_use calls to the desktop host. Prefer the default loopback\n"
+            "bind plus an SSH/VPN tunnel; non-loopback binds require --allow-non-loopback.")
+    computer_use_bridge.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    computer_use_bridge.add_argument("--port", type=int, default=8765, help="Bind port (default: 8765)")
+    computer_use_bridge.add_argument(
+        "--token", default=None,
+        help="Bearer token for bridge requests. Prefer an env var so the token stays out of shell history.")
+    computer_use_bridge.add_argument(
+        "--token-env", default="HERMES_COMPUTER_USE_BRIDGE_TOKEN",
+        help="Environment variable to read the token from (default: HERMES_COMPUTER_USE_BRIDGE_TOKEN)")
+    computer_use_bridge.add_argument(
+        "--allow-non-loopback", action="store_true",
+        help="Allow binding outside loopback. Use only behind a trusted VPN/tunnel.")
+
+    def _cu_bridge(args):
+        from tools.computer_use.bridge import run_bridge_server
+        sys.exit(run_bridge_server(
+            host=str(args.host), port=int(args.port), token=args.token, token_env=str(args.token_env),
+            allow_non_loopback=bool(args.allow_non_loopback)))
+
     _actions = {"install": _cu_install, "status": _cu_status, "doctor": _cu_doctor,
-                "permissions": _cu_permissions}
+                "permissions": _cu_permissions, "bridge": _cu_bridge}
 
     def cmd_computer_use(args):
         handler = _actions.get(getattr(args, "computer_use_action", None))

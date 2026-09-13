@@ -44,6 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
@@ -94,12 +95,13 @@ _STT_PROVIDER_BASE_URLS = {
 _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 
 
-class QQAdapter(BasePlatformAdapter):
+class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    ALLOW_ALL_ENV_PREFIX = "QQ"
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 
@@ -178,11 +180,6 @@ class QQAdapter(BasePlatformAdapter):
     @property
     def name(self) -> str:
         return "QQBot"
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """QQBot gates DM/group access at intake via dm_policy/group_policy."""
-        return True
 
     # ── Connection lifecycle ──
 
@@ -1660,35 +1657,7 @@ class QQAdapter(BasePlatformAdapter):
     def _strip_at_mention(content: str) -> str:
         return re.sub(r"^@\S+\s*", "", content.strip())
 
-    def _open_dm_opted_in(self) -> bool:
-        # Both names via the scoped reader: under multiplex os.environ is the DEFAULT profile's
-        # opt-in, which must not open a secondary bot's DMs.
-        truthy = {"true", "1", "yes"}
-        return any(_resolve_qq_secret(name, "").lower() in truthy
-                   for name in ("GATEWAY_ALLOW_ALL_USERS", "QQ_ALLOW_ALL_USERS"))
-
-    def _is_dm_allowed(self, user_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return self._entry_matches(self._allow_from, user_id)
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    def _is_dm_intake_allowed(self, user_id: str) -> bool:
-        principal = str(user_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "pairing":
-            return True
-        return self._is_dm_allowed(principal)
-
-    def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
-        if self._group_policy == "allowlist":
-            return self._entry_matches(self._group_allow_from, group_id)
-        return self._group_policy == "open"
-
-    @staticmethod
-    def _entry_matches(entries: List[str], target: str) -> bool:
+    def _entry_matches(self, entries: List[str], target: str) -> bool:
         normalized_target = str(target).strip().lower()
         return any(str(e).strip().lower() in ("*", normalized_target) for e in entries)
 

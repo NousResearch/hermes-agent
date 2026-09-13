@@ -50,6 +50,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
@@ -700,39 +701,30 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AccessPolicy:
+class AccessPolicy(OwnAccessPolicyMixin):
     """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
+    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
+
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
-        self._dm_allow_from = dm_allow_from
+        self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
-    def _open_dm_opted_in(self) -> bool:
-        return any((_yb_secret(k, "") or "").lower() in {"true", "1", "yes"}
-                   for k in ("GATEWAY_ALLOW_ALL_USERS", "YUANBAO_ALLOW_ALL_USERS"))
-
-    def _evaluate(self, policy: str, allow_from: list[str], principal: str, *, pairing: bool) -> bool:
-        """Shared allow/deny rule; *pairing* is the verdict for the "pairing" policy."""
-        if policy == "allowlist":
-            return principal in allow_from
-        if policy == "pairing":
-            return pairing
-        if policy == "open":
-            return self._open_dm_opted_in()
-        return False  # "disabled" or unknown
-
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
-        return self._evaluate(self._dm_policy, self._dm_allow_from, sender_id.strip(), pairing=False)
+        return self._is_dm_allowed(sender_id.strip())
 
     def is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        return bool(principal) and self._evaluate(self._dm_policy, self._dm_allow_from, principal, pairing=True)
+        return self._is_dm_intake_allowed(sender_id)
 
     def is_group_allowed(self, group_code: str) -> bool:
-        return self._evaluate(self._group_policy, self._group_allow_from, group_code.strip(), pairing=False)
+        """Unlike the shared rule, an ``open`` group still needs the allow-all opt-in: Yuanbao groups
+        have no runner-side mention gate, so open-without-opt-in would forward every member."""
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return self._is_group_allowed(group_code.strip())
 
     @property
     def dm_policy(self) -> str:
@@ -2681,7 +2673,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     @property
     def enforces_own_access_policy(self) -> bool:
-        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        """Intake gating lives in ``AccessPolicy`` (composed, not inherited), so the flag stays here."""
         return True
 
     def _sender_may_designate_home(self, ctx: InboundContext) -> bool:

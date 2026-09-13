@@ -29,6 +29,7 @@ CRYPTO_AVAILABLE = Cipher is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -691,7 +692,8 @@ _OUTBOUND_BY_EXT: Tuple[Tuple[frozenset, str, str], ...] = (
 _DIRECT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
-class WeixinAdapter(BasePlatformAdapter):
+class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
+    ALLOW_ALL_ENV_PREFIX = "WEIXIN"
     supports_code_blocks = True  # Weixin renders fenced code blocks
     splits_long_messages = True  # send() chunks via _split_text()
     MAX_MESSAGE_LENGTH = 2000
@@ -893,7 +895,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
-            if self._group_policy in {"disabled", "pairing"} or (self._group_policy == "allowlist" and effective_chat_id not in self._group_allow_from):
+            if not self._is_group_allowed(effective_chat_id):
                 return
         elif not self._is_dm_intake_allowed(sender_id):
             return
@@ -918,24 +920,6 @@ class WeixinAdapter(BasePlatformAdapter):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
-
-    def _open_dm_opted_in(self) -> bool:
-        # Scoped reads: the default profile's allow-all flag must not leak into a multiplexed secondary profile's gate.
-        return any((_wx_secret(name, "") or "").lower() in {"true", "1", "yes"} for name in ("GATEWAY_ALLOW_ALL_USERS", "WEIXIN_ALLOW_ALL_USERS"))
-
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        """Like ``_is_dm_allowed`` but ``pairing`` admits everyone at intake (pairing gate runs later)."""
-        return self._dm_policy == "pairing" or self._is_dm_allowed(sender_id)
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """Weixin gates DM/group access at intake via dm_policy/group_policy."""
-        return True
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         from gateway.session import build_session_key

@@ -28,6 +28,7 @@ HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
@@ -109,7 +110,7 @@ def _bounded_put(store: Dict[str, str], key: str, value: str) -> bool:
     return True
 
 
-class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePlatformAdapter):
+class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
@@ -532,26 +533,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
             return MessageType.VOICE
         return MessageType.TEXT
 
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """WeCom gates DM/group access at intake via dm_policy/group_policy."""
-        return True
-
-    def _open_dm_opted_in(self) -> bool:
-        # Scoped reads: default profile's allow-all flag must not leak into a multiplexed profile.
-        return any((_get_scoped_secret(var, "") or "").lower() in {"true", "1", "yes"} for var in ("GATEWAY_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS"))
-
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return _entry_matches(self._allow_from, sender_id)
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        principal = str(sender_id or "").strip()
-        return bool(principal) and (self._dm_policy == "pairing" or self._is_dm_allowed(principal))
+    def _entry_matches(self, entries: List[str], target: str) -> bool:
+        return _entry_matches(entries, target)
 
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
-        if self._group_policy in ("disabled", "pairing") or (self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id)):
+        """Per-group ``groups.<id>.allow_from`` restricts senders on top of the chat-level policy."""
+        if not super()._is_group_allowed(chat_id):
             return False
         group_cfg = self._resolve_group_cfg(chat_id)
         sender_allow = _coerce_list(group_cfg.get("allow_from") or group_cfg.get("allowFrom"))

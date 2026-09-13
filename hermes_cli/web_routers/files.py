@@ -27,7 +27,8 @@ from fastapi.responses import FileResponse
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _managed_file_entry, _managed_files_policy, _managed_response_meta,
+    _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsCreate, FsDelete, FsRename, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
@@ -749,25 +750,38 @@ async def fs_rename(payload: FsRename):
 
 
 @router.delete("/api/fs/delete")
-async def fs_delete(payload: FsDelete):
+async def fs_delete(payload: FsDelete, request: Request):
     """Delete a file, or a directory with ``recursive: true``.
 
     Mirrors the managed-files delete route's guards: the managed root itself
     and the filesystem root can never be deleted. Unlike the OS-trash path the
     local Electron tree uses, this is permanent — the desktop confirm dialog
     says so in remote mode.
+
+    With ``recursive: false`` an empty directory is removed with ``rmdir()``
+    (same semantics as the managed-files route); only a non-empty directory
+    needs the recursive opt-in.
     """
     target = _fs_path(payload.path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
-    if target.is_dir() and not payload.recursive:
-        raise HTTPException(status_code=409, detail="Directory is not empty (enable recursive delete)")
+    policy = _managed_files_policy(request)
+    if policy.locked_root is not None and target == policy.locked_root:
+        raise HTTPException(status_code=400, detail="Cannot delete the managed directory root")
 
     with _io_errors("Path is not writable", "Could not delete path"):
         if target.is_dir():
-            shutil.rmtree(target)
+            if payload.recursive:
+                shutil.rmtree(target)
+            else:
+                # rmdir() removes an EMPTY directory (matches the managed-files
+                # route); a non-empty one raises ENOTEMPTY/EEXIST → 409 below.
+                try:
+                    target.rmdir()
+                except OSError:
+                    raise HTTPException(status_code=409, detail="Directory is not empty (enable recursive delete)")
         else:
             target.unlink()
     return {"ok": True, "path": str(target)}

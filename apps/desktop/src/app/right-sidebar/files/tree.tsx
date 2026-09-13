@@ -59,6 +59,7 @@ export function ProjectTree({
 }: ProjectTreeProps) {
   markRightPanePerf('project-tree-render')
 
+  const creatingEntry = useStore($creatingEntry)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
@@ -202,7 +203,13 @@ export function ProjectTree({
           padding={0}
           ref={treeRef}
           renderRow={ProjectTreeRowContainer}
-          rowHeight={ROW_HEIGHT}
+          rowHeight={node =>
+            // The NEW-ENTRY flow renders a second row (the inline name input)
+            // beneath the folder row inside a single arborist item; give that
+            // item a real doubled slot so react-window's fixed-ROW_HEIGHT
+            // offset math stays correct and the input is not clipped/overlaid.
+            creatingEntry?.parentDir === node.data?.id ? ROW_HEIGHT * 2 : ROW_HEIGHT
+          }
           width={size.width}
         >
           {props => (
@@ -383,8 +390,21 @@ function ProjectTreeRow({
 
   if (creatingHere) {
     return (
-      <div style={{ ...style, paddingLeft: withTreeInset(style.paddingLeft) }}>
-        {row}
+      <div
+        style={{
+          ...style,
+          // This item hosts TWO visual rows (the folder row plus its inline
+          // new-entry input), and `rowHeight` above reports the doubled size
+          // to react-window — keep the container and the arborist row slot in
+          // sync so the next item starts BELOW the input, never behind it.
+          height: ROW_HEIGHT * 2,
+          overflow: 'hidden',
+          paddingLeft: withTreeInset(style.paddingLeft)
+        }}
+      >
+        {/* Row is h-full: pin it to the top half so the input row below is
+            not pushed out of the item. */}
+        <div style={{ height: ROW_HEIGHT }}>{row}</div>
         <div className="flex h-(--file-tree-row-height) items-center gap-1 px-3 text-xs text-(--ui-text-secondary)">
           <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
             <Codicon name={creatingEntry?.directory ? 'folder' : 'file'} size="0.875rem" />

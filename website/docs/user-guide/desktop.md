@@ -99,7 +99,7 @@ The model picker lives in the **composer**, just left of the microphone. Click i
 
 Explore, preview, and manage the working directory without leaving the app — useful for following along as the agent reads, writes, and edits files. Set the initial project directory with `hermes desktop --cwd <path>` (or the `HERMES_DESKTOP_CWD` environment variable).
 
-Right-click a row for **Reveal** (local), **Copy path**, **Download** (remote files), **Rename** (F2), and **Delete**; folders also offer **New File** / **New Folder**. Renames and deletes work on a remote gateway too — the operations run on the gateway host through its file API. Two delete flavors to know about: a local delete moves the file to the OS trash (recoverable), while a remote delete is **permanent** — the confirm dialog says which one you're getting.
+Right-click a row for **Reveal** (local), **Copy path**, **Download** (remote files), **Rename** (F2), and **Delete**; folders also offer **New File** / **New Folder**. Renames and deletes work on a remote gateway too — the operations run on the gateway host through its file API. Two delete flavors to know about: a local delete moves the file to the OS trash (recoverable), while a remote delete is **permanent** — the confirm dialog says which one you're getting. New File in local mode is an exclusive create (an existing name is refused, never truncated); local **New Folder** is not yet supported and shows a "not available" message — folders can be created on a remote gateway.
 
 ### Artifacts
 

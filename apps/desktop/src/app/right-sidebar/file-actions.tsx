@@ -18,6 +18,7 @@ import {
   $fileActionDialog,
   beginInlineRename,
   cancelInlineRename,
+  cancelNewEntry,
   closeFileActionDialog,
   copyFilePath,
   downloadRemoteFile,
@@ -177,18 +178,26 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
     }
 
     done.current = true
+    const creatingHere = creating && creating.parentDir === path
     const next = value.trim()
 
     if (commit && next) {
       try {
-        if (creating && creating.parentDir === path) {
+        if (creatingHere) {
           await executeEntryCreate(creating.directory, creating.parentDir, next)
         } else if (next !== name) {
           await executeFileRename(path, next)
         }
       } catch (error) {
+        // Caller-owned failure toast (the store functions no longer notify);
+        // a create failure keeps the generic message, rename keeps its own.
         notifyError(error, translateNow('errors.genericFailure'))
       }
+    } else if (creatingHere) {
+      // Esc / empty-blur cancel of a NEW-ENTRY flow: only executeEntryCreate's
+      // finally clears $creatingEntry on the commit path, so the non-commit
+      // path must clear it here too or the inline row can't be dismissed.
+      cancelNewEntry()
     }
 
     cancelInlineRename()

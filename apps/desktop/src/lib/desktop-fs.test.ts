@@ -66,10 +66,13 @@ const api = vi.fn(async ({ path }: { path: string }) => {
   throw new Error(`unexpected path ${path}`)
 })
 
+const createTextFileExclusive = vi.fn(async (path: string) => ({ path }))
+
 function stubBridge() {
   vi.stubGlobal('window', {
     hermesDesktop: {
       api,
+      createTextFileExclusive,
       gitRoot,
       readDir,
       readFileDataUrl,
@@ -359,21 +362,37 @@ describe('desktop filesystem facade', () => {
       method: 'POST',
       path: '/api/fs/create'
     })
+    // Remote delete hits the registered DELETE route (not POST), and opts into
+    // recursive deletion — the confirm dialog already says the delete is
+    // permanent, so a folder delete must not fail on non-empty contents.
     expect(api).toHaveBeenCalledWith({
-      body: { path: '/remote/gone.txt', recursive: false },
-      method: 'POST',
+      body: { path: '/remote/gone.txt', recursive: true },
+      method: 'DELETE',
       path: '/api/fs/delete'
     })
     expect(writeTextFile).not.toHaveBeenCalled()
+    expect(createTextFileExclusive).not.toHaveBeenCalled()
   })
 
-  it('creates local files through the Electron bridge and refuses local folders', async () => {
+  it('refuses traversal names and basic-unsafe names for create and rename', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    for (const bad of ['../escape', 'a/b', 'a\\b', '.', '..', '']) {
+      await expect(createDesktopEntry('/remote/project', bad, false)).rejects.toThrow('name is invalid')
+      await expect(renameDesktopPath('/remote/old.txt', bad)).rejects.toThrow('name is invalid')
+    }
+
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('creates local files through the exclusive-create bridge and refuses local folders', async () => {
     $connection.set({ mode: 'local' } as never)
 
-    await expect(createDesktopEntry('/work', 'notes.md', false)).resolves.toBe('/work/notes.md')
-    await expect(createDesktopEntry('/work', 'subdir', true)).rejects.toThrow('Folder creation is not available')
+    await expect(createDesktopEntry('/home', 'notes.md', false)).resolves.toBe('/home/notes.md')
+    await expect(createDesktopEntry('/home', 'subdir', true)).rejects.toThrow('Folder creation is not available')
 
-    expect(writeTextFile).toHaveBeenCalledWith('/work/notes.md', '')
+    expect(createTextFileExclusive).toHaveBeenCalledWith('/home/notes.md')
+    expect(writeTextFile).not.toHaveBeenCalled()
     expect(api).not.toHaveBeenCalled()
   })
 

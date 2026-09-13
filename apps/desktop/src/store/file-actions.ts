@@ -77,17 +77,14 @@ export function cancelNewEntry(): void {
 }
 
 /** Create the entry after the inline input commits. Throws on failure so the
- *  caller can toast; bumps the workspace tick on success. */
+ *  CALLER (InlineRenameInput) owns the error notification — this function only
+ *  cleans up state. Bumps the workspace tick on success. */
 export async function executeEntryCreate(directory: boolean, parentDir: string, name: string): Promise<string> {
   try {
     const created = await createDesktopEntry(parentDir, name, directory)
     notifyWorkspaceChanged()
 
     return created
-  } catch (error) {
-    notifyError(error, translateNow('fileMenu.createFailed'))
-
-    throw error
   } finally {
     cancelNewEntry()
   }
@@ -146,24 +143,16 @@ export function toRelativePath(path: string, relativeTo: string): string {
 
 // ── Dialog-confirmed mutations (called by FileActionDialogs) ──────────────────
 
+// Caller-owned error handling, one source of truth: the rejection propagates
+// so the UI surface that invoked the action owns the error (InlineRenameInput
+// toasts rename failures, ConfirmDialog shows delete failures inline). No
+// notify here — the old stack toasted AND re-threw, doubling the message.
 export async function executeFileRename(path: string, newName: string): Promise<void> {
-  try {
-    await renameDesktopPath(path, newName)
-    notifyWorkspaceChanged()
-  } catch (error) {
-    notifyError(error, translateNow('errors.genericFailure'))
-
-    throw error
-  }
+  await renameDesktopPath(path, newName)
+  notifyWorkspaceChanged()
 }
 
 export async function executeFileDelete(path: string): Promise<void> {
-  try {
-    await trashDesktopPath(path)
-    notifyWorkspaceChanged()
-  } catch (error) {
-    notifyError(error, translateNow('errors.genericFailure'))
-
-    throw error
-  }
+  await trashDesktopPath(path)
+  notifyWorkspaceChanged()
 }

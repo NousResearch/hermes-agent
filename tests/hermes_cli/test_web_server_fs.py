@@ -173,6 +173,37 @@ def test_fs_delete_file_dir_and_recursive_guard(client, tmp_path):
     assert missing.status_code == 404
 
 
+def test_fs_delete_empty_directory_without_recursive(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "empty").mkdir(parents=True)
+
+    response = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "empty"), "recursive": False})
+
+    assert response.status_code == 200
+    assert not (root / "empty").exists()
+
+
+def test_fs_delete_refuses_managed_root(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import files as files_router
+
+    locked = tmp_path / "managed-root"
+    locked.mkdir()
+
+    monkeypatch.setattr(
+        files_router,
+        "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    response = client.request("DELETE", "/api/fs/delete", json={"path": str(locked), "recursive": True})
+
+    assert response.status_code == 400
+    assert locked.exists()
+
+
 def test_fs_delete_never_removes_filesystem_root(client, tmp_path):
     response = client.request("DELETE", "/api/fs/delete", json={"path": "/", "recursive": True})
 

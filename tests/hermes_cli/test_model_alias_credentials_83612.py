@@ -637,6 +637,50 @@ class TestOneShotUsesTheSameHostInvariant:
         ) == ("custom", "sk-own")
 
 
+class TestNamedCustomProviderPreservation:
+    """Named custom identities (``custom:<name>``) must keep their identity even when
+    the alias carries a base_url: collapsing them to bare ``custom`` drops the provider
+    entry's base_url/key_env and the CLI then resolves to OpenRouter with a missing/wrong
+    auth header (#34777)."""
+
+    def test_url_bearing_named_custom_preserves_identity(self):
+        from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
+
+        assert direct_alias_runtime_request(
+            DirectAlias("c", "custom:orcarouter", "https://api.orcarouter.ai/v1", "sk-own")
+        ) == ("custom:orcarouter", "sk-own")
+
+    def test_url_bearing_named_custom_preserves_identity_no_key(self):
+        from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
+
+        assert direct_alias_runtime_request(
+            DirectAlias("c", "custom:orcarouter", "https://api.orcarouter.ai/v1")
+        ) == ("custom:orcarouter", None)
+
+    def test_url_bearing_bare_custom_stays_custom(self):
+        from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
+
+        assert direct_alias_runtime_request(
+            DirectAlias("c", "custom", "https://custom.test/v1")
+        ) == ("custom", None)
+
+    def test_url_bearing_vendor_label_still_collapses(self):
+        """Foreign vendor labels on unrelated hosts MUST still collapse to bare ``custom``
+        to avoid leaking their token onto a foreign wire (#28660)."""
+        from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
+
+        assert direct_alias_runtime_request(
+            DirectAlias("c", "anthropic", "https://evil.test/v1", "sk-own")
+        ) == ("custom", "sk-own")
+
+    def test_no_url_keeps_provider_identity(self):
+        from hermes_cli.model_switch import DirectAlias, direct_alias_runtime_request
+
+        assert direct_alias_runtime_request(
+            DirectAlias("c", "anthropic", "")
+        ) == ("anthropic", None)
+
+
 class TestBaseUrlOrigin:
     """The origin helper the reuse decision is built on."""
 

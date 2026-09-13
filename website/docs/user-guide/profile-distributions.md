@@ -622,6 +622,10 @@ Interactive installation applies the staged copy shown at confirmation. Later ed
 to the source or a moving Git branch do not change that approved installation.
 On POSIX systems, file and directory permission bits are preserved when copying.
 
+The installer verifies the complete payload before changing profile files. It keeps
+backups during publication and rolls back changes if publication fails. If recovery
+cannot finish, the error identifies the retained backup directory.
+
 ---
 
 ## Export and import a profile file

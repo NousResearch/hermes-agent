@@ -327,9 +327,11 @@ profile B receives B's value for such a name, or nothing if B has none, never th
 default profile's. MCP servers are connected **per profile**: two profiles that
 both name a server `github` with their own token get two connections and each
 sees only its own tools; profiles whose `mcp_servers` entry is identical (same
-route *and* credentials) share one connection — except `auth: oauth` servers, which are
-never shared: each profile holds its own token and opens its own connection — and an owner's `/reload-mcp`
-re-registers the sharing profiles' tools without them reloading. Terminal settings
+route *and* credentials, including mTLS `client_cert`/`client_key`) share one
+connection, and an owner's `/reload-mcp`
+re-registers the sharing profiles' tools without them reloading. `auth: oauth`
+servers are never shared across profiles: each profile holds its own token under
+its own `mcp-tokens/` and opens its own connection. Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the

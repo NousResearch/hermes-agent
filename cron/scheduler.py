@@ -39,7 +39,7 @@ from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
-    _expand_env_vars, load_config, load_config_readonly, resolve_cron_model_drift_defaults)
+    load_config, load_config_readonly, resolve_cron_model_drift_defaults)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
@@ -1361,15 +1361,10 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     _cfg: dict = {}
     _model_cfg: Any = {}
     try:
-        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.config_effective import load_user_config_effective
         _cfg_path = str(_get_hermes_home() / "config.yaml")
         if os.path.exists(_cfg_path):
-            _cfg = read_user_config_raw(Path(_cfg_path))
-            # Honor administrator-pinned managed scope (fail-open; no-op without managed scope).
-            with contextlib.suppress(Exception):
-                from hermes_cli import managed_scope
-                _cfg = managed_scope.apply_managed_overlay(_cfg)
-            _cfg = _expand_env_vars(_cfg)
+            _cfg = load_user_config_effective(Path(_cfg_path))
             # Coerce null to {} so a falsy default never clobbers a resolved env value.
             _model_cfg = _cfg.get("model") or {}
             _cron_cfg_for_model = _cfg.get("cron") or {}

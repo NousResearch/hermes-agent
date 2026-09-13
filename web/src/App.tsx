@@ -106,6 +106,11 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
+import {
+  readPhonePointer,
+  shouldUseStructuredChatOnPhone,
+  structuredChatLocationFromChat,
+} from "@/lib/phone-structured-chat";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -373,7 +378,7 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
 export default function App() {
   const { t } = useI18n();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -403,14 +408,18 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const isChatSurface = isChatRoute || normalizedPath === "/chat/structured";
+  const phoneStructuredChat = shouldUseStructuredChatOnPhone(readPhonePointer());
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
-  const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
+  const [chatHostMounted, setChatHostMounted] = useState(
+    () => normalizedPath === "/chat" && !shouldUseStructuredChatOnPhone(readPhonePointer()),
+  );
   useEffect(() => {
+    if (phoneStructuredChat) return;
     setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
-  }, [isChatRoute]);
+  }, [isChatRoute, phoneStructuredChat]);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -791,7 +800,9 @@ export default function App() {
                   </Suspense>
                 </ProfileKeyedRoutes>
 
-                {embeddedChat &&
+                {isChatRoute && phoneStructuredChat ? (
+                  <Navigate to={structuredChatLocationFromChat(pathname, search)} replace />
+                ) : embeddedChat &&
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
                     isChatRoute ? (

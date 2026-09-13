@@ -407,6 +407,10 @@ export default function StructuredChatPage({
           rows={3}
           enterKeyHint="send"
           autoCorrect="on"
+          autoCapitalize="sentences"
+          autoComplete="on"
+          spellCheck
+          inputMode="text"
           className="w-full resize-y rounded border border-current/30 bg-transparent p-3"
         />
         <button type="submit" disabled={unavailable || !composer.trim()} className="mt-2 rounded border border-current/30 px-4 py-2">

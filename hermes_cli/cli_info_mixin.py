@@ -772,8 +772,12 @@ class CLIInfoMixin:
                 i += 1
 
         try:
+            from hermes_constants import get_hermes_home
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
+            if not (get_hermes_home() / "state.db").exists():
+                print("  No session data yet.")
+                return
             db = SessionDB(read_only=True)
             try:
                 engine = InsightsEngine(db)

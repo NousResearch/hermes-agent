@@ -2,15 +2,17 @@
 minimal. Config: ``display.runtime_footer: {enabled: bool, fields: [model, context_pct, cwd]}``
 (order shown; drop any to hide), per-platform override ``display.platforms.<p>.runtime_footer``,
 toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``context_pct`` (last-call
-occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
-renders exactly as before), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
-final response only (never to tool-progress or streaming partials); when streaming already
-delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
+occupancy), ``context_usage`` (last-call context tokens + percent, opt-in), ``session_tokens``
+(cumulative session usage from the persisted session row, opt-in), ``latency`` (turn wall-clock,
+opt-in — NOT in the default set so an unset ``fields`` renders exactly as before), ``cwd``
+(home-relative). ``gateway/run_turn.py`` appends the footer to the final response only (never to
+tool-progress or streaming partials); when streaming already delivered the text, it goes out as a
+trailing message via ``send_trailing_footer()``."""
 
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
@@ -71,9 +73,59 @@ def _format_latency(seconds: float) -> str:
     return f"{m}m{sec:02d}s"
 
 
+def _format_token_count(value: Any) -> str:
+    """Format token counts with compact units (``18.9K``, ``2.9M``)."""
+    try:
+        number = max(0, int(value or 0))
+    except (TypeError, ValueError):
+        number = 0
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:.1f}M"
+    if number >= 1_000:
+        return f"{number / 1_000:.1f}K"
+    return str(number)
+
+
+def format_session_token_usage(usage: Mapping[str, Any] | None) -> str:
+    """Render cumulative token usage for one persisted Hermes session, or "" when the row carries
+    no usable counters. ``input_tokens`` excludes cache tokens in Hermes' canonical accounting, so
+    the displayed ``In`` value follows session-stats and includes read/write cache tokens while
+    also showing the cache amount separately."""
+    if not isinstance(usage, Mapping):
+        return ""
+
+    input_tokens = max(0, int(usage.get("input_tokens", 0) or 0))
+    output_tokens = max(0, int(usage.get("output_tokens", 0) or 0))
+    cache_tokens = max(
+        0,
+        int(usage.get("cache_read_tokens", 0) or 0)
+        + int(usage.get("cache_write_tokens", 0) or 0),
+    )
+    request_count = max(0, int(usage.get("api_call_count", 0) or 0))
+    total_tokens = max(
+        0,
+        int(usage.get("total_tokens", 0) or 0)
+        or input_tokens + cache_tokens + output_tokens,
+    )
+
+    if not (request_count or input_tokens or output_tokens or cache_tokens or total_tokens):
+        return ""
+
+    parts = ["📊 Sesión"]
+    if request_count:
+        parts.append(f"{request_count} req")
+    parts.append(f"In: {_format_token_count(input_tokens + cache_tokens)}")
+    if cache_tokens:
+        parts[-1] += f" (cache: {_format_token_count(cache_tokens)})"
+    parts.append(f"Out: {_format_token_count(output_tokens)}")
+    parts.append(f"Total: {_format_token_count(total_tokens)}")
+    return _SEP.join(parts)
+
+
 def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
+                          session_usage: Mapping[str, Any] | None = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -82,9 +134,18 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
             return f"{max(0, min(100, round((context_tokens / context_length) * 100)))}%"
         return ""
 
+    def context_usage() -> str:
+        if context_length and context_length > 0 and context_tokens >= 0:
+            pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+            return f"{_format_token_count(context_tokens)} ({pct}%)"
+        return ""
+
     renderers = {
         "model": lambda: _model_short(model),
         "context_pct": context_pct,
+        "context_usage": context_usage,
+        # Skipped unless the caller resolved a persisted session row with counters.
+        "session_tokens": lambda: format_session_token_usage(session_usage),
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
@@ -94,14 +155,17 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
-                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None) -> str:
-    """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
-    to the final response themselves, preserving a single blank line of separation.
+                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
+                      session_usage: Mapping[str, Any] | None = None) -> str:
+    """Entry point for gateway/run_turn.py: footer text, or "" when disabled / no data. Callers
+    append it to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
-    ``latency`` field."""
+    ``latency`` field. ``session_usage`` is the persisted session counters mapping used by the
+    ``session_tokens`` field; ``None`` skips it."""
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
+                                 session_usage=session_usage,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

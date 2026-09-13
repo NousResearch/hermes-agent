@@ -895,11 +895,18 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        from gateway.session import is_session_principal_isolated
         from gateway.slash_access import policy_for_source
         from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
         policy = policy_for_source(self.config, event.source)
         if not policy.is_admin(event.source.user_id):
             return EphemeralReply("Only gateway admins can change session YOLO mode.")
+        if not is_session_principal_isolated(
+            event.source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+        ):
+            return EphemeralReply("Session YOLO mode is unavailable in shared conversations.")
         session_key = self._session_key_for_source(event.source)
         if is_session_yolo_enabled(session_key):
             disable_session_yolo(session_key)

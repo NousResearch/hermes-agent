@@ -112,3 +112,30 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_sources_detected_by_default_and_toggleable(home, monkeypatch):
+    from agent.vault_backends import base
+
+    monkeypatch.setattr(base, "is_installed", lambda name: True)
+
+    # By default without opt-out, an installed manager reports enabled
+    res = _result(srv._methods["vault.sources"](1, {}))
+    bw = next(s for s in res["sources"] if s["name"] == "bitwarden")
+    assert bw["installed"] is True
+    assert bw["enabled"] is True
+
+    # Disable via vault.source.set
+    set_res = _result(srv._methods["vault.source.set"](2, {"name": "bitwarden", "enabled": False}))
+    assert set_res["enabled"] is False
+    res = _result(srv._methods["vault.sources"](3, {}))
+    bw = next(s for s in res["sources"] if s["name"] == "bitwarden")
+    assert bw["enabled"] is False
+
+    # Enable via vault.source.set persists enabled state
+    set_res = _result(srv._methods["vault.source.set"](4, {"name": "bitwarden", "enabled": True}))
+    assert set_res["enabled"] is True
+    res = _result(srv._methods["vault.sources"](5, {}))
+    bw = next(s for s in res["sources"] if s["name"] == "bitwarden")
+    assert bw["enabled"] is True
+

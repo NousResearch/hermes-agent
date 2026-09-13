@@ -154,7 +154,7 @@ def _cmd_sources(args) -> None:
         cfg = load_config()
         section = cfg.setdefault("vault", {}).setdefault(name, {})
         if args.enable:
-            section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
+            section["enabled"] = True
         else:
             section["enabled"] = False
         save_config(cfg)

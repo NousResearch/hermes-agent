@@ -728,10 +728,15 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             sys.exit(1)
         return
     # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
-    # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
-    # local graph, so park pre_pull_sha behind a rescue ref first.
+    # But committed local-only work is NOT in the autostash (a committed fix shows clean in
+    # `git status`), so a bare `reset --hard` would silently destroy it. Count commits in HEAD
+    # that aren't on origin/<branch> and back HEAD up before resetting when there are any — or
+    # when the count itself failed (`local_only < 0`: bad ref / git error). The reset below is
+    # unrecoverable, so the only safe direction to fail is toward taking a backup we may not
+    # have needed. Never `reset --hard` without a working backup.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
     has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
+    local_only = _count_commits_between(git_cmd, _m().PROJECT_ROOT, f"origin/{branch}", "HEAD")
     if not has_common_ancestor and pre_pull_sha:
         from datetime import datetime as _dt, timezone
         # SHA suffix so two updates in the same second get distinct refs.
@@ -744,11 +749,34 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
                 f"{head}backed up current HEAD to {rescue_ref} before resetting. "
                 f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
         else:
-            # update-ref failure is intentionally non-fatal, but never claim a backup exists.
+            # update-ref failure is fatal: never reset --hard without a working backup.
             print(
                 f"{head}attempted to back up current HEAD to {rescue_ref} before resetting, "
                 f"but the backup write failed (pre-reset SHA was {pre_pull_sha}).")
+            print("  ✗ Refusing to reset --hard without a backup; your local history is still intact.")
+            print(f"  Reconcile manually with: git rebase origin/{branch}")
+            sys.exit(1)
         _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
+    elif local_only != 0:
+        # local_only > 0: there ARE local commits not on origin/<branch>; local_only < 0: the
+        # count itself failed. Treat both as "back HEAD up" — the reset is unrecoverable.
+        backup_ref = (
+            f"refs/hermes-update-backups/{branch}-"
+            f"{_time.strftime('%Y%m%d-%H%M%S')}")
+        if _git_run(git_cmd, ["update-ref", backup_ref, "HEAD"]).returncode != 0:
+            # Never claim a backup we do not have, and never run the destructive reset without one.
+            print(f"✗ Could not create backup ref {backup_ref} for local commits; refusing to reset --hard.")
+            print("  Your local commits are still intact. Reconcile manually with:")
+            print(f"    git rebase origin/{branch}")
+            sys.exit(1)
+        if local_only > 0:
+            print(
+                f"  ℹ Preserving {local_only} local commit(s) not on origin/{branch} before "
+                f"resetting (backed up to {backup_ref})...")
+        else:
+            print(
+                f"  ℹ Could not count local commits not on origin/{branch}; backing up HEAD to "
+                f"{backup_ref} before resetting, to be safe...")
     print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
     reset_result = _git_run(git_cmd, ["reset", "--hard", f"origin/{branch}"])
     if reset_result.returncode != 0:

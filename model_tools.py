@@ -56,7 +56,7 @@ def _is_dispatcher_owned_worker() -> bool:
         from agent.delegation_context import is_dispatcher_owned_worker_context
         return is_dispatcher_owned_worker_context()
     except Exception:
-        return True
+        return False
 
 
 # --- Async bridging (single source of truth; registry.dispatch uses it too) ---

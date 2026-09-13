@@ -1274,6 +1274,8 @@ export interface Translations {
       autoArchiveDaysLabel: string
       autoArchiveDaysUnit: string
       autoArchiveFailed: string
+      sidebarOpenInNewTabTitle: string
+      sidebarOpenInNewTabDesc: string
       defaultDirTitle: string
       defaultDirDesc: string
       defaultDirUpdated: string

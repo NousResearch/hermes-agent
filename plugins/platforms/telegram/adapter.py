@@ -18,6 +18,7 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -30,21 +31,6 @@ def _redact_telegram_error_text(error: object) -> str:
         return redact_sensitive_text(text, force=True)
     except Exception:
         return "<telegram error redacted>"
-
-
-def _scoped_gate_env(name: str, default: str = "") -> str:
-    """Per-profile TELEGRAM_*/GATEWAY_* gate env read (multiplex env is first-writer-wins).
-
-    Under gateway.multiplex_profiles the process env is first-writer-wins (the YAML→env bridge in
-    ``_apply_yaml_config``), so a raw ``os.getenv`` can return ANOTHER profile's allowlist (issue #72348,
-    Telegram mirror). Reads the active profile's secret scope when installed; falls back to ``os.getenv``
-    outside multiplex — identical single-profile behavior.
-    """
-    try:
-        from gateway.authz_mixin import _platform_gate_env
-        return _platform_gate_env(name, default)
-    except Exception:
-        return (os.getenv(name) or default).strip()
 
 
 def _consume_abandoned_task(task: asyncio.Task) -> None:
@@ -2851,12 +2837,7 @@ class TelegramAdapter(BasePlatformAdapter):
         webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
         # Default "" → tornado listens on IPv4 + IPv6; "0.0.0.0" is unreachable on IPv6-only networks.
         webhook_host = (os.getenv("TELEGRAM_WEBHOOK_HOST", "").strip() or str((self.config.extra or {}).get("webhook_host") or "").strip())
-        # Profile-scoped read; only an UNSCOPED read under multiplex falls back to process env.
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            webhook_secret = (get_secret("TELEGRAM_WEBHOOK_SECRET") or "").strip()
-        except UnscopedSecretError:
-            webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        webhook_secret = (_get_scoped_secret("TELEGRAM_WEBHOOK_SECRET") or "").strip()
         if not webhook_secret:
             raise RuntimeError(
                 "TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_WEBHOOK_URL is set. Without it, the "
@@ -2949,11 +2930,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
             # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
             # default's listener (and stops polling for it).
-            from agent.secret_scope import UnscopedSecretError, get_secret
-            try:
-                webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
-            except UnscopedSecretError:
-                webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            webhook_url = (_get_scoped_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:

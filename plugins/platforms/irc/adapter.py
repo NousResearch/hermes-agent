@@ -15,7 +15,9 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
-from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -412,26 +414,21 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> dict | None:
-    """Seed ``PlatformConfig.extra`` from env vars BEFORE adapter construction; ``None`` when IRC isn't
-    minimally configured (caller skips auto-enabling). ``home_channel`` becomes a ``HomeChannel``."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter construction;
+    ``None`` when IRC isn't minimally configured. Passwords also live in extra for back-compat with
+    config.yaml users; env wins at construct time. Home channel defaults to IRC_CHANNEL so cron
+    ``deliver=irc`` has a target without extra config."""
     server = _get_scoped_secret("IRC_SERVER", "").strip()
     channel = _get_scoped_secret("IRC_CHANNEL", "").strip()
     if not (server and channel):
         return None
-    seed: dict = {"server": server, "channel": channel}
-    for env, key, conv in (("IRC_PORT", "port", int), ("IRC_NICKNAME", "nickname", str),
-                           ("IRC_USE_TLS", "use_tls", lambda v: v.lower() in _TRUTHY)):
-        if raw := _get_scoped_secret(env, "").strip():
-            with contextlib.suppress(ValueError):  # non-numeric IRC_PORT is dropped, not fatal
-                seed[key] = conv(raw)
-    # Passwords also live in extra for back-compat with config.yaml users; env wins at construct time.
-    for env, key in (("IRC_SERVER_PASSWORD", "server_password"), ("IRC_NICKSERV_PASSWORD", "nickserv_password")):
-        if secret := _get_scoped_secret(env):
-            seed[key] = secret
-    # Home channel defaults to IRC_CHANNEL so cron ``deliver=irc`` has a target without extra config.
-    if home := _get_scoped_secret("IRC_HOME_CHANNEL") or channel:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("IRC_HOME_CHANNEL_NAME", home)}
-    return seed
+    seed = _seed_extra_from_env((
+        ("IRC_PORT", "port", int), ("IRC_NICKNAME", "nickname", None),
+        ("IRC_USE_TLS", "use_tls", lambda v: v.lower() in _TRUTHY),
+        ("IRC_SERVER_PASSWORD", "server_password", None), ("IRC_NICKSERV_PASSWORD", "nickserv_password", None),
+    ), home_env="IRC_HOME_CHANNEL", home_default=channel)
+    return {"server": server, "channel": channel, **seed}
+
 
 
 def _strip_irc_control_chars(text: str) -> str:

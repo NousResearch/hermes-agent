@@ -17,7 +17,6 @@ import asyncio
 import importlib.util
 import json
 import logging
-import os
 import re
 import sys
 from contextlib import contextmanager, suppress
@@ -58,7 +57,9 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,26 +168,18 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> dict | None:
-    """Seed ``PlatformConfig.extra`` from env before adapter construction so ``gateway status`` reflects
-    env-only setups without the SDK. ``None`` when not minimally configured; ``home_channel`` becomes a
-    ``HomeChannel`` via the core hook."""
-    # Every identity/endpoint here is per-profile (the app the secret belongs to, its regional
-    # service URL, the cron home conversation): read them all through the profile scope so a
-    # secondary is never seeded with the default profile's Teams app.
-    client_id = _get_scoped_secret("TEAMS_CLIENT_ID", "").strip()
-    client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
-    tenant_id = _get_scoped_secret("TEAMS_TENANT_ID", "").strip()
-    if not (client_id and client_secret and tenant_id):
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before adapter construction
+    so ``gateway status`` reflects env-only setups without the SDK; ``None`` when not minimally configured.
+    Every identity/endpoint is per-profile (the app the secret belongs to, its regional service URL, the
+    cron home conversation), so a secondary is never seeded with the default profile's Teams app."""
+    seed = _seed_extra_from_env((
+        ("TEAMS_CLIENT_ID", "client_id", None), ("TEAMS_CLIENT_SECRET", "client_secret", None),
+        ("TEAMS_TENANT_ID", "tenant_id", None), ("TEAMS_PORT", "port", int), ("TEAMS_SERVICE_URL", "service_url", None),
+    ), home_env="TEAMS_HOME_CHANNEL")
+    if not all(seed.get(k) for k in ("client_id", "client_secret", "tenant_id")):
         return None
-    seed: dict = {"client_id": client_id, "client_secret": client_secret, "tenant_id": tenant_id}
-    port = coerce_port(_get_scoped_secret("TEAMS_PORT", "").strip(), None)
-    if port is not None:
-        seed["port"] = port
-    if service_url := _get_scoped_secret("TEAMS_SERVICE_URL", "").strip():
-        seed["service_url"] = service_url
-    if home := _get_scoped_secret("TEAMS_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("TEAMS_HOME_CHANNEL_NAME", "Home")}
     return seed
+
 
 
 async def _standalone_send(

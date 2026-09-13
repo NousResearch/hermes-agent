@@ -24,7 +24,9 @@ from typing import Any, Dict, List, Optional
 
 from urllib.parse import unquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
 from gateway.platforms.helpers import cancel_task
@@ -586,20 +588,17 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed ``PlatformConfig.extra`` from env BEFORE adapter construction so ``gateway status``
-    reflects env-only setups. ``None`` when not minimally configured; ``home_channel`` becomes
-    a ``HomeChannel`` via the core hook."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env BEFORE adapter
+    construction; ``None`` when ``SIMPLEX_WS_URL`` is unset."""
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL", "").strip()
     if not ws_url:
         return None
-    seed: dict = {"ws_url": ws_url}
-    if auto_accept := _get_scoped_secret("SIMPLEX_AUTO_ACCEPT", "").strip().lower():
-        seed["auto_accept"] = auto_accept not in {"0", "false", "no"}
-    if group_allowed := _get_scoped_secret("SIMPLEX_GROUP_ALLOWED", "").strip():
-        seed["group_allowed"] = group_allowed
-    if home := _get_scoped_secret("SIMPLEX_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("SIMPLEX_HOME_CHANNEL_NAME", "").strip() or home}
-    return seed
+    seed = _seed_extra_from_env((
+        ("SIMPLEX_AUTO_ACCEPT", "auto_accept", lambda v: v.lower() not in {"0", "false", "no"}),
+        ("SIMPLEX_GROUP_ALLOWED", "group_allowed", None),
+    ), home_env="SIMPLEX_HOME_CHANNEL")
+    return {"ws_url": ws_url, **seed}
+
 
 
 async def _standalone_send(

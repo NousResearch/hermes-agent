@@ -92,7 +92,10 @@ from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
+    get_scoped_secret as _get_scoped_secret, send_error
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1268,11 +1271,10 @@ class FeishuAdapter(BasePlatformAdapter):
         def _secret(name: str, default: str = "") -> str:
             return _get_scoped_secret(name, default).strip()
 
-        def _extra_or_secret(key: str, env: str) -> str:
-            return str(extra.get(key) or _get_scoped_secret(env, "")).strip()
+        def _extra_or_secret(key: str, env: str, default: str = "") -> str:
+            return str(_shared_extra_or_secret(extra, key, env, default)).strip()
 
-        def _extra_or_env(key: str, env: str, default: str) -> str:
-            return str(extra.get(key) or _get_scoped_secret(env, default)).strip()
+        _extra_or_env = _extra_or_secret
 
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -4159,9 +4161,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Interactive setup for Feishu / Lark — scan-to-create or manual creds (CLI helpers lazy-imported)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
     from hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Feishu / Lark")
@@ -4277,17 +4279,11 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and seed
-    ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value.
+    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
+    seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
+    seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
+    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy feishu_cfg block from
-    gateway/config.py::load_gateway_config() (allow_bots). Env vars take precedence over YAML.
-    """
-    if "allow_bots" not in feishu_cfg:
-        return None
-    _set_env = _yaml_env_setter()
-    _set_env("FEISHU_ALLOW_BOTS", str(feishu_cfg["allow_bots"]).lower())
-    return {"allow_bots": str(feishu_cfg["allow_bots"]).lower()}
 
 
 def _is_connected(config) -> bool:
@@ -4296,15 +4292,11 @@ def _is_connected(config) -> bool:
     return bool(extra.get("app_id"))
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs FeishuAdapter from a PlatformConfig."""
-    return FeishuAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="feishu", label="Feishu / Lark", adapter_factory=_build_adapter,
+        name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],

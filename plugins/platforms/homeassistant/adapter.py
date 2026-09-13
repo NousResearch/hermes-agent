@@ -6,7 +6,6 @@ Requires aiohttp, HASS_TOKEN (Long-Lived Access Token) and HASS_URL (default htt
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from datetime import datetime
@@ -22,7 +21,9 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 logger = logging.getLogger(__name__)
 
@@ -337,11 +338,8 @@ async def _standalone_send(
         return send_error(f"Home Assistant send failed: {e}")
 
 
-def _is_connected(config) -> bool:
-    """Connected when ``HASS_TOKEN`` is set; read via ``hermes_cli.gateway.get_env_value`` at call
-    time so tests patching ``gateway_mod.get_env_value`` can suppress ambient env vars."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("HASS_TOKEN") or "").strip())
+_is_connected = _env_is_connected("HASS_TOKEN")
+
 
 
 def register(ctx) -> None:

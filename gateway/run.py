@@ -1151,7 +1151,7 @@ def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None
     if raw is None:
         # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
         # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
         raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
 

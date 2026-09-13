@@ -16,7 +16,6 @@ import base64
 import hashlib
 import hmac
 import logging
-import os
 import re
 import urllib.parse
 from typing import Any, Dict, Optional
@@ -25,7 +24,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import redact_phone, strip_markdown
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 try:
     import aiohttp
@@ -322,10 +323,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error(f"SMS send failed: {e}")
 
 
-def _is_connected(config) -> bool:
-    """SMS is connected when Twilio credentials are present (bool(TWILIO_ACCOUNT_SID))."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("TWILIO_ACCOUNT_SID") or "").strip())
+_is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")
+
 
 
 def register(ctx) -> None:

@@ -33,10 +33,14 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from agent.retry_utils import parse_retry_after_seconds
-from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env, send_error
+)
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -1653,17 +1657,8 @@ class SlackAdapter(BasePlatformAdapter):
             self._set_fatal_error("missing_dependency", "slack-bolt not installed", retryable=False)
             return False
         raw_token = self.config.token
-        # Scoped secret is authoritative; only an UNSCOPED read falls back to
-        # process env, else a secondary profile inherits the default's app.
-        try:
-            # Multiplex: profile secrets live in the secret scope, not process os.environ. When a scope is
-            # installed (secondary-profile connect), it is AUTHORITATIVE — do not fall through to os.getenv,
-            # or a secondary profile missing SLACK_APP_TOKEN silently inherits the default profile's Socket
-            # Mode app (#59739). Only an UNSCOPED read under multiplex (default-profile startup loop,
-            # background reconnect rebuild) falls back to process env, which is that profile's own.
-            app_token = get_secret("SLACK_APP_TOKEN")
-        except UnscopedSecretError:
-            app_token = os.getenv("SLACK_APP_TOKEN")
+        # Scoped read: a secondary profile missing SLACK_APP_TOKEN must not inherit the default's app (#59739).
+        app_token = _get_scoped_secret("SLACK_APP_TOKEN")
         for env_name, value in (("SLACK_BOT_TOKEN", raw_token), ("SLACK_APP_TOKEN", app_token)):
             if not value:
                 self._fatal_missing_env(env_name)
@@ -5155,7 +5150,7 @@ class SlackAdapter(BasePlatformAdapter):
                     normalized_user_id, exc_info=True)
         # Env-only fallback. Per-profile accessor: under multiplex a scoped miss
         # returns "" rather than leaking the DEFAULT profile's os.environ allowlist.
-        from gateway.authz_mixin import _platform_gate_env as _env
+        _env = _scoped_gate_env
         if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
             return True
         allowed_ids = {
@@ -5968,9 +5963,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _extra_or_env_flag(self, key: str, env_var: str, *, strip: bool = False) -> bool:
         """Opt-in boolean: ``config.extra[key]`` wins, else ``env_var`` (default false)."""
-        configured = self.config.extra.get(key)
-        if configured is None:
-            configured = _get_scoped_secret(env_var, "false")
+        configured = _extra_or_secret(self.config.extra, key, env_var, "false")
         if isinstance(configured, str):
             if strip:
                 configured = configured.strip()
@@ -6004,9 +5997,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, key: str, env_var: str, *, coerce_scalar: bool = False) -> set:
         """Channel-ID set from ``config.extra[key]`` (list or CSV) else ``env_var`` CSV.
         ``coerce_scalar`` accepts non-str scalars (a bare numeric YAML value loads as int)."""
-        raw = self.config.extra.get(key)
-        if raw is None:
-            raw = _get_scoped_secret(env_var, "")
+        raw = _extra_or_secret(self.config.extra, key, env_var, "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if coerce_scalar:
@@ -6069,7 +6060,7 @@ class SlackAdapter(BasePlatformAdapter):
 
 
 # ── Plugin entry point + hooks (register, _standalone_send, interactive_setup,
-# _apply_yaml_config, _is_connected, _build_adapter) ──────────────────────────
+# _apply_yaml_config, _is_connected) ──────────────────────────
 
 
 # Standalone-send cache: user ID -> DM conversation ID, keyed "{token}:{user_id}" (multi-workspace).
@@ -6077,7 +6068,7 @@ class SlackAdapter(BasePlatformAdapter):
 # #3823) Everything below this line was added when the Slack adapter moved from
 # ``gateway/platforms/slack.py`` into this bundled plugin. It mirrors the Discord migration (PR #24356)
 # exactly: a ``register(ctx)`` entry point plus the hook implementations (``_standalone_send``,
-# ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``, ``_build_adapter``) that replace the
+# ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
 # per-platform core touchpoints (the ``Platform.SLACK`` elif in ``gateway/run.py``, the ``slack_cfg``
 # YAML→env block in ``gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
 # in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
@@ -6418,7 +6409,7 @@ def _write_slack_manifest_and_instruct() -> None:
 def interactive_setup() -> None:
     """Guide the user through Slack bot setup (manifest, tokens, allowlist, home channel).
     CLI helpers are lazy-imported to keep the plugin's import surface small."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success, print_warning)
     from hermes_cli.setup_platforms import declines_reconfigure
@@ -6472,55 +6463,27 @@ def interactive_setup() -> None:
         print_info("Home channel cleared.")
 
 
-_YAML_BOOL_KEYS = (
-    ("require_mention", "SLACK_REQUIRE_MENTION"), ("strict_mention", "SLACK_STRICT_MENTION"),
-    ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS"),
-    ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION"), ("allow_bots", "SLACK_ALLOW_BOTS"),
-    ("reactions", "SLACK_REACTIONS"), ("disable_dms", "SLACK_DISABLE_DMS"))
-# (yaml key, env var, list-ish types joined with ","); str(value) when not a list.
-_YAML_LIST_KEYS = (
-    ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", list),
-    ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", list),
-    ("reaction_triggers", "SLACK_REACTION_TRIGGERS", (list, tuple, set)),
-    ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", ()),
-    ("allowed_channels", "SLACK_ALLOWED_CHANNELS", list),
-    ("ignored_channels", "SLACK_IGNORED_CHANNELS", list))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
+    ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
+    ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
+    ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
+    ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
+    ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
+    ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),
+    ("allowed_channels", "SLACK_ALLOWED_CHANNELS", "csv"), ("ignored_channels", "SLACK_IGNORED_CHANNELS", "csv"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (explicit env wins) and
-    ``PlatformConfig.extra`` (extra-first readers; the env write is skipped under a multiplexed
-    secondary profile's scope so its policy never becomes the default profile's).
-
-    Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
-    used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
-    """
-    _set_env = _yaml_env_setter()
-    seeded: dict = {}
-    for key, env in _YAML_BOOL_KEYS:
-        if key in slack_cfg:
-            seeded[key] = slack_cfg[key]  # original type: the shared-key loop already seeded bools as bools
-            _set_env(env, str(slack_cfg[key]).lower())
-    for key, env, list_types in _YAML_LIST_KEYS:
-        val = slack_cfg.get(key)
-        if val is not None:
-            seeded[key] = val
-            if list_types and isinstance(val, list_types):
-                val = ",".join(str(v) for v in val)
-            _set_env(env, str(val))
-    return seeded or None
+    """``apply_yaml_config_fn`` (#24849): ``slack:`` YAML keys → ``SLACK_*`` env (explicit env wins; skipped
+    under a multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(slack_cfg, _YAML_BRIDGE)
 
 
-def _is_connected(config) -> bool:
-    """Connected when SLACK_BOT_TOKEN is set. Resolved through ``gateway_mod`` at call
-    time (not a bound import) so tests patching ``get_env_value`` take effect."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("SLACK_BOT_TOKEN") or "").strip())
 
+_is_connected = _env_is_connected("SLACK_BOT_TOKEN")
 
-def _build_adapter(config):
-    """Factory wrapper that constructs SlackAdapter from a PlatformConfig."""
-    return SlackAdapter(config)
 
 
 def register(ctx) -> None:
@@ -6528,7 +6491,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="slack",
         label="Slack",
-        adapter_factory=_build_adapter,
+        adapter_factory=SlackAdapter,
         check_fn=slack_deps_present,
         ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,

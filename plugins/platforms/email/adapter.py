@@ -804,15 +804,11 @@ def _is_connected(config) -> bool:
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs EmailAdapter from a PlatformConfig."""
-    return EmailAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="email", label="Email", adapter_factory=_build_adapter, check_fn=check_email_requirements, is_connected=_is_connected,
+        name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,

@@ -35,7 +35,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -360,7 +362,7 @@ _OUTBOUND_MEDIA = {
 _INBOUND_MEDIA_EXT = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file": ".bin"}
 _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_video_from_bytes_async}
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
-_ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"), ("LINE_HOME_CHANNEL", "home_channel"))
+_ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
 
 
 class LineAdapter(BasePlatformAdapter):
@@ -910,15 +912,11 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """Seed PlatformConfig.extra from env-only setups so ``hermes status`` sees them."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from env-only setups so ``hermes status`` sees them."""
     if not _env_credentials_present():
         return None
-    seeded: Dict[str, Any] = {}
-    if _get_scoped_secret("LINE_PORT"):
-        with contextlib.suppress(ValueError):
-            seeded["port"] = int(_get_scoped_secret("LINE_PORT"))
-    seeded.update({key: _get_scoped_secret(env) for env, key in _ENV_SEED_KEYS if _get_scoped_secret(env)})
-    return seeded
+    return _seed_extra_from_env(_ENV_SEED_KEYS, home_env="LINE_HOME_CHANNEL")
+
 
 
 async def _standalone_send(

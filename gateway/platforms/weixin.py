@@ -37,30 +37,12 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
-from agent.secret_scope import UnscopedSecretError, get_secret
-
-
-def _wx_secret(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Scope-aware WEIXIN_* read. Secondary profiles run scoped: a miss returns ``default``
-    (never borrow ``os.environ``). The DEFAULT profile runs *unscoped* under multiplexing,
-    where ``get_secret`` raises; there ``os.environ`` is its own value, so fall back.
-
-    Same pattern as the Slack ``SLACK_APP_TOKEN`` read (#59739) and WhatsApp's ``_get_wsecret``.
-    """
-    try:
-        return get_secret(name, default)
-    except UnscopedSecretError:
-        return os.getenv(name, default)
+from gateway.platforms._shared import extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
 
 
 def _extra_or_secret(extra: Dict[str, Any], key: str, default: str = "") -> str:
-    """``config.extra[key]`` first, else the scoped secret ``WEIXIN_<KEY>``; stripped."""
-    return str(extra.get(key) or _wx_secret(f"WEIXIN_{key.upper()}", default)).strip()
-
-
-def _extra_or_env(extra: Dict[str, Any], key: str, default: str) -> Any:
-    """``config.extra[key]`` first, else plain ``os.getenv("WEIXIN_<KEY>", default)`` (non-secret tunables)."""
-    return extra.get(key) or os.getenv(f"WEIXIN_{key.upper()}", default)
+    """``config.extra[key]`` first, else the scoped ``WEIXIN_<KEY>``; stripped."""
+    return str(_extra_or_env(extra, key, f"WEIXIN_{key.upper()}", default)).strip()
 
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -714,13 +696,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._base_url = _extra_or_secret(extra, "base_url", ILINK_BASE_URL).rstrip("/")
         self._cdn_base_url = _extra_or_secret(extra, "cdn_base_url", WEIXIN_CDN_BASE_URL).rstrip("/")
         # Tunables: ``extra.<key>`` else env ``WEIXIN_<KEY>`` (e.g. WEIXIN_SEND_CHUNK_RETRIES).
-        self._send_chunk_delay_seconds = float(_extra_or_env(extra, "send_chunk_delay_seconds", "1.5"))
-        self._send_chunk_retries = int(_extra_or_env(extra, "send_chunk_retries", "4"))
-        self._send_chunk_retry_delay_seconds = float(_extra_or_env(extra, "send_chunk_retry_delay_seconds", "1.0"))
+        self._send_chunk_delay_seconds = float(_extra_or_secret(extra, "send_chunk_delay_seconds", "1.5"))
+        self._send_chunk_retries = int(_extra_or_secret(extra, "send_chunk_retries", "4"))
+        self._send_chunk_retry_delay_seconds = float(_extra_or_secret(extra, "send_chunk_retry_delay_seconds", "1.0"))
         self._send_text_gate = asyncio.Lock()
-        self._rate_limit_circuit_threshold = max(1, int(_extra_or_env(extra, "rate_limit_circuit_threshold", "1")))
-        self._rate_limit_circuit_window_seconds = float(_extra_or_env(extra, "rate_limit_circuit_window_seconds", "30.0"))
-        self._rate_limit_circuit_open_seconds = float(_extra_or_env(extra, "rate_limit_circuit_open_seconds", "30.0"))
+        self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "1")))
+        self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
+        self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()

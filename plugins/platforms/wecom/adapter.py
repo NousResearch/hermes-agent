@@ -821,9 +821,6 @@ def _callback_is_connected(config) -> bool:
     return bool(extra.get("corp_id") or extra.get("apps"))
 
 
-def _build_adapter(config):
-    return WeComAdapter(config)
-
 
 def _build_callback_adapter(config):
     from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
@@ -833,7 +830,7 @@ def _build_callback_adapter(config):
 def register(ctx) -> None:
     common = dict(install_hint="Run `hermes setup` to install WeCom support.", emoji="💼", allow_update_command=True)
     ctx.register_platform(
-        name="wecom", label="WeCom (Enterprise WeChat)", adapter_factory=_build_adapter, check_fn=check_wecom_requirements,
+        name="wecom", label="WeCom (Enterprise WeChat)", adapter_factory=WeComAdapter, check_fn=check_wecom_requirements,
         is_connected=_is_connected, validate_config=_is_connected, required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
         setup_fn=interactive_setup, allowed_users_env="WECOM_ALLOWED_USERS", allow_all_env="WECOM_ALLOW_ALL_USERS",
         cron_deliver_env_var="WECOM_HOME_CHANNEL", standalone_sender_fn=_standalone_send, max_message_length=4000, **common,

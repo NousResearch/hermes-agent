@@ -270,7 +270,10 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import send_error, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, platform_gate_env as _scoped_gate_env, send_error,
+    yaml_env_setter as _yaml_env_setter
+)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -544,15 +547,6 @@ _GATE_ENV_KEYS = (
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
-
-
-def _scoped_gate_env(name: str, default: str = "") -> str:
-    """Scope-aware gate env read: profile secret scope first under multiplex."""
-    try:
-        from gateway.authz_mixin import _platform_gate_env
-        return _platform_gate_env(name, default)
-    except Exception:
-        return (os.getenv(name) or default).strip()
 
 
 def _multiplex_active() -> bool:
@@ -7026,16 +7020,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     return seeded_extra or None
 
 
-def _is_connected(config) -> bool:
-    """Connected when DISCORD_BOT_TOKEN is set.
-    Looks up ``hermes_cli.gateway.get_env_value`` at call time so tests can patch it (ambient env)."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("DISCORD_BOT_TOKEN") or "").strip())
+_is_connected = _env_is_connected("DISCORD_BOT_TOKEN")
 
-
-def _build_adapter(config):
-    """Factory wrapper that constructs DiscordAdapter from a PlatformConfig."""
-    return DiscordAdapter(config)
 
 
 def register(ctx) -> None:
@@ -7043,7 +7029,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="discord",
         label="Discord",
-        adapter_factory=_build_adapter,
+        adapter_factory=DiscordAdapter,
         check_fn=discord_deps_present,
         ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,

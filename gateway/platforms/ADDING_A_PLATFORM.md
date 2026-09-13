@@ -20,15 +20,23 @@ status display, gateway setup, and more.
   (and an optional `home_channel` dict) from env vars BEFORE the adapter is
   constructed.  Without this, env-only setups don't surface in
   `hermes gateway status` or `get_connected_platforms()` until the SDK
-  instantiates.
+  instantiates.  Build it from a `(ENV_VAR, extra_key, conv)` table with
+  `gateway.platforms._shared.seed_extra_from_env(spec, home_env=...)`; every
+  read goes through `_shared.get_scoped_secret` (multiplex-safe, never
+  `os.getenv`).
 - `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
-  translate this platform's `config.yaml` keys into env vars and/or seed
-  `PlatformConfig.extra` directly.  Lets a plugin own its YAML schema
-  instead of growing core `gateway/config.py` boilerplate per platform.
-  Mutating `os.environ` is allowed (use `not os.getenv(...)` guards to
-  preserve env > YAML precedence); the returned dict is merged into
-  `PlatformConfig.extra`.  Called during `load_gateway_config()` after
-  the generic shared-key loop and before `_apply_env_overrides()`.
+  translate this platform's `config.yaml` keys into env vars and seed
+  `PlatformConfig.extra`.  Lets a plugin own its YAML schema instead of
+  growing core `gateway/config.py` boilerplate per platform.  Declare a
+  `(yaml_key, ENV_VAR, kind)` table and return
+  `_shared.apply_yaml_bridge(platform_cfg, TABLE)`: it writes env only when
+  unset (env > YAML), never under a multiplexed secondary profile's scope,
+  and returns the same values for `extra` (read `extra` first in the adapter
+  via `_shared.extra_or_secret`).  Called during `load_gateway_config()`
+  after the generic shared-key loop and before `_apply_env_overrides()`.
+- `is_connected: (config) -> bool` — for env-only platforms use
+  `_shared.env_is_connected("YOUR_TOKEN_VAR", ...)` instead of a hand-rolled
+  `get_env_value` check.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
   set, `deliver=<name>` cron jobs route to this var without editing
   `cron/scheduler.py`'s hardcoded sets.

@@ -386,7 +386,7 @@ class GatewayConfigLoadersMixin:
         (``_completion_event_scope``). The env override reads through the secret scope so a served
         secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
         from gateway.run import _load_gateway_config
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
         mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
             raw = cfg_get(_load_gateway_config(), "display", "background_process_notifications")

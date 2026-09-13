@@ -37,8 +37,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from agent.secret_scope import UnscopedSecretError, get_secret
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
+from agent.secret_scope import get_secret
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 try:
     from mautrix.types import (
@@ -479,7 +481,7 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     raw = config.extra.get(key)
     if raw is None:
         # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
-        raw = _startup_env_secret(env_name)
+        raw = _get_scoped_secret(env_name, "").strip()
     return _csv_set(raw)
 
 
@@ -550,15 +552,9 @@ def _handle_generated_matrix_recovery_key(mxid: str, recovery_key: str) -> None:
 
 
 def _scoped_recovery_key() -> str:
-    """MATRIX_RECOVERY_KEY via the profile-scoped secret store (see _startup_env_secret): a bare
-    os.getenv under multiplex resolves the default profile's key and verification fails with
-    "Key MAC does not match".
-
-    We read through :func:`get_secret`, which is scope-aware. An *unscoped* read under multiplex (e.g. the
-    default-profile startup loop) raises ``UnscopedSecretError``; in that context ``os.environ`` is that
-    profile's own value, so we fall back to it — mirroring the established Slack app-token pattern (#59739).
-    """
-    return _startup_env_secret("MATRIX_RECOVERY_KEY")
+    """MATRIX_RECOVERY_KEY via the profile-scoped reader: a bare os.getenv under multiplex resolves
+    the default profile's key and verification fails with "Key MAC does not match"."""
+    return _get_scoped_secret("MATRIX_RECOVERY_KEY", "").strip()
 
 
 # --- LaTeX math ($...$, $$...$$) -> Element data-mx-maths markup ---
@@ -643,18 +639,6 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
         "", result)
 
 
-def _startup_env_secret(name: str) -> str:
-    """Scope-aware credential read: a scoped miss is empty (never borrow the process env);
-    only an UNSCOPED read (default-profile startup loop) falls back to os.environ.
-
-    See #59739.
-    """
-    try:
-        return (get_secret(name) or "").strip()
-    except UnscopedSecretError:
-        return os.getenv(name, "").strip()
-
-
 def matrix_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; ``ensure_matrix_deps`` is the installer.
 
@@ -671,9 +655,9 @@ def matrix_deps_present() -> bool:
 
 def check_matrix_requirements() -> bool:
     """Credentials + deps answer for setup/status callers (credentials must NOT gate the installer)."""
-    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
-    password = _startup_env_secret("MATRIX_PASSWORD")
-    homeserver = _startup_env_secret("MATRIX_HOMESERVER")
+    token = _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
+    password = _get_scoped_secret("MATRIX_PASSWORD", "").strip()
+    homeserver = _get_scoped_secret("MATRIX_HOMESERVER", "").strip()
     if not token and not password:
         logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
         return False
@@ -799,13 +783,13 @@ class MatrixAdapter(BasePlatformAdapter):
         # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
         # secondary's credential sends that credential to the wrong homeserver (or reuses the
         # default's E2EE device id).
-        self._homeserver: str = (config.extra.get("homeserver", "") or _startup_env_secret("MATRIX_HOMESERVER")).rstrip("/")
-        self._access_token: str = config.token or _startup_env_secret("MATRIX_ACCESS_TOKEN")
-        self._user_id: str = config.extra.get("user_id", "") or _startup_env_secret("MATRIX_USER_ID")
-        self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
+        self._homeserver: str = (config.extra.get("homeserver", "") or _get_scoped_secret("MATRIX_HOMESERVER", "").strip()).rstrip("/")
+        self._access_token: str = config.token or _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
+        self._user_id: str = config.extra.get("user_id", "") or _get_scoped_secret("MATRIX_USER_ID", "").strip()
+        self._password: str = config.extra.get("password", "") or _get_scoped_secret("MATRIX_PASSWORD", "").strip()
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
-        self._device_id: str = config.extra.get("device_id", "") or _startup_env_secret("MATRIX_DEVICE_ID")
+        self._device_id: str = config.extra.get("device_id", "") or _get_scoped_secret("MATRIX_DEVICE_ID", "").strip()
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -864,10 +848,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
         # allowlist, which must not decide who approves tool calls on a secondary bot.
-        self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
+        self._allowed_user_ids: Set[str] = _csv_set(_get_scoped_secret("MATRIX_ALLOWED_USERS", "").strip())
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):
+        for pattern in (p.strip() for p in _get_scoped_secret("MATRIX_IGNORE_USER_PATTERNS", "").strip().split(",") if p.strip()):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -2394,7 +2378,7 @@ class MatrixAdapter(BasePlatformAdapter):
     def _is_authorized_user(self, user_id: str) -> bool:
         """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
-        return _startup_env_secret("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes") or bool(
+        return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
@@ -2984,38 +2968,21 @@ def interactive_setup() -> None:
             print_info("Home room cleared.")
 
 
-_YAML_LOWER_KEYS = (
-    ("require_mention", "MATRIX_REQUIRE_MENTION"), ("process_notices", "MATRIX_PROCESS_NOTICES"),
-    ("session_scope", "MATRIX_SESSION_SCOPE"), ("auto_thread", "MATRIX_AUTO_THREAD"),
-    ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS"))
-_YAML_LIST_KEYS = (
-    ("allowed_users", "MATRIX_ALLOWED_USERS"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS"),
-    ("allowed_rooms", "MATRIX_ALLOWED_ROOMS"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS"))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
+    ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
+    ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
+    ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
+    ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
+    ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins) + ``PlatformConfig.extra``.
-    Lowercased flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
+    """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
+    multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy matrix_cfg block from
-    gateway/config.py::load_gateway_config(). The env write is skipped under a multiplexed secondary
-    profile's scope; the seeded ``extra`` is what its adapter reads (extra-first readers).
-    """
-    _set_env = _yaml_env_setter()
-    seeded: dict = {}
-    for key, env_name in _YAML_LOWER_KEYS:
-        if key in matrix_cfg:
-            seeded[key] = matrix_cfg[key]
-            _set_env(env_name, str(matrix_cfg[key]).lower())
-    for key, env_name in _YAML_LIST_KEYS:
-        value = matrix_cfg.get(key)
-        if value is not None:
-            seeded[key] = value
-            _set_env(env_name, value)
-    if "max_message_length" in matrix_cfg:
-        seeded["max_message_length"] = matrix_cfg["max_message_length"]
-        _set_env("MATRIX_MAX_MESSAGE_LENGTH", str(matrix_cfg["max_message_length"]))
-    return seeded or None
 
 
 def _is_connected(config) -> bool:
@@ -3029,14 +2996,10 @@ def _is_connected(config) -> bool:
     return bool(str(homeserver).strip() and str(token).strip())
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs MatrixAdapter from a PlatformConfig."""
-    return MatrixAdapter(config)
-
 
 def register(ctx) -> None:
     ctx.register_platform(
-        name="matrix", label="Matrix", adapter_factory=_build_adapter, check_fn=matrix_deps_present,
+        name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",

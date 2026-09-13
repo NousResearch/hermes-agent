@@ -37,7 +37,10 @@ else:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
@@ -268,16 +271,13 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed PlatformConfig.extra from env so env-only setups appear in status
-    (``home_channel`` becomes a ``HomeChannel`` via the core plugin hook)."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` so env-only setups appear in status."""
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    seed: dict = {"project_id": project_id, "project_secret": project_secret}
-    home = _get_scoped_secret("PHOTON_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("PHOTON_HOME_CHANNEL_NAME", "Home")}
-    return seed
+    return {"project_id": project_id, "project_secret": project_secret,
+            **_seed_extra_from_env((), home_env="PHOTON_HOME_CHANNEL")}
+
 
 
 def _markdown_enabled() -> bool:
@@ -468,11 +468,8 @@ class PhotonAdapter(BasePlatformAdapter):
         # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
         # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
         def _setting(key: str, env: str, default: Any, cast: Callable[[Any], Any]) -> Any:
-            value = extra.get(key)
-            if value is None:
-                value = _get_scoped_secret(env)
             try:
-                return cast(value)
+                return cast(_extra_or_secret(extra, key, env, None))
             except (TypeError, ValueError):
                 return default
         self._probe_interval = _setting("probe_interval_seconds", "PHOTON_PROBE_INTERVAL_SECONDS", 600.0, float)

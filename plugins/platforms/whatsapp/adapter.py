@@ -14,7 +14,9 @@ from functools import wraps
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from gateway.platforms._shared import get_scoped_secret, send_error, yaml_env_setter
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret, send_error
+)
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -942,34 +944,19 @@ def interactive_setup() -> None:
 
 
 # config.yaml whatsapp: key → env var. Env vars take precedence over YAML.
-_YAML_LOWERCASE_KEYS = (("require_mention", "WHATSAPP_REQUIRE_MENTION"), ("dm_policy", "WHATSAPP_DM_POLICY"), ("group_policy", "WHATSAPP_GROUP_POLICY"))
-_YAML_LIST_KEYS = (("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"), ("allow_from", "WHATSAPP_ALLOWED_USERS"), ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS"))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "WHATSAPP_REQUIRE_MENTION", "lower"), ("dm_policy", "WHATSAPP_DM_POLICY", "lower"),
+    ("group_policy", "WHATSAPP_GROUP_POLICY", "lower"), ("mention_patterns", "WHATSAPP_MENTION_PATTERNS", "json"),
+    ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
+    ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
-    """config.yaml whatsapp: keys → WHATSAPP_* env vars + ``PlatformConfig.extra`` (apply_yaml_config_fn).
+    """``apply_yaml_config_fn`` (#24849): config.yaml whatsapp: keys → WHATSAPP_* env (env wins; skipped under
+    a multiplexed secondary profile's scope, #80099) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(whatsapp_cfg, _YAML_BRIDGE)
 
-    Mirrors the legacy whatsapp_cfg block from gateway/config.py::load_gateway_config(). Env vars take
-    precedence over YAML. The env write is skipped under a multiplexed secondary profile's scope (#80099);
-    every field has an extra-first reader (``WhatsAppAdapter.__init__`` policies/allowlists,
-    ``whatsapp_common`` require_mention/free_response_chats/mention_patterns). See #24849.
-    """
-    import json as _json
-    _set_env = yaml_env_setter()
-    seeded: dict = {}
-    for key, env in _YAML_LOWERCASE_KEYS:
-        if key in whatsapp_cfg:
-            seeded[key] = whatsapp_cfg[key]
-            _set_env(env, str(whatsapp_cfg[key]).lower())
-    if "mention_patterns" in whatsapp_cfg:
-        seeded["mention_patterns"] = whatsapp_cfg["mention_patterns"]
-        _set_env("WHATSAPP_MENTION_PATTERNS", _json.dumps(whatsapp_cfg["mention_patterns"]))
-    for key, env in _YAML_LIST_KEYS:
-        val = whatsapp_cfg.get(key)
-        if val is not None:
-            seeded[key] = val
-            _set_env(env, val)
-    return seeded or None
 
 
 def _is_connected(config) -> bool:
@@ -981,13 +968,10 @@ def _is_connected(config) -> bool:
     return (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower() in {"true", "1", "yes"}
 
 
-def _build_adapter(config):
-    return WhatsAppAdapter(config)
-
 
 def register(ctx) -> None:
     ctx.register_platform(
-        name="whatsapp", label="WhatsApp", adapter_factory=_build_adapter, check_fn=check_whatsapp_requirements,
+        name="whatsapp", label="WhatsApp", adapter_factory=WhatsAppAdapter, check_fn=check_whatsapp_requirements,
         is_connected=_is_connected, required_env=["WHATSAPP_ENABLED"],
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="WHATSAPP_ALLOWED_USERS",

@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import SendResult, redact_transport_error_text, safe_url_for_log
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
@@ -126,13 +126,16 @@ class DiscordMediaMixin:
                             if status != 200:
                                 logger.warning(
                                     "[%s] Failed to download image (HTTP %d) in batch: %s",
-                                    self.name, status, image_url[:80],
+                                    self.name, status, safe_url_for_log(image_url),
                                 )
                                 continue
                             ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
                             files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
                         except Exception as dl_err:
-                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
+                            logger.warning(
+                                "[%s] Download failed for %s: %s",
+                                self.name, safe_url_for_log(image_url), redact_transport_error_text(dl_err),
+                            )
                             continue
                 if not files:
                     continue
@@ -152,7 +155,7 @@ class DiscordMediaMixin:
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
-                    self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
+                    self.name, chunk_idx + 1, len(chunks), redact_transport_error_text(e),
                 )
                 fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
@@ -289,10 +292,13 @@ class DiscordMediaMixin:
                 msg = await channel.send(content=caption if caption else None, file=file)
                 return SendResult(success=True, message_id=str(msg.id))
         except ImportError:
-            logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name, exc_info=True)
+            logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name)
             return await fallback(error_metadata)
         except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send %s attachment, falling back to URL: %s", self.name, kind, e, exc_info=True)
+            logger.error(
+                "[%s] Failed to send %s attachment, falling back to URL: %s",
+                self.name, kind, redact_transport_error_text(e),
+            )
             return await fallback(error_metadata)
 
 
@@ -344,4 +350,3 @@ class DiscordMediaMixin:
             chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
             metadata=metadata,
         )
-

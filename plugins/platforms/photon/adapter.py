@@ -475,6 +475,8 @@ async def _cancel_task(task: Optional[asyncio.Task]) -> None:
 class PhotonAdapter(BasePlatformAdapter):
     """Bidirectional bridge to Photon Spectrum via the Node spectrum-ts sidecar."""
 
+    supports_native_remote_images = True
+
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
 

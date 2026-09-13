@@ -83,6 +83,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text, safe_url_for_log,
     BasePlatformAdapter, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
@@ -1201,6 +1202,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 
+    supports_native_remote_images = True
+
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
@@ -1836,7 +1839,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             image_path = await self._download_remote_image(image_url)
         except Exception as exc:
-            logger.error("[Feishu] Failed to download image %s: %s", image_url, exc, exc_info=True)
+            logger.error("[Feishu] Failed to download image %s: %s", safe_url_for_log(image_url), redact_transport_error_text(exc))
             return await super().send_image(
                 chat_id=chat_id, image_url=image_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
@@ -1854,7 +1857,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 animation_url, default_ext=".gif", preferred_name="animation.gif",
             )
         except Exception as exc:
-            logger.error("[Feishu] Failed to download animation %s: %s", animation_url, exc, exc_info=True)
+            logger.error("[Feishu] Failed to download animation %s: %s", safe_url_for_log(animation_url), redact_transport_error_text(exc))
             return await super().send_animation(
                 chat_id=chat_id, animation_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )

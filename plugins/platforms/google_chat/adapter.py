@@ -1312,6 +1312,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an inline image via URL (no upload); patches the typing card when tracked."""
         thread_id = self._resolve_thread_id(reply_to, metadata, chat_id=chat_id)
+        from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         text = "\n".join(([caption] if caption else []) + [image_url])
         try:
             patched = await self._consume_typing_card_with_text(chat_id, text)

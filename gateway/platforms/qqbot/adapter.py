@@ -39,6 +39,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    redact_transport_error_text,
     gateway_trust_env, BasePlatformAdapter, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
@@ -96,6 +97,8 @@ _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac"
 
 class QQAdapter(BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
+
+    supports_native_remote_images = True
 
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
@@ -1525,6 +1528,9 @@ class QQAdapter(BasePlatformAdapter):
         if result.success or not self._is_url(image_url):
             return result
         logger.warning("[%s] Image send failed, falling back to text: %s", self._log_tag, result.error)
+        from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         fallback = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=fallback, reply_to=reply_to)
 
@@ -1588,8 +1594,9 @@ class QQAdapter(BasePlatformAdapter):
                 success=False, retryable=False,
                 error=f"{exc.file_name!r} ({exc.file_size_human}) exceeds the QQ per-file upload limit ({exc.limit_human}).")
         except Exception as exc:
-            logger.error("[%s] Media send failed: %s", self._log_tag, exc)
-            return SendResult(success=False, error=str(exc) or type(exc).__name__)
+            safe_error = redact_transport_error_text(exc) or type(exc).__name__
+            logger.error("[%s] Media send failed: %s", self._log_tag, safe_error)
+            return SendResult(success=False, error=safe_error)
 
     async def _upload_local_file(
         self, chat_type: str, chat_id: str, media_source: str, file_type: int, file_name: Optional[str],

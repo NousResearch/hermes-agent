@@ -37,6 +37,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
+    redact_transport_error_text,
     gateway_trust_env, BasePlatformAdapter,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
@@ -855,6 +856,8 @@ class SlackAdapter(BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
+
+    supports_native_remote_images = True
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
@@ -2698,7 +2701,7 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
-                    chunk_idx + 1, len(chunks), e, exc_info=True)
+                    chunk_idx + 1, len(chunks), redact_transport_error_text(e))
                 fallback = await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
@@ -2739,7 +2742,7 @@ class SlackAdapter(BasePlatformAdapter):
                     })
                 except Exception as dl_err:
                     logger.warning(
-                        "[Slack] Download failed for %s: %s", safe_url_for_log(image_url), dl_err)
+                        "[Slack] Download failed for %s: %s", safe_url_for_log(image_url), redact_transport_error_text(dl_err))
         return file_uploads, initial_comment_parts
 
     def _record_uploaded_file_thread(
@@ -3182,7 +3185,10 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning(
                 "[Slack] Failed to upload image from URL %s, falling back to text: %s",
-                safe_url_for_log(image_url), e, exc_info=True)
+                safe_url_for_log(image_url), redact_transport_error_text(e))
+            from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+            image_url = sanitize_remote_image_url_for_plaintext(image_url)
             # Fall back to sending the URL as text
             text = f"{caption}\n{image_url}" if caption else image_url
             return await self.send(

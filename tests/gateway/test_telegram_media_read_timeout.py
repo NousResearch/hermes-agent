@@ -104,3 +104,102 @@ async def test_send_image_upload_fallback_uses_media_read_timeout(adapter, monke
     upload = calls[1]
     assert isinstance(upload["photo"], (bytes, bytearray))
     assert upload["read_timeout"] == tg._MEDIA_SEND_READ_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_signed_image_url_reaches_private_transports_intact(adapter, monkeypatch):
+    signed_url = (
+        "https://example.com/private.png"
+        "?X-Amz-Signature=secret-signature&X-Amz-Credential=credential"
+    )
+    downloaded_urls = []
+    calls = []
+
+    class _Resp:
+        content = b"image-bytes"
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            downloaded_urls.append(url)
+            return _Resp()
+
+    import tools.url_safety as url_safety
+
+    monkeypatch.setattr(
+        url_safety,
+        "create_ssrf_safe_async_client",
+        lambda **kw: _Client(),
+    )
+
+    async def _photo(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("force private download fallback")
+        msg = MagicMock()
+        msg.message_id = 3
+        return msg
+
+    adapter._bot.send_photo = AsyncMock(side_effect=_photo)
+
+    result = await adapter.send_image("123", signed_url)
+
+    assert result.success
+    assert calls[0]["photo"] == signed_url
+    assert downloaded_urls == [signed_url]
+    assert calls[1]["photo"] == b"image-bytes"
+
+
+
+@pytest.mark.asyncio
+async def test_send_image_plaintext_fallback_masks_signed_query(adapter, monkeypatch):
+    signed_url = "https://example.com/private.png?X-Amz-Signature=secret-signature"
+    adapter._bot.send_photo = AsyncMock(side_effect=RuntimeError("send failed"))
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            raise RuntimeError("download failed")
+
+    import tools.url_safety as url_safety
+
+    monkeypatch.setattr(
+        url_safety,
+        "create_ssrf_safe_async_client",
+        lambda **kw: _Client(),
+    )
+
+    adapter.send = AsyncMock(return_value=MagicMock(success=True))
+    await adapter.send_image("123", signed_url, caption="caption")
+    adapter.send.assert_awaited_once()
+    visible = adapter.send.await_args.kwargs["content"]
+    assert visible == "caption\nhttps://example.com/private.png?X-Amz-Signature=***"
+    assert "secret-signature" not in visible
+
+
+
+@pytest.mark.asyncio
+async def test_send_image_unsafe_url_plaintext_fallback_is_sanitized(adapter):
+    unsafe_signed_url = (
+        "http://127.0.0.1/private.png?X-Amz-Signature=secret-signature"
+    )
+
+    adapter.send = AsyncMock(return_value=MagicMock(success=True))
+    await adapter.send_image("123", unsafe_signed_url)
+    adapter.send.assert_awaited_once()
+    visible = adapter.send.await_args.kwargs["content"]
+    assert visible == "http://127.0.0.1/private.png?X-Amz-Signature=***"
+    assert "secret-signature" not in visible

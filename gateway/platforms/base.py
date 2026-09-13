@@ -500,17 +500,36 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
     try:
         parsed = urlsplit(raw)
     except Exception:
-        return raw[:max_len]
-    safe = raw
-    if parsed.scheme and parsed.netloc:
-        # Strip potential embedded credentials (user:pass@host).
-        path = parsed.path or ""
-        basename = path.rsplit("/", 1)[-1]
-        tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
-        safe = f"{parsed.scheme}://{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
+        safe = "<invalid URL>"
+    else:
+        safe = raw.split("?", 1)[0].split("#", 1)[0]
+        if parsed.netloc:
+            # Absolute and network references can both carry user:pass@host.
+            path = parsed.path or ""
+            basename = path.rsplit("/", 1)[-1]
+            tail = "" if path in ("", "/") else f"/.../{basename}" if basename else "/..."
+            prefix = f"{parsed.scheme}:" if parsed.scheme else ""
+            safe = f"{prefix}//{parsed.netloc.rsplit('@', 1)[-1]}{tail}"
     if len(safe) <= max_len:
         return safe
     return "." * max_len if max_len <= 3 else f"{safe[:max_len - 3]}..."
+
+
+def sanitize_remote_image_url_for_plaintext(url: str) -> str:
+    """Mask credential-bearing URL fields only at a visible image fallback."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(url, force=True, redact_url_credentials=True)
+
+
+def redact_transport_error_text(error: object) -> str:
+    """Mask secrets and signed URL credentials at transport diagnostic boundaries."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(
+            "" if error is None else str(error), force=True, redact_url_credentials=True)
+    except Exception:
+        return "<transport error redacted>"
 
 
 async def _ssrf_redirect_guard(response):
@@ -1797,6 +1816,9 @@ _strip_media_directives = _strip_media_tag_directives
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
+    # Native image transports may consume signed URLs intact; their plaintext
+    # fallbacks must sanitize the URL before exposing it as message text.
+    supports_native_remote_images: bool = False
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
     # fenced terminal command; plain-text platforms get the preview).
     supports_code_blocks: bool = False
@@ -2617,6 +2639,9 @@ class BasePlatformAdapter(ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
+                if (urlsplit(image_url).scheme.lower() in {"http", "https"}
+                        and self.supports_native_remote_images is not True):
+                    image_url = sanitize_remote_image_url_for_plaintext(image_url)
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
                 if image_url.startswith("file://"):
@@ -2628,11 +2653,11 @@ class BasePlatformAdapter(ABC):
                 img_result = await sender(
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
-                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    logger.error("[%s] Failed to send image: %s", self.name, redact_transport_error_text(img_result.error))
                 else:
                     delivered = True
             except Exception as img_err:
-                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                logger.error("[%s] Error sending image: %s", self.name, redact_transport_error_text(img_err))
         if not images:
             return SendResult(success=False, error="no images to send")
         return SendResult(
@@ -2643,6 +2668,7 @@ class BasePlatformAdapter(ABC):
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image natively; default falls back to sending the URL as text."""
+        image_url = sanitize_remote_image_url_for_plaintext(image_url)
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 

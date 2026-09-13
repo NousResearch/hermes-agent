@@ -2266,6 +2266,10 @@ class GatewayTurnMixin:
                 )
             for image_url, alt_text in (images or []):
                 with suppress(Exception):
+                    from gateway.platforms.base import sanitize_remote_image_url_for_plaintext
+
+                    if getattr(adapter, "supports_native_remote_images", False) is not True:
+                        image_url = sanitize_remote_image_url_for_plaintext(image_url)
                     await adapter.send_image(
                         chat_id=source.chat_id, image_url=image_url, caption=alt_text, metadata=_thread_metadata,
                     )

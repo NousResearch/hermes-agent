@@ -2683,12 +2683,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
-        app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
-        app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
+        # Telegram emits edits as fresh updates with the original message id. This is opt-in because
+        # existing bots may deliberately process edits; enabled profiles must never start a second turn.
+        inbound_filter = ~filters.UpdateType.EDITED if self._telegram_ignore_edited_messages() else filters.ALL
+        app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND & inbound_filter, self._handle_text_message))
+        app.add_handler(TelegramMessageHandler(filters.COMMAND & inbound_filter, self._handle_command))
         app.add_handler(TelegramMessageHandler(
-            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+            (filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION)) & inbound_filter, self._handle_location_message))
         app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            (filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL)
+            & inbound_filter,
             self._handle_media_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
@@ -5048,6 +5052,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false",
             "ingest_unmentioned_group_messages")
 
+    def _telegram_ignore_edited_messages(self) -> bool:
+        """Whether this profile discards Telegram edits instead of treating them as new inbound messages."""
+        return self._extra_bool("ignore_edited_messages", "TELEGRAM_IGNORE_EDITED_MESSAGES", "false")
+
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
         return self._extra_bool("guest_mode", "TELEGRAM_GUEST_MODE", "false")
@@ -6511,7 +6519,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     for key, env in (
         ("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"), ("allow_bots", "TELEGRAM_ALLOW_BOTS"),
         ("bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION"),
-        ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES")):
+        ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"),
+        ("ignore_edited_messages", "TELEGRAM_IGNORE_EDITED_MESSAGES")):
         _bridge_lower(key, env)
     # No extras seed for allowed_chats / allowed_topics / group_allowed_chats: the shared-key loop already
     # bridges them with their original type and this merge would clobber it.
@@ -6533,7 +6542,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages",
+                 "ignore_edited_messages", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map

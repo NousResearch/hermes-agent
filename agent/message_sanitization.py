@@ -152,8 +152,30 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
 
     # Passes 1-3: strip trailing commas, close unclosed structures, trim excess closers (bounded).
     fixed = re.sub(r',\s*([}\]])', r'\1', raw_stripped)
-    fixed += '}' * max(0, fixed.count('{') - fixed.count('}'))
-    fixed += ']' * max(0, fixed.count('[') - fixed.count(']'))
+    # String contents are payload, and mixed containers must close innermost-first.
+    closers: list[str] = []
+    in_string = False
+    escape_next = False
+    for ch in fixed:
+        if in_string:
+            if escape_next:
+                escape_next = False
+            elif ch == '\\':
+                escape_next = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in '{[':
+            closers.append('}' if ch == '{' else ']')
+        elif closers and ch == closers[-1]:
+            closers.pop()
+    if in_string:
+        # Preserve a dangling backslash without letting it escape the closing quote.
+        if escape_next:
+            fixed += '\\'
+        fixed += '"'
+    fixed += ''.join(reversed(closers))
     for _ in range(50):
         if _loads_ok(fixed) or not (
             (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))

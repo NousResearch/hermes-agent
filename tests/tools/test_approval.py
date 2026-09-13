@@ -478,6 +478,10 @@ class TestHermesHomeHardline:
         monkeypatch.setattr(terminal_module, "_task_env_overrides", {})
         monkeypatch.setattr(terminal_module, "_session_cwd", {})
         monkeypatch.setattr(terminal_module, "_active_environments", {})
+        shell_home = (
+            f"/{home.drive[0].lower()}{home.as_posix()[2:]}"
+            if home.drive else home.as_posix()
+        )
 
         for mode, force in (("ordinary", False), ("yolo", False), ("force", True)):
             task_id = f"managed-cwd-{mode}"
@@ -485,7 +489,7 @@ class TestHermesHomeHardline:
             target.write_text("keep", encoding="utf-8")
             terminal_module.register_task_env_overrides(task_id, {"cwd": str(workspace)})
             cd_result = json.loads(terminal_module.terminal_tool(
-                command=f'cd "{home.as_posix()}" && pwd', task_id=task_id,
+                command=f'cd "{shell_home}" && pwd', task_id=task_id,
             ))
             assert cd_result["exit_code"] == 0
             assert os.path.samefile(terminal_module.get_session_cwd(task_id), home)

@@ -49,6 +49,7 @@ _ALLOW_BOTS_ENV = {
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
 from gateway.platforms._shared import decode_json_list_literal as _decode_json_list_literal  # noqa: E402
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret  # noqa: E402
 from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
 
 
@@ -480,12 +481,18 @@ class GatewayAuthorizationMixin:
                 adapter_group_allowed = self._adapter_extra_for_source(source).get("group_allowed_chats")
                 if adapter_group_allowed and _allows(_coerce_allow_set(adapter_group_allowed), source.chat_id):
                     return True
-        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (Slack Workflow Builder
-        # posts arrive with user=None).
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS (scoped env → the routed adapter's YAML ``allow_bots`` →
+        # none) bypass the human allowlist (Slack Workflow Builder posts arrive with user=None). The YAML
+        # rung is what a secondary profile has: its config is never bridged into the process env.
         if getattr(source, "is_bot", False):
             allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
-            if allow_bots_var and _auth_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
-                return True
+            if allow_bots_var:
+                extra = {}
+                with contextlib.suppress(Exception):
+                    extra = self._adapter_extra_for_source(source)
+                mode = str(_extra_or_secret(extra, "allow_bots", allow_bots_var, "none")).lower().strip()
+                if mode in {"mentions", "all"}:
+                    return True
         return False
 
     def _legacy_telegram_chat_grant(self, source, group_user_allowlist: str) -> bool:

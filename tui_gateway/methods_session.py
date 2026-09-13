@@ -1101,10 +1101,15 @@ def _(rid, params: dict) -> dict:
                 current = str(row.get("parent_session_id") or "").strip()
             if root_session_id is None:
                 return _err(rid, 4007, "conversation worktree binding not found")
+            binding_record = db.get_conversation_worktree(root_session_id)
+            if binding_record is None:
+                return _err(rid, 5036, "conversation worktree binding disappeared")
+            session_row = db.get_session(root_session_id) or {}
+            binding_cwd = session_row.get("cwd") or binding_record.worktree_path
             manager, _owned_db, owns_db = _conversation_worktree_manager(
                 profile_home=profile_home,
                 db=db,
-                session_cwd=(db.get_session(root_session_id) or {}).get("cwd"),
+                session_cwd=binding_cwd,
             )
             if owns_db:
                 return _err(rid, 5036, "conversation worktree database ownership mismatch")

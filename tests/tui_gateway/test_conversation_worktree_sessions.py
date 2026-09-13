@@ -172,6 +172,63 @@ def test_alternate_project_root_inside_selected_repository_moves_outside_both(
     assert not routed.worktree_root.is_relative_to(selected)
 
 
+def test_alternate_linked_checkout_root_moves_outside_repository(monkeypatch, tmp_path):
+    from agent.conversation_worktree_policy import ConversationWorktreePolicy
+
+    configured = tmp_path / "lunabot"
+    selected_common = tmp_path / "hermes-agent"
+    selected_checkout = selected_common / ".worktrees" / "linked"
+    configured.mkdir()
+    selected_checkout.mkdir(parents=True)
+    policy = ConversationWorktreePolicy(
+        enabled=True,
+        source_worktree=configured,
+        worktree_root=selected_checkout / ".worktrees",
+    )
+
+    monkeypatch.setattr(server.git_probe, "repo_root", lambda _cwd: str(selected_checkout))
+    monkeypatch.setattr(
+        server.git_probe,
+        "common_repo_root",
+        lambda cwd: str(configured if str(cwd) == str(configured) else selected_common),
+    )
+    monkeypatch.setattr(
+        server.git_probe,
+        "run_git",
+        lambda cwd, *_args: (
+            f"worktree {selected_common}\nworktree {selected_checkout}\n"
+            if str(cwd) == str(selected_common) else ""
+        ),
+    )
+    monkeypatch.setattr(server, "get_hermes_home", lambda: tmp_path / ".hermes")
+
+    routed = server._conversation_worktree_policy_for_session(policy, str(selected_checkout))
+
+    assert routed.worktree_root is not None
+    assert routed.worktree_root.is_relative_to(tmp_path / ".hermes")
+    assert not routed.worktree_root.is_relative_to(selected_common)
+
+
+def test_selected_git_repository_probe_failure_fails_closed(monkeypatch, tmp_path):
+    from agent.conversation_worktree import ConversationWorktreeError
+    from agent.conversation_worktree_policy import ConversationWorktreePolicy
+
+    configured = tmp_path / "lunabot"
+    selected = tmp_path / "hermes-agent"
+    configured.mkdir()
+    selected.mkdir()
+    (selected / ".git").write_text("gitdir: ../hermes-agent.git\n", encoding="utf-8")
+    policy = ConversationWorktreePolicy(
+        enabled=True,
+        source_worktree=configured,
+        worktree_root=tmp_path / "conversations",
+    )
+    monkeypatch.setattr(server.git_probe, "repo_root", lambda _cwd: "")
+
+    with pytest.raises(ConversationWorktreeError, match="could not be identified"):
+        server._conversation_worktree_policy_for_session(policy, str(selected))
+
+
 def test_session_create_defers_worktree_until_first_prompt(monkeypatch):
     calls: list[tuple[str, str]] = []
     scheduled: list[tuple[str, str]] = []

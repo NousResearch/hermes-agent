@@ -542,6 +542,14 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
         return policy
     source = git_probe.repo_root(str(session_cwd))
     if not source:
+        candidate = Path(session_cwd).expanduser().resolve()
+        while candidate != candidate.parent:
+            if (candidate / ".git").exists():
+                from agent.conversation_worktree import ConversationWorktreeError
+                raise ConversationWorktreeError(
+                    "selected session repository could not be identified", phase="identity"
+                )
+            candidate = candidate.parent
         return policy
     source_path = Path(source).resolve()
     configured_path = policy.source_worktree.resolve()
@@ -559,10 +567,15 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
     suffix = hashlib.sha256(str(selected_common_path).encode()).hexdigest()[:12]
     namespace = f"{selected_common_path.name}-{suffix}"
     configured_root = policy.worktree_root.resolve()
-    if not (
-        configured_root.is_relative_to(configured_path)
-        or configured_root.is_relative_to(selected_common_path)
-    ):
+    repository_worktrees = {configured_path, selected_common_path}
+    for common_path in (Path(configured_common).resolve(), selected_common_path):
+        listing = git_probe.run_git(str(common_path), "worktree", "list", "--porcelain")
+        repository_worktrees.update(
+            Path(line.removeprefix("worktree ")).resolve()
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        )
+    if not any(configured_root.is_relative_to(worktree) for worktree in repository_worktrees):
         worktree_root = policy.worktree_root / namespace
     else:
         # A conventional ``<repo>/.worktrees`` root is valid for its own

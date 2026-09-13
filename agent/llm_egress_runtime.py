@@ -910,7 +910,7 @@ def dispatch_authorized_agent_request(
 ) -> Any:
     resolved_route = _route_for_agent(agent, route)
     if not egress_enforcement_enabled():
-        return callback(dict(kwargs))
+        return callback({key: value for key, value in kwargs.items() if key not in _INTERNAL_EGRESS_KEYS})
     destination = classify_destination(
         str(_route_field(resolved_route, "provider", "") or ""),
         _route_field(resolved_route, "base_url"),

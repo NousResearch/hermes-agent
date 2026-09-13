@@ -2640,10 +2640,12 @@ def test_operator_config_can_temporarily_disable_egress_enforcement(
     calls = []
     runtime.dispatch_authorized_agent_request(
         _agent(tmp_path),
-        {"model": "test-model", "messages": [{"role": "user", "content": "SECRET_TOKEN=allowed-for-operator-test"}]},
+        {"model": "test-model", "messages": [{"role": "user", "content": "SECRET_TOKEN=allowed-for-operator-test"}],
+         "_hermes_source_provenance": {"path": "/private/secret"}},
         lambda request: calls.append(request),
     )
     assert calls
+    assert "_hermes_source_provenance" not in calls[0]
 
     monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "enabled")
     assert runtime.egress_enforcement_enabled() is False

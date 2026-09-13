@@ -230,7 +230,8 @@ def _validate_model_config(config_path, issues: list) -> None:
     user_provider_disabled = False
     if provider and provider not in {"auto", "custom"}:
         provider_entry = (cfg.get("providers") or {}).get(provider)
-        user_provider_disabled = isinstance(provider_entry, dict) and provider_entry.get("enabled") is False
+        from hermes_cli.config import is_provider_enabled
+        user_provider_disabled = isinstance(provider_entry, dict) and not is_provider_enabled(provider_entry)
         if resolve_auth is not None:
             try:
                 runtime_provider = resolve_auth(provider)

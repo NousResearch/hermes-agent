@@ -8,11 +8,12 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
 
-import { formatTimelineRange, formatTimelineTimestamp } from './timestamp'
+import { formatMessageTimestamp, formatTimelineDuration } from './timestamp'
 
 import { Thread } from '.'
 
@@ -199,21 +200,28 @@ describe('expired OAuth grant recovery', () => {
 })
 
 describe('message timeline timestamps', () => {
-  it('always renders precise user and assistant lifecycle times', async () => {
+  const MILLISECOND_CLOCK = /\d{1,2}:\d{2}:\d{2}\.\d{3}/
+  const friendlyMessageTime = formatMessageTimestamp(createdAt, TRANSLATIONS.en.assistant.thread)
+
+  const stampsIn = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node => node.textContent?.trim())
+
+  it('renders friendly message times and durations, never millisecond ranges', async () => {
     const { container } = render(<Harness />)
 
     await screen.findByText('done')
 
-    const stamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
-      node.textContent?.trim()
-    )
-
+    const stamps = stampsIn(container)
     const startedAt = createdAt.getTime() / 1000
 
-    expect(stamps).toContain(formatTimelineTimestamp(startedAt))
-    expect(stamps).toContain(formatTimelineRange(startedAt, completedAt))
-    expect(stamps).toContain(formatTimelineRange(startedAt + 0.05, startedAt + 0.1))
-    expect(stamps).toContain(formatTimelineRange(startedAt + 0.125, startedAt + 0.5))
+    // Message rows read as a day + clock, not a wall clock with milliseconds.
+    expect(stamps).toContain(friendlyMessageTime)
+    // Settled reasoning / text parts read as their duration. Both fixture steps
+    // are sub-second, so neither may print a start → end range.
+    expect(stamps).toContain(formatTimelineDuration(startedAt + 0.05, startedAt + 0.1))
+    expect(stamps).toContain(formatTimelineDuration(startedAt + 0.125, startedAt + 0.5))
+    // Nothing in the default view prints a millisecond wall clock.
+    expect(stamps.filter(stamp => MILLISECOND_CLOCK.test(stamp ?? ''))).toEqual([])
   })
 
   it('suppresses an aggregate assistant stamp that exactly duplicates its sole part', async () => {
@@ -228,10 +236,11 @@ describe('message timeline timestamps', () => {
 
     await screen.findByText('done')
 
-    const stamps = Array.from(container.querySelectorAll('[data-slot="timeline-timestamp"]')).map(node =>
-      node.textContent?.trim()
-    )
+    const stamps = stampsIn(container)
 
-    expect(stamps.filter(stamp => stamp === formatTimelineRange(startedAt, completedAt))).toHaveLength(1)
+    // The sole part's stamp replaces the aggregate — one event, one line, so
+    // the friendly message time survives only on the user's row.
+    expect(stamps.filter(stamp => stamp === friendlyMessageTime)).toHaveLength(1)
+    expect(stamps).toContain(formatTimelineDuration(startedAt, completedAt))
   })
 })

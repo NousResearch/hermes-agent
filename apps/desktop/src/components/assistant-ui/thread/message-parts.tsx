@@ -237,7 +237,13 @@ const ThinkingDisclosure: FC<{
         open={open}
         trailing={
           <span className="flex shrink-0 items-center gap-1.5">
-            <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
+            {/* Once the block settled, its label already carries the duration
+                ("Thought for 21s") — a stamp beside it would say the same thing
+                twice (#103608). With no measured duration, or while it is still
+                running, the stamp is the only thing dating the row. */}
+            {(pending || thoughtFor === null) && (
+              <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
+            )}
             {pending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
           </span>
         }

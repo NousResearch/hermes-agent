@@ -10,7 +10,7 @@ import { $toolDisclosureStates } from '@/store/tool-view'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 import { Thread } from '../thread'
-import { formatTimelineRange } from '../thread/timestamp'
+import { formatTimelineDuration } from '../thread/timestamp'
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
@@ -631,7 +631,7 @@ describe('flat tool list approval surfacing', () => {
 })
 
 describe('tool lifecycle timestamps', () => {
-  it('shows the precise call and completion times on a settled tool row', async () => {
+  it('shows the call duration on a settled tool row, not its millisecond range', async () => {
     const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
 
     await screen.findByText(/Read/)
@@ -642,10 +642,11 @@ describe('tool lifecycle timestamps', () => {
 
     const startedAt = createdAt.getTime() / 1000 + 10.125
 
-    expect(timestamps).toContain(formatTimelineRange(startedAt, createdAt.getTime() / 1000 + 12.875))
+    expect(timestamps).toContain(formatTimelineDuration(startedAt, createdAt.getTime() / 1000 + 12.875))
+    expect(timestamps.filter(stamp => /\d{1,2}:\d{2}:\d{2}\.\d{3}/.test(stamp ?? ''))).toEqual([])
   })
 
-  it('shows the full lifecycle range when settled calls are collapsed', async () => {
+  it('shows the run duration when settled calls are collapsed', async () => {
     const { container } = render(<GroupHarness message={settledRunMessage()} />)
 
     await waitFor(() => expect(container.querySelector('[data-tool-summary]')).toBeTruthy())
@@ -655,7 +656,7 @@ describe('tool lifecycle timestamps', () => {
     )
 
     expect(timestamps).toContain(
-      formatTimelineRange(createdAt.getTime() / 1000 + 20, createdAt.getTime() / 1000 + 23.5)
+      formatTimelineDuration(createdAt.getTime() / 1000 + 20, createdAt.getTime() / 1000 + 23.5)
     )
   })
 })

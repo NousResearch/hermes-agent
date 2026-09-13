@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatMessageTimestamp, formatTimelineRange, formatTimelineTimestamp } from './timestamp'
+import {
+  formatMessageTimestamp,
+  formatTimelineDuration,
+  formatTimelineRange,
+  formatTimelineTimestamp
+} from './timestamp'
 
 const labels = {
   today: (time: string) => `Today at ${time}`,
@@ -59,5 +64,27 @@ describe('precise timeline timestamps', () => {
     expect(formatTimelineTimestamp(undefined)).toBe('')
     expect(formatTimelineTimestamp(Number.NaN)).toBe('')
     expect(formatTimelineRange(undefined, 10)).toBe('')
+  })
+})
+
+describe('formatTimelineDuration', () => {
+  const start = 1_778_000_000
+
+  it('renders a settled event as its duration, not a start → end range', () => {
+    expect(formatTimelineDuration(start, start + 21)).toBe('21s')
+    expect(formatTimelineDuration(start, start + 125)).toBe('2m 5s')
+  })
+
+  it('collapses sub-second steps instead of printing a full range', () => {
+    // The 0.277s step the issue screenshots as a whole "11:09:01.682 AM →
+    // 11:09:01.959 AM" range at reply weight.
+    expect(formatTimelineDuration(start, start + 0.277)).toBe('<1s')
+    expect(formatTimelineDuration(start, start)).toBe('<1s')
+  })
+
+  it('returns an empty string unless both boundaries are usable and ordered', () => {
+    expect(formatTimelineDuration(undefined, start + 21)).toBe('')
+    expect(formatTimelineDuration(start, undefined)).toBe('')
+    expect(formatTimelineDuration(start, start - 5)).toBe('')
   })
 })

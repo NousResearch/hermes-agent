@@ -29,6 +29,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
+    _send_qqbot,
     _send_signal,
     _send_telegram,
     _send_to_platform,
@@ -1821,3 +1822,107 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class _FakeQQBotResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeQQBotHttpClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if not self.responses:
+            raise AssertionError("unexpected QQBot POST")
+        return self.responses.pop(0)
+
+
+class TestSendQQBot:
+    def test_rest_send_gets_token_and_returns_message_id(self, monkeypatch):
+        import httpx
+
+        client = _FakeQQBotHttpClient([
+            _FakeQQBotResponse(200, {"access_token": "access-token"}),
+            _FakeQQBotResponse(200, {"id": "message-123"}),
+        ])
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: client)
+
+        result = asyncio.run(_send_qqbot(
+            SimpleNamespace(token="client-secret", extra={"app_id": "app-1"}),
+            "channel-1",
+            "hello",
+        ))
+
+        assert result == {
+            "success": True,
+            "platform": "qqbot",
+            "chat_id": "channel-1",
+            "message_id": "message-123",
+        }
+        assert client.calls[0] == (
+            "https://bots.qq.com/app/getAppAccessToken",
+            {"json": {"appId": "app-1", "clientSecret": "client-secret"}},
+        )
+        assert client.calls[1] == (
+            "https://api.sgroup.qq.com/channels/channel-1/messages",
+            {
+                "json": {"content": "hello", "msg_type": 0},
+                "headers": {
+                    "Authorization": "QQBot access-token",
+                    "Content-Type": "application/json",
+                },
+            },
+        )
+
+    def test_missing_credentials_is_reported_without_http(self):
+        client = _FakeQQBotHttpClient([])
+        result = asyncio.run(_send_qqbot(
+            SimpleNamespace(token="", extra={}),
+            "channel-1",
+            "hello",
+        ))
+
+        assert result == {"error": "QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured."}
+        assert client.calls == []
+
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            (
+                _FakeQQBotResponse(401, {}),
+                "QQBot token request failed: 401",
+            ),
+            (
+                _FakeQQBotResponse(200, {}),
+                "QQBot: no access_token in response",
+            ),
+        ],
+    )
+    def test_token_failures_are_reported(self, monkeypatch, response, expected):
+        import httpx
+
+        client = _FakeQQBotHttpClient([response])
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: client)
+
+        result = asyncio.run(_send_qqbot(
+            SimpleNamespace(token="client-secret", extra={"app_id": "app-1"}),
+            "channel-1",
+            "hello",
+        ))
+
+        assert result == {"error": expected}
+        assert len(client.calls) == 1

@@ -135,6 +135,24 @@ class TestStoreInit:
         assert (legacies[0] / fake_repo.name).exists()
         assert (legacies[0] / fake_repo.name / "HEAD").exists()
 
+    def test_gc_stripped_refs_self_heal_on_next_checkpoint(
+        self, mgr, work_dir, checkpoint_base
+    ):
+        """gc can strip refs/ from the bare store, leaving every git command dead at
+        rc=128; the next checkpoint must repair the store instead of failing forever."""
+        store = _store_path(checkpoint_base)
+        assert mgr.ensure_checkpoint(str(work_dir), "before") is True
+        shutil.rmtree(store / "refs")
+
+        repaired = CheckpointManager(enabled=True, max_snapshots=50)
+        assert (
+            repaired.ensure_checkpoint(str(work_dir), "after gc stripped refs") is True
+        )
+        assert (store / "refs" / "heads").exists()
+        assert (
+            mgr.list_checkpoints(str(work_dir))[0]["reason"] == "after gc stripped refs"
+        )
+
 
 # =========================================================================
 # CheckpointManager — disabled

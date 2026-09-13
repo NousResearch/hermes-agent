@@ -399,6 +399,9 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             return f"Could not create checkpoint base: {exc}"
         _migrate_legacy_store(base)
     if _store_has_head(store):
+        # HEAD alone doesn't make the store usable: gc can strip refs/ from a bare
+        # repo, after which every git command exits 128 and checkpoints silently die.
+        _repair_bare_repo_dirs(store)
         return None
     for d in (store, store / _INDEXES_DIRNAME, store / _PROJECTS_DIRNAME):
         d.mkdir(parents=True, exist_ok=True)

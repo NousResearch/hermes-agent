@@ -103,6 +103,34 @@ def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
     assert res["code"] == "human_has_control" and "SECRET" not in json.dumps(res)
 
 
+def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypatch):
+    """A full take-over / hand-back during approval leaves holder=agent, so assert_agent_may_act
+    succeeds. Input still belongs to the human's turn: compare admitted.epoch before _dispatch,
+    not only after. Do not patch _dispatch — a recording backend must never be called."""
+    from tools.computer_use import tool
+
+    class Rec:
+        def __init__(self):
+            self.calls = []
+
+        def click(self, **_kw):
+            self.calls.append("click")
+            return json.dumps({"ok": True, "action": "click"})
+
+    rec = Rec()
+    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": rec)
+
+    def _approval_cycles_the_lease(scope, args, session_id=""):
+        lease.acquire("human")
+        lease.release("human")
+        return None
+
+    monkeypatch.setattr(tool, "_request_approval", _approval_cycles_the_lease)
+    res = json.loads(tool.handle_computer_use({"action": "click", "coordinate": [1, 1]}))
+    assert rec.calls == []
+    assert res.get("code") == "human_has_control"
+
+
 def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason(tmp_path):
     """Missing file = fresh profile (agent). A file that exists but cannot be parsed must not read as
     "agent holds": a torn write must never let the agent act on a human's screen. Taking over after a

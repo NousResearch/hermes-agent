@@ -1416,3 +1416,535 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Respawn guard — prev_worker_alive (defence in depth against a still-running
+# worker being misclassified as dead and respawned beside itself)
+# ---------------------------------------------------------------------------
+
+def _spawn_stand_in_worker():
+    """A genuine long-lived child process to stand in for a worker pid."""
+    return subprocess.Popen(
+        ["sleep", "300"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _end_run_as_reclaimed(conn, tid, *, outcome="crashed"):
+    """Simulate a (possibly WRONG) crash/timeout/reclaim classification: reset
+    the task row to ``ready`` and close its run — WITHOUT touching the actual
+    worker process, exactly like a misclassified live worker. Returns the
+    closed run's id."""
+    run_id = kb.get_task(conn, tid).current_run_id
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status='ready', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+            (tid,),
+        )
+        kb._end_run(conn, tid, outcome=outcome, status=outcome, error="test-induced close")
+    return run_id
+
+
+def test_respawn_guard_blocks_spawn_when_prev_worker_pid_alive_on_this_host(
+    kanban_home, all_assignees_spawnable,
+):
+    """A reclaimed card whose previous worker pid IS alive on this host must
+    not respawn: ``check_respawn_guard`` returns ``prev_worker_alive``,
+    ``dispatch_once`` does not spawn, a ``respawn_guarded`` event carries the
+    pid/host/run id, and the card stays ``ready``."""
+    proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="prev-alive", assignee="alice")
+            claimed = kb.claim_task(conn, tid)
+            assert claimed is not None
+            run_id = claimed.current_run_id
+            kbd._set_worker_pid(conn, tid, proc.pid)
+
+            _end_run_as_reclaimed(conn, tid)
+
+            assert kbd.check_respawn_guard(conn, tid) == "prev_worker_alive"
+
+            spawned: list[int] = []
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+            )
+            assert tid not in [s[0] for s in res.spawned]
+            guarded = dict(res.respawn_guarded)
+            assert guarded.get(tid) == "prev_worker_alive"
+            assert not spawned, "guarded task must not be spawned"
+            assert kb.get_task(conn, tid).status == "ready"
+
+            events = [e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"]
+            assert len(events) == 1
+            payload = events[0].payload
+            assert payload.get("reason") == "prev_worker_alive"
+            assert payload.get("pid") == proc.pid
+            assert payload.get("run_id") == run_id
+            assert payload.get("host")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@pytest.mark.linux_only
+def test_respawn_guard_survives_deleted_spawned_claimed_events_via_run_metadata(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A garbage-collection pass on done/archived tasks can delete the
+    spawned/claimed event rows for an older run, and a pid-source that only
+    looked at those events would go blind the moment that happened (returned
+    None, letting a second worker spawn beside the still-live first one).
+    The run row's own ``metadata`` JSON is a second, durable pid source
+    stamped at close time — reclaim via the real production path
+    (``detect_crashed_workers``), delete the spawned/claimed events for that
+    run, and the guard must still block on the metadata stamp alone."""
+    import hermes_cli.kanban_db as _kb
+
+    proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="metadata-survives-event-gc", assignee="alice")
+            claimed = kb.claim_task(conn, tid)
+            run_id = claimed.current_run_id
+            kbd._set_worker_pid(conn, tid, proc.pid)
+
+            # Force the reclaim path to classify this run as crashed even
+            # though the decoy process is genuinely alive.
+            monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+            monkeypatch.setattr(kbd, "_pid_alive", lambda pid: False)
+            crashed = kbd.detect_crashed_workers(conn)
+            assert tid in crashed
+
+            # Sanity: the run row's metadata really was stamped at close time.
+            run = kb.list_runs(conn, tid)[-1]
+            assert run.id == run_id
+            assert run.metadata.get("prev_worker_pid") == proc.pid
+            assert run.metadata.get("prev_worker_host")
+
+            # Delete the immutable spawned/claimed events for that run —
+            # exactly what an event-retention gc pass does for a done/archived task.
+            deleted = conn.execute(
+                "DELETE FROM task_events WHERE task_id = ? AND run_id = ? "
+                "AND kind IN ('spawned', 'claimed')",
+                (tid, run_id),
+            )
+            conn.commit()
+            assert deleted.rowcount > 0, "test setup: expected spawned/claimed rows to delete"
+
+            # The guard must still block via the run-row metadata stamp.
+            assert kbd.check_respawn_guard(conn, tid) == "prev_worker_alive"
+            info = kbd._prev_worker_alive_guard_info(conn, tid)
+            assert info == {
+                "pid": proc.pid, "host": _kb._host_prefix().rstrip(":"), "run_id": run_id,
+            }
+
+            spawned: list[int] = []
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+            )
+            assert tid not in [s[0] for s in res.spawned]
+            assert not spawned, "metadata-backed guard must still block the respawn"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_respawn_guard_prev_worker_alive_escalates_after_five_ticks(
+    kanban_home, all_assignees_spawnable,
+):
+    """A genuinely alive previous worker must not park the card forever
+    invisibly. The first four ticks each append one ``respawn_guarded``
+    event; the fifth consecutive tick stops appending per-tick rows, emits
+    exactly one ``respawn_guard_escalated`` event naming the pid/run, and
+    blocks the card ``needs_input`` so a human sees it."""
+    proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="prev-alive-escalate", assignee="alice")
+            claimed = kb.claim_task(conn, tid)
+            kbd._set_worker_pid(conn, tid, proc.pid)
+            _end_run_as_reclaimed(conn, tid)
+            assert kbd.check_respawn_guard(conn, tid) == "prev_worker_alive"
+
+            for tick in range(1, kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER):
+                res = kbd.dispatch_once(
+                    conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                        AssertionError("must not spawn while guarded"),
+                    ),
+                )
+                guarded = dict(res.respawn_guarded)
+                assert guarded.get(tid) == "prev_worker_alive", f"tick {tick}"
+                assert kb.get_task(conn, tid).status == "ready", f"tick {tick}"
+                guarded_events = [
+                    e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"
+                ]
+                assert len(guarded_events) == tick, f"tick {tick}"
+                escalated_events = [
+                    e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_escalated"
+                ]
+                assert escalated_events == [], f"tick {tick}"
+
+            # Fifth consecutive tick: escalate instead of another guarded row.
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                    AssertionError("must not spawn on escalation"),
+                ),
+            )
+            assert tid not in [s[0] for s in res.spawned]
+
+            guarded_events = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"
+            ]
+            assert len(guarded_events) == kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER - 1, (
+                "escalation must stop appending per-tick respawn_guarded rows"
+            )
+            escalated_events = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_escalated"
+            ]
+            assert len(escalated_events) == 1
+            assert escalated_events[0].payload.get("pid") == proc.pid
+            assert escalated_events[0].payload.get("consecutive") == (
+                kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER
+            )
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked"
+            assert task.block_kind == "needs_input"
+
+            # A sixth tick must not fire a second escalation event or touch
+            # the (now blocked) card again.
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                    AssertionError("must not spawn after escalation"),
+                ),
+            )
+            escalated_events = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_escalated"
+            ]
+            assert len(escalated_events) == 1, "must not re-escalate the same pid"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@pytest.mark.linux_only
+def test_respawn_guard_recycled_pid_does_not_block_genuine_pid_does(
+    kanban_home, all_assignees_spawnable,
+):
+    """A pid that merely OCCUPIES the recorded slot but is NOT our worker --
+    its /proc start time predates the run by far more than the identity
+    tolerance, and its cmdline does not reference the run's workspace --
+    must NOT block a legitimate respawn (closes M5: an identity check that
+    always returns True would wrongly block here). A genuine worker pid in
+    an otherwise identical fixture -- its cmdline carries the workspace path
+    verbatim, the strong identity signal -- DOES block, even though the same
+    far-backdated run start time means the timing signal alone could not
+    have decided it."""
+    # Case (a): a decoy/recycled pid.
+    decoy = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="recycled-pid", assignee="alice")
+            workspace = f"/tmp/kanban-test-workspace-{tid}"
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET workspace_path = ? WHERE id = ?", (workspace, tid),
+                )
+            claimed = kb.claim_task(conn, tid)
+            assert claimed is not None
+            kbd._set_worker_pid(conn, tid, decoy.pid)
+            run_id = _end_run_as_reclaimed(conn, tid)
+            # Backdate the closed run's started_at far outside the identity
+            # tolerance so ONLY the cmdline signal could plausibly accept
+            # it -- and the decoy's cmdline carries no workspace reference.
+            old = int(time.time()) - 100_000
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? WHERE id = ?", (old, run_id),
+                )
+            with open(f"/proc/{decoy.pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode()
+            assert workspace not in cmdline, "test setup: decoy must not carry the workspace"
+
+            assert kbd.check_respawn_guard(conn, tid) is None, (
+                "a recycled/unrelated pid must not block a legitimate respawn"
+            )
+            spawned: list[int] = []
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+            )
+            assert tid in [s[0] for s in res.spawned]
+            assert spawned, "a recycled pid must not guard a legitimate respawn"
+    finally:
+        decoy.terminate()
+        try:
+            decoy.wait(timeout=5)
+        except Exception:
+            decoy.kill()
+            decoy.wait(timeout=5)
+
+    # Case (b): a genuine worker -- same fixture shape (run backdated
+    # identically far outside the time tolerance), but the process's cmdline
+    # carries the task's workspace path verbatim.
+    with kbc.connect() as conn:
+        tid2 = kb.create_task(conn, title="genuine-worker", assignee="alice")
+        workspace2 = f"/tmp/kanban-test-workspace-{tid2}"
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_path = ? WHERE id = ?", (workspace2, tid2),
+            )
+        claimed2 = kb.claim_task(conn, tid2)
+        assert claimed2 is not None
+    genuine = subprocess.Popen(
+        ["/bin/sh", "-c", f"sleep 300  # worker for {workspace2}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.2)
+        with kbc.connect() as conn:
+            kbd._set_worker_pid(conn, tid2, genuine.pid)
+            run_id2 = _end_run_as_reclaimed(conn, tid2)
+            old2 = int(time.time()) - 100_000
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? WHERE id = ?", (old2, run_id2),
+                )
+            with open(f"/proc/{genuine.pid}/cmdline", "rb") as f:
+                cmdline2 = f.read().replace(b"\x00", b" ").decode()
+            assert workspace2 in cmdline2, "test setup: genuine worker must carry the workspace"
+
+            assert kbd.check_respawn_guard(conn, tid2) == "prev_worker_alive", (
+                "a genuine worker's pid, identified via the workspace-path "
+                "cmdline signal, must block the respawn"
+            )
+            res2 = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                    AssertionError("must not spawn while a genuine worker is alive"),
+                ),
+            )
+            assert tid2 not in [s[0] for s in res2.spawned]
+    finally:
+        genuine.terminate()
+        try:
+            genuine.wait(timeout=5)
+        except Exception:
+            genuine.kill()
+            genuine.wait(timeout=5)
+
+
+def _end_run_as_reclaimed_into_review(conn, tid, *, outcome="crashed"):
+    """Simulate a misclassified crash landing the card back in the REVIEW
+    lane -- the shape a reviewer's worker leaves behind: the run is closed
+    exactly like :func:`_end_run_as_reclaimed`, but the card is parked in
+    ``review`` instead of ``ready``. ``block_task`` cannot move a ``review``
+    row, so the guard's own escalation bound is the only thing that stops
+    it from re-parking the card forever."""
+    run_id = kb.get_task(conn, tid).current_run_id
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status='review', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+            (tid,),
+        )
+        kb._end_run(conn, tid, outcome=outcome, status=outcome, error="test-induced close")
+    return run_id
+
+
+def test_respawn_guard_prev_worker_alive_escalation_bound_holds_in_review_lane(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """The prev_worker_alive escalation bound's already-escalated early
+    return is a no-op in the ready lane once ``block_task`` moves the card
+    out of ``ready`` -- the REVIEW lane is the only lane where it is
+    load-bearing, because ``block_task`` cannot touch a ``review`` row and
+    nothing else halts the tick loop (closes M4). Hold a card in review past
+    the bound with a still-alive previous worker, then keep ticking well
+    past it (10 further ticks): exactly ONE escalated marker must ever
+    appear, and no further per-tick ``respawn_guarded`` rows may be
+    appended."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="review-lane-escalate", assignee="reviewer")
+            claimed = kb.claim_task(conn, tid)
+            assert claimed is not None
+            kbd._set_worker_pid(conn, tid, proc.pid)
+            _end_run_as_reclaimed_into_review(conn, tid)
+            assert kb.get_task(conn, tid).status == "review"
+            assert kbd.check_respawn_guard(conn, tid, lane="review") == "prev_worker_alive"
+
+            for tick in range(1, kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER):
+                res = kbd.dispatch_once(
+                    conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                        AssertionError("must not spawn while guarded"),
+                    ),
+                )
+                guarded = dict(res.respawn_guarded)
+                assert guarded.get(tid) == "prev_worker_alive", f"tick {tick}"
+                assert kb.get_task(conn, tid).status == "review", f"tick {tick}"
+
+            # Escalation tick.
+            kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                    AssertionError("must not spawn on escalation"),
+                ),
+            )
+            escalated = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_escalated"
+            ]
+            assert len(escalated) == 1
+            guarded_at_escalation = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"
+            ]
+            assert len(guarded_at_escalation) == kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER - 1
+
+            # block_task cannot move a 'review' row: the card MUST still be
+            # 'review', and the stall must be visible via last_failure_error
+            # instead of a block event.
+            task = kb.get_task(conn, tid)
+            assert task.status == "review"
+            assert task.last_failure_error and str(proc.pid) in task.last_failure_error
+
+            # At least 10 further ticks past the bound: exactly one
+            # escalated marker must EVER exist, and no further per-tick
+            # respawn_guarded rows may be appended.
+            for tick in range(10):
+                res = kbd.dispatch_once(
+                    conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                        AssertionError("must not spawn after escalation"),
+                    ),
+                )
+                assert tid not in [s[0] for s in res.spawned], f"post-escalation tick {tick}"
+
+            escalated_after = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_escalated"
+            ]
+            assert len(escalated_after) == 1, (
+                "the review lane must never re-escalate the same still-alive pid"
+            )
+            guarded_after = [
+                e for e in kb.list_events(conn, tid) if e.kind == "respawn_guarded"
+            ]
+            assert len(guarded_after) == kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER - 1, (
+                "escalation must stop appending per-tick respawn_guarded "
+                "rows in the review lane too"
+            )
+            assert kb.get_task(conn, tid).status == "review"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_respawn_guard_consults_latest_ended_run_not_an_older_one(
+    kanban_home, all_assignees_spawnable,
+):
+    """With several ended runs on one card, the guard must consult only the
+    LATEST ended run's pid -- an older run's still-alive pid must never
+    block a card whose most recent attempt already ended with a dead pid,
+    and conversely a stale dead pid on an older run must never mask a
+    genuinely alive pid on the latest run (closes M6). Both directions are
+    asserted."""
+
+    def _dead_pid() -> int:
+        p = subprocess.Popen(
+            ["true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        p.wait(timeout=5)
+        return p.pid
+
+    # Direction 1: older run's pid is ALIVE, latest run's pid is DEAD ->
+    # must NOT block.
+    alive_proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="latest-run-wins-dead", assignee="alice")
+            kb.claim_task(conn, tid)
+            kbd._set_worker_pid(conn, tid, alive_proc.pid)
+            _end_run_as_reclaimed(conn, tid)  # run 1 (older): alive pid
+
+            dead_pid = _dead_pid()
+            kb.claim_task(conn, tid)
+            kbd._set_worker_pid(conn, tid, dead_pid)
+            _end_run_as_reclaimed(conn, tid)  # run 2 (latest): dead pid
+
+            runs = kb.list_runs(conn, tid, include_active=False)
+            assert len(runs) == 2, "test setup: expected exactly two closed runs"
+
+            assert kbd.check_respawn_guard(conn, tid) is None, (
+                "an older run's still-alive pid must not block a card whose "
+                "latest attempt ended with a dead pid"
+            )
+            spawned: list[int] = []
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+            )
+            assert tid in [s[0] for s in res.spawned]
+            assert spawned
+    finally:
+        alive_proc.terminate()
+        try:
+            alive_proc.wait(timeout=5)
+        except Exception:
+            alive_proc.kill()
+            alive_proc.wait(timeout=5)
+
+    # Direction 2: older run's pid is DEAD, latest run's pid is ALIVE ->
+    # must block.
+    dead_pid_2 = _dead_pid()
+    alive_proc_2 = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid2 = kb.create_task(conn, title="latest-run-wins-alive", assignee="alice")
+            kb.claim_task(conn, tid2)
+            kbd._set_worker_pid(conn, tid2, dead_pid_2)
+            _end_run_as_reclaimed(conn, tid2)  # run 1 (older): dead pid
+
+            kb.claim_task(conn, tid2)
+            kbd._set_worker_pid(conn, tid2, alive_proc_2.pid)
+            _end_run_as_reclaimed(conn, tid2)  # run 2 (latest): alive pid
+
+            runs2 = kb.list_runs(conn, tid2, include_active=False)
+            assert len(runs2) == 2, "test setup: expected exactly two closed runs"
+
+            assert kbd.check_respawn_guard(conn, tid2) == "prev_worker_alive", (
+                "the latest run's alive pid must block even though an "
+                "older run's pid is dead"
+            )
+            res2 = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                    AssertionError("must not spawn while the latest run's worker is alive"),
+                ),
+            )
+            assert tid2 not in [s[0] for s in res2.spawned]
+    finally:
+        alive_proc_2.terminate()
+        try:
+            alive_proc_2.wait(timeout=5)
+        except Exception:
+            alive_proc_2.kill()
+            alive_proc_2.wait(timeout=5)
+
+

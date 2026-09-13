@@ -31,6 +31,25 @@ _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Snapshot filter that collapses ADJACENT duplicate PATH entries (case-sensitive, per-line).
+# Every command re-emits the inherited PATH into the snapshot, so a polluted parent — e.g. a
+# single trailing-backslash PATH entry on Windows — compounds across commands until MSYS bash
+# mis-translates the result (issue #108508; 70+ duplicates observed). Adjacent-only is deliberate:
+# PATH may legitimately repeat a directory non-adjacently for shadowing. ``awk`` is POSIX and ships
+# with macOS, Linux and Git Bash alike.
+# Regression coverage: tests/tools/test_snapshot_path_dedupe.py.
+_PATH_DEDUPE_AWK = (
+    "awk 'BEGIN{prev=\"\"} /^declare -x PATH=/{"
+    "  sub(/^declare -x PATH=\"/, \"\", $0);"
+    "  sub(/\"$/, \"\", $0);"
+    "  n=split($0, parts, \":\");"
+    "  out=\"\"; last=\"\";"
+    "  for(i=1;i<=n;i++) if(parts[i] != last) { out = (out == \"\" ? parts[i] : out \":\" parts[i]); last = parts[i] }"
+    "  print \"declare -x PATH=\\\"\" out \"\\\"\";"
+    "  prev=$0; next"
+    "} { if(prev ~ /^declare -x PATH=/) next; print; prev=$0 }'"
+)
+
 # mktemp template suffix + the shell variable holding the allocated temp path.
 _SNAP_TMP_SUFFIX = ".tmp.XXXXXXXXXX"
 _SNAP_TMP = '"$__hermes_snap_tmp"'
@@ -136,6 +155,15 @@ def _wrap_command_script(
     succeeding so a failed dump never replaces a good snapshot. ``umask 077`` is applied after
     the user's command so snapshot files (which may carry secrets) are private without
     changing the command's umask.
+
+    The re-dump is funneled through ``awk`` to collapse consecutive duplicate PATH
+    entries (case-sensitive, per-line): every command was previously re-emitted
+    whatever the parent inherited, and over many commands a polluted parent (e.g.
+    1 trailing-backslash PATH entry on Windows) would compound into 70+ duplicates
+    that MSYS bash would then mis-translate (verified 2026-09-11). See issue
+    #108508. Adjacent dedup is the right scope: non-adjacent dupes are still
+    meaningful (PATH can validly contain the same dir twice for shadowing), and
+    awk is in coreutils so it works on macOS and Windows-bash alike.
     """
     escaped = command.replace("'", "'\\''")
     save, restore = _passthrough_save_restore(passthrough_names)
@@ -155,6 +183,8 @@ def _wrap_command_script(
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
+            f"| {_PATH_DEDUPE_AWK} "
+            f"> {_SNAP_TMP} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]

@@ -1,4 +1,6 @@
 """Tests for email adapter HTML rendering (PR #73294)."""
+import logging
+
 import pytest
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -50,6 +52,27 @@ class TestMarkdownToHtmlEmail:
         assert "code" in html
         # Verify no raw {body} placeholder remains
         assert "{body}" not in html
+
+    def test_markdown_with_quoted_tags_still_renders(self):
+        """A tag quoted in prose/code must not skip Markdown rendering.
+
+        Regression: the body mentions `<pre><code>` (common in agent output),
+        which used to flip detection to the HTML path and leave every Markdown
+        construct unrendered.
+        """
+        from plugins.platforms.email.adapter import _markdown_to_html_email
+        html = _markdown_to_html_email(
+            "**Wichtig:** Nutze `<pre><code>` fuer Codebloecke.\n\n- eins\n- zwei\n"
+        )
+        assert "<strong>" in html
+        assert "<ul style=" in html
+        assert "**Wichtig:**" not in html
+
+    def test_markdown_table_with_bare_br_still_renders(self):
+        """A bare `<br>` must not skip Markdown rendering of the whole body."""
+        from plugins.platforms.email.adapter import _markdown_to_html_email
+        html = _markdown_to_html_email("| A | B |\n|---|---|\n| 1 | 2 |\n<br>\n")
+        assert "<table" in html
 
 
 class TestAttachParts:
@@ -195,6 +218,42 @@ class TestHtmlDetection:
         assert _is_html("# Heading\n\nParagraph") is False
         assert _is_html("Just plain text.") is False
 
+    def test_tag_mentioned_in_inline_code_is_markdown(self):
+        """A tag quoted inside a code span must not flip the body to HTML."""
+        from plugins.platforms.email.adapter import _is_html
+        assert _is_html("Nutze `<pre><code>` fuer Bloecke.") is False
+        assert _is_html("Ein `<br>` am Zeilenende.") is False
+
+    def test_tag_inside_fenced_block_is_markdown(self):
+        """HTML shown as a fenced example is still Markdown, not an HTML body."""
+        from plugins.platforms.email.adapter import _is_html
+        body = "Beispiel:\n\n```html\n<div>\n  <p>x</p>\n</div>\n```\n"
+        assert _is_html(body) is False
+
+    def test_bare_br_does_not_flip_to_html(self):
+        """`<br>` alone carries no block structure — keep rendering Markdown."""
+        from plugins.platforms.email.adapter import _is_html
+        assert _is_html("| A | B |\n|---|---|\n| 1 | 2 |\n<br>\n") is False
+
+    def test_unclosed_block_tag_is_not_html(self):
+        from plugins.platforms.email.adapter import _is_html
+        assert _is_html("<div>no closing tag here") is False
+
+    def test_paired_block_tag_is_html(self):
+        """Guards against over-tightening: real fragments must still be HTML."""
+        from plugins.platforms.email.adapter import _is_html
+        assert _is_html("<div><b>Hi</b></div>") is True
+        assert _is_html("<p>Hello</p>") is True
+        assert _is_html("Cronjob Response: X\n-------------\n<div><b>Hi</b></div>") is True
+
+    def test_doctype_detected_even_with_code_span(self):
+        from plugins.platforms.email.adapter import _is_html
+        assert _is_html("<!DOCTYPE html>\n<html><body>hi</body></html>") is True
+
+    def test_empty_body_is_not_html(self):
+        from plugins.platforms.email.adapter import _is_html
+        assert _is_html("") is False
+
 
 class TestStandaloneSendSMTPPort:
     """_standalone_send must select SMTP_SSL for port 465 (implicit TLS)."""
@@ -330,3 +389,25 @@ class TestTrimHtmlPreamblePostamble:
         )
         assert "<b>Hi</b>" in result
         assert "Cronjob Response" not in result
+
+
+class TestSanitizerFallback:
+    """The sanitizer fallback must not swallow errors silently."""
+
+    def test_failure_logs_warning_and_escapes(self, caplog):
+        import plugins.platforms.email.adapter as adapter_mod
+
+        class Boom(adapter_mod._EmailHtmlSanitizer):
+            def feed(self, data):
+                raise RuntimeError("boom")
+
+        original = adapter_mod._EmailHtmlSanitizer
+        adapter_mod._EmailHtmlSanitizer = Boom
+        try:
+            with caplog.at_level(logging.WARNING, logger=adapter_mod.logger.name):
+                result = adapter_mod._sanitize_email_html("<p>x</p>")
+        finally:
+            adapter_mod._EmailHtmlSanitizer = original
+
+        assert result == "&lt;p&gt;x&lt;/p&gt;"
+        assert "sanitiz" in caplog.text.lower()

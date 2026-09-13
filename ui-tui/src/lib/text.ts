@@ -1,3 +1,5 @@
+import { compactNumber } from '@hermes/shared/format'
+
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
@@ -96,14 +98,14 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
 
   if (!preview) {
-    return `[[ [${fmtK(lineCount)} lines] ]]`
+    return `[[ [${compactNumber(lineCount)} lines] ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
   return tail
-    ? `[[ ${head.trimEnd()}.. [${fmtK(lineCount)} lines] .. ${tail.trimStart()} ]]`
-    : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
+    ? `[[ ${head.trimEnd()}.. [${compactNumber(lineCount)} lines] .. ${tail.trimStart()} ]]`
+    : `[[ ${preview} [${compactNumber(lineCount)} lines] ]]`
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
@@ -177,8 +179,8 @@ const boundedRenderText = (
 
   const label =
     omittedLines > 0
-      ? `[${labelPrefix}; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
-      : `[${labelPrefix}; omitted ${fmtK(omittedChars)} chars]\n`
+      ? `[${labelPrefix}; omitted ${compactNumber(omittedLines)} lines / ${compactNumber(omittedChars)} chars]\n`
+      : `[${labelPrefix}; omitted ${compactNumber(omittedChars)} chars]\n`
 
   return `${label}${tail}`
 }
@@ -409,10 +411,6 @@ export const clarifyBatchRevisitState = (
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
-
-const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
-
-export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 

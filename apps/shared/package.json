@@ -8,8 +8,10 @@
     "./billing": "./src/billing-types.ts",
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
+    "./format": "./src/format.ts",
     "./fuzzy": "./src/fuzzy.ts",
     "./model-search-text": "./src/model-search-text.ts",
+    "./reasoning-effort": "./src/reasoning-effort.ts",
     "./skin": "./src/skin.ts"
   },
   "types": "./src/index.ts",

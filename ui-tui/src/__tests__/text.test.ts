@@ -7,7 +7,6 @@ import {
   edgePreview,
   estimateRows,
   estimateTokensRough,
-  fmtK,
   hasAnsi,
   isToolTrailResultLine,
   lastCotTrailIndex,
@@ -115,22 +114,6 @@ describe('sameToolTrailGroup', () => {
   it('rejects other tools', () => {
     expect(sameToolTrailGroup('searching', 'reading ✓')).toBe(false)
     expect(sameToolTrailGroup('searching', 'searching extra ✓')).toBe(false)
-  })
-})
-
-describe('fmtK', () => {
-  it('keeps small numbers plain', () => {
-    expect(fmtK(999)).toBe('999')
-  })
-
-  it('formats thousands as lowercase k', () => {
-    expect(fmtK(1000)).toBe('1k')
-    expect(fmtK(1500)).toBe('1.5k')
-  })
-
-  it('formats millions and billions with lowercase suffixes', () => {
-    expect(fmtK(1_000_000)).toBe('1m')
-    expect(fmtK(1_000_000_000)).toBe('1b')
   })
 })
 

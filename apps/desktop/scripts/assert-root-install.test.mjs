@@ -4,14 +4,26 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
 
-import { BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL, checkRootInstall, requiredPackages } from '../scripts/assert-root-install.mjs'
+import {
+  BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL,
+  checkRootInstall,
+  findPnpManifest,
+  requiredPackages
+} from '../scripts/assert-root-install.mjs'
 
 // Build a throwaway repo shaped like this one: an app workspace whose
 // dependencies are hoisted to the repo root, which is what the guard walks.
 // `manifest` is merged into the app's package.json so tests can declare
-// dependencies the guard is expected to read.
-function makeTree({ rootPackages = BUILD_CRITICAL, react = '19.2.7', reactDom = '19.2.7', manifest = {} } = {}) {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-root-'))
+// dependencies the guard is expected to read. `parentDir` places the repo
+// inside an existing directory so tests can plant files above the repo root.
+function makeTree({
+  rootPackages = BUILD_CRITICAL,
+  react = '19.2.7',
+  reactDom = '19.2.7',
+  manifest = {},
+  parentDir = os.tmpdir()
+} = {}) {
+  const tempRoot = fs.mkdtempSync(path.join(parentDir, 'hermes-assert-root-'))
   const appDir = path.join(tempRoot, 'apps', 'desktop')
   fs.mkdirSync(appDir, { recursive: true })
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', ...manifest }), 'utf8')
@@ -193,5 +205,38 @@ test('checkRootInstall keeps the floor when the manifest is unreadable', () => {
     assert.match(result.error, /katex/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+// esbuild adopts a Yarn PnP manifest from any ancestor directory, so a stray
+// `.pnp.cjs` above the repo (typically in a home directory) breaks
+// `bundle-electron-main.mjs` with `Could not resolve "simple-git"` over a
+// complete npm install. The guard must name the file instead.
+test('checkRootInstall fails when a PnP manifest sits above the repo root', () => {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-pnp-'))
+  fs.writeFileSync(path.join(outer, '.pnp.cjs'), '', 'utf8')
+  const { tempRoot, appDir } = makeTree({ parentDir: outer })
+  try {
+    const result = checkRootInstall(appDir, tempRoot)
+    assert.equal(result.ok, false)
+    assert.ok(result.error.includes(path.join(outer, '.pnp.cjs')))
+    assert.match(result.error, /Plug'n'Play/)
+  } finally {
+    fs.rmSync(outer, { recursive: true, force: true })
+  }
+})
+
+test('findPnpManifest detects every manifest name and returns null when absent', () => {
+  for (const name of ['.pnp.cjs', '.pnp.js', '.pnp.data.json']) {
+    const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-pnp-'))
+    const nested = path.join(outer, 'repo', 'apps', 'desktop')
+    fs.mkdirSync(nested, { recursive: true })
+    try {
+      assert.equal(findPnpManifest(nested), null)
+      fs.writeFileSync(path.join(outer, name), '', 'utf8')
+      assert.equal(findPnpManifest(nested), path.join(outer, name))
+    } finally {
+      fs.rmSync(outer, { recursive: true, force: true })
+    }
   }
 })

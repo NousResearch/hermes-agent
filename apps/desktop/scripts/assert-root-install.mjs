@@ -76,9 +76,46 @@ export function requiredPackages(appDir) {
   }
 }
 
+// esbuild switches to Yarn Plug'n'Play resolution when it finds a PnP manifest
+// in *any* ancestor directory — including ones above this repo, such as a stray
+// `~/.pnp.cjs` left by running `yarn` in a home directory. The manifest does not
+// list this workspace's packages, so `bundle-electron-main.mjs` then fails with
+// `Could not resolve "simple-git"` even though the npm install is complete, and
+// nothing in that error points at a file outside the repo. A fresh OS user has
+// no such file, which makes the failure look machine-specific and random.
+const PNP_MANIFESTS = [".pnp.cjs", ".pnp.js", ".pnp.data.json"]
+export { PNP_MANIFESTS }
+
+// First PnP manifest found walking from `fromDir` up to the filesystem root, or null.
+export function findPnpManifest(fromDir) {
+  let dir = fromDir
+  for (;;) {
+    for (const name of PNP_MANIFESTS) {
+      const candidate = join(dir, name)
+      if (existsSync(candidate)) return candidate
+    }
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
 // Pure check — returns { ok: true } or { ok: false, error: "..." }.
 // Kept side-effect-free so it can be unit tested without spawning a process.
 export function checkRootInstall(appDir, rootDir) {
+  const pnpManifest = findPnpManifest(appDir)
+  if (pnpManifest) {
+    return {
+      ok: false,
+      error:
+        `found a Yarn Plug'n'Play manifest at ${pnpManifest}. This workspace is ` +
+        `installed with npm, but esbuild honours PnP manifests in any parent ` +
+        `directory and will fail to resolve installed packages (e.g. ` +
+        `Could not resolve "simple-git"). Move or delete that file — it is ` +
+        `usually left over from running yarn in a parent folder — then rebuild.`
+    }
+  }
+
   const wanted = [...new Set([...BUILD_CRITICAL_PACKAGES, ...requiredPackages(appDir)])]
   const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir))
   if (missing.length > 0) {

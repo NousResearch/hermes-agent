@@ -9,11 +9,12 @@ Tests cover:
 """
 
 import concurrent.futures
-import os
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 
 # Ensure project root is importable
@@ -167,24 +168,57 @@ class TestInactivityTimeout:
 
         assert result["final_response"] == "Done"
 
-    def _parse_cron_timeout(self, raw_value):
-        """Mirror the defensive parsing logic from cron/scheduler.py run_job()."""
-        if raw_value:
-            try:
-                return float(raw_value)
-            except (ValueError, TypeError):
-                return 600.0
-        return 600.0
-
     def test_timeout_env_var_parsing(self, monkeypatch):
         """HERMES_CRON_TIMEOUT env var is respected."""
+        from cron.jobs import resolve_cron_inactivity_timeout
+
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
-        raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        _cron_timeout = self._parse_cron_timeout(raw)
+        _cron_timeout = resolve_cron_inactivity_timeout(
+            {"cron": {"inactivity_timeout_seconds": 3600}}
+        )
         assert _cron_timeout == 1200.0
 
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         assert _cron_inactivity_limit == 1200.0
+
+    def test_config_drives_scheduler_and_claim_ttl(self, monkeypatch):
+        from cron import jobs, scheduler
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"inactivity_timeout_seconds": 3600}},
+        )
+
+        assert scheduler._cron_inactivity_seconds() == 3600.0
+        assert jobs._oneshot_run_claim_ttl_seconds() == 10800.0
+
+    def test_zero_means_unlimited_with_bounded_claim_fallback(self, monkeypatch):
+        from cron import jobs, scheduler
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+
+        assert scheduler._cron_inactivity_seconds() == 0.0
+        assert jobs._oneshot_run_claim_ttl_seconds() == 1800.0
+
+    @pytest.mark.parametrize("value", [-1, "nan", "inf", "-inf", object()])
+    def test_invalid_values_use_default(self, monkeypatch, value):
+        from cron import jobs, scheduler
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        config = {"cron": {"inactivity_timeout_seconds": value}}
+
+        assert scheduler._cron_inactivity_seconds(config) == 600.0
+        assert jobs._oneshot_run_claim_ttl_seconds(config) == 1800.0
+
+    @pytest.mark.parametrize("value", ["-1", "nan", "inf", "-inf"])
+    def test_invalid_env_override_uses_default(self, monkeypatch, value):
+        from cron import jobs, scheduler
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", value)
+
+        assert scheduler._cron_inactivity_seconds() == 600.0
+        assert jobs._oneshot_run_claim_ttl_seconds() == 1800.0
 
 
     def test_agent_without_activity_summary_uses_wallclock_fallback(self):

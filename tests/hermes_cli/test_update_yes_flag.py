@@ -16,15 +16,24 @@ import pytest
 
 from hermes_cli.main import cmd_update
 
+pytestmark = pytest.mark.usefixtures(
+    "isolated_update_processes", "isolated_update_checkout",
+)
+
 
 @pytest.fixture(autouse=True)
-def _isolate_update(isolated_update_runtime, monkeypatch):
-    import shutil
-    from hermes_cli import managed_uv, update_cmd
+def _isolate_venv_holders(monkeypatch):
+    """The update flow's venv-holder guard sees the live gateway processes on
+    a dev machine and aborts with SystemExit 2 before reaching the branch
+    logic under test.  Isolate it so the test exercises the intended path."""
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
 
-    monkeypatch.setattr(managed_uv, "resolve_uv", lambda **kw: shutil.which("uv"))
-    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kw: shutil.which("uv"))
-    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kw: None)
+
+@pytest.fixture(autouse=True)
+def _isolate_update(monkeypatch):
+    from hermes_cli import update_cmd
+
     monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
 
 
@@ -132,7 +141,7 @@ class TestUpdateYesConfigMigration:
 
         # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
         # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
-        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
+        # a MagicMock. The MagicMock approach was flaky under parallel test runs
         # — a sibling test that imported ``hermes_cli.main`` first could leave
         # a different ``sys`` reference resolved inside the function and the
         # mock would never be consulted, with CI then taking the

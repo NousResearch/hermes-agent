@@ -1,10 +1,11 @@
 """macOS TCC-safe behavior for broad file searches."""
 
 import re
+import pytest
 from pathlib import Path
 
 import tools.file_operations as file_operations
-from tools.environments.local import LocalEnvironment
+from tools.environments.local import LocalEnvironment, _bash_safe_path
 from tools.file_operations import ShellFileOperations
 from tools.file_operations_search import _macos_protected_search_exclusions
 
@@ -75,13 +76,13 @@ def test_non_macos_search_has_no_implicit_exclusions(tmp_path):
     assert exclusions == []
 
 
+@pytest.mark.platforms("macos")
 def test_broad_file_search_passes_protected_globs_to_ripgrep(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     result = ops.search("*.txt", path=str(home), target="files")
 
@@ -92,13 +93,13 @@ def test_broad_file_search_passes_protected_globs_to_ripgrep(tmp_path, monkeypat
     assert "macOS protected folders" in result.warning
 
 
+@pytest.mark.platforms("macos")
 def test_broad_content_search_passes_protected_globs_to_ripgrep(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     ops.search("needle", path=str(home), target="content")
 
@@ -107,13 +108,13 @@ def test_broad_content_search_passes_protected_globs_to_ripgrep(tmp_path, monkey
         assert f"!{dirname}/**" in rg_command
 
 
+@pytest.mark.platforms("macos")
 def test_empty_ripgrep_file_search_is_one_scan_with_protected_globs(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     ops.search("*.txt", path=str(home), target="files")
 
@@ -123,6 +124,7 @@ def test_empty_ripgrep_file_search_is_one_scan_with_protected_globs(tmp_path, mo
         assert "!Downloads/**" in command
 
 
+@pytest.mark.platforms("macos")
 def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
     """The grep fallback must NOT use --exclude-dir (basename-wide: it would
     skip every nested dir named Downloads anywhere under the root). It routes
@@ -132,7 +134,6 @@ def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
     monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
 
     ops.search("needle", path=str(home), target="content")
@@ -141,11 +142,12 @@ def test_grep_fallback_prunes_by_path_not_basename(tmp_path, monkeypatch):
     for dirname in PROTECTED_NAMES:
         # Path-scoped pruning: full protected path present, no basename-wide
         # --exclude-dir for protected names.
-        assert ops._escape_shell_arg(str(home / dirname)) in pruned_command
+        assert _bash_safe_path(str(home / dirname)) in pruned_command
         assert f"--exclude-dir={dirname}" not in pruned_command
         assert f"--exclude-dir='{dirname}'" not in pruned_command
 
 
+@pytest.mark.platforms("macos")
 def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeypatch):
     """A repo-internal directory literally named 'Downloads' must still be
     searched by the pruned grep path — the exact regression --exclude-dir had."""
@@ -157,7 +159,6 @@ def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeyp
     protected.mkdir()
     (protected / "secret.txt").write_text("needle protected\n")
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
     ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
     monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
 
@@ -168,6 +169,7 @@ def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeyp
     assert not any(str(protected / "secret.txt") in p for p in matched_paths)
 
 
+@pytest.mark.platforms("macos")
 def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     """Non-local environments get no exclusions: platform facts describe the
     controller, not the execution host (macOS controller + Linux SSH backend
@@ -178,7 +180,6 @@ def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     env.is_local = False  # remote/container-shaped backend
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     result = ops.search("*.txt", path=str(home), target="files")
 
@@ -187,13 +188,13 @@ def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     assert result.warning is None
 
 
+@pytest.mark.platforms("macos")
 def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     home.mkdir(parents=True)
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
     monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
 
     ops.search("*.txt", path=str(home), target="files")
@@ -201,7 +202,7 @@ def test_find_fallback_prunes_protected_directories(tmp_path, monkeypatch):
     find_commands = _find_commands(env.commands)
     assert find_commands
     for command in find_commands:
-        assert ops._escape_shell_arg(str(home / "Downloads")) in command
+        assert _bash_safe_path(str(home / "Downloads")) in command
         assert "-prune" in command
 
 
@@ -212,7 +213,6 @@ def _multi_root_protected_search(tmp_path, monkeypatch, engine):
     env = RecordingEnvironment(home)
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
     monkeypatch.setattr(ops, "_has_command", lambda command: command == engine)
     path_checks = 0
 
@@ -232,6 +232,7 @@ def _multi_root_protected_search(tmp_path, monkeypatch, engine):
     return ops, env, result, downloads
 
 
+@pytest.mark.platforms("macos")
 def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     tmp_path, monkeypatch
 ):
@@ -254,6 +255,7 @@ def test_rg_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     assert "Downloads" not in protected_warning
 
 
+@pytest.mark.platforms("macos")
 def test_find_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     tmp_path, monkeypatch
 ):
@@ -271,11 +273,11 @@ def test_find_multi_root_keeps_explicit_protected_root_and_reports_actual_skips(
     assert "Downloads" not in protected_warning
 
 
+@pytest.mark.platforms("macos")
 def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkeypatch):
     env = RecordingEnvironment("/")
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
@@ -312,11 +314,11 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     ]
 
 
+@pytest.mark.platforms("macos")
 def test_rg_scoped_multi_root_handles_dot_spaces_and_overlapping_roots(monkeypatch):
     env = RecordingEnvironment("/Users/alice/work space")
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
@@ -339,11 +341,11 @@ def test_rg_scoped_multi_root_handles_dot_spaces_and_overlapping_roots(monkeypat
     assert result.files == ["/Users/alice/work space/local.txt"]
 
 
+@pytest.mark.platforms("macos")
 def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monkeypatch):
     env = RecordingEnvironment("/Users/alice")
     ops = ShellFileOperations(env)
     monkeypatch.setattr(file_operations, "_HOME", "/Users/alice")
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
 
     def execute(command, cwd=None, **kwargs):
         env.commands.append(command)
@@ -365,6 +367,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
     assert result.error is None
 
 
+@pytest.mark.platforms("macos")
 def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     safe = home / "safe"
@@ -374,7 +377,6 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     (safe / "visible.txt").write_text("needle")
     (protected / "protected.txt").write_text("needle")
     monkeypatch.setattr(file_operations, "_HOME", str(home))
-    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
     ops = ShellFileOperations(LocalEnvironment(cwd=str(home)))
 
     result = ops.search("needle", path=str(home), target="content")

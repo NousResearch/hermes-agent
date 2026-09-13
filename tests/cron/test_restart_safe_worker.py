@@ -77,7 +77,7 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert "whether side effects ran is unknown" in recovered["error"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
     import tools.process_registry as process_registry
 
@@ -93,7 +93,7 @@ def test_restart_safe_gateway_child_fails_closed_when_required(monkeypatch):
         )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_safe_gateway_child_degrades_without_scope(monkeypatch, caplog):
     """Managed gateway + no user bus degrades to a mode distinct from the
     in-process passthrough, and warns once per process, not per dispatch."""
@@ -376,7 +376,7 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     popen.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launch_external_worker_degrades_by_default_with_real_helper(
     tmp_path, monkeypatch,
 ):
@@ -537,7 +537,7 @@ def test_lost_execution_start_cas_prevents_side_effects(monkeypatch):
     run.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.live_system_guard_bypass
 def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     tmp_path, monkeypatch

@@ -6,6 +6,10 @@ description: "Connect Hermes Agent to WeCom via the AI Bot WebSocket gateway"
 
 # WeCom (Enterprise WeChat)
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Connect Hermes to [WeCom](https://work.weixin.qq.com/) (企业微信), Tencent's enterprise messaging platform. The adapter uses WeCom's AI Bot WebSocket gateway for real-time bidirectional communication — no public endpoint or webhook needed.
 
 See also: [WeCom Callback](./wecom-callback.md) for inbound webhook setup.
@@ -213,7 +217,7 @@ WeCom encrypts some inbound media attachments with AES-256-CBC. The adapter hand
 - When an inbound media item includes an `aeskey` field, the adapter downloads the encrypted bytes and decrypts them using AES-256-CBC with PKCS#7 padding.
 - The AES key is the base64-decoded value of the `aeskey` field (must be exactly 32 bytes).
 - The IV is derived from the first 16 bytes of the key.
-- This requires the `cryptography` Python package (`pip install cryptography`).
+- This requires the `cryptography` Python package (`hermes pm repair`).
 
 No configuration is needed — decryption happens transparently when encrypted media is received.
 
@@ -291,14 +295,14 @@ Inbound messages are deduplicated using message IDs with a 5-minute window and a
 | Problem | Fix |
 |---------|-----|
 | `WECOM_BOT_ID and WECOM_SECRET are required` | Set both env vars or configure in setup wizard |
-| `WeCom startup failed: aiohttp not installed` | Install aiohttp: `pip install aiohttp` |
-| `WeCom startup failed: httpx not installed` | Install httpx: `pip install httpx` |
+| `WeCom startup failed: aiohttp not installed` | Install aiohttp: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
+| `WeCom startup failed: httpx not installed` | Install httpx: `hermes pm repair` |
 | `invalid secret (errcode=40013)` | Verify the secret matches your bot's credentials |
 | `Timed out waiting for subscribe acknowledgement` | Check network connectivity to `openws.work.weixin.qq.com` |
 | Bot doesn't respond in groups | Check `group_policy` setting and ensure the group ID is in `group_allow_from` |
 | Bot ignores certain users in a group | Check per-group `allow_from` lists in the `groups` config section |
-| Media decryption fails | Install `cryptography`: `pip install cryptography` |
-| `cryptography is required for WeCom media decryption` | The inbound media is AES-encrypted. Install: `pip install cryptography` |
+| Media decryption fails | Install `cryptography`: `hermes pm repair` |
+| `cryptography is required for WeCom media decryption` | The inbound media is AES-encrypted. Install: `hermes pm repair` |
 | Voice messages sent as files | WeCom only supports AMR format for native voice. Other formats are auto-downgraded to file. |
 | `File too large` error | WeCom has a 20 MB absolute limit on all file uploads. Compress or split the file. |
 | Images sent as files | Images > 10 MB exceed the native image limit and are auto-downgraded to file attachments. |

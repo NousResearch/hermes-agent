@@ -162,7 +162,6 @@ class TestLightpandaRequirements:
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool_cdp._get_cdp_override", return_value=""), \
              patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install._requires_real_termux_browser_install", return_value=False), \
              patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None), \
              patch("tools.browser_tool_cloud._get_browser_engine", return_value="lightpanda"), \
              patch("tools.browser_tool_install._chromium_installed", return_value=False):
@@ -173,7 +172,6 @@ class TestLightpandaRequirements:
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool_cdp._get_cdp_override", return_value=""), \
              patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install._requires_real_termux_browser_install", return_value=False), \
              patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None), \
              patch("tools.browser_tool_cloud._get_browser_engine", return_value="auto"), \
              patch("tools.browser_tool_install._chromium_installed", return_value=False):
@@ -441,7 +439,7 @@ class TestEngineOverride:
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True), \
              patch("tools.browser_tool_lifecycle._write_owner_pid"), \
-             patch.dict(os.environ, {}, clear=True):
+             patch.dict(os.environ, {}, clear=False):
             # AppArmor/root detection would normally auto-inject Chromium args.
             bt_session._run_browser_command("task1", "snapshot", [])
 

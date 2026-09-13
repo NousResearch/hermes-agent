@@ -28,9 +28,21 @@ from typing import Optional, Sequence
 # relies on stdlib's exact ``_open()``/``doRollover()`` lifecycle for the
 # 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
 if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
+    if _portalocker_probe():
+        from concurrent_log_handler import (  # noqa: E402
+            ConcurrentRotatingFileHandler as RotatingFileHandler,
+        )
+    else:
+        # portalocker cannot take a lock on this box (typical cause: a sealed
+        # bundle whose venv never processed pywin32.pth, so `import pywintypes`
+        # fails and portalocker's Win32Locker has no msvcrt fallback). CLH
+        # would silently drop every record through the suppressed lock-timeout
+        # below; fall back to stdlib rotation instead. Rollover is disabled in
+        # the fallback: multi-process appends make Windows renames fail with
+        # WinError 32, the exact #44873 trap CLH exists to avoid.
+        from logging.handlers import RotatingFileHandler  # noqa: E402
+
+        _WINDOWS_CLH_FALLBACK = True
 else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
 
@@ -39,6 +51,50 @@ from hermes_constants import get_config_path, get_hermes_home, mkdir_under_herme
 
 # setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
 _logging_initialized = False
+
+# True only when CLH was rejected at import because portalocker cannot take a
+# lock on this Windows box; file handlers then use stdlib rotation (rollover
+# disabled — see the module-header comment) and setup_logging() warns once.
+_WINDOWS_CLH_FALLBACK = False
+_WINDOWS_CLH_FALLBACK_REASON = ""
+_fallback_warned = False
+
+
+def _portalocker_probe() -> bool:
+    """Return True when portalocker can actually take a lock on this box.
+
+    concurrent-log-handler locks every write through portalocker, which on
+    Windows instantiates Win32Locker and imports pywintypes. Bundled payloads
+    have shipped with that import broken (the venv's .pth files were never
+    processed), and portalocker 3.x gives no msvcrt fallback — every emit then
+    dies with the ImportError, CLH retries 20x, and the suppressed "Cannot
+    acquire lock" RuntimeError below hides it completely. Probe a scratch file
+    once at import so we can fall back to stdlib rotation instead of silently
+    dropping every record. No-op (True) off Windows, where stdlib is in use.
+    """
+    global _WINDOWS_CLH_FALLBACK_REASON
+    if sys.platform != "win32":
+        return True
+    try:
+        import portalocker
+        import tempfile
+    except Exception as exc:
+        _WINDOWS_CLH_FALLBACK_REASON = repr(exc)
+        return False
+    fd, path = tempfile.mkstemp(prefix="hermes-portalocker-")
+    try:
+        with os.fdopen(fd, "r+") as stream:
+            portalocker.lock(stream, portalocker.LOCK_EX)
+            portalocker.unlock(stream)
+    except Exception as exc:
+        _WINDOWS_CLH_FALLBACK_REASON = repr(exc)
+        return False
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return True
 
 # Thread-local per-conversation session context.
 _session_context = threading.local()
@@ -78,6 +134,33 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
         sys.platform == "win32"
         and isinstance(exc, RuntimeError)
         and "Cannot acquire lock after 20 attempts" in str(exc)
+    )
+
+
+_windows_lock_timeout_warned = False
+_windows_lock_timeout_warn_lock = threading.Lock()
+
+
+def _warn_windows_lock_timeout_once() -> None:
+    """Report a suppressed CLH lock timeout exactly once per process.
+
+    Every emit after the first failure raises the same RuntimeError, so the
+    warning must be one-shot or it would spam errors.log as badly as the
+    stderr noise it replaces. CLH does not chain the underlying cause (the
+    RuntimeError is raised outside the except, from the retry loop's else
+    clause), so the message cannot include it; a constantly repeating timeout
+    means file logging is degraded — the startup portalocker probe in this
+    module should have caught a dead portalocker and fallen back already.
+    """
+    global _windows_lock_timeout_warned
+    with _windows_lock_timeout_warn_lock:
+        if _windows_lock_timeout_warned:
+            return
+        _windows_lock_timeout_warned = True
+    logging.getLogger("hermes_logging").warning(
+        "concurrent-log-handler timed out acquiring the cross-process log "
+        "lock; this and later records were dropped (the Desktop slash-worker "
+        "surface stays clean, but file logging is degraded)."
     )
 
 
@@ -177,6 +260,7 @@ def setup_logging(
     ``gateway.log`` and ``mode="gui"`` adds ``gui.log``.
     """
     global _logging_initialized
+    global _fallback_warned
     home = hermes_home or get_hermes_home()
     log_dir = mkdir_under_hermes_home(home / "logs")
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
@@ -204,6 +288,16 @@ def setup_logging(
             log_dir / filename, level=lvl, max_bytes=size, backup_count=count,
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES[component]) if component else None,
+        )
+
+    if _WINDOWS_CLH_FALLBACK and not _fallback_warned:
+        # One-shot, and the file handlers above are already live, so this lands
+        # in errors.log/agent.log — the fallback must never be invisible again.
+        _fallback_warned = True
+        logging.getLogger("hermes_logging").warning(
+            "concurrent-log-handler unavailable on this Windows install (%s); "
+            "file logging fell back to stdlib rotation without rollover.",
+            _WINDOWS_CLH_FALLBACK_REASON or "portalocker probe failed",
         )
 
     if _logging_initialized and not force:
@@ -322,10 +416,13 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
 
         CLH's ``emit()`` routes that RuntimeError here, so this is the single point to
         silence it before stdlib prints to stderr (which the Desktop slash-worker
-        captures into chat output).
+        captures into chat output). Silencing is not silent: warn once through the
+        logging system so a wedged lock is visible in the logs instead of a black hole.
         """
-        if not _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
-            super().handleError(record)
+        if _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
+            _warn_windows_lock_timeout_once()
+            return
+        super().handleError(record)
 
     def _open(self):
         stream = super()._open()
@@ -345,6 +442,10 @@ def _new_file_handler(
 ) -> "_ManagedRotatingFileHandler":
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
+    if _WINDOWS_CLH_FALLBACK:
+        # stdlib fallback: no rollover, or the file pins at the size threshold
+        # and every emit re-triggers the WinError 32 rename failure (#44873).
+        max_bytes, backup_count = 0, 0
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
     )

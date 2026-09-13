@@ -8,13 +8,108 @@ description: "How to update Hermes Agent to the latest version or uninstall it"
 
 ## Updating
 
-Update to the latest version with a single command:
+Choose the update method for the installation that is running:
+
+| Installation | Update method |
+|---|---|
+| Managed source checkout | `hermes update`, or the source-built desktop's update handoff. |
+| Windows sideload MSIX | The desktop Update control and Windows App Installer. |
+| Microsoft Store package | Microsoft Store updates. |
+| macOS bundled app | The desktop Update control, through `electron-updater`. |
+| Docker image | Pull the chosen image and recreate the container with the same data mount. |
+| Nix | Update the flake/profile and rebuild. |
+| Termux APT | `pkg update`, then `pkg upgrade hermes-agent`. |
+
+`hermes update` does not rewrite package-owned application files. PM manages
+dependencies, not application distribution: `hermes pm update` is a maintainer
+pin-update command, not an alternative application updater.
+
+For a managed source installation:
 
 ```bash
 hermes update
 ```
 
-This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+The default source channel tracks `main`. Configured stable and canary channels
+track their published release commits. The update prepares dependencies through
+PM and reports configuration changes and process-restart results.
+
+### Bundled desktop updates
+
+On Windows, the sideload app checks the registered App Installer source. Apply
+downloads the `.appinstaller` descriptor before stopping app-owned backends,
+opens that local file, and quits for Windows to replace the package.
+A detached waiter attempts automatic relaunch after the package version changes.
+A waiter-registration failure produces a manual-reopen warning.
+
+On macOS, apply downloads the ZIP update and waits for Squirrel.Mac to accept
+the signed app before stopping backends. Only that apply flow requests install
+and relaunch. An ordinary quit does not install a pending download.
+Download or verification failures leave backends running.
+
+Store packages use the Store instead of either sideload feed. A broken or
+unavailable update check must not be interpreted as "already up to date."
+The application and its bundled base runtime update together; user data stays
+outside the package. See [Desktop installation](../user-guide/desktop.md#install).
+
+Stable and canary desktop bundles are separate applications. Installing canary
+does not replace stable, including on Windows with MSIX. Each application keeps
+its own desktop state and updates within the channel baked into its build;
+changing channels means installing the other application, not changing a setting.
+The canary icon has a yellow background (dark yellow in dark mode), and its CLI
+command is `hermes-canary`.
+
+One-off commit bundles are separate from both release channels and from other
+commit bundles. Their red icons show the short build SHA, also used in the
+`hermes-<short-sha>` CLI command. They do not check for or install updates,
+including through `hermes update` or `hermes update --check`. They explain:
+
+> This build doesn't get updates. Ask the developer who gave it to you for a new build.
+
+Separate applications still share Hermes profiles, configuration, and sessions
+under the same Hermes home. Running different builds against one profile is not
+schema isolation: newer builds can change stored data that an older build cannot
+read. Back up shared data before testing. The desktop and standalone CLI warn
+when another live installation uses the same profile; this is advisory, not a
+lock. Desktop post-update notices are scoped to the application, so launching
+canary cannot consume stable's pending notice. The `hermes://` URL scheme remains
+shared; the application that most recently registered it handles links.
+
+### Source channels and install identity
+
+```bash
+hermes update --install-id
+hermes update --set-channel stable
+hermes update --channel stable --check
+# Or track published canary commits in this source installation:
+hermes update --set-channel canary
+hermes update
+```
+
+`--install-id` prints the installation identity and path. `--set-channel`
+changes only that installation's configuration, then exits without applying an
+update. `--channel` is a one-run override. An explicit `--branch` takes precedence
+for a source checkout.
+
+Source `main` tracks the branch tip. Source `stable` and `canary` resolve the
+published release for that channel and update the checkout to its exact Git
+commit. Canary does not mean the current tip of `main`, and an unpublished tag
+is not a release. Switching a source channel does not install a desktop package.
+Per-install records live under `update.installs` in configuration, so one
+checkout's choice does not change another installation's channel. The source-built
+desktop uses that same selection for checks and update handoffs; it does not
+replace a selected release channel with its default branch.
+
+For branch-tracking source installs, the desktop keeps the current named branch
+unless an explicit desktop branch override exists. A detached checkout uses the
+default branch. Older checkouts without source-channel probing show manual
+recovery instructions instead of guessing a target: inspect `hermes update --help`
+in that installation and choose the intended branch or channel before updating.
+
+Packaged desktop feed channels derive from their build tag and package owner.
+Changing a source channel is not an MSIX or Store channel switch. Canary builds
+can advance stored data formats; switching back is not a schema rollback.
+Back up data before changing release channels.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -32,12 +127,12 @@ This suppresses both cached update notices and passive update-check network requ
 
 ### What happens during an update
 
-When you run `hermes update`, the following steps occur:
+For an admitted source checkout, `hermes update` runs these phases:
 
-1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Because the code swap and gateway restarts touch every profile, the same snapshot is taken for **every profile** on the install — each into its own `state-snapshots/` directory — and the post-update cron-jobs safety net checks each profile against its own snapshot. Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots are file-loss recovery, not code-rollback insurance — for a coherent point-in-time rollback use `--backup` (full mode).
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+1. **Pre-update snapshot** — Hermes saves selected state files for every profile in that profile's `state-snapshots/` directory. These include pairing data, cron jobs, `config.yaml`, `.env`, and `auth.json`. Automatic quick snapshots skip individual files larger than 1 GiB. `updates.pre_update_backup` selects `quick`, `full`, or `off`. Full archives use the [backup exclusions](/reference/faq#hermes-backup-vs-hermes-profile-export). Recovery uses [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md). Quick snapshots recover state files, not application code.
+2. **Code update** — applies the configured source branch or stable release tag and updates submodules.
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
-4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
+4. **Dependency preparation** — PM provisions required tools and prepares a complete Python environment from the new lock, existing extras, and enabled plugin requirements. It validates that environment before publishing its selection.
 5. **Config migration** — detects new config options added since your version and prompts you to set them
 6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build. A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update reports `⚠ Update partially complete` and `hermes desktop` retries the rebuild.
 7. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. Manually-launched `hermes serve` / `hermes dashboard` backends (for example a network-bound serve powering a remote Desktop) are handled the same way: each backend records its bind address in the install's spawn ledger at startup, so the update stops it before the code swap and relaunches it afterward on the **same host and port** — a remote Desktop pointed at that endpoint reconnects instead of stranding. Backends owned by a running Desktop app are left to the app's own respawn.
@@ -51,7 +146,8 @@ On Windows, a Desktop reopened during packaging is stopped again immediately bef
 
 ### Updating against a non-default branch: `--branch`
 
-By default `hermes update` tracks `origin/main`. Pass `--branch <name>` to update against a different branch — useful for QA channels, feature branches, or release-candidate testing:
+On the default source channel, `hermes update` tracks `origin/main`. Use
+`--branch NAME` for a one-run branch override:
 
 ```bash
 hermes update --branch release-candidate
@@ -101,7 +197,10 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+`hermes update --check` compares the checkout with its source-channel target
+without applying code, installing dependencies, or restarting gateways. The
+comparison can fetch Git metadata; it is not a promise of zero filesystem writes.
+Package-owned installs report their external update method.
 
 ### Fleet preview: `hermes update --plan`
 
@@ -141,67 +240,44 @@ updates:
   pre_update_backup: full
 ```
 
-`updates.pre_update_backup` is a single knob with three modes: `quick` (default — the lightweight state snapshot described above), `full` (the quick snapshot plus a complete `HERMES_HOME` zip; can add minutes on large homes), and `off` (no pre-update backup at all — `--no-backup` does the same for a single run). Legacy boolean values still work: `true` means `full`, `false` means `off`.
+`updates.pre_update_backup` has three modes:
+
+- `quick` saves the selected state files described above. This is the default.
+- `full` adds a zip archive with the [backup exclusions](/reference/faq#hermes-backup-vs-hermes-profile-export). Large data directories can take several minutes.
+- `off` disables pre-update backups. `--no-backup` selects this mode for one run.
+
+Legacy boolean values remain supported: `true` means `full`, and `false` means `off`.
 
 :::tip Moving to a new machine instead?
 Update backups protect an in-place update. If you're migrating your whole setup to different hardware, use `hermes backup` + `hermes import` instead — see [Exporting Hermes to another machine](/reference/faq#exporting-hermes-to-another-machine) and [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
 :::
 
-### Windows: another `hermes.exe` is running
+### Windows process ownership and dependency changes
 
-On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:
+Windows can hold executable and native-extension files open while processes run.
+PM therefore prepares dependency generations separately instead of replacing
+imported libraries in place. A running process keeps its current imports until
+it restarts.
 
-```
-$ hermes update
-✗ Another hermes.exe is running:
-    PID 12345  hermes.exe
+Follow any blocker diagnostic for the specific process and installation. Do
+not kill every process named Python or Hermes. Source updates and MSIX package
+replacement have different owners and shutdown requirements.
 
-  Updating now would fail to overwrite ...\venv\Scripts\hermes.exe because
-  Windows blocks REPLACE on a running executable.
-
-  Close Hermes Desktop, exit any open `hermes` REPLs, and
-  stop the gateway (`hermes gateway stop`) before retrying.
-  Override with `hermes update --force` if you've already
-  confirmed those processes will not write to the venv.
-```
-
-Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
-
-A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
-
-#### Windows venv recreation is transactional
-
-When the Windows installer must recreate an existing `venv`, it first moves the old directory to a unique `venv.stale.*` name, then creates and verifies the replacement. The old tree is deleted only after the dependency install completes and the baseline imports pass in the new tree — until then it is the rollback source (recorded in `venv.pending-backup`).
-
-If the move cannot be completed, the installer stops and leaves the live `venv` untouched. If `uv` fails or reports success without creating the interpreter, any partial replacement is moved to `venv.failed.*` and the previous venv is restored. This keeps the health and blocker checks usable after a failed install.
-
-A `venv.stale.*` or `venv.failed.*` directory can remain when another process still owns a file handle. Close Hermes Desktop, gateways, and Python processes using the install, then retry the install/update; parked directories are cleaned up best-effort after a successful recreation.
-
-Expected output looks like:
-
-```
-$ hermes update
-Updating Hermes Agent...
-📥 Pulling latest code...
-Already up to date.  (or: Updating abc1234..def5678)
-📦 Updating dependencies...
-✅ Dependencies updated
-🔍 Checking for new config options...
-✅ Config is up to date  (or: Found 2 new options — running migration...)
-🔄 Restarting gateways...
-✅ Gateway restarted
-✅ Hermes Agent updated successfully!
-```
+The parser retains `--force` and `--force-venv` for Windows compatibility. They
+are not normal update instructions or a guarantee that an OS file lock can be
+bypassed. Inspect `hermes update --plan`, the update log, and `hermes pm status`
+before retrying a failed update.
 
 ### Recommended Post-Update Validation
 
-`hermes update` handles the main update path, but a quick validation confirms everything landed cleanly:
+After a source update, run the following diagnostics. For a bundled app, use
+its About page and backend health instead of Git commands inside the package.
 
 1. `git status --short` — if the tree is unexpectedly dirty, inspect before continuing
 2. `hermes doctor` — checks config, dependencies, and service health
 3. `hermes --version` — confirm the version bumped as expected
 4. If you use the gateway: `hermes gateway status`
-5. If `doctor` reports npm audit issues: run `npm audit fix` in the flagged directory
+5. `hermes pm status` — inspect dependency preparation and any failed steps.
 
 :::warning Dirty working tree after update
 If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.
@@ -240,55 +316,25 @@ You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams b
 
 This pulls the latest code, updates dependencies, and restarts running gateways. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
 
-### Manual Update
+### Manual source maintenance and rollback
 
-If you installed manually (not via the quick installer):
+Use the [source-install guide](../user-guide/switching-to-source.md) for an
+independent development checkout. Commit or otherwise preserve local work
+before changing its Git revision. Stop the services you own before replacing
+the code that those services run.
 
-```bash
-cd /path/to/hermes-agent
-# Activate the venv you created during install (outside the source tree)
-export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
+After changing the source revision, run that revision's dependency/bootstrap
+procedure. PM-managed checkouts use `python -m pm.cli install` from the selected
+source environment. A bare pip install is not equivalent: it does not prepare
+the managed tool store or PM's runtime selection.
 
-# Pull latest code
-git pull origin main
+A code checkout alone is not a data rollback. Newer releases can migrate
+configuration or databases in ways older code cannot read. Use a coherent
+backup from before the update if an older release requires the earlier data
+format. Preserve the current data before attempting a restore.
 
-# Reinstall (picks up new dependencies)
-uv pip install -e ".[all]"
-
-# Check for new config options
-hermes config check
-hermes config migrate   # Interactively add any missing options
-```
-
-### Rollback instructions
-
-If an update introduces a problem, you can roll back to a previous version:
-
-```bash
-cd /path/to/hermes-agent
-
-# List recent versions
-git log --oneline -10
-
-# Roll back to a specific commit
-git checkout <commit-hash>
-uv pip install -e ".[all]"
-
-# Restart the gateway if running
-hermes gateway restart
-```
-
-To roll back to a specific release tag (substitute your previous tag — e.g. a recent release like `v2026.5.16`, or any earlier tag from `git tag --sort=-version:refname`):
-
-```bash
-git checkout vX.Y.Z
-uv pip install -e ".[all]"
-```
-
-:::warning
-Rolling back may cause config incompatibilities if new options were added. Run `hermes config check` after rolling back and remove any unrecognized options from `config.yaml` if you encounter errors.
-:::
+Package-owned installations use their package manager's rollback or reinstall
+procedure. Do not run Git or pip inside a signed app or an immutable image.
 
 ### Image-managed installs (Docker): the provenance marker
 
@@ -322,10 +368,22 @@ See [Nix Setup](./nix-setup.md) for more details.
 hermes uninstall
 ```
 
-The uninstaller gives you the option to keep your configuration files (`~/.hermes/`) for a future reinstall.
+For source installs, review `hermes uninstall --dry-run` before removal.
+The default removal can preserve configuration and user data. `--full` also
+removes data. `--data` removes user data without deleting package-owned code.
+These modes are destructive; make a backup first.
+
+For MSIX/Store, use Windows Settings → Apps → Installed apps. For macOS,
+quit Hermes and move its app bundle to Trash. Docker, Nix, and Termux use the
+same manager that installed them. Their package files are not removed by the
+source uninstaller. Data deletion is separate from package removal.
 
 :::tip Moving to a new machine rather than leaving?
-Take your setup with you before removing anything: `hermes backup` captures the entire `~/.hermes` directory including credentials, while `hermes profile export` packs a single profile with credentials excluded by design (so an export alone is not a full backup). See [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
+Run `hermes backup` before you remove the installation. The full archive includes
+credentials but excludes downloaded runtimes, dependency environments, caches,
+and browser profiles. Review its skipped-file report before you delete source data.
+`hermes profile export` packs one profile without credentials.
+See [`hermes backup` vs `hermes profile export`](/reference/faq#hermes-backup-vs-hermes-profile-export).
 :::
 
 ### Manual Uninstall

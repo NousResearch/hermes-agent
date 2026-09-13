@@ -13,6 +13,22 @@ There are two distinct ways Docker intersects with Hermes Agent:
 
 This page covers option 1. The container stores all user data (config, API keys, sessions, skills, memories) in a single directory mounted from the host at `/opt/data`. The image itself is stateless and can be upgraded by pulling a new version without losing any configuration.
 
+## Image channels and runtime ownership
+
+| Image tag | Meaning |
+|---|---|
+| `latest` / `stable` | The image accepted by the stable release gate. |
+| `main` | The development image published from main-branch builds. |
+| `X.Y.Z` | A versioned stable image. Use a digest for an exact deployment pin. |
+
+The workflow builds and tests amd64 and arm64 images. Stable publication uses
+the tested image archives rather than rebuilding them. Only the full release
+promotion moves `stable` and `latest`; a main push does not advance those tags.
+
+The image's Python environment follows `pyproject.toml` and `uv.lock` (currently
+Python 3.14). Its curated extras are not the native desktop bundle's
+`--all-extras` set. It does not include an Electron desktop app.
+
 ## Quick start
 
 If this is your first time running Hermes Agent, create a data directory on the host and start the container interactively to run the setup wizard:
@@ -484,18 +500,33 @@ docker run -d \
 
 ## What the Dockerfile does
 
-The official image is based on `debian:13.4` and includes:
+The image uses Debian 13.4 and includes:
 
-- Python 3.13 with dependencies synced from the lockfile via `uv sync --frozen --no-install-project` for the baked extras (`all`, `messaging`, Anthropic/Bedrock/Azure identity, Hindsight, Matrix), followed by a no-dependency editable install of Hermes itself.
-- Node.js 26 + npm (for browser automation, WhatsApp bridge, TUI/Desktop bundles, and workspace build tooling)
-- Playwright with Chromium (`npx playwright install --with-deps chromium --only-shell`)
-- ripgrep, ffmpeg, git, and `xz-utils` as system utilities
-- **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
-- **`openssh-client`** — enables the [SSH terminal backend](/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
-- The WhatsApp bridge (`scripts/whatsapp-bridge/`)
-- **[`s6-overlay`](https://github.com/just-containers/s6-overlay) v3** as PID 1 (replaces the older `tini`) — supervises the dashboard and per-profile gateways with auto-restart on crash, reaps zombie subprocesses, and forwards signals.
+- A Python 3.14 environment synchronized from the committed `uv.lock`, followed
+  by a no-dependency editable install of Hermes.
+- The curated extras `all`, `messaging`, `otlp`, `anthropic`, `bedrock`,
+  `azure-identity`, `hindsight`, and `matrix`. This is not `--all-extras`.
+- Node.js 26 and npm from the digest-pinned Node source image.
+- PM-pinned uv, Chromium, and Chromium headless shell in `/opt/hermes/tools`.
+- System Git, ripgrep, FFmpeg, OpenSSH, Docker CLI, and Chromium shared libraries.
+- Prebuilt TUI/dashboard assets and baked Photon sidecar dependencies.
+- s6-overlay for supervision and zombie-process cleanup.
 
-The image treats `/opt/hermes` as an immutable install tree at runtime. Optional Python extras, Node workspaces, and TUI assets that must be available inside Docker need to be baked during the image build; runtime lazy installs are disabled so supervised gateways and `docker exec hermes …` commands do not try to write dependency artifacts back into the read-only source tree.
+Chromium is staged through PM, not `npx playwright install`. The build records
+its resolved executable in `/etc/hermes/agent-browser-executable-path`.
+`PLAYWRIGHT_BROWSERS_PATH` names `/opt/hermes/tools`, outside the data mount.
+
+The image disables on-demand dependency installation with its internal
+`HERMES_DISABLE_LAZY_INSTALLS` policy. Changing `security.allow_lazy_installs`
+alone does not override that image policy. The old `lazy-packages` overlay is
+not used. Build additional required dependencies into a derived image, or run
+an independent tool in a separate environment/service.
+
+Image provenance lives at `/etc/hermes/image-provenance.json`, outside both the
+source and data mounts. The build stamp lives at `/opt/hermes/install-stamp.json`.
+A local build without a supplied stamp reports an unknown revision rather than
+inventing a commit. `hermes update` refuses image-owned code changes; replace
+the image to update the application.
 
 The container's `ENTRYPOINT` is a small dispatcher (`docker/entrypoint-dispatch.sh`). When the container owns PID 1 (normal Docker / Podman), it exec's s6-overlay's `/init` and you get the full supervision tree described below. When a platform wraps the image entrypoint under its own PID-1 init (Fly.io Machines, `docker run --init`, some Nomad/Kubernetes setups), `/init` would abort with `s6-overlay-suexec: fatal: can only run as pid 1` — so the dispatcher instead runs the stage2 bootstrap directly and exec's the main wrapper without s6. On that fallback path the requested command still runs, but supervised services (dashboard, per-profile gateways) are unavailable.
 
@@ -519,7 +550,7 @@ Do not override the image entrypoint unless you keep `/init` (or, equivalently, 
 
 ### `docker exec` automatically drops to the `hermes` user
 
-`docker exec hermes <cmd>` defaults to running as root inside the container, but the image ships a thin shim at `/opt/hermes/bin/hermes` (earliest on PATH) that detects root callers and transparently re-execs through `s6-setuidgid hermes`. So `docker exec hermes login`, `docker exec hermes profile create …`, `docker exec hermes setup`, etc. all write files owned by UID 10000 — i.e. readable by the supervised gateway — with no extra `--user` flag needed. Non-root callers (the supervised processes themselves, `docker exec --user hermes`, kanban subagents inside the container) hit a short-circuit that exec's the venv binary directly, so there's no overhead on the hot paths.
+`docker exec hermes <cmd>` defaults to running as root inside the container, but the image ships a thin shim at `/opt/hermes/bin/hermes` (earliest on PATH) that detects root callers and transparently re-execs through `s6-setuidgid hermes`. So `docker exec hermes hermes login`, `docker exec hermes hermes profile create …`, `docker exec hermes hermes setup`, etc. all write files owned by UID 10000 — i.e. readable by the supervised gateway — with no extra `--user` flag needed. Non-root callers (the supervised processes themselves, `docker exec --user hermes`, kanban subagents inside the container) hit a short-circuit that exec's the venv binary directly, so there's no overhead on the hot paths.
 
 If you specifically need a `docker exec` that retains root semantics (diagnostic sessions, inspecting root-only state, files outside `/opt/data` that root happens to own), opt out per invocation:
 
@@ -588,7 +619,11 @@ Dependencies are fetched on demand and cached for the life of the container. Con
 
 ### Other tools (apt packages, binaries) — install and remember
 
-For anything outside npm or PyPI — `apt` packages, prebuilt binaries, language runtimes not already in the image — instruct Hermes how to install it (e.g. `apt-get update && apt-get install -y <package>`) and tell it to remember the install command. The tool persists for the rest of the container's lifetime, and Hermes will re-run the install command after a container restart when it next needs the tool.
+The runtime user cannot install system APT packages. For occasional tools, an
+operator can deliberately use a root shell; those changes last only until the
+container is replaced. A container restart retains its writable layer, while
+recreation does not. Memory of an install command is not automatic provisioning.
+Use a derived image for repeatable system dependencies.
 
 This is a good fit for tools that are quick to install and used occasionally. For tools used constantly, prefer the next approach.
 
@@ -603,7 +638,7 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends <your-package> \
     && rm -rf /var/lib/apt/lists/*
-USER hermes
+# Keep the root entrypoint; s6 drops privileges for the runtime.
 ```
 
 Build it and use it in place of the official image:
@@ -801,9 +836,8 @@ Check logs: `docker logs hermes`. Common causes:
 
 The container's stage2 hook drops privileges to the non-root `hermes` user (UID 10000) via `s6-setuidgid` inside each supervised service. If your host `~/.hermes/` is owned by a different UID, set `HERMES_UID`/`HERMES_GID` — or their `PUID`/`PGID` aliases, for parity with LinuxServer.io and NAS images — to match your host user, or ensure the data directory is writable:
 
-```sh
-chmod -R 755 ~/.hermes
-```
+Do not make the whole data tree world-readable. It contains credentials.
+Match the container UID/GID to the bind mount's owner instead.
 
 On a NAS (UGOS, Synology, unRAID) the data directory is typically a **bind mount** owned by a host UID the container cannot `chown`. Set `PUID`/`PGID` (or `HERMES_UID`/`HERMES_GID`) to that host user so the runtime runs as the owner of the mount rather than UID 10000:
 
@@ -855,6 +889,6 @@ docker restart hermes
 
 ```sh
 docker logs --tail 50 hermes          # Recent logs
-docker run -it --rm nousresearch/hermes-agent:latest version     # Verify version
+docker run -it --rm nousresearch/hermes-agent:latest --version   # Verify version
 docker stats hermes                    # Resource usage
 ```

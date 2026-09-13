@@ -29,6 +29,27 @@ The `curl | bash` installer manages Python, Node, and dependencies itself. The N
 **For NixOS module users**, the entire lifecycle is different: configuration lives in `configuration.nix`, secrets go through sops-nix/agenix, the service is a systemd unit, and CLI config commands are blocked. You manage hermes the same way you manage any other NixOS service.
 :::
 
+## Runtime pins
+
+PM's tool lock is also a Nix build input. `nix/npm-pinned.nix` reads the npm
+pin, and `nix/pm-packages.nix` exposes matching archives as `pm-NAME` derivations:
+
+```bash
+nix build .#pm-ripgrep
+```
+
+These outputs unpack the pinned archives. They are not the complete Hermes
+wrapper or a guarantee that each archive runs without platform integration.
+The application still uses the uv2nix environment and Nix wrapper.
+
+`nix/pythonLock.nix` reads Python's major/minor from `pm/lock.json`.
+The uv2nix environment, package overrides, plugin packages, and developer shell
+use that interpreter family. If the pinned nixpkgs lacks that family, evaluation
+stops instead of selecting a different Python.
+
+Native Nix evaluation and builds remain CI gates. Update through Nix. Do not
+repair a Nix store path with pip.
+
 ## Prerequisites
 
 - **Nix with flakes enabled** — [Determinate Nix](https://install.determinate.systems) recommended (enables flakes by default)
@@ -775,7 +796,7 @@ For pip-packaged plugins that register via `[project.entry-points."hermes_agent.
 
 ```nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "rtk-hermes";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -785,7 +806,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```
@@ -809,7 +830,9 @@ services.hermes-agent = {
 };
 ```
 
-This is resolved by uv alongside core dependencies — no PYTHONPATH patching, no collision risk. Available groups:
+These groups join the core dependency resolution at build time. Conflicting
+requirements can still fail that resolution. The table lists common groups;
+`pyproject.toml` is authoritative for the complete list and platform markers.
 
 | Group | What it enables |
 |-------|-----------------|
@@ -849,7 +872,7 @@ A directory plugin with third-party Python dependencies needs both options:
 ```nix
 services.hermes-agent = {
   extraPlugins = [ my-plugin-src ];          # plugin source
-  extraPythonPackages = [ pkgs.python312Packages.redis ];  # its Python dep
+  extraPythonPackages = [ config.services.hermes-agent.package.python.pkgs.redis ];  # its Python dep
   extraPackages = [ pkgs.redis ];            # system binary it needs
 };
 ```
@@ -891,17 +914,15 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides a development shell with Python 3.12, uv, Node.js, and all runtime tools:
+The flake provides an editable Python environment with the lock-derived interpreter
+and the `dev` extra. `HERMES_PYTHON` points to its interpreter. It does not install
+Python dependencies into a repository-local `.venv`. The shell also provides
+Node.js and runtime tools. Its npm hook refreshes JS workspaces when their inputs change.
 
 ```bash
 cd hermes-agent
 nix develop
-
-# Shell provides:
-#   - Python 3.12 + uv (deps installed into .venv on first entry)
-#   - Node.js 26, ripgrep, git, openssh, ffmpeg on PATH
-#   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
-
+"$HERMES_PYTHON" -c "import sys; print(sys.executable); print(sys.version)"
 hermes setup
 hermes chat
 ```
@@ -913,7 +934,7 @@ The included `.envrc` activates the dev shell automatically:
 ```bash
 cd hermes-agent
 direnv allow    # one-time
-# Subsequent entries are near-instant (stamp file skips dep install)
+# Nix reuses its built Python environment; the npm hook checks JS inputs.
 ```
 
 ### Flake Checks
@@ -1011,7 +1032,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
-| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
+| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["hindsight"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
@@ -1220,7 +1241,7 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
-| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
+| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Read `journalctl -u hermes-agent` for `InstallError` or `requirements not met` and the underlying cause. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
 | `hermes --version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |

@@ -93,6 +93,17 @@ def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
     """Start ``_search_worker.py`` as a script with ``plugins`` importable. Running as a
     script puts ``plugins/web/ddgs/`` on ``sys.path[0]``, breaking ``import plugins...``,
     so the real package location is prepended to PYTHONPATH."""
+
+    # pm store PATH: the worker runs under the STORE python, whose third-party
+    # imports (ddgs/primp) arrive via the launcher-composed PYTHONPATH. The
+    # sanitizer strips Hermes-owned entries (cross-version protection); this
+    # worker is the SAME interpreter, so merge the ambient PYTHONPATH back in.
+    _ambient_pp = os.environ.get("PYTHONPATH")
+    if _ambient_pp:
+        _current = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            _ambient_pp + os.pathsep + _current if _current else _ambient_pp
+        )
     child_pythonpath = env.get("PYTHONPATH", "")
     path_entry = _plugins_path_entry()
     if path_entry and path_entry not in child_pythonpath.split(os.pathsep):

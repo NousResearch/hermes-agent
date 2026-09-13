@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 import unittest.mock
 from contextlib import contextmanager, ExitStack
@@ -28,7 +29,7 @@ os.environ["TERMINAL_ENV"] = "local"
 
 @pytest.fixture(autouse=True)
 def _force_local_terminal(monkeypatch):
-    """Mirror test_code_execution.py — guarantee local backend under xdist."""
+    """Mirror test_code_execution.py — guarantee local backend."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
@@ -216,17 +217,10 @@ class TestModeAwareSchema(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # Integration: what actually happens when execute_code runs per mode
+# (host-neutral: strict tmpdir + venv interpreter resolve fine on Windows'
+# Scripts/python.exe layout; no POSIX-only layout is asserted)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Assumes POSIX venv layout (bin/python) and symlink creation "
-        "privileges.  execute_code itself works on Windows — these "
-        "integration tests just haven't been ported to the Scripts/"
-        "python.exe layout yet."
-    ),
-)
 class TestExecuteCodeModeIntegration(unittest.TestCase):
     """End-to-end: verify the subprocess actually runs where we expect."""
 
@@ -286,8 +280,12 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
         This is the PYTHONPATH fix — without it, switching to session CWD
         breaks `from hermes_tools import terminal`.
         """
+        import shutil
         import tempfile
-        with tempfile.TemporaryDirectory() as td:
+        from tools.code_kernel import shutdown_all_kernels
+
+        td = tempfile.mkdtemp(prefix="hermes_test_cwd_")
+        try:
             code = (
                 "from hermes_tools import terminal\n"
                 "r = terminal('echo x')\n"
@@ -296,6 +294,18 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
             result = self._run(code, mode="project", extra_env={"TERMINAL_CWD": td})
             self.assertEqual(result["status"], "success")
             self.assertIn("mock", result["output"])
+        finally:
+            # Release the child's cwd even when an assertion failed.
+            shutdown_all_kernels()
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    shutil.rmtree(td)
+                    break
+                except (PermissionError, FileNotFoundError):
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.2)
 
     def test_strict_mode_can_still_import_hermes_tools(self):
         """Regression: strict mode's tmpdir CWD still works for imports."""
@@ -315,17 +325,10 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
 # These MUST pass in both strict and project mode. The whole tiered-mode
 # proposition rests on the claim that switching from strict to project only
 # changes CWD + interpreter, not the security posture.
+# Host-neutral: env scrubbing and whitelist enforcement run identically on
+# Windows — nothing here depends on POSIX venv layout.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Assumes POSIX venv layout (bin/python) and symlink creation "
-        "privileges.  execute_code itself works on Windows — these "
-        "integration tests just haven't been ported to the Scripts/"
-        "python.exe layout yet."
-    ),
-)
 class TestSecurityInvariantsAcrossModes(unittest.TestCase):
 
     def _run(self, code, mode):

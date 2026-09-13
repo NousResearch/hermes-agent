@@ -23,16 +23,16 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 | **网页搜索/提取后端** | [网页搜索提供商插件](/developer-guide/web-search-provider-plugin) |
 | **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](/developer-guide/browser-provider-plugin) |
 | **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](/developer-guide/secret-source-plugin) |
-| **仪表盘 OIDC/认证提供商** | [Web 仪表盘 — 自定义提供商](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
-| **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](/user-guide/features/tts#custom-command-providers)——配置驱动，无需 Python |
-| **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](/user-guide/features/tts#voice-message-transcription-stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
+| **仪表盘 OIDC/认证提供商** | [Web 仪表盘 — 自定义提供商](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
+| **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](/user-guide/features/tts#自定义命令提供商)——配置驱动，无需 Python |
+| **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](/user-guide/features/tts#语音消息转录stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
 | **通过 MCP 接入外部工具**（文件系统、GitHub、Linear、任意 MCP 服务器） | [MCP](/user-guide/features/mcp)——在 `config.yaml` 中声明 `mcp_servers.<name>` |
 | **网关事件钩子**（在启动、会话事件、命令时触发） | [事件钩子](/user-guide/features/hooks#gateway-event-hooks)——将 `HOOK.yaml` + `handler.py` 放入 `~/.hermes/hooks/<name>/` |
 | **Shell 钩子**（在事件发生时运行 shell 命令） | [Shell 钩子](/user-guide/features/hooks#shell-hooks)——在 `config.yaml` 的 `hooks:` 下声明 |
-| **额外技能来源**（自定义 GitHub 仓库、私有技能索引） | [技能](/user-guide/features/skills)——`hermes skills tap add <repo>` · [发布 tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
+| **额外技能来源**（自定义 GitHub 仓库、私有技能索引） | [技能](/user-guide/features/skills)——`hermes skills tap add <repo>` · [发布 tap](/user-guide/features/skills#发布自定义-skill-tap) |
 | 一流的**核心**推理提供商（非插件） | [添加提供商](/developer-guide/adding-providers) |
 
-查看完整的[可插拔接口表](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each)，获取每种扩展接口的汇总视图，包括配置驱动（TTS、STT、MCP、shell 钩子）和放入目录（网关钩子）两种方式。
+查看完整的[可插拔接口表](/user-guide/features/plugins#可插拔接口--各场景对应文档)，获取每种扩展接口的汇总视图，包括配置驱动（TTS、STT、MCP、shell 钩子）和放入目录（网关钩子）两种方式。
 :::
 
 ## 你将构建什么
@@ -268,7 +268,7 @@ def register(ctx):
 - `ctx.register_tool()` 将你的工具放入注册表——模型立即可见
 - `ctx.register_hook()` 订阅生命周期事件
 - `ctx.register_cli_command()` 注册 CLI 子命令（例如 `hermes my-plugin <subcommand>`）
-- `ctx.register_command()` 注册会话内斜杠命令（例如在 CLI / 网关聊天中输入 `/myplugin <args>`）——详见下方[注册斜杠命令](#register-slash-commands)
+- `ctx.register_command()` 注册会话内斜杠命令（例如在 CLI / 网关聊天中输入 `/myplugin <args>`）——详见下方[注册斜杠命令](#注册斜杠命令)
 - `ctx.dispatch_tool(name, arguments)` ——以父代理的上下文（审批、凭证、task_id 自动连接）调用任意其他工具（内置或来自其他插件）。适用于需要直接调用 `terminal`、`read_file` 或其他工具的斜杠命令处理器，效果等同于模型直接调用。
 - 如果此函数崩溃，插件将被禁用，但 Hermes 继续正常运行
 
@@ -370,12 +370,13 @@ hermes logs --level WARNING | grep -i plugin
 ```python
 # In tools.py or __init__.py
 from pathlib import Path
+from ruamel.yaml import YAML
 
 _PLUGIN_DIR = Path(__file__).parent
 _DATA_FILE = _PLUGIN_DIR / "data" / "languages.yaml"
 
 with open(_DATA_FILE) as f:
-    _DATA = yaml.safe_load(f)
+    _DATA = YAML(typ="safe").load(f)
 ```
 
 ### 捆绑技能
@@ -455,34 +456,39 @@ requires_env:
 
 两种格式可在同一列表中混用。已设置的变量会被静默跳过。
 
-### 懒加载可选 Python 依赖
+### 懒加载可选 Python 依赖 {#lazy-install-optional-python-dependencies}
 
-如果你的插件封装了一个并非所有用户都会安装的 SDK（供应商 SDK、重型 ML 库、平台特定包），不要在模块顶部 `import` 它。在工具处理器内部使用 `tools.lazy_deps.ensure(...)` 辅助函数——Hermes 会在首次使用时安装该包，并受用户 `security.allow_lazy_installs` 配置的控制。
+对于 Hermes 已声明的项目 extra，在实际需要 SDK 的操作中使用 `pm.ensure_import`。
+可用性检查使用只读的 `pm.available`。不要从频繁调用的 `check_fn` 安装依赖。
+
+以下示例请求现有的 `bedrock` extra：
 
 ```python
-# tools.py
-from tools.lazy_deps import ensure, FeatureUnavailable
+from pm import InstallError, ensure_import
 
 def my_tool_handler(args, **kwargs):
     try:
-        ensure("my-plugin.my-backend")   # key must be in LAZY_DEPS
-    except FeatureUnavailable as exc:
+        ensure_import("bedrock")
+    except InstallError as exc:
         return {"error": str(exc)}
 
-    import my_backend_sdk   # safe now
-    ...
+    import boto3
+    # Use the SDK here.
 ```
 
-来自 `tools/lazy_deps.py` 安全模型的两条规则：
+参数是 `pyproject.toml` 中的 extra 名称，不是任意 pip 规格或插件限定键。
+旧的 `LAZY_DEPS` 注册表和 `FeatureUnavailable` 异常已移除。
+如果新环境需要重启，请返回该错误，不要向当前进程叠加另一个环境的导入路径。
+关闭 `security.allow_lazy_installs` 不影响已经可用的依赖。
 
-| 规则 | 原因 |
-|---|---|
-| 你的功能键必须出现在内置的 `LAZY_DEPS` 允许列表中 | 防止恶意配置诱使 Hermes 安装任意包——只有 Hermes 自身随附的规格才符合条件 |
-| 规格仅限 PyPI 包名 | 不允许 `--index-url`、`git+https://` 或 `file:` 路径。在允许列表条目中使用 PEP 440 固定版本（`"my-sdk>=1.2,<2"`） |
-
-对于通过 pip 分发的第三方插件，在你自己的 `pyproject.toml` 中将可选依赖声明为 `[project.optional-dependencies]` extras，并告知用户执行 `pip install your-plugin[backend]`——该路径不经过 `lazy_deps`。懒加载安装最适合**内置**插件，因为对每次安装都强制依赖会增加 Hermes 基础安装的体积。
-
-当全局设置 `security.allow_lazy_installs: false` 时，`ensure()` 会立即抛出 `FeatureUnavailable` 并附带修复提示——你的插件应捕获该异常并优雅降级（返回错误结果，而非让工具循环崩溃）。
+目录插件通过 `pyproject.toml` 的 `[project].dependencies` 声明自己的依赖。
+`plugin.yaml` 中的旧式 `pip_dependencies` 和 `python_dependencies` 列表也会加入 PM 工作区。
+PM 在启用插件前统一准备核心依赖和插件依赖，不改写已发布的源码或锁文件。
+安装流程会请求依赖安装许可；拒绝时保留已安装但未启用的插件。
+成功准备后，环境选择与启用配置通过同一准入事务发布；失败保留原选择和启用列表。
+解析冲突会拒绝准入并保留原环境，不会自动禁用其他插件。
+手动 pip 安装不等于持久的 PM 依赖声明，后续环境替换不保证保留它们。
+详见[包管理](/reference/package-management)。
 
 ### 条件工具可用性
 
@@ -533,7 +539,7 @@ def register(ctx):
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | 任意工具执行前 | `tool_name: str, args: dict, task_id: str` | 忽略 |
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | 任意工具返回后 | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | 忽略 |
-| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | 每轮一次，工具调用循环前 | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [上下文注入](#pre_llm_call-context-injection) |
+| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | 每轮一次，工具调用循环前 | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [上下文注入](#pre_llm_call-上下文注入) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | 每轮一次，工具调用循环后（仅成功轮次） | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | 忽略 |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | 新会话创建（仅第一轮） | `session_id: str, model: str, platform: str` | 忽略 |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | 每次 `run_conversation` 调用结束 + CLI 退出 | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | 忽略 |
@@ -675,7 +681,7 @@ def register(ctx):
 
 注册后，用户可以运行 `hermes my-plugin status`、`hermes my-plugin config` 等命令。
 
-**记忆提供商插件**使用基于约定的方式：在插件的 `cli.py` 文件中添加 `register_cli(subparser)` 函数。记忆插件发现系统会自动找到它——无需调用 `ctx.register_cli_command()`。详见[记忆提供商插件指南](/developer-guide/memory-provider-plugin#adding-cli-commands)。
+**记忆提供商插件**使用基于约定的方式：在插件的 `cli.py` 文件中添加 `register_cli(subparser)` 函数。记忆插件发现系统会自动找到它——无需调用 `ctx.register_cli_command()`。详见[记忆提供商插件指南](/developer-guide/memory-provider-plugin#添加-cli-命令)。
 
 **活跃提供商限制：** 记忆插件 CLI 命令仅在其提供商是配置中活跃的 `memory.provider` 时才会出现。如果用户尚未设置你的提供商，你的 CLI 命令不会出现在帮助输出中。
 
@@ -960,7 +966,7 @@ description: Custom image generation backend
 
 ## 非 Python 扩展接口
 
-Hermes 也接受完全不是 Python 插件的扩展。这些在[可插拔接口表](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each)中有所展示；以下各节简要介绍每种编写方式。
+Hermes 也接受完全不是 Python 插件的扩展。这些在[可插拔接口表](/user-guide/features/plugins#可插拔接口--各场景对应文档)中有所展示；以下各节简要介绍每种编写方式。
 
 ### MCP 服务器——注册外部工具
 
@@ -1033,7 +1039,7 @@ hermes skills install myorg/skills-repo/my-workflow
 
 发布你自己的 tap 只需一个包含 `skills/<skill-name>/SKILL.md` 目录的 GitHub 仓库——无需服务器或注册表注册。
 
-**完整指南：** [技能中心](/user-guide/features/skills#skills-hub) · [发布自定义 tap](/user-guide/features/skills#publishing-a-custom-skill-tap)（仓库结构、最小示例、非默认路径、信任级别）。
+**完整指南：** [技能中心](/user-guide/features/skills#skills-hub) · [发布自定义 tap](/user-guide/features/skills#发布自定义-skill-tap)（仓库结构、最小示例、非默认路径、信任级别）。
 
 ### 通过命令模板接入 TTS / STT
 
@@ -1052,7 +1058,7 @@ tts:
 
 对于 STT，将 `HERMES_LOCAL_STT_COMMAND` 指向一个 shell 模板。支持的占位符：`{input_path}`、`{output_path}`、`{format}`、`{voice}`、`{model}`、`{speed}`（TTS）；`{input_path}`、`{output_dir}`、`{language}`、`{model}`（STT）。任何与路径交互的 CLI 都自动成为插件。
 
-**完整指南：** [TTS 自定义命令提供商](/user-guide/features/tts#custom-command-providers) · [STT](/user-guide/features/tts#voice-message-transcription-stt)。
+**完整指南：** [TTS 自定义命令提供商](/user-guide/features/tts#自定义命令提供商) · [STT](/user-guide/features/tts#语音消息转录stt)。
 
 ## 通过 pip 分发
 
@@ -1064,10 +1070,11 @@ tts:
 my-plugin = "my_plugin_package"
 ```
 
-```bash
-pip install hermes-plugin-calculator
-# 下次 hermes 启动时自动发现插件
-```
+当安装所有者提供的环境中包含该发行包时（例如 Nix 派生），entry-point 发现仍受支持。
+发现机制不代表可以向 PM 选中的环境直接注入 pip 包。对于 PM 管理的安装，
+请分发带有 `pyproject.toml` 或清单 Python 依赖声明的目录插件，并使用
+`hermes plugins install` / `enable` 进行事务式准入。新环境选定后重启 Hermes。
+`hermes pm install` 接受托管工具名称，不接受任意 PyPI 包名。
 
 ## 为 NixOS 分发
 
@@ -1077,7 +1084,7 @@ pip install hermes-plugin-calculator
 ```nix
 # User's configuration.nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "my-plugin";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -1087,7 +1094,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";  # nix-prefetch-url --unpack
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```
@@ -1104,7 +1111,7 @@ services.hermes-agent.extraPlugins = [
 ];
 ```
 
-完整文档（包括 overlay 用法和冲突检查）见 [Nix 设置指南](/getting-started/nix-setup#plugins)。
+完整文档（包括 overlay 用法和冲突检查）见 [Nix 设置指南](/getting-started/nix-setup#插件)。
 
 ## 常见错误
 

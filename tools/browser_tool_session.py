@@ -24,7 +24,7 @@ from tools import browser_tool_real_profile as _real_profile
 from tools import browser_tool_snapshot as _snapshot
 
 _DOCKER_PULL = "docker pull ghcr.io/nousresearch/hermes-agent:latest"
-_CHROMIUM_INSTALL = "npx agent-browser install --with-deps (or: npx playwright install --with-deps chromium)"
+_CHROMIUM_INSTALL = "hermes pm install chromium (system libraries: npx playwright install-deps chromium)"
 _CHROMIUM_MISSING_DOCKER_HINT = ("Chromium browser is missing. You're running in Docker — pull the latest image "
                                  f"to get the bundled Chromium: {_DOCKER_PULL}")
 _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROMIUM_INSTALL}"
@@ -37,7 +37,7 @@ def _needs_chromium_sandbox_bypass() -> bool:
     if _install._running_in_docker():
         return True
     try:
-        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8") as f:
+        with open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", encoding="utf-8-sig") as f:
             return f.read().strip() == "1"
     except OSError:
         return False
@@ -56,7 +56,7 @@ def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str,
     out = []
     for path in (stdout_path, stderr_path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 out.append(f.read().strip())
         except OSError:
             out.append("")
@@ -83,7 +83,7 @@ def _format_browser_timeout_error(
     if "sandbox" in f"{stderr}\n{stdout}".lower():
         parts.append("Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
                      "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
-                     "or run: npx agent-browser install --with-deps")
+                     "or run: npx playwright install-deps chromium")
     elif command == "open" and _cloud._is_local_mode():
         if _install._running_in_docker():
             parts.append("The browser daemon may still be starting or Chromium may be "
@@ -95,16 +95,7 @@ def _format_browser_timeout_error(
 
 
 def _agent_browser_argv(browser_cmd: str) -> list:
-    """Command prefix to invoke agent-browser (concrete binary, or the npx sentinel expanded).
-
-    npx is resolved through the same PATH cascade as ``_find_agent_browser`` (a bare
-    ``which("npx")`` would let a broken system npx shadow a healthy managed one); if
-    absent the bare name gives a readable ``FileNotFoundError``. ``--ignore-scripts``:
-    the spec is a floating range — a compromised future patch must not run install scripts.
-    """
-    if _install._is_npx_agent_browser_sentinel(browser_cmd):
-        _npx_bin = _install._resolve_npx_bin() or "npx"
-        return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", _bt.AGENT_BROWSER_NPX_SPEC]
+    """Keep the selected executable, including spaces, as one argv entry."""
     return [browser_cmd]
 
 
@@ -122,8 +113,16 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
     unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
+    from pm import env_for
+
     env = _bt._build_browser_env()
     env["PATH"] = _install._merge_browser_path(env.get("PATH", ""))
+    env = env_for("agent-browser", base_env=env)
+    from hermes_cli.browser_runtime import chromium_executable
+
+    executable = chromium_executable()
+    if executable:
+        env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
@@ -357,7 +356,7 @@ def _read_browser_daemon_pid(task_socket_dir: str, session_name: str) -> Optiona
     """Read the agent-browser daemon PID for a session (best-effort)."""
     pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
     try:
-        return int(Path(pid_file).read_text(encoding="utf-8").strip())
+        return int(Path(pid_file).read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 
@@ -482,11 +481,6 @@ def _browser_command_preflight() -> Dict[str, Any]:
         _bt.logger.warning("agent-browser CLI not found: %s", e)
         return {"success": False, "error": str(e)}
 
-    if _install._requires_real_termux_browser_install(browser_cmd):
-        error = _install._termux_browser_install_error()
-        _bt.logger.warning("browser command blocked on Termux: %s", error)
-        return {"success": False, "error": error}
-
     # Skip when engine=lightpanda — LP doesn't need Chromium for navigation.
     if (
         _cloud._is_local_mode()
@@ -542,9 +536,9 @@ def _spawn_and_collect(
         _bt.logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                        command, timeout, task_id, task_socket_dir)
         return {"success": False, "error": _format_browser_timeout_error(command, timeout, stdout, stderr)}
-    with open(stdout_path, "r", encoding="utf-8") as f:
+    with open(stdout_path, "r", encoding="utf-8-sig") as f:
         stdout = f.read()
-    with open(stderr_path, "r", encoding="utf-8") as f:
+    with open(stderr_path, "r", encoding="utf-8-sig") as f:
         stderr = f.read()
     _unlink_command_output_files(stdout_path, stderr_path)
     return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)

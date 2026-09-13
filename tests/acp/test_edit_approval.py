@@ -68,6 +68,43 @@ def test_requester_exception_denies_and_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
+def test_approved_existing_file_edit_applies(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    set_edit_approval_requester(lambda _proposal: True)
+
+    result = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-approve",
+        )
+    )
+
+    assert "error" not in result
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+
+def test_rejected_existing_file_edit_denies_with_clean_message(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    set_edit_approval_requester(lambda _proposal: False)
+
+    result = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-reject",
+        )
+    )
+
+    assert "denied by ACP client" in result["error"]
+    assert "not defined" not in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
 def test_patch_replace_rejection_does_not_mutate(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")

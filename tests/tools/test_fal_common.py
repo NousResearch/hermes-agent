@@ -34,35 +34,35 @@ class TestImportFalClient:
     def test_returns_fal_client_module(self, monkeypatch, fake_fal_client):
         """import_fal_client returns the fal_client module reference."""
         ensure = MagicMock()
-        monkeypatch.setattr("tools.lazy_deps.ensure", ensure)
+        monkeypatch.setattr("pm.ensure_import", ensure)
 
         result = import_fal_client()
         assert result is fake_fal_client
-        ensure.assert_called_once_with("image.fal", prompt=False)
+        ensure.assert_called_once_with("fal")
 
     def test_lazy_ensure_import_error_is_swallowed(self, monkeypatch, fake_fal_client):
-        """If lazy_deps.ensure raises ImportError, it's swallowed (fal_client still imported)."""
+        """If pm.ensure_import raises ImportError, it's swallowed (fal_client still imported)."""
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure",
-            MagicMock(side_effect=ImportError("no lazy_deps")),
+            "pm.ensure_import",
+            MagicMock(side_effect=ImportError("no pm")),
         )
 
         assert import_fal_client() is fake_fal_client
 
     def test_lazy_ensure_other_exception_raises_import_error(self):
-        """If lazy_deps.ensure raises a non-ImportError, it's re-raised as ImportError."""
-        with patch("tools.lazy_deps.ensure", side_effect=RuntimeError("install hint")):
+        """If pm.ensure_import raises a non-ImportError, it's re-raised as ImportError."""
+        with patch("pm.ensure_import", side_effect=RuntimeError("install hint")):
             with pytest.raises(ImportError, match="install hint"):
                 import_fal_client()
 
     def test_lazy_ensure_module_missing_is_swallowed(self, fake_fal_client):
-        """If tools.lazy_deps itself can't be imported, ImportError is swallowed."""
+        """If pm itself can't be imported, ImportError is swallowed."""
         import builtins
 
         original_import = builtins.__import__
 
         def failing_import(name, *args, **kwargs):
-            if name == "tools.lazy_deps":
+            if name == "pm":
                 raise ImportError("no module")
             return original_import(name, *args, **kwargs)
 

@@ -6,6 +6,9 @@ description: "将 Hermes Agent 与 Amazon Bedrock 配合使用——原生 Conve
 
 # AWS Bedrock
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 OpenAI 兼容端点。这让你可以完整访问 Bedrock 生态系统：IAM 身份验证、Guardrails、跨区域推理配置文件以及所有基础模型。
 
 ## 前提条件
@@ -15,7 +18,7 @@ Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 Ope
   - `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` 环境变量
   - `AWS_PROFILE`（用于 SSO 或命名配置文件）
   - `aws configure`（用于本地开发）
-- **boto3** — 通过 `cd ~/.hermes/hermes-agent && uv pip install -e ".[bedrock]"` 安装
+- **boto3** — 通过 `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"` 安装
 - **IAM 权限** — 至少需要：
   - `bedrock:InvokeModel` 和 `bedrock:InvokeModelWithResponseStream`（用于推理）
   - `bedrock:ListFoundationModels` 和 `bedrock:ListInferenceProfiles`（用于模型发现）
@@ -28,7 +31,7 @@ Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 Ope
 
 ```bash
 # 安装并启用 Bedrock 支持
-cd ~/.hermes/hermes-agent && uv pip install -e ".[bedrock]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"
 
 # 选择 Bedrock 作为提供商
 hermes model

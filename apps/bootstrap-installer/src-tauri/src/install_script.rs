@@ -252,7 +252,7 @@ const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
 /// Prepare bytes for the on-disk bootstrap cache.
 ///
 /// `.ps1` files get a UTF-8 BOM (unless one is already present). `.sh` files
-/// are left unchanged — a BOM would break `#!/bin/bash`.
+/// are left unchanged — a BOM would break `#!/usr/bin/env bash`.
 pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec<u8> {
     match kind {
         ScriptKind::Ps1 => {
@@ -429,9 +429,9 @@ mod tests {
 
     #[test]
     fn prepare_cached_sh_stays_bomless() {
-        let out = prepare_cached_script_bytes(ScriptKind::Sh, b"#!/bin/bash\n");
+        let out = prepare_cached_script_bytes(ScriptKind::Sh, b"#!/usr/bin/env bash\n");
         assert!(!out.starts_with(UTF8_BOM));
-        assert_eq!(out, b"#!/bin/bash\n");
+        assert_eq!(out, b"#!/usr/bin/env bash\n");
     }
 
     #[test]
@@ -492,10 +492,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hermes-bom-sh-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cached = dir.join("install-main.sh");
-        std::fs::write(&cached, b"#!/bin/bash\n").unwrap();
+        std::fs::write(&cached, b"#!/usr/bin/env bash\n").unwrap();
 
         upgrade_cached_script(ScriptKind::Sh, &cached, &|_| {});
-        assert_eq!(std::fs::read(&cached).unwrap(), b"#!/bin/bash\n");
+        assert_eq!(std::fs::read(&cached).unwrap(), b"#!/usr/bin/env bash\n");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

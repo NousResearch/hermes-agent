@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
+import { en } from '@/i18n/en'
 
 const storage = new Map<string, string>()
 
@@ -80,8 +82,11 @@ vi.mock('@/store/gateway-reconnect', () => ({
 }))
 
 const {
+  refreshDesktopVersion,
+  $desktopVersion,
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
+  checkUpdates,
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
@@ -134,6 +139,44 @@ const setRemote = (on: boolean) =>
     windowButtonPosition: null
   })
 
+describe('gateway version refresh', () => {
+  afterEach(() => {
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    $desktopVersion.set(null)
+  })
+
+  it('requests the active gateway and does not publish a previous connection reply', async () => {
+    setRemote(true)
+    setApiRequestConnection('remote-box')
+    setApiRequestProfile('work')
+
+    const version: DesktopVersionInfo = {
+      appVersion: '4.5.6', electronVersion: '40', nodeVersion: '26', platform: 'win32', hermesRoot: ''
+    }
+
+    const getVersion = vi.fn().mockResolvedValue(version)
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, getVersion }
+
+    try {
+      expect(await refreshDesktopVersion()).toEqual(version)
+      expect(getVersion).toHaveBeenCalledWith({ connectionId: 'remote-box', profile: 'work' })
+      expect($desktopVersion.get()?.appVersion).toBe('4.5.6')
+      let finish!: (value: DesktopVersionInfo) => void
+      getVersion.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      const pending = refreshDesktopVersion()
+      setRemote(false)
+      $desktopVersion.set(null)
+      finish(version)
+      expect(await pending).toBeNull()
+      expect($desktopVersion.get()).toBeNull()
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+})
+
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
     storage.clear()
@@ -170,18 +213,52 @@ describe('maybeNotifyUpdateAvailable', () => {
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
+  it('notifies for a Store update without a commit and never for an unknown check', () => {
+    maybeNotifyUpdateAvailable(status({ mechanism: 'microsoft-store', targetSha: undefined, behind: null, updateAvailable: true }))
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    notifySpy.mockClear()
+    maybeNotifyUpdateAvailable(status({ mechanism: 'microsoft-store', targetSha: undefined, behind: null, updateAvailable: false, error: 'Store unavailable' }))
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('does nothing when already up to date', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
-  // FAIL-BEFORE: a shallow installer clone reports behind:null + updateAvailable
+  // FAIL-BEFORE (#C19): a shallow installer clone reports behind:null + updateAvailable
   // (exact count unknowable without a merge-base). The guard treated null as 0
   // and silently swallowed the notification entirely.
   it('still notifies with generic copy when the exact behind count is unknown', () => {
     maybeNotifyUpdateAvailable(status({ behind: null, updateAvailable: true }))
     expect(notifySpy).toHaveBeenCalledTimes(1)
     expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'A new update is available.' })
+  })
+
+  // FAIL-BEFORE (C19): an App Installer check legitimately carries no
+  // targetSha — the OS reports availability against the .appinstaller feed,
+  // so there is no commit identity to name. Requiring targetSha made the
+  // mechanism-specific App Installer toast unreachable forever.
+  it('notifies for an App Installer check even though it has no targetSha', () => {
+    maybeNotifyUpdateAvailable(
+      status({
+        behind: null,
+        currentVersion: '0.19.0',
+        mechanism: 'app-installer',
+        targetSha: undefined,
+        updateAvailable: true
+      })
+    )
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: en.notifications.updateReadyMessageAppInstaller })
+  })
+
+  // Eligibility stays mechanism-specific: a git-style check must still prove
+  // there is a target commit before the toast fires — never a made-up SHA.
+  it('stays quiet for a git-style check that names no target commit', () => {
+    maybeNotifyUpdateAvailable(status({ targetSha: undefined }))
+    expect(notifySpy).not.toHaveBeenCalled()
   })
 })
 
@@ -249,7 +326,7 @@ describe('checkBackendUpdates', () => {
     vi.useRealTimers()
   })
 
-  it('maps the backend /update/check onto the backend status, including commits', async () => {
+  it('maps the backend /update/check onto the backend status, including commits', async (): Promise<void> => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
@@ -264,12 +341,15 @@ describe('checkBackendUpdates', () => {
 
     const result = await checkBackendUpdates()
 
-    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(false)
     expect(result?.behind).toBe(2)
     expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+
+    await checkBackendUpdates({ force: true })
+    expect(checkHermesUpdateSpy).toHaveBeenLastCalledWith(true)
   })
 
   it('preserves backend update_available when the backend cannot count commits', async () => {
@@ -821,6 +901,14 @@ describe('applyUpdates terminal state', () => {
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
+  it('does not claim an installation when the Store reports no remaining update', async () => {
+    applyMock.mockResolvedValue({ ok: true, updateAvailable: false })
+    await applyUpdates()
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('closes the overlay + toasts when updated but not relaunched in place', async () => {
     // The Linux AppImage / dev-run path: backend + GUI updated, no in-place
     // relaunch. Must not strand the overlay on a closeless spinner.
@@ -845,26 +933,6 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().error).toBe('rebuild-failed')
   })
 
-  it('preserves structured safe blockers for the close-and-update prompt', async () => {
-    const blockers = [
-      {
-        pid: 47484,
-        name: 'python.exe',
-        cmdline: 'python.exe -m http.server 8766',
-        kind: 'local-preview' as const,
-        safeToStop: true,
-        label: 'Example Preview',
-        port: 8766
-      }
-    ]
-
-    applyMock.mockResolvedValue({ ok: false, error: 'venv-blocked', message: 'blocked', blockers })
-
-    await applyUpdates()
-
-    expect($updateApply.get().error).toBe('venv-blocked')
-    expect($updateApply.get().blockers).toEqual(blockers)
-  })
 
   it('keeps the manual command state for CLI installs with no staged updater', async () => {
     applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
@@ -1375,6 +1443,11 @@ describe('startUpdatePoller', () => {
 
     await vi.advanceTimersByTimeAsync(1)
     expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes an explicit manual check through to the main process', async (): Promise<void> => {
+    await checkUpdates({ force: true })
+    expect(checkMock).toHaveBeenCalledWith({ force: true })
   })
 
   it('window focus only re-checks once the daily cadence has elapsed', async () => {

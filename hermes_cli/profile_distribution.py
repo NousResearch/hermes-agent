@@ -14,12 +14,13 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli.archive_safe import normalize_archive_parts
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -30,27 +31,11 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 # ``distribution_owned:``. config.yaml is dist-owned but preserved on update by default.
 DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
 
-# Paths NEVER part of a distribution: user-owned, protected on update. Keep consistent with
-# ``profiles.py`` export exclusions plus the ``local/`` convention for user customizations.
-USER_OWNED_EXCLUDE: frozenset = frozenset({
-    # Credentials & runtime secrets
-    "auth.json", ".env",
-    # Databases & runtime state
-    "state.db", "state.db-shm", "state.db-wal",
-    "hermes_state.db", "response_store.db",
-    "response_store.db-shm", "response_store.db-wal",
-    "gateway.pid", "gateway_state.json", "processes.json",
-    "auth.lock", "active_profile", ".update_check",
-    "errors.log", ".hermes_history",
-    # User data
-    "memories", "sessions", "logs", "plans", "workspace", "home",
-    "image_cache", "audio_cache", "document_cache",
-    "browser_screenshots", "checkpoints", "sandboxes",
-    "backups", "cache",
-    # Infrastructure
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
-    # User customization namespace
-    "local",
+# Distribution-specific user data extends the shared profile/runtime exclusions.
+from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
+
+USER_OWNED_EXCLUDE: frozenset = DEFAULT_EXPORT_EXCLUDE_ROOT | frozenset({
+    "memories", "sessions", "plans", "workspace", "home", "backups", "local",
 })
 
 
@@ -148,7 +133,7 @@ def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
     if not mf_path.is_file():
         return None
     try:
-        data = yaml.safe_load(mf_path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(mf_path.read_text(encoding="utf-8-sig"))  # utf-8-sig: tolerate BOM (ours)
     except Exception as exc:
         raise DistributionError(f"Failed to parse {mf_path}: {exc}") from exc
     return DistributionManifest.from_dict(data or {})
@@ -346,10 +331,11 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
         return
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
-        rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+        try:
+            rel_parts = tuple(normalize_archive_parts(rel))
+        except ValueError:
             continue
-        if ".." in rel_parts or PurePosixPath(rel).is_absolute():
+        if rel_parts[0] in USER_OWNED_EXCLUDE:
             continue
         src = staged.joinpath(*rel_parts)
         if src.exists():

@@ -100,7 +100,7 @@ def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
 
 def parse_pack(text: str, *, source: str = "<pack>") -> PluginPack:
     """Parse and validate a pack YAML document."""
-    import yaml
+    import hermes_yaml as yaml
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -183,7 +183,7 @@ def load_pack(path_or_url: str) -> PluginPack:
         raise PackError(f"Pack file not found: {path}")
     if path.stat().st_size > _MAX_PACK_BYTES:
         raise PackError("Pack file exceeds the 1 MiB size limit.")
-    return parse_pack(path.read_text(encoding="utf-8"), source=str(path))
+    return parse_pack(path.read_text(encoding="utf-8-sig"), source=str(path))
 
 
 # ── Resolution (bare index names → owner/repo) + review screen ──────────────────────────────
@@ -314,14 +314,12 @@ def install_pack_plugins(
     from hermes_cli.plugins_cmd import (
         PluginOperationError,
         _declared_capabilities_from_manifest,
-        _get_disabled_set,
-        _get_enabled_set,
         _install_plugin_core,
         _prompt_plugin_env_vars,
         _run_capability_consent,
-        _save_disabled_set,
-        _save_enabled_set,
+        _set_plugin_enabled,
     )
+    from hermes_cli.plugins_admission import AdmissionRefused
     results: List[PackInstallResult] = []
 
     def _fail(display: str, error: str) -> None:
@@ -351,12 +349,11 @@ def install_pack_plugins(
         except Exception:
             logger.debug("requires_env prompt failed for %s", installed_name, exc_info=True)
 
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
+        try:
+            _set_plugin_enabled(installed_name, enable=True)
+        except AdmissionRefused as exc:
+            _fail(display, str(exc))
+            continue
 
         # Per-plugin capability consent — the SAME flow as a single install (#64228). A pack never
         # bulk-grants capabilities.
@@ -419,7 +416,7 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
 def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, List[str]]:
     """Build pack YAML from the current install; returns ``(yaml_text, warnings)``. Plugins with
     unknown Git provenance (no install metadata) become warnings + YAML comments, never entries."""
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli.plugins_cmd import _get_enabled_set, _plugins_dir, _read_install_metadata
     metadata = _read_install_metadata()
     enabled = _get_enabled_set()

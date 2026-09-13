@@ -1,6 +1,10 @@
-"""Fixtures shared across hermes_cli tests."""
+"""Shared CLI fixtures; updater mutation boundaries are explicitly opt-in."""
 
 from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import patch
+import subprocess
 
 import pytest
 
@@ -42,7 +46,7 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     except Exception:
         return
     # raising=False: under pytest's per-test spawn isolation, a concurrent
-    # xdist worker importing a module that transitively touches hermes_cli.main
+    # process importing a module that transitively touches hermes_cli.main
     # can briefly expose a partially-initialized module object here — one where
     # _detect_concurrent_hermes_instances isn't defined yet. A bare setattr
     # would raise AttributeError and error the (unrelated) test. The attribute
@@ -57,31 +61,70 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 
 
 @pytest.fixture
-def isolated_update_runtime(monkeypatch, tmp_path, request):
-    """Keep mocked updater flows off the host checkout and runtime fleet."""
-    from hermes_cli import gateway, main, update_cmd, update_cmd_fleet
-    from hermes_cli import update_inventory, update_receipt
+def isolated_update_processes():
+    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
 
-    checkout = tmp_path / "isolated-update-checkout"
-    (checkout / ".git").mkdir(parents=True)
-    (checkout / "apps" / "desktop").mkdir(parents=True)
-    monkeypatch.setattr(main, "PROJECT_ROOT", checkout)
-    if hasattr(request.module, "PROJECT_ROOT"):
-        monkeypatch.setattr(request.module, "PROJECT_ROOT", checkout)
+    The restart phase used to swallow every exception at debug level, so these
+    end-to-end tests never noticed it touching real gateway discovery. Since
+    the phase is surfaced (#78574: an aborted restart now fails the update),
+    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
+    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
+    Discovery returning nothing makes the phase a clean no-op for every test
+    in this module (none of them assert on gateway restarts).
+    """
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.update_cmd_windows._detect_venv_python_processes", return_value=[]), \
+         patch("hermes_cli.main._fleet_probe_expected_runtimes", return_value=False), \
+         patch("os.kill"), \
+         patch("pm.sync_venv"), \
+         patch("pm.client.sync_venv"), \
+         patch(
+             "hermes_cli.update_inventory.collect_runtime_inventory",
+             return_value=SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+         ), \
+         patch("hermes_cli.main._purge_stale_hermes_modules"), \
+         patch("hermes_cli.main._pause_windows_gateways_for_update", return_value=None), \
+         patch("hermes_cli.main._resume_windows_gateways_after_update"), \
+         patch(
+             "hermes_cli.main._install_hangup_protection",
+             return_value={
+                 "prev_stdout": None, "prev_stderr": None,
+                 "log_file": None, "installed": False,
+             },
+         ), \
+         patch("hermes_cli.main._finalize_update_output"), \
+         patch("hermes_cli.update_cmd._reload_config_modules"):
+        yield
 
-    # A real purge would discard the module objects patched below.
-    monkeypatch.setattr(main, "_purge_stale_hermes_modules", lambda: None)
-    monkeypatch.setattr(gateway, "find_gateway_pids", lambda *a, **k: [])
-    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda *a, **k: [])
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda *a, **k: set())
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(main, "_resume_windows_gateways_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(main, "_detect_venv_python_processes", lambda: [])
-    monkeypatch.setattr(main, "_restore_active_tool_dependencies", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
-    monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: None)
-    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda *a, **k: [])
+
+@pytest.fixture
+def isolated_update_checkout(monkeypatch, tmp_path):
+    """Keep the updater on an isolated checkout and intercept the web build's Popen path."""
+    import hermes_cli.main as cli_main
+    from hermes_cli import main_web_build
+
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path, raising=False)
+    noop_build = lambda *args, **kwargs: True  # noqa: E731
+    monkeypatch.setattr(cli_main, "_build_web_ui", noop_build, raising=False)
+    monkeypatch.setattr(main_web_build, "_build_web_ui", noop_build, raising=False)
+    monkeypatch.setattr(
+        main_web_build, "_web_ui_build_needed", lambda *a, **k: False, raising=False
+    )
+    fake_npm = lambda *a, **k: subprocess.CompletedProcess(  # noqa: E731
+        [], 0, stdout="", stderr=""
+    )
+    monkeypatch.setattr(
+        main_web_build, "_run_npm_install_deterministic", fake_npm, raising=False
+    )
+
+    # Tests that exercise ZIP fallback must override this tripwire explicitly.
+    def _no_zip_fallback(*args, **kwargs):
+        pytest.fail(
+            "test reached _update_via_zip — the git checkout path was not "
+            "isolated correctly (missing tmp .git or unexpected fallback)"
+        )
+
+    monkeypatch.setattr("hermes_cli.update_cmd._update_via_zip", _no_zip_fallback)

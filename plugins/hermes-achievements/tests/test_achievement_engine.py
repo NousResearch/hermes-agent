@@ -157,7 +157,7 @@ class AchievementEngineTests(unittest.TestCase):
             / "dashboard"
             / "dist"
             / "style.css"
-        ).read_text(encoding="utf-8")
+        ).read_text(encoding="utf-8-sig")
 
         hover_rule = next(
             line for line in style_css.splitlines() if line.startswith(".ha-card:hover")

@@ -84,6 +84,28 @@ export function getLocalModelsJobs(): Promise<{ jobs: LocalRuntimeJob[] }> {
   })
 }
 
+// Pause/resume a download-phase job (catalog model, quickstart, runtime
+// install/update, HF-browsed). The backend answers {ok, paused} /
+// {ok, resumed} — a false flag (no live download handle, e.g. a
+// quickstart engine leg) is reported to the caller, not treated as success.
+export function pauseLocalDownload(jobId: string): Promise<{ ok: boolean; paused: boolean }> {
+  return hermesApi<{ ok: boolean; paused: boolean }>({
+    ...profileScoped(),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/pause'
+  })
+}
+
+export function resumeLocalDownload(jobId: string): Promise<{ ok: boolean; resumed: boolean }> {
+  return hermesApi<{ ok: boolean; resumed: boolean }>({
+    ...profileScoped(),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/resume'
+  })
+}
+
 export function activateLocalModel(modelId: string): Promise<{ job_id: string }> {
   return hermesApi<{ job_id: string }>({
     ...profileScoped(),

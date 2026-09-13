@@ -14,13 +14,15 @@ Sidebar is updated to nest all per-skill pages under Skills → Bundled / Option
 
 from __future__ import annotations
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO))
+import hermes_yaml as yaml
+
 DOCS = REPO / "website" / "docs"
 SKILLS_PAGES = DOCS / "user-guide" / "skills"
 

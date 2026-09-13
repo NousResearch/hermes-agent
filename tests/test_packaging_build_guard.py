@@ -94,3 +94,38 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
 
     missing = sorted(expected - shipped)
     assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+
+
+def test_wheel_ships_pm_package_and_lock_json(tmp_path):
+    """The pm/ package manager must survive a sealed wheel build.
+
+    pm is a flat package listed in [tool.setuptools.packages.find] include,
+    and pm/lock.json is its runtime pin table (uv/python/tool versions +
+    sha256s) declared via [tool.setuptools.package-data]. If either drops
+    out of the wheel, installed Hermes has no package manager at all --
+    exercise the real PEP 517 build path rather than reading TOML source.
+    """
+    result = _build_artifact("wheel", tmp_path, nix_build=True)
+
+    assert result.returncode == 0, result.stderr
+    artifacts = list(tmp_path.glob("hermes_agent-*.whl"))
+    assert artifacts
+
+    with zipfile.ZipFile(artifacts[0]) as wheel:
+        shipped = set(wheel.namelist())
+
+    missing = sorted({"pm/__init__.py", "pm/lock.json", "pm/artifact-mirror.json"} - shipped)
+    assert not missing, f"wheel omits pm package files: {missing}"
+
+    installed = tmp_path / "installed"
+    with zipfile.ZipFile(artifacts[0]) as wheel:
+        wheel.extractall(installed)
+    check = subprocess.run(
+        [sys.executable, "-I", "-S", "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); "
+         "from pm.artifact_mirror import mirror_url; print(mirror_url('0' * 64))", str(installed)],
+        cwd=tmp_path, text=True, capture_output=True, timeout=30,
+    )
+    assert check.returncode == 0, check.stderr
+    from pm.artifact_mirror import mirror_url
+    assert check.stdout.strip() == mirror_url("0" * 64)

@@ -192,7 +192,7 @@ class TestReadFileNonTextPaths:
         assert len(calls) == 1 and READ_PROBE_MARK not in calls[0]
         assert r.is_image is True and r.file_size == 6
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_fifo_returns_not_regular_without_blocking(self, shell, tmp_path):
         if not hasattr(os, "mkfifo"):
             pytest.skip("no mkfifo")
@@ -323,7 +323,7 @@ class TestNativeRead:
         for c in calls:
             assert c == "echo $HOME" or c.startswith("ls -1 '~; echo PWNED"), c
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_fifo_refused_without_a_shell_and_without_blocking(self, native, tmp_path):
         if not hasattr(os, "mkfifo"):
             pytest.skip("no mkfifo")

@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
 

@@ -38,6 +38,24 @@ def test_probe_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert a._probe_enabled is True
 
 
+def test_probe_config_explicit_zero_disables_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Explicit 0 in extra must NOT fall through to the default (``or`` bug):
+    # a non-positive interval is the documented escape hatch that disables the watchdog.
+    a = _make_adapter(monkeypatch, probe_interval_seconds=0)
+    assert a._probe_interval == 0
+    assert a._probe_enabled is False
+
+
+def test_probe_config_invalid_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unparseable values degrade to defaults instead of aborting construction.
+    a = _make_adapter(monkeypatch, probe_interval_seconds="soon", probe_timeout_seconds=None,
+                      probe_max_failures="lots")
+    assert a._probe_interval == 600.0
+    assert a._probe_timeout == 10.0
+    assert a._probe_max_failures == 3
+    assert a._probe_enabled is True
+
+
 def test_note_activity_resets_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     a = _make_adapter(monkeypatch)
     a._probe_failures = 2

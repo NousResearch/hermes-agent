@@ -112,7 +112,7 @@ class OptionalSkillSource(SkillSource):
         # Catalog stubs point at the real skill in an upstream-maintained repo
         # (metadata.hermes.upstream); install pulls the live content from there.
         try:
-            skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             skill_md = None
         upstream = None if skill_md is None else self._upstream_pointer_from_content(skill_md)
@@ -264,7 +264,7 @@ class OptionalSkillSource(SkillSource):
         for skill_md in self._local_skill_mds():
             parent = skill_md.parent
             try:
-                content = skill_md.read_text(encoding="utf-8")
+                content = skill_md.read_text(encoding="utf-8-sig")
             except (OSError, UnicodeDecodeError):
                 continue
             fm = _parse_frontmatter(content)

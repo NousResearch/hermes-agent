@@ -27,10 +27,10 @@ def boba_installed(tmp_path, monkeypatch):
 
 
 def _write_config(home, *, enabled: bool, slug: str = "") -> None:
-    import yaml
+    import hermes_yaml as yaml
 
     cfg = {"display": {"pet": {"enabled": enabled, "slug": slug, "scale": 0.33}}}
-    (home / "config.yaml").write_text(yaml.dump(cfg), encoding="utf-8")
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 
@@ -56,7 +56,7 @@ def test_pets_cli_quoted_false_disables_and_toggle_enables(tmp_path, monkeypatch
     bool('false') is True — before the is_truthy_value fix, _has_active_pet
     reported an active pet and /pet toggle DISABLED instead of enabling.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     from hermes_cli.pets import _has_active_pet, toggle_pet_display
 

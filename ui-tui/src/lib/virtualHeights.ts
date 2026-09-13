@@ -1,4 +1,3 @@
-import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
@@ -105,7 +104,7 @@ export const estimatedMsgHeight = (
     return Math.max(2, msg.todos.length + 2)
   }
 
-  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
+  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt)
   const text = msg.text
   let h = wrappedLines(text || ' ', bodyWidth)
 

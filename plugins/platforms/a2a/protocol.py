@@ -454,7 +454,7 @@ def persist_message(context_id: str, role: str, text: str, task_id: str = "") ->
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding="utf-8").splitlines()
+        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").splitlines()
     except Exception:
         return []
     out: list[dict] = []

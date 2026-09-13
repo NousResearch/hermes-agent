@@ -155,6 +155,17 @@ Security-critical invariants are identical across both modes:
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
 
+## Persistent session kernel
+
+Calls reuse a Python child for the same session, execution mode, interpreter,
+working directory, and tool set. Imports, variables, and loaded data can persist
+between cells. The child environment is fixed when the kernel starts.
+
+Pass `reset: true` to discard that kernel state. A timeout or interrupted kernel
+can also lose it. Do not assume that a later terminal environment change is
+already visible inside an existing kernel. The old `code_execution.kernel_mode`
+setting is no longer a separate switch.
+
 ## Resource Limits
 
 | Resource | Limit | Notes |

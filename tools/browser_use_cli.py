@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import subprocess
 import time
@@ -139,7 +138,7 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
     env = _build_browser_env()
-    # The CLI runs under its own Python (uv tool / uvx); an inherited PYTHONPATH/PYTHONHOME
+    # The CLI runs under its own PM-managed Python; an inherited PYTHONPATH/PYTHONHOME
     # (Hermes's venv) wins over its site-packages → wrong-ABI C-extensions and a crash.
     # PYTHONPATH/PYTHONHOME inherited from the agent process point at Hermes's venv site-packages, and a
     # child interpreter honors them ahead of its own site-packages — so the CLI imports compiled
@@ -154,10 +153,11 @@ def _base_subprocess_env() -> dict:
 
 
 def _floor_subprocess_path(path: str) -> str:
-    """Guarantee core system dirs on the CLI subprocess PATH: profile workers (kanban bots, cron) can inherit
-    a PATH of only version-manager dirs, and the uv binary's POSIX sh trampoline resolves ``dirname``/``realpath``
-    via PATH (exit 127 without /usr/bin). Reuses browser_tool's ``_merge_browser_path`` floor, else appends
-    FHS bin dirs. Windows .cmd shims don't trampoline: no-op there."""
+    """Keep system commands reachable from profile workers with a minimal PATH.
+
+    Browser subprocesses may launch shell helpers; version-manager-only paths
+    omit /usr/bin. Reuse the shared browser PATH floor on POSIX.
+    """
     if os.name == "nt":
         return path
     with contextlib.suppress(Exception):
@@ -205,7 +205,7 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
-    unset ``browser.backend`` ("") enables it whenever the CLI is runnable (installed binary or uvx);
+    unset ``browser.backend`` ("") enables it whenever the PM-managed CLI is installed;
     ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
     tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
     if _camofox_active():
@@ -221,12 +221,14 @@ def default_downgrade_notice() -> Optional[str]:
         if get_browser_backend() or _camofox_active() or _find_cli() is not None:
             return None  # explicit choice / Camofox / CLI present — nothing downgraded
         stamp = Path(get_hermes_home()) / "cache" / ".browser_use_default_notice"
+        now = time.time()
         with contextlib.suppress(OSError):
-            if 0 <= time.time() - stamp.stat().st_mtime < 24 * 3600:
+            if 0 <= now - stamp.stat().st_mtime < 24 * 3600:
                 return None
         with contextlib.suppress(OSError):
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.touch()
+            os.utime(stamp, (now, now))
         return ("Browser Use CLI not found — using the built-in browser tools. Run `hermes tools` "
                 "(Browser Automation → Browser Use) to install it, or `browser.backend: off` in config.yaml to silence this.")
     except Exception as e:  # pragma: no cover — a notice must never break startup
@@ -234,70 +236,28 @@ def default_downgrade_notice() -> Optional[str]:
         return None
 
 
-def _managed_bin_dir() -> str:
-    """$HERMES_HOME/bin — where install.sh puts uv/uvx and install_cli() links browser-use."""
-    return str(Path(get_hermes_home()) / "bin")
+_CLI_REQUIREMENTS = ("browser-use==0.13.10",)
 
 
 def _find_cli() -> Optional[List[str]]:
-    """Locate the browser-use CLI, or None when it can't be run. MANAGED-FIRST: Hermes' own ``$HERMES_HOME/bin``
-    copy always wins so every session drives one Hermes-controlled binary; PATH and the user-level tool dir
-    (~/.local/bin, or uv's %APPDATA%/uv/bin on Windows — Desktop/TUI workers may start with a minimal PATH
-    that omits it) are fallbacks; uvx zero-install (same probe order) is last."""
-    if os.name == "nt":
-        appdata = os.environ.get("APPDATA")
-        user_bin = str(Path(appdata) / "uv" / "bin") if appdata else None
-    else:
-        user_bin = str(Path(os.path.expanduser("~")) / ".local" / "bin")
-    probe_paths = [p for p in (_managed_bin_dir(), None, user_bin) if p is None or p]  # None = PATH
-    for name, argv in (("browser-use", lambda b: [b]), ("uvx", lambda b: [b, "browser-use"])):
-        for probe_path in probe_paths:
-            found = shutil.which(name, path=probe_path)
-            if found:
-                return argv(found)
-    return None
+    """Read PM's selected CLI without installing anything during discovery."""
+    import pm
+
+    binary = pm.python_tool("browser-use", "browser-use")
+    return [str(binary)] if binary is not None else None
 
 
 def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
-    """Install the browser-use CLI via ``uv tool install`` (managed uv via ``ensure_uv`` → uv on PATH), linking
-    the binary into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()`` resolves it for every profile.
-    Returns ``(ok, message)``; never raises. MANAGED-FIRST: only the managed copy short-circuits — a browser-use
-    on PATH is a user-level side install and must not block provisioning the canonical copy (version drift)."""
-    bin_dir = _managed_bin_dir()
-    managed = shutil.which("browser-use", path=bin_dir)
-    if managed:
-        return True, f"browser-use CLI already installed ({managed})"
-
-    def _managed_uv() -> Optional[str]:
-        from hermes_cli.managed_uv import ensure_uv
-        return str(ensure_uv() or "") or None
-    uv_bin = _quiet(_managed_uv, None, "Managed uv bootstrap unavailable") or shutil.which("uv")
-    if not uv_bin:
-        return False, ("uv is not available and could not be bootstrapped. Install uv "
-                       "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`.")
-    env = {**os.environ, "UV_NO_CONFIG": "1"}
+    """Provision the pinned CLI in PM's isolated environment; never raises."""
     try:
-        Path(bin_dir).mkdir(parents=True, exist_ok=True)
-        env["UV_TOOL_BIN_DIR"] = bin_dir
-    except OSError as e:
-        logger.debug("Could not prepare %s: %s", bin_dir, e)
+        import pm
 
-    try:
-        result = subprocess.run([uv_bin, "tool", "install", "browser-use"], capture_output=True, text=True, encoding="utf-8",
-                                errors="replace", env=env, timeout=timeout_s, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return False, f"`uv tool install browser-use` timed out after {timeout_s}s"
-    except Exception as e:
-        return False, f"Failed to run `uv tool install browser-use`: {e}"
-
-    if result.returncode != 0:
-        tail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-3:])
-        return False, f"`uv tool install browser-use` failed:\n{tail}"
-    found = _find_cli()
-    if not found or len(found) != 1:
-        return False, ("install reported success but the browser-use binary is still not resolvable — "
-                       "run `uv tool install browser-use` manually")
-    return True, f"browser-use CLI installed ({found[0]})"
+        binary = pm.ensure_python_tool(
+            "browser-use", _CLI_REQUIREMENTS, "browser-use", explicit=True, timeout=timeout_s,
+        )
+    except Exception as exc:
+        return False, f"Could not install browser-use CLI: {exc}"
+    return True, f"browser-use CLI installed ({binary})"
 
 
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
@@ -593,9 +553,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     cmd = _find_cli()
     if not cmd:
-        return tool_error("browser-use CLI not found on PATH, and uvx is unavailable for a zero-install run. "
-                          "Install it with `uv tool install browser-use` (or `pipx install browser-use`), "
-                          "then run `browser-use --doctor` to verify the setup.")
+        return tool_error("The PM-managed browser-use CLI is not installed. "
+                          "Run `hermes tools` (Browser Automation → Browser Use) to install it.")
 
     env = _base_subprocess_env()
     if session:
@@ -736,9 +695,9 @@ def _dynamic_schema_overrides() -> dict:
 
 BROWSER_EXEC_SCHEMA = {
     "name": "browser_exec",
-    # Static fallback description, used only when the CLI (and uvx) is unavailable
+    # Static fallback description, used only when the managed CLI is unavailable
     "description": (_HEADER_BASE + _HELPERS_DIGEST
-                    + "\n\n(The browser-use CLI is not installed yet. Install it with `uv tool install browser-use`.)"),
+                    + "\n\n(The browser-use CLI is not installed yet. Install it with `hermes tools` (Browser Automation → Browser Use).)"),
     "parameters": {
         "type": "object",
         "properties": {

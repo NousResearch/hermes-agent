@@ -7,7 +7,7 @@ import pytest
 import hermes_state_holders
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_foreign_holder_accepts_same_inode_reached_through_an_alias(
     tmp_path, monkeypatch
 ):

@@ -1,10 +1,8 @@
-"""Tests for _verify_console_scripts_installed (issue #52931)."""
+"""Orphan launcher discovery follows the declared console script names."""
 
 from __future__ import annotations
 
 import textwrap
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from hermes_cli import main_install_repair
@@ -40,30 +38,13 @@ def fake_scripts_dir(tmp_path):
     return scripts
 
 
-class TestVerifyConsoleScriptsInstalled:
-    def test_no_action_when_all_shims_present(self, temp_pyproject, fake_scripts_dir):
-        for name in ("hermes", "hermes-agent", "hermes-acp"):
-            (fake_scripts_dir / f"{name}.exe").write_bytes(b"fake")
+class TestHermesExeShims:
+    """The orphan sweep includes declared scripts and the legacy gateway shim."""
 
-        with patch("hermes_cli.main_install_repair._is_windows", return_value=True), \
-             patch("hermes_cli.main_install_repair._venv_scripts_dir", return_value=fake_scripts_dir), \
-             patch("hermes_cli.main_install_repair._run_quarantined_install") as mock_install:
-            from hermes_cli.main_install_repair import _verify_console_scripts_installed
-
-            _verify_console_scripts_installed(["uv", "pip"], env={})
-
-        mock_install.assert_not_called()
-
-
-
-
-    def test_quarantine_shims_include_declared_console_scripts(
+    def test_shims_include_declared_console_scripts(
         self, temp_pyproject, fake_scripts_dir
     ):
-        import hermes_cli.main as main_mod
-
-        with patch("hermes_cli.main_install_repair._is_windows", return_value=True):
-            names = {path.name for path in main_install_repair._hermes_exe_shims(fake_scripts_dir)}
+        names = {path.name for path in main_install_repair._hermes_exe_shims(fake_scripts_dir)}
 
         assert {"hermes.exe", "hermes-agent.exe", "hermes-acp.exe"} <= names
         assert "hermes-gateway.exe" in names

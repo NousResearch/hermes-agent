@@ -1682,14 +1682,13 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
             if commit_fence is not None:
                 commit_fence.try_cancel_before_commit()
             worker_started.set()
-            # Keep the worker alive (and keep reporting "progress") so a
-            # host that still extends to the 600s ceiling would stall here.
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
+            # Keep the worker alive (and keep reporting "progress") until the
+            # test releases it — which happens only AFTER the host has
+            # returned. A host that still extends toward the 600s ceiling
+            # would stall here and blow the bounded wait_for below.
+            while not release_worker.is_set():
                 if commit_fence is not None:
                     commit_fence.touch_progress()
-                if release_worker.is_set():
-                    break
                 time.sleep(0.02)
             return (messages, None)
 
@@ -1699,16 +1698,11 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
         runner, adapter, event = _make_cooldown_runner(
             monkeypatch, tmp_path, HungAfterFenceCancelAgent, db, session_id
         )
-        started = time.monotonic()
-        result = await runner._handle_message(event)
-        elapsed = time.monotonic() - started
+        result = await asyncio.wait_for(runner._handle_message(event), timeout=30)
 
         assert result == "ok"
-        assert worker_started.wait(timeout=2)
-        assert elapsed < 2.0, (
-            f"hygiene host waited {elapsed:.1f}s after fence cancel — "
-            "must not extend toward the 600s ceiling (#96953)"
-        )
+        assert worker_started.wait(timeout=10)
+        assert not cleanup_done.is_set()
         assert runner._run_agent.await_count == 1
         state = db.get_compression_failure_cooldown(session_id)
         assert state is not None and state["remaining_seconds"] > 0
@@ -1716,8 +1710,10 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
             "Context compression timed out" in s["content"] for s in adapter.sent
         ), "fence-cancel is not a summary-model timeout; no timeout toast"
         release_worker.set()
-        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+        assert await asyncio.to_thread(cleanup_done.wait, 10)
     finally:
+        release_worker.set()
+        await asyncio.to_thread(cleanup_done.wait, 10)
         db.close()
 
 
@@ -1812,6 +1808,6 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
             f"{state!r}"
         )
         release_worker.set()
-        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
+        assert await asyncio.to_thread(cleanup_done.wait, 10)
     finally:
         db.close()

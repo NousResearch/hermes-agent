@@ -128,7 +128,7 @@ def _run_native_windows_gateway_start_diag(
     return json.loads(line.removeprefix("DIAG_JSON="))
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize(
     ("marker", "expected_breakaway"),
     [("1", True), ("0", False), (None, None)],
@@ -289,7 +289,6 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setenv("USER", "alice")
         monkeypatch.setattr(
             gateway.subprocess,
@@ -301,16 +300,9 @@ class TestSystemdLingerStatus:
         assert gateway.get_systemd_linger_status() == (True, "")
 
 
-    def test_reports_termux_as_not_supported(self, monkeypatch):
-        monkeypatch.setattr(gateway, "is_termux", lambda: True)
-
-        assert gateway.get_systemd_linger_status() == (None, "not supported in Termux")
-
-
 class TestContainerSystemdSupport:
     def test_supports_systemd_services_in_container_with_user_manager(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: False)
         monkeypatch.setattr(gateway, "is_container", lambda: True)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
@@ -343,15 +335,10 @@ def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
 
     assert len(calls) == 1
     cmd, kwargs = calls[0]
-    assert cmd == [
-        "/usr/bin/python3",
-        "-m",
-        "hermes_cli.stderr_timestamp",
-        "--error-log",
-        str(tmp_path / "logs" / "gateway.error.log"),
-        "--",
-        *child_cmd,
-    ]
+    assert cmd[0] == "/usr/bin/python3"
+    separator = cmd.index("--")
+    assert cmd[separator - 2:separator] == ["--error-log", str(tmp_path / "logs" / "gateway.error.log")]
+    assert cmd[separator + 1:] == child_cmd
     assert kwargs["stdin"] is gateway.subprocess.DEVNULL
     assert kwargs["stderr"] is gateway.subprocess.DEVNULL
     assert kwargs["stdout"].name == str(tmp_path / "logs" / "gateway.log")
@@ -685,18 +672,14 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         fake_psutil = SimpleNamespace(Process=lambda pid: by_pid[pid])
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
+    @pytest.mark.platforms("windows")
     def test_windows_excludes_recorded_pid_and_bootstrap_from_kill(self, monkeypatch):
         """The recorded gateway PID and its bootstrap parent must not be killed."""
         recorded_pid = 52615   # detached gateway recorded in gateway.pid
         bootstrap_pid = 52616  # Scheduled-Task bootstrap (argv matches scan)
         orphan_pid = 99998     # a real orphan that should still be reaped
 
-        # Pretend we're on Windows — supports_systemd_services() returns
-        # False so the function does NOT short-circuit and proceeds to the
-        # scan, and is_macos() is False so the launchd branch is skipped.
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        # Native Windows owns the service topology; records remain test data.
 
         # gateway.pid records the detached gateway; its parent is the
         # Scheduled-Task bootstrap whose argv matches the gateway scan.
@@ -736,15 +719,12 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         assert recorded_pid not in killed  # the recorded gateway was NOT killed
         assert bootstrap_pid not in killed  # its supervision chain was NOT killed
 
+    @pytest.mark.platforms("windows")
     def test_windows_no_orphans_when_only_recorded_gateway_running(self, monkeypatch):
         """If the only gateway processes are the recorded one and its
         bootstrap parent, the reaper returns False and kills nothing."""
         recorded_pid = 52615
         bootstrap_pid = 52616
-
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
 
         bootstrap = SimpleNamespace(pid=bootstrap_pid, parent=lambda: None)
         recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: bootstrap)
@@ -774,6 +754,7 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         assert result is False  # no orphans reaped
         assert killed_pids == []  # nothing was killed
 
+    @pytest.mark.platforms("windows")
     def test_windows_raw_record_supplies_exclusion_when_validation_fails(
         self, monkeypatch
     ):
@@ -788,10 +769,6 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         would TerminateProcess a healthy standalone gateway (#87158).
         """
         recorded_pid = 52615
-
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
 
         recorded = SimpleNamespace(pid=recorded_pid, parent=lambda: None)
         self._install_fake_psutil(monkeypatch, [recorded])
@@ -852,6 +829,7 @@ class TestReaperCandidateIsSupervisorOwned:
         fake_psutil = SimpleNamespace(Process=lambda pid: by_pid[pid])
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
+    @pytest.mark.platforms("windows")
     def test_windows_scheduled_task_gateway_spared_without_pidfile(self, monkeypatch):
         """A Windows gateway launched by the Scheduled Task is spared even when
         gateway.pid is missing — the supervisor-owned backstop catches it."""
@@ -859,9 +837,6 @@ class TestReaperCandidateIsSupervisorOwned:
         bootstrap_pid = 52616   # Task-launched `hermes gateway run` bootstrap
         orphan_pid = 99998      # a genuine orphan that SHOULD be reaped
 
-        monkeypatch.setattr(gateway, "is_windows", lambda: True)
-        monkeypatch.setattr(gateway, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         # No pidfile => get_running_pid() returns None.
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         # _get_service_pids() is empty on Windows.
@@ -1277,3 +1252,65 @@ def test_find_profile_gateway_processes_strict_propagates_profile_listing_failur
 
     with pytest.raises(RuntimeError, match="profile listing failed"):
         gateway.find_profile_gateway_processes(strict=True)
+
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Steward-keyed gateway posture: apt-termux sealed installs
+#
+# A Termux APT package ships a sealed tree with no service manager: the
+# service install/uninstall/start lanes refuse (keyed on the steward
+# stamp, not a platform probe), while foreground process management
+# (stop via the PID registry) keeps working on every install.
+# ---------------------------------------------------------------------------
+
+
+def _apt_termux_tree(tmp_path) -> Path:
+    """A sealed (no .git) tree stamped as an apt-termux install."""
+    root = tmp_path / "apt-termux"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "install-stamp.json").write_text(
+        json.dumps({"distribution": "apt-termux"})
+    )
+    return root
+
+
+def test_apt_termux_probe_keys_on_steward_stamp(monkeypatch, tmp_path):
+    """The probe fires only for a sealed apt-termux tree, by provenance."""
+    root = _apt_termux_tree(tmp_path)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", root)
+    assert gateway._is_apt_termux_install() is True
+
+    # A git checkout (the repo itself) is not steward-owned: not apt-termux.
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", Path(__file__).parent.parent)
+    assert gateway._is_apt_termux_install() is False
+
+
+@pytest.mark.parametrize(
+    "cmd_name",
+    ["_cmd_install", "_cmd_uninstall", "_cmd_start"],
+)
+def test_service_commands_refuse_on_sealed_apt_termux(
+    monkeypatch, tmp_path, capsys, cmd_name
+):
+    """Every gated service lane exits 1 with the no-backend message on a
+    sealed apt-termux tree -- even without TERMUX env set (the refusal is
+    provenance-keyed, not platform-keyed)."""
+    import types as _types
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr/local")  # no termux prefix
+    monkeypatch.setattr(gateway, "is_termux", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    monkeypatch.setattr(gateway, "_refuse_from_inside_gateway", lambda *a: None)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", _apt_termux_tree(tmp_path))
+
+    with pytest.raises(SystemExit) as exc:
+        getattr(gateway, cmd_name)(_types.SimpleNamespace(
+            force=False, system=False, run_as_user=None, all=False,
+            start_now=None, start_on_login=None, elevated_handoff=False,
+        ))
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Termux" in out

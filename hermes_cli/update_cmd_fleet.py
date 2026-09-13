@@ -71,7 +71,7 @@ def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
     try:
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
         sha = (get_code_identity(refresh=True) or {}).get("sha")
         return str(sha) if sha else None
     except Exception:
@@ -1179,7 +1179,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     # handler fail closed on an empty survivor probe rather than reporting a clean update (#78574).
     # Declared outside the restart try/except below (and never reset to None) so it's always safe to read
     # afterwards even if that block raises before reaching its own restart bookkeeping — needed to forward
-    # already-restarted units to ``_finish_dashboard_update_cleanup`` (review on #83595).
+    # already-restarted units to ``_refresh_dashboard_after_update`` (review on #83595).
     restarted_scoped_units: set = set()
 
     # Purge stale cached Hermes modules FIRST: the import below loads new gateway
@@ -1283,23 +1283,25 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
             return snapshot
 
 
-def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):
+def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, update_complete):
     """Post-restart verification: legacy-unit warning, dashboard cleanup, stale serve
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
     Exits 1 (leaving ``fleet_restart_pending`` for the next catch-up) when any gateway
-    may still be stale; otherwise clears the marker.
+    may still be stale; otherwise clears the marker. A failed SQLite verdict also
+    exits 1, without retaining a fulfilled fleet-restart obligation.
     """
     from hermes_cli.update_cmd import (
-        _finish_dashboard_update_cleanup, _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
+        _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
     )
+    from hermes_cli.update_cmd_maint import _refresh_dashboard_after_update
     with _best_effort('Legacy unit check during update failed: %s'):
         _print_legacy_units_warning()
 
     # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
     # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
-    # Failed Node refresh leaves it untouched; already-restarted units aren't redone.
-    _finish_dashboard_update_cleanup(node_failures, already_restarted_units=set(restart.restarted_services))
+    # Already-restarted units aren't redone.
+    _refresh_dashboard_after_update(already_restarted_units=set(restart.restarted_services))
 
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
@@ -1383,8 +1385,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 restart.incomplete = True
             with suppress(Exception):
                 import hermes_cli.update_receipt as _ur
-                if _ur._current is not None:
-                    _ur._current.data["runtime_outcomes"] = _runtime_outcomes
+                _active = _ur._current.get()
+                if _active is not None:
+                    _active.data["runtime_outcomes"] = _runtime_outcomes
 
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
@@ -1400,6 +1403,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
+    if not update_complete:
+        # Fleet caught up, but the independently checked SQLite runtime is unsafe.
+        sys.exit(1)
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
     with _best_effort('Multiplex auto-migration after update failed: %s'):

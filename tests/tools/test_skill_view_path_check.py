@@ -85,10 +85,10 @@ class TestOldCheckWouldFail:
             and resolved != skill_dir_resolved
         )
 
-    # ``windows_only`` rather than ``skipif(os.sep == "/")``: the Windows CI
+    # ``platforms("windows")`` rather than ``skipif(os.sep == "/")``: the Windows CI
     # job greps for the marker to decide which files to import, so a bare
     # skipif leaves this running on no host at all.
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_old_check_false_positive_on_windows(self, tmp_path):
         """On Windows, the old check incorrectly blocks valid subpaths."""
         skill_dir = tmp_path / "skills" / "axolotl"

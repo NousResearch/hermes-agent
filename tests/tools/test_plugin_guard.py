@@ -115,6 +115,7 @@ class TestMaliciousPlugin:
         result = scan_plugin(plugin)
         assert result.verdict == "dangerous"
 
+    @pytest.mark.require_symlinks
     def test_symlink_escape_is_dangerous(self, tmp_path):
         plugin = _mk_plugin(tmp_path, BASE_FILES)
         outside = tmp_path / "outside-secret.txt"

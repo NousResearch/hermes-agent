@@ -11,6 +11,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -49,14 +50,15 @@ def _run_with_env(extra_os_env=None, self_env=None):
     and return the env dict passed to the subprocess."""
     captured = {}
     test_environ = {
-        "PATH": "/usr/bin:/bin",
+        **os.environ,
+        "PATH": os.environ.get("PATH", ""),
         "HOME": "/home/user",
         "USER": "testuser",
     }
     if extra_os_env:
         test_environ.update(extra_os_env)
 
-    env = LocalEnvironment(cwd="/tmp", timeout=10, env=self_env)
+    env = LocalEnvironment(cwd=tempfile.gettempdir(), timeout=10, env=self_env)
 
     with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
          patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
@@ -761,7 +763,7 @@ class TestPythonpathSelectiveStrip:
         assert hermes_win in entries
         assert user_win in entries
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_hermes_owned_paths_stripped(self):
         """On Windows, a Hermes venv site-packages entry written with
         backslashes is stripped by the same Hermes-owned check, while a
@@ -821,31 +823,45 @@ class TestPythonpathSelectiveStrip:
 
 
     def test_base_python_sanitizer_uses_validated_separate_runtime_venv(self, tmp_path, monkeypatch):
-        """A base interpreter strips the exact Windows runtime site-packages.
+        """A base interpreter strips the exact pm runtime site-packages.
 
         This deliberately uses a synthetic Hermes venv separate from the test
-        runner: sys.prefix represents base Python, while validated VIRTUAL_ENV
-        identifies ``<repo>/venv`` as the Hermes runtime producer contract.
+        runner: sys.prefix represents base Python, while the pm-provisioned
+        runtime venv (facts + store layout, no VIRTUAL_ENV anywhere)
+        identifies the Hermes runtime site-packages.
         """
+        import json
+
         import tools.environments.local as local
         from tools.environments import local_pythonpath
 
-        repo_root = tmp_path / "hermes-agent"
-        runtime_venv = repo_root / "venv"
-        runtime_sp = runtime_venv / "Lib" / "site-packages"
+        # pm bundled-install layout: store + manifest + relocatable venv.
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        runtime_venv = payload / "state" / "environments" / "candidate" / "venv"
+        runtime_sp = __import__("hermes_cli.runtime_paths", fromlist=["site_packages"]).site_packages(runtime_venv)
         runtime_sp.mkdir(parents=True)
-        (runtime_venv / "pyvenv.cfg").write_text("version = 3.11\n", encoding="utf-8")
+        store.mkdir(parents=True, exist_ok=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        from hermes_cli.runtime_paths import runtime_facts_path
+        monkeypatch.setattr("hermes_cli.runtime_paths.install_state_dir", lambda repo: payload / "state")
+        facts = runtime_facts_path(Path(local.__file__).resolve().parents[2])
+        facts.parent.mkdir(parents=True, exist_ok=True)
+        (runtime_venv / "pyvenv.cfg").write_text("version = 3.11\n")
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(runtime_venv)}}}))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
         base_prefix = tmp_path / "base-python"
         unrelated = "/custom/lib/python3.13/site-packages"
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (tmp_path / "hermes-agent",))
         monkeypatch.setattr(local, "_in_venv", False)
         monkeypatch.setattr(local, "_hermes_site_packages", None)
         monkeypatch.setattr(local.sys, "prefix", str(base_prefix))
         monkeypatch.setattr(local.sys, "base_prefix", str(base_prefix))
 
         env = {
-            "VIRTUAL_ENV": str(runtime_venv),
             "PYTHONPATH": os.pathsep.join([str(runtime_sp), unrelated]),
         }
         result = local._sanitize_subprocess_env(env)
@@ -856,18 +872,19 @@ class TestPythonpathSelectiveStrip:
         assert "VIRTUAL_ENV" not in result
 
     def test_unrelated_virtual_env_is_not_runtime_provenance(self, tmp_path, monkeypatch):
-        """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH ownership."""
+        """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH
+        ownership — provenance is pm's facts, and pm records no venv here."""
         import tools.environments.local as local
         from tools.environments import local_pythonpath
 
-        repo_root = tmp_path / "hermes-agent"
-        repo_root.mkdir()
         unrelated_venv = tmp_path / "user-venv"
         unrelated_sp = unrelated_venv / "Lib" / "site-packages"
         unrelated_sp.mkdir(parents=True)
         (unrelated_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "no-such-store"))
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (tmp_path / "hermes-agent",))
         monkeypatch.setattr(local, "_in_venv", False)
         monkeypatch.setattr(local, "_hermes_site_packages", None)
 
@@ -905,7 +922,7 @@ class TestPythonpathSelectiveStrip:
             "HOME": "/home/user",
             "PYTHONPATH": os.pathsep.join([venv_sp, "/home/user/my-lib"]),
         }
-        with patch.dict(os.environ, seed, clear=True):
+        with patch.dict(os.environ, seed, clear=False):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
             elif builder == "_sanitize_subprocess_env":
@@ -977,6 +994,7 @@ class TestPythonpathSelectiveStrip:
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
             proc.stdout.read.return_value = b""
+            proc.stdout.read1.return_value = b""
             proc.stderr.read.return_value = b""
             proc.wait.return_value = 0
             proc.returncode = 0
@@ -1238,45 +1256,43 @@ class TestPythonpathSelectiveStrip:
         local_pythonpath._strip_hermes_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
-    def test_validated_runtime_venv_lexical_after_repo_recovery(self, tmp_path, monkeypatch):
-        """uv-base gateway: once the lexical repo alias is recovered, a lexical
-        VIRTUAL_ENV (<lexical repo>/venv) validates and its site-packages is
-        stripped together with the repo root, while user entries survive.
+    def test_pm_runtime_venv_provenance_is_alias_independent(self, tmp_path, monkeypatch):
+        """pm's facts/store layout is the provenance for the runtime venv —
+        not a VIRTUAL_ENV matched against repo aliases. The pm-provisioned
+        venv's site-packages is stripped together with the repo root, while
+        user entries survive, even when an unrelated VIRTUAL_ENV is present.
         """
+        import json
+
         import tools.environments.local as local
         from tools.environments import local_pythonpath
 
-        physical_root = _physical_repo_root(tmp_path)
-        venv_dir = physical_root / "venv"
-        venv_dir.mkdir(parents=True)
-        (venv_dir / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
-        configured_home = tmp_path / "configured-home"
-        configured_home.mkdir()
-        try:
-            _make_directory_link(configured_home / "hermes-agent", physical_root)
-        except OSError as exc:
-            pytest.skip(f"directory link unavailable on this host: {exc}")
+        # pm bundled-install layout, entirely outside the repo aliases.
+        payload = tmp_path / "payload"
+        store = payload / "tools"
+        venv_dir = payload / "state" / "environments" / "candidate" / "venv"
+        venv_sp = __import__("hermes_cli.runtime_paths", fromlist=["site_packages"]).site_packages(venv_dir)
+        venv_sp.mkdir(parents=True)
+        store.mkdir(parents=True, exist_ok=True)
+        (payload / "manifest.json").write_text("{}", encoding="utf-8")
+        from hermes_cli.runtime_paths import runtime_facts_path
+        monkeypatch.setattr("hermes_cli.runtime_paths.install_state_dir", lambda repo: payload / "state")
+        facts = runtime_facts_path(Path(local.__file__).resolve().parents[2])
+        facts.parent.mkdir(parents=True, exist_ok=True)
+        (venv_dir / "pyvenv.cfg").write_text("version = 3.11\n")
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(venv_dir)}}}))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
 
-        lexical_root = configured_home / "hermes-agent"
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
-            physical_root.resolve(),
-            physical_root,
-            configured_home,
-        )
-        assert any(local_pythonpath._same_path(a, lexical_root) for a in aliases)
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
-
-        lexical_venv = lexical_root / "venv"
-        validated = local_pythonpath._validated_runtime_venv({"VIRTUAL_ENV": str(lexical_venv)})
+        validated = local_pythonpath._validated_runtime_venv({"VIRTUAL_ENV": "/somewhere/else"})
         assert validated is not None
-        assert local_pythonpath._same_path(validated, lexical_venv)
+        assert local_pythonpath._same_path(validated, venv_dir)
 
-        local._hermes_site_packages = None
+        monkeypatch.setattr(local, "_hermes_site_packages", None)
+        monkeypatch.setattr(local, "_in_venv", False)
         env = {"PYTHONPATH": os.pathsep.join([
-            str(lexical_root),
-            str(lexical_venv / "Lib" / "site-packages"),
+            str(venv_sp),
             "/home/user/my-lib",
-        ]), "VIRTUAL_ENV": str(lexical_venv)}
+        ])}
         local_pythonpath._strip_hermes_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
@@ -1595,7 +1611,7 @@ class TestSanePathIncludesHomebrew:
                 assert entry in path_entries
 
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
         """The literal macOS launchd PATH is the production trigger for #35613.
 
@@ -1613,7 +1629,7 @@ class TestSanePathIncludesHomebrew:
         assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch):
         """Windows-only: ``_path_env_key`` looks for a case-insensitive PATH
         key only on Windows, so the mixed-case ``Path`` preservation this

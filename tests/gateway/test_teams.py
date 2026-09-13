@@ -179,7 +179,7 @@ def _bind_mock_sdk(feature, importer, target_globals, **kwargs):
     return True
 
 
-with patch("tools.lazy_deps.ensure_and_bind", _bind_mock_sdk):
+with patch("pm.extras.ensure_and_bind", _bind_mock_sdk):
     assert _teams_mod.check_teams_requirements() is True
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 
@@ -230,14 +230,14 @@ class TestTeamsRequirements:
             return True
 
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+            "pm.extras.ensure_and_bind", _fake_ensure_and_bind
         )
         assert check_teams_requirements() is True
         assert called["ensure_and_bind"] == 0
 
     def test_check_teams_requirements_lazy_installs_when_missing(self, monkeypatch):
         # When deps are missing, the active installer delegates to
-        # ensure_and_bind("platform.teams", ...) — parity with Slack/Discord.
+        # ensure_and_bind("teams", ...) — parity with Slack/Discord.
         monkeypatch.setattr(_teams_mod, "App", None)
         monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
@@ -248,10 +248,10 @@ class TestTeamsRequirements:
             return True
 
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+            "pm.extras.ensure_and_bind", _fake_ensure_and_bind
         )
         assert check_teams_requirements() is True
-        assert seen["feature"] == "platform.teams"
+        assert seen["feature"] == "teams"
 
     def test_validate_config_with_env(self, monkeypatch):
         monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
@@ -365,7 +365,7 @@ class TestTeamsConnect:
         # locked-down env): the lazy-installer can't rebind the globals, so
         # App stays None and connect() must fail without calling it.
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind",
+            "pm.extras.ensure_and_bind",
             lambda *_a, **_k: False,
         )
         adapter = TeamsAdapter(_make_config(
@@ -385,7 +385,7 @@ class TestTeamsConnect:
         monkeypatch.setattr(_teams_mod, "ClientOptions", None)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind",
+            "pm.extras.ensure_and_bind",
             lambda *_a, **_k: False,
         )
         adapter = TeamsAdapter(_make_config(

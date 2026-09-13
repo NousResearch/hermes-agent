@@ -36,7 +36,6 @@ get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
-_dependency_importable = late("_dependency_importable", "hermes_cli.web_server_memory")
 load_env = late("load_env", "hermes_cli.config")
 # Sentinel: remove this key so it falls back to the host or built-in default.
 _UNSET: Any = object()
@@ -108,7 +107,7 @@ def _read_json_dict(path: Path, what: str) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         _log.warning("Failed to read %s from %s", what, path, exc_info=True)
         return {}
@@ -329,30 +328,15 @@ def _command_result(
     }
 
 
-def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[Dict[str, Any]]:
-    if not dependencies:
-        return []
-    missing = [dep for dep in dependencies if not _dependency_importable(dep)]
-    if not missing:
-        return [_command_result(kind="pip", name=", ".join(dependencies), status="already_installed")]
-    # Route through the lazy-install pipeline rather than pip against
-    # sys.executable: on hosted/immutable images the agent venv is sealed
-    # read-only and installs must go to HERMES_LAZY_INSTALL_TARGET, which
-    # install_specs also activates on sys.path so the recheck sees the packages.
-    name = ", ".join(missing)
+def _install_memory_provider_python_dependencies(name: str) -> List[Dict[str, Any]]:
+    from hermes_cli.memory_setup import prepare_memory_provider_dependencies
+
+    command = "hermes pm install"
     try:
-        from tools.lazy_deps import install_specs
-        outcome = install_specs(missing, timeout=240)
+        _manifest, status = prepare_memory_provider_dependencies(name)
     except Exception as exc:
-        return [_command_result(kind="pip", name=name, status="failed", error=str(exc))]
-    if outcome.blocked:
-        return [_command_result(kind="pip", name=name, status="failed", command=outcome.command, error=outcome.reason)]
-    return [_command_result(
-        kind="pip", name=name, status="installed" if outcome.ok else "failed", command=outcome.command,
-        completed=subprocess.CompletedProcess(
-            args=outcome.command, returncode=0 if outcome.ok else 1, stdout=outcome.stdout, stderr=outcome.stderr,
-        ),
-    )]
+        return [_command_result(kind="pip", name=name, status="failed", command=command, error=str(exc))]
+    return [_command_result(kind="pip", name=name, status=status, command=command)] if status else []
 
 
 def _run_setup_step(results: list, kind: str, name: str, command: str, status_of, **kwargs) -> Optional[int]:
@@ -395,8 +379,12 @@ def _install_memory_provider_setup(name: str) -> Dict[str, Any]:
     manifest = _memory_provider_manifest(name)
     if provider is None and not manifest:
         raise _unknown_provider(name)
-    setup = _memory_provider_setup_manifest(name)
-    results = _install_memory_provider_pip_dependencies(setup["pip_dependencies"])
+    results = _install_memory_provider_python_dependencies(name)
+    try:
+        setup, _inputs = _memory_provider_setup_manifest(name)
+    except Exception as exc:
+        results.append(_command_result(kind="setup", name=name, status="failed", error=str(exc)))
+        setup = {"external_dependencies": []}
     results.extend(_install_memory_provider_external_dependencies(setup["external_dependencies"]))
     if not results:
         results.append(_command_result(kind="setup", name=name, status="no_declared_steps"))

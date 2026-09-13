@@ -1,178 +1,144 @@
-"""A failed Desktop pack must not look like a successful update.
+"""Retired soft-build hooks stop old updaters instead of claiming completion.
 
-#88251: ``hermes update`` treated a failed desktop pack as non-fatal, printed
-an early warning, then still ended with ``✓ Update complete!``. The Python
-side moved on; the Electron app stayed on the previous build.
-
-``_rebuild_desktop_after_update`` returns False only when a rebuild was
-attempted and failed. The final banner then prints ``⚠ Update partially
-complete`` instead of the success line, and gateway mode writes ``1`` to
-``.update_exit_code``.
+Live source builds now raise on failure before maintenance runs. Old updaters
+can still import these frozen names after swapping their checkout.
 """
+
+from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import update_cmd
-import hermes_cli.update_cmd_maint as update_cmd_maint
-from hermes_cli.update_cmd import (
-    _print_update_summary,
-    _rebuild_desktop_after_update,
-    _write_gateway_update_exit_code,
+from hermes_cli import update_cmd_maint
+
+
+@pytest.mark.parametrize(
+    "name,args,kwargs",
+    [
+        ("_print_update_summary", (), {
+            "node_failures": [], "desktop_build_ok": True, "pre_update_version": None,
+        }),
+        ("_print_update_summary", (), {
+            "node_failures": ["dashboard"], "desktop_build_ok": False,
+            "pre_update_version": "0.20.1",
+        }),
+        ("_finish_dashboard_update_cleanup", ([],), {}),
+        ("_finish_dashboard_update_cleanup", (["dashboard"],), {
+            "already_restarted_units": {"hermes-serve"},
+        }),
+    ],
 )
+def test_historical_completion_hooks_stop_before_work(name, args, kwargs, monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        pytest.fail("old updater attempted post-update work")
 
-
-class _Result:
-    def __init__(self, returncode: int, stdout: str = ""):
-        self.returncode = returncode
-        self.stdout = stdout
-
-
-@pytest.fixture()
-def desktop_env(tmp_path, monkeypatch):
-    """A desktop dir that looks installed and a faked CLI main module."""
-    desktop_dir = tmp_path / "apps" / "desktop"
-    desktop_dir.mkdir(parents=True)
-    (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
-
-    calls = {"builds": 0, "build_needed": True}
-
-    class _FakeMain:
-        PROJECT_ROOT = tmp_path
-
-        @staticmethod
-        def _resolve_node_runtime_npm():
-            return "/fake/npm"
-
-        @staticmethod
-        def _desktop_build_needed(*_a, **_kw):
-            return calls["build_needed"]
-
-        @staticmethod
-        def _run_logged_subprocess(cmd, cwd=None, env=None):
-            calls["builds"] += 1
-            return _Result(1, stdout="Error: [stage-native-deps] boom")
-
-    monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", forbidden)
+    monkeypatch.setattr(update_cmd, "_reload_process_scan_modules", forbidden)
     monkeypatch.setattr(
-        "hermes_constants.with_hermes_node_path", lambda: {}, raising=False
+        update_cmd, "_m", lambda: SimpleNamespace(_kill_stale_dashboard_processes=forbidden),
     )
-    monkeypatch.setattr(
-        "hermes_constants.display_hermes_home", lambda: str(tmp_path), raising=False
-    )
-    return desktop_dir, calls
+    with pytest.raises(SystemExit) as exc:
+        getattr(update_cmd_maint, name)(*args, **kwargs)
+    assert exc.value.code == 0
+    output = capsys.readouterr()
+    assert "run `hermes` again" in output.err
+    assert "Update complete" not in output.out
 
 
-def _run(desktop_dir):
-    return _rebuild_desktop_after_update(
-        desktop_dir, had_desktop_app_before_update=True
-    )
+def test_gateway_exit_code_file_tracks_verified_outcome(tmp_path, monkeypatch):
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path)
+    update_cmd._write_gateway_update_exit_code(True)
+    assert (tmp_path / ".update_exit_code").read_text(encoding="utf-8") == "0"
+    update_cmd._write_gateway_update_exit_code(False)
+    assert (tmp_path / ".update_exit_code").read_text(encoding="utf-8") == "1"
 
 
-def test_failed_rebuild_returns_false_and_keeps_the_retry_hint(desktop_env, capsys):
-    desktop_dir, calls = desktop_env
-    assert _run(desktop_dir) is False
-    assert calls["builds"] == 2
-    out = capsys.readouterr().out
-    assert "Desktop build failed" in out
-    assert "stage-native-deps" in out
-    assert "Update complete" not in out
+def test_verified_completion_keeps_success_banner(capsys, monkeypatch):
+    monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda: "")
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
 
+    assert update_cmd_maint._print_verified_update_completion("✓ Update complete!") is True
 
-def test_successful_rebuild_returns_true(desktop_env, monkeypatch, capsys):
-    desktop_dir, _calls = desktop_env
-    builds = []
-    monkeypatch.setattr(
-        update_cmd._m(),
-        "_run_logged_subprocess",
-        staticmethod(lambda cmd, cwd=None, env=None: builds.append(cmd) or _Result(0)),
-    )
-    assert _run(desktop_dir) is True
-    assert len(builds) == 1
-    assert "Desktop app up to date" in capsys.readouterr().out
-
-
-def test_up_to_date_desktop_returns_true_without_spawning(desktop_env):
-    desktop_dir, calls = desktop_env
-    calls["build_needed"] = False
-    assert _run(desktop_dir) is True
-    assert calls["builds"] == 0
-
-
-def test_desktop_never_installed_returns_true(tmp_path, monkeypatch):
-    spawned = []
-    monkeypatch.setattr(
-        update_cmd,
-        "_m",
-        lambda: type(
-            "_M",
-            (),
-            {
-                "PROJECT_ROOT": tmp_path,
-                "_resolve_node_runtime_npm": staticmethod(lambda: "/fake/npm"),
-                "_run_logged_subprocess": staticmethod(
-                    lambda *a, **k: spawned.append(1) or _Result(0)
-                ),
-            },
-        ),
-    )
-    missing = tmp_path / "apps" / "desktop"
-    missing.mkdir(parents=True)
-    assert _run(missing) is True
-    assert spawned == []
-
-
-def test_summary_omits_success_banner_when_desktop_rebuild_failed(capsys):
-    _print_update_summary(
-        node_failures=[],
-        desktop_build_ok=False,
-        pre_update_version="0.20.1",
-    )
-    out = capsys.readouterr().out
-    assert "Update complete" not in out
-    assert "partially complete" in out
-    assert "desktop app was not rebuilt" in out
-    assert "hermes desktop" in out
-
-
-def test_summary_keeps_success_banner_when_desktop_ok(capsys, monkeypatch):
-    monkeypatch.setattr(
-        update_cmd, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
-    )
-    monkeypatch.setattr(
-        update_cmd_maint, "_update_complete_message", lambda _v: "✓ Update complete! (v0.20.2)"
-    )
-    monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda *a, **k: "")
-    monkeypatch.setattr(
-        update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None)
-    )
-    monkeypatch.setattr(
-        update_cmd_maint, "_post_update_sqlite_runtime_status", lambda: (True, None)
-    )
-    _print_update_summary(
-        node_failures=[],
-        desktop_build_ok=True,
-        pre_update_version="0.20.1",
-    )
     out = capsys.readouterr().out
     assert "✓ Update complete!" in out
     assert "partially complete" not in out
+    assert "desktop" not in out
+    assert "Node" not in out
+    assert "=== hermes-update completed" not in out
 
 
-def test_summary_combines_node_and_desktop_failures(capsys):
-    _print_update_summary(
-        node_failures=["dashboard"],
-        desktop_build_ok=False,
-        pre_update_version="0.20.1",
+def test_verified_completion_emits_dashboard_receipt_only_on_success(monkeypatch, capsys):
+    action_id = "a" * 32
+    monkeypatch.setenv("HERMES_ACTION_ID", action_id)
+    monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda: "")
+    monkeypatch.setattr(
+        update_cmd, "_post_update_sqlite_runtime_status",
+        lambda: (False, SimpleNamespace(sqlite_version_string="3.46.1")),
     )
-    out = capsys.readouterr().out
-    assert "Update complete" not in out
-    assert "dashboard" in out
-    assert "desktop app was not rebuilt" in out
+    assert update_cmd_maint._print_verified_update_completion("✓ Update complete!") is False
+    assert f"=== hermes-update completed {action_id} ===" not in capsys.readouterr().out
+
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
+    assert update_cmd_maint._print_verified_update_completion("✓ Update complete!") is True
+    assert f"=== hermes-update completed {action_id} ===" in capsys.readouterr().out
 
 
-def test_gateway_exit_code_file_tracks_desktop_rebuild(tmp_path, monkeypatch):
-    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path)
-    _write_gateway_update_exit_code(True)
-    assert (tmp_path / ".update_exit_code").read_text(encoding="utf-8") == "0"
-    _write_gateway_update_exit_code(False)
-    assert (tmp_path / ".update_exit_code").read_text(encoding="utf-8") == "1"
+def test_unavailable_sqlite_probe_retains_existing_nonblocking_behavior(monkeypatch, capsys):
+    monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda: "")
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (False, None))
+
+    assert update_cmd_maint._print_verified_update_completion("✓ Update complete!") is True
+    assert "✓ Update complete!" in capsys.readouterr().out
+
+
+def test_maintenance_returns_sqlite_verdict_without_frontend_flags(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(PROJECT_ROOT=tmp_path))
+    monkeypatch.setattr("hermes_cli.macos_tcc_anchor.ensure_tcc_anchor", lambda: None)
+    monkeypatch.setattr("hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
+    monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", lambda **kwargs: None)
+    for name in (
+        "_verify_and_restore_state_dbs_post_update", "_print_bundled_skills_sync_report",
+        "_sync_profiles_after_update", "_print_post_update_notices_and_self_heals",
+    ):
+        monkeypatch.setattr(update_cmd_maint, name, lambda: None)
+    monkeypatch.setattr(
+        update_cmd, "_post_update_sqlite_runtime_status",
+        lambda: (False, SimpleNamespace(sqlite_version_string="3.46.1")),
+    )
+
+    complete = update_cmd_maint._run_post_update_maintenance(
+        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        had_desktop_app_before_update=False, pre_update_version=None,
+    )
+
+    assert complete is False
+    assert "Update complete" not in capsys.readouterr().out
+    monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
+    monkeypatch.setattr(update_cmd, "_branch_head_suffix", lambda: "")
+    assert update_cmd_maint._run_post_update_maintenance(
+        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        had_desktop_app_before_update=False, pre_update_version=None,
+    ) is True
+    assert "✓ Update complete!" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("already_restarted_units", [None, {"hermes-serve"}])
+def test_dashboard_refresh_reloads_then_preserves_restart_bookkeeping(
+    already_restarted_units, monkeypatch, capsys,
+):
+    order = []
+    monkeypatch.setattr(update_cmd, "_reload_process_scan_modules", lambda: order.append("reload"))
+
+    def kill(**kwargs):
+        order.append(kwargs)
+        return {"unrecovered": [1234]}
+
+    monkeypatch.setattr(
+        update_cmd, "_m", lambda: SimpleNamespace(_kill_stale_dashboard_processes=kill),
+    )
+    update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=already_restarted_units)
+
+    assert order == ["reload", {
+        "restart_managed": True, "already_restarted_units": already_restarted_units,
+    }]
+    assert "could not be auto-restarted" in capsys.readouterr().out

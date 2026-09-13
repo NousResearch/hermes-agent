@@ -279,7 +279,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
                 if not manifest_file.exists():
                     continue
                 try:
-                    with open(manifest_file, encoding="utf-8") as _mf:
+                    with open(manifest_file, encoding="utf-8-sig") as _mf:
                         manifest = _c.fast_safe_load(_mf) or {}
                 except Exception:
                     manifest = {}
@@ -529,7 +529,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     for name, profile_dir in _roster(_hermes_root(get_hermes_home())):
         soul = profile_dir / "SOUL.md"
         try:
-            text = soul.read_text(encoding="utf-8") if soul.is_file() else ""
+            text = soul.read_text(encoding="utf-8-sig") if soul.is_file() else ""
             if _PROTOCOL_HEADING in text:
                 soul.write_text(strip_legacy_protocol(text), encoding="utf-8")
                 cleaned.append(name)

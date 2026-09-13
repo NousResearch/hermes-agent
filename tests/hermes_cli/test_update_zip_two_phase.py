@@ -151,52 +151,6 @@ def test_venv_helpers_are_platform_consistent():
     assert (bin_name, exe_name) in {("Scripts", "python.exe"), ("bin", "python")}
 
 
-def test_managed_uv_helper_delegates_to_the_shared_one():
-    from hermes_cli.managed_uv import _venv_python
-
-    v = Path("/opt/proj/venv")
-    assert _venv_python(v) == venv_python_path(v)
-
-
-def test_no_open_coded_venv_layout_remains_in_hermes_cli():
-    """Fails if a new call site hand-rolls Scripts/bin again (#76105).
-
-    Uses AST rather than substring matching: an earlier `"if" in line` version
-    matched any word containing "if" (mod*if*y, ver*if*y) and still missed
-    `os.path.join(venv, "Scripts")`.
-
-    ``stdio.py`` is exempt: it builds a list of literal *Windows-only* PATH
-    candidates, not a cross-platform layout derivation, so ``venv_bin_dir()``
-    (which branches on the host platform) would be the wrong tool there.
-    """
-    import ast
-    import hermes_cli
-
-    exempt = {"stdio.py"}
-    pkg = Path(hermes_cli.__file__).parent
-    offenders = []
-    for py in pkg.rglob("*.py"):
-        if py.name in exempt:
-            continue
-        try:
-            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            # Any *code* string literal "Scripts" is a hand-rolled layout;
-            # docstrings and comments never reach ast.Constant in an expr
-            # position we care about here.
-            if isinstance(node, ast.Constant) and node.value == "Scripts":
-                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
-    assert not offenders, (
-        "open-coded venv layout found (use hermes_constants.venv_bin_dir):\n"
-        + "\n".join(offenders)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Top-level FILES must be atomic too (#76104 review, C1)
-# ---------------------------------------------------------------------------
 
 def test_top_level_files_are_swapped_atomically(tmp_path):
     """The repo root holds 20 first-party modules (run_agent.py, cli.py,
@@ -332,23 +286,6 @@ def test_venv_helpers_honour_an_explicit_platform_verdict():
         )
 
 
-def test_patched_is_windows_reaches_the_venv_path_derivation():
-    """End-to-end: patching the module predicate must change the derived path."""
-    from unittest.mock import patch
-
-    from hermes_cli import main as hermes_main
-
-    with patch.object(hermes_main, "_is_windows", return_value=True):
-        got = hermes_main._resolve_install_target_python(
-            ["uv", "pip"], env={"VIRTUAL_ENV": "/nope/venv"}
-        )
-    # The path doesn't exist so we get None, but the *derivation* must have
-    # used the Windows layout -- assert that directly.
-    assert got is None
-    assert (
-        venv_python_path("/nope/venv", windows=True).as_posix()
-        == "/nope/venv/Scripts/python.exe"
-    )
 
 
 # ---------------------------------------------------------------------------

@@ -74,6 +74,11 @@ def _validated_runtime_venv(env: dict) -> Path | None:
     """Producer-owned runtime venv identified by VIRTUAL_ENV, or None. The variable
     alone is not provenance (users carry unrelated venvs): require the legacy Windows
     base-Python producer's exact ``<repo>/venv`` layout AND a real ``pyvenv.cfg``."""
+    from hermes_cli.runtime_paths import runtime_facts_path, selected_venv
+
+    root = Path(__file__).resolve().parents[2]
+    if runtime_facts_path(root).is_file():
+        return selected_venv(root)
     candidate = Path(env.get("VIRTUAL_ENV") or "")
     if not env.get("VIRTUAL_ENV") or not any(
             _same_path(candidate, root / "venv") for root in _state()._hermes_repo_root_aliases):
@@ -106,7 +111,8 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
 
     runtime_venv = _validated_runtime_venv(env)
     if runtime_venv is not None:
-        runtime_site_packages = runtime_venv / "Lib" / "site-packages"
+        from hermes_cli.runtime_paths import site_packages
+        runtime_site_packages = site_packages(runtime_venv)
         if not any(_same_path(runtime_site_packages, existing) for existing in result):
             result.append(runtime_site_packages)
     return result

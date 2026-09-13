@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/desktop-update/windows.ps1"
 
 
@@ -38,7 +38,7 @@ def _server(tmp_path: Path, *, failed: bool = False):
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
     try:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             text = output_path.read_text(encoding="utf-8", errors="replace")
             match = re.search(r"SELF-TEST: shim at (http://127\.0\.0\.1:\d+/)", text)
@@ -51,8 +51,11 @@ def _server(tmp_path: Path, *, failed: bool = False):
         pytest.fail(f"Update server did not publish a serving URL: {text}")
     finally:
         if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+            )
+            process.wait(timeout=15)
 
 
 def _request(url: str, *, post: bool = False):

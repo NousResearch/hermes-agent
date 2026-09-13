@@ -53,6 +53,7 @@ from hermes_cli.doctor_state import (
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
+    _check_update_provenance,
 )
 
 _PROVIDER_ENV_HINTS = (
@@ -63,7 +64,6 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY", "COMMANDCODE_API_KEY", "XIAOMI_API_KEY",
     "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
 )
-
 
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
@@ -114,7 +114,7 @@ DOCTOR_CHECKS = (
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db),
-    (None, _check_gateway_supervision), (None, _check_command_installation),
+    (None, _check_update_provenance), (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),

@@ -13,11 +13,10 @@ from unittest.mock import AsyncMock, MagicMock
 from gateway.platforms.base import CachedMedia
 from gateway.platforms.event import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from gateway.platforms.event import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
-# loaded by sibling tests in the same xdist worker.
+# loaded by sibling tests in the same process.
 _buzz_mod = load_plugin_adapter("buzz")
 
 BuzzAdapter = _buzz_mod.BuzzAdapter
@@ -286,7 +285,7 @@ class TestMultiplexProfileScope:
     ):
         """The gate must consult the profile's own config.yaml + secret scope,
         not the default profile's env values."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -618,7 +617,7 @@ class TestCliErrorContract:
         [
             "x" * 100_000,
             json.dumps({"error": "relay_error", "message": "x" * 100_000}),
-        ],
+        ], ids=["plain-large", "json-large"],
     )
     def test_bounds_untrusted_cli_error_output(self, stderr):
         msg = _cli_error_message(stderr, 2)
@@ -2771,7 +2770,7 @@ class TestInboundMediaLocalisation:
         assert event.message_type == MessageType.DOCUMENT
         assert event.media_types == ["application/pdf"]
         assert len(event.media_urls) == 1
-        assert "/cache/documents/" in event.media_urls[0]
+        assert "/cache/documents/" in Path(event.media_urls[0]).as_posix()
 
     @pytest.mark.asyncio
     async def test_download_failure_preserves_caption_and_alt_text(

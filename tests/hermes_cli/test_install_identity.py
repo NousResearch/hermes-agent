@@ -3,6 +3,8 @@ import multiprocessing
 from pathlib import Path
 import time
 
+import pytest
+
 from gateway.hosted_rooms import local_authority_gateway_id
 import hermes_cli.install_identity as install_identity
 from hermes_cli.install_identity import read_or_create_install_id
@@ -39,6 +41,31 @@ def test_concurrent_first_use_returns_one_persisted_identity(tmp_path):
     assert len(set(values)) == 1
     assert values[0]
     assert (tmp_path / "install_id").read_text(encoding="utf-8").strip() == values[0]
+
+
+@pytest.mark.parametrize("transient_read_failure", [False, True])
+def test_existing_identity_survives_read_only_root_or_racing_publication(
+    tmp_path, monkeypatch, transient_read_failure,
+):
+    value = "a" * 32
+    (tmp_path / "install_id").write_text(value, encoding="utf-8")
+    original_read = Path.read_text
+    failed = False
+
+    def read(path, *args, **kwargs):
+        nonlocal failed
+        if transient_read_failure and not failed and path.name == "install_id":
+            failed = True
+            raise PermissionError("publication in progress")
+        return original_read(path, *args, **kwargs)
+
+    def refuse_lock(_root):
+        raise AssertionError("read-only identity lookup must not acquire a writable lock")
+
+    monkeypatch.setattr(Path, "read_text", read)
+    if not transient_read_failure:
+        monkeypatch.setattr(install_identity, "_install_id_file_lock", refuse_lock)
+    assert read_or_create_install_id(tmp_path) == value
 
 
 def test_independent_first_callers_return_the_single_committed_identity(tmp_path, monkeypatch):

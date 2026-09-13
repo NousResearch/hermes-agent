@@ -77,7 +77,7 @@ def _read_proc_status() -> str | None:
     if sys.platform != "linux":
         return None
     try:
-        return Path("/proc/self/status").read_text(encoding="utf-8")
+        return Path("/proc/self/status").read_text(encoding="utf-8-sig")
     except OSError:
         return None
 

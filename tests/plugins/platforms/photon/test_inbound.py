@@ -158,11 +158,11 @@ def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adapter._is_duplicate("id-1") is True  # still dup
 
 
-def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
-    # If no node binary on PATH the adapter should refuse to start.
+def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     from plugins.platforms.photon import adapter as adapter_mod
 
-    monkeypatch.setattr(adapter_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
     assert adapter_mod.check_requirements() is False
 
 

@@ -100,7 +100,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
 
 def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict | None = None,
                   timezone: str | None = None, gateway_cfg: dict | None = None) -> None:
-    import yaml
+    import hermes_yaml as yaml
     cfg: dict = {}
     if agent_cfg:
         cfg["agent"] = agent_cfg

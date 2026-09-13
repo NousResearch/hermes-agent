@@ -68,6 +68,7 @@ class TestSharedConnection:
             a.close()
             b.close()
 
+    @pytest.mark.require_symlinks
     def test_symlinked_path_shares_connection(self, tmp_path):
         """A symlink to the same DB file must hit the same registry entry —
         otherwise two connections to one file silently reintroduce the

@@ -172,7 +172,7 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         assert session["transport"] is server._detached_ws_transport
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("client_type", [PipeClient, SocketClient])
 @pytest.mark.parametrize("slow_first", [True, False])
 @pytest.mark.parametrize("on_loop", [True, False])

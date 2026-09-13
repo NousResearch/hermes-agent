@@ -9,7 +9,6 @@ from __future__ import annotations
 import concurrent.futures
 import functools
 import os
-import sys
 from typing import NamedTuple
 
 from hermes_cli.colors import Colors, color
@@ -232,8 +231,10 @@ def _probe_bedrock() -> ProbeResult:
         n = len(client.list_foundation_models().get("modelSummaries", []))
         return _row(name, "ok", f"({auth_var}, {region}, {n} models)", label=label)
     except ImportError:
-        pip = f"{sys.executable} -m pip install boto3"
-        return _row(name, "warn", f"(boto3 not installed — {pip})", [f"Install boto3 for Bedrock: {pip}"], label=label)
+        hint = ("From the Hermes environment, run: "
+                "python -c \"from pm import sync_venv; sync_venv(['bedrock'], explicit=True)\". "
+                "Then restart Hermes.")
+        return _row(name, "warn", "(boto3 not installed)", [hint], label=label)
     except Exception as e:
         err_name = type(e).__name__
         return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
@@ -264,7 +265,9 @@ def _probe_azure_entra() -> ProbeResult:
     except Exception as exc:
         return _row(name, "warn", f"(adapter import failed: {exc})", [f"Azure Foundry adapter import failed: {exc}"], label=label)
     if not has_azure_identity_installed():
-        return _row(name, "warn", "(azure-identity not installed)", [f"Install azure-identity: {sys.executable} -m pip install azure-identity"], label=label)
+        return _row(name, "warn", "(azure-identity not installed)", ["From the Hermes environment, run: "
+                     "python -c \"from pm import sync_venv; sync_venv(['azure-identity'], explicit=True)\". "
+                     "Then restart Hermes."], label=label)
     entra_cfg = model_cfg.get("entra") or {}
     scope = (str(entra_cfg.get("scope") or "").strip() if isinstance(entra_cfg, dict) else "") or SCOPE_AI_AZURE_DEFAULT
     info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)

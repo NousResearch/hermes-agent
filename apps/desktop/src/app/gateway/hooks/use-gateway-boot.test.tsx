@@ -1,7 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopConnectionsRegistry } from '@/global'
+import type { DesktopBootstrapState, DesktopConnectionsRegistry } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $desktopBoot } from '@/store/boot'
 import {
@@ -470,6 +470,18 @@ describe('primary failure foreground isolation', () => {
 
       const desktop = Object.assign(fakeDesktop(), {
         getRecentLogs: vi.fn(async () => ({ lines: [] })),
+        getBootstrapState: vi.fn(async (): Promise<DesktopBootstrapState> => ({
+          active: false,
+          manifest: null,
+          stages: {},
+          error: null,
+          log: [],
+          startedAt: null,
+          completedAt: null,
+          setupChoice: null,
+          unsupportedPlatform: null,
+          bundled: false
+        })),
         getConnectionConfig: vi.fn(async () => ({ mode: 'cloud', remoteAuthMode: 'oauth', remoteUrl: cloud.baseUrl })),
         getConnectionFor: vi.fn(async () => ({
           ...coderConn,

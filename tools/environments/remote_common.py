@@ -87,14 +87,12 @@ def bash_argv(cmd_string: str, login: bool = False) -> list[str]:
     return ["bash", "-l", "-c", cmd_string] if login else ["bash", "-c", cmd_string]
 
 
-def ensure_lazy_dep(feature: str) -> None:
-    """Lazy-install an optional SDK via ``tools.lazy_deps`` (idempotent). Missing ``tools.lazy_deps``
-    is tolerated (the SDK import that follows fails with its own message); any other failure
-    surfaces as ``ImportError``."""
+def ensure_lazy_dep(extra: str) -> None:
+    """Lazy-install an optional SDK's pm extra (idempotent). Install failures
+    surface as ``ImportError``."""
+    import pm
+
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure(feature, prompt=False)
-    except ImportError:
-        pass
+        pm.ensure_import(extra)
     except Exception as e:
         raise ImportError(str(e))

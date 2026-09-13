@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.subcommands.plugins import build_plugins_parser
 
@@ -308,17 +308,20 @@ def test_checkout_mismatch_is_rejected(monkeypatch, tmp_path):
 
 
 def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_cli.plugins_cmd import _install_plugin_core, PluginOperationError
+    from hermes_cli import runtime_state
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(
-        "hermes_cli.plugins_cmd._write_install_metadata",
-        lambda _metadata: (_ for _ in ()).throw(OSError("disk full")),
-    )
+    atomic_bytes = runtime_state._atomic_bytes
+    def fail_metadata(path, data):
+        if path == home / "plugins/.install-metadata.json":
+            raise OSError("disk full")
+        return atomic_bytes(path, data)
+    monkeypatch.setattr(runtime_state, "_atomic_bytes", fail_metadata)
 
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(PluginOperationError, match="disk full"):
         _install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
 
     assert not (home / "plugins" / "demo").exists()
@@ -350,7 +353,7 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
 
 
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_cli.plugins_cmd import _install_plugin_core, _rmtree_force
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -358,7 +361,7 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     target, _manifest, _name = _install_plugin_core(
         repo.as_uri(), force=False, ref=old_sha
     )
-    shutil.rmtree(target)
+    _rmtree_force(target)
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 

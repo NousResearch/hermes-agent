@@ -221,7 +221,7 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
         return ActiveSessionRegistryError(f"active session registry {what}: {path}")
 
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return []

@@ -53,7 +53,7 @@ def test_atomic_output_keeps_previous_file_after_failure(tmp_path) -> None:
 def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> None:
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    (home / "config.yaml").write_bytes(b"model: {}\n")
     published: list[tuple[Path, Path]] = []
 
     from hermes_cli import backup

@@ -32,7 +32,7 @@
 let
   repoRoot = ./..;
 
-  npm12 = callPackage ./npm-12-0-2.nix { };
+  npm12 = callPackage ./npm-pinned.nix { };
   node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { };
   nodejs_26_npm_12 = symlinkJoin {
     name = "nodejs-26-npm-12";
@@ -174,6 +174,9 @@ let
       in
       if relPath == "" then
         true
+      else if lib.hasPrefix "scripts/build/" relPath && lib.hasSuffix ".mjs" relPath then
+        # Frontend recipes belong to their product source filters, not Python.
+        false
       else if builtins.elem relPath excludedFiles then
         false
       else if builtins.elem topComponent excludedDirs then
@@ -209,6 +212,11 @@ let
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    # The lock already records override resolutions. importNpmLock changes
+    # direct specs to file:/nix/store tarballs, which conflict with the
+    # original semver overrides (EOVERRIDE). Drop them only from this offline
+    # build manifest; the hook restores the repository manifest afterwards.
+    package = builtins.removeAttrs rootPackageJson [ "overrides" ];
   };
 
   # Build a per-package npm source: workspace resolution files + the

@@ -12,6 +12,7 @@ import importlib
 import json
 import pkgutil
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,8 @@ def test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object():
     bad = []
     for e in _entries():
         facade, name = e["facade"], e["name"]
+        if sys.platform == "win32" and e["target"] == "hermes_cli.pty_bridge":
+            continue  # POSIX PTYs; Windows uses ConPTY, not this external bridge
         sibs = _sibling_modules(facade)
         if not sibs:
             continue
@@ -60,11 +63,17 @@ def test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object():
         except Exception as exc:  # unresolvable pointer is its own failure
             bad.append((facade, name, f"unresolvable: {exc!r}"))
             continue
+        # Importing siblings may reload a lazy provider module. Resolve the
+        # facade again after imports before comparing the current objects.
+        modules = []
         for s in sibs:
             try:
                 mod = importlib.import_module(s)
             except Exception:
                 continue
+            modules.append((s, mod))
+        got = getattr(importlib.import_module(facade), name)
+        for s, mod in modules:
             if name in vars(mod):
                 sib_obj = vars(mod)[name]
                 same = (sib_obj == got) if isinstance(got, (int, float, str, bytes, bool, type(None))) else (sib_obj is got)
@@ -89,4 +98,8 @@ def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
         conn.close()
     assert "tasks" in tables, tables
     assert not (tmp_path / "projects.db").exists()
-    assert isinstance(sqlite3.connect(db), sqlite3.Connection)
+    conn = sqlite3.connect(db)
+    try:
+        assert isinstance(conn, sqlite3.Connection)
+    finally:
+        conn.close()

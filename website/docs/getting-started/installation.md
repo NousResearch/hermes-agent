@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, WSL2, native Windows, or Android via Termux"
+description: "Install Hermes Agent with desktop bundles, source installers, Docker, Nix, or the Termux APT package"
 ---
 
 # Installation
@@ -14,13 +14,29 @@ platform-gated features are supported), see **[Platform Support](./platform-supp
 :::
 
 ## Quick Install
-### With the Hermes Desktop installer on macOS or Windows (recommended)
-To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
+### Desktop packages on macOS or Windows
+
+Download the package for your platform from the
+[Hermes website](https://hermes-agent.nousresearch.com/).
+
+- **Windows:** open the `.appinstaller` download with Windows App Installer.
+  It installs the signed MSIX bundle and records its update source.
+  Microsoft Store packages have separate Store ownership.
+- **macOS:** open the DMG, then copy `Hermes.app` to Applications. The ZIP
+  artifact carries the signed app used by the automatic updater.
+
+Bundled packages contain the agent, Python, supported dependencies, and prebuilt
+interfaces. First launch does not build that base runtime. Provider access and
+optional integrations can still require network access.
+
+A `Hermes-Setup` bootstrap installer is different: it downloads a source
+installation and builds the desktop app. Light is a remote-only build variant,
+not a bundled local runtime. See [Hermes Desktop](../user-guide/desktop.md).
 
 ### Without Hermes Desktop:
 For a command-line only install without Hermes Desktop, run:
 
-#### Linux / macOS / WSL2 / Android (Termux)
+#### Linux / macOS / WSL2
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
@@ -37,20 +53,42 @@ If you want to install & run Hermes Desktop after a command-line only install, s
 hermes desktop
 ```
 
-### What the Installer Does
+### Android / Termux
 
-The installer handles everything automatically — all dependencies (Python, Node.js, ripgrep, ffmpeg), the repo clone, virtual environment, global `hermes` command setup, and LLM provider configuration. By the end, you're ready to chat.
+Use the [Termux APT package](./termux.md) on aarch64 Android devices.
+Configure its signed repository before running `pkg install hermes-agent`.
+The desktop/server scripts are not the Termux installation path.
 
-#### Install Layout
+### What the source installer does
 
-Where the installer puts things depends on whether you're installing as a normal user or as root:
+The scripts clone the source, bootstrap uv, and delegate dependency preparation
+to PM. PM provides pinned Python, Node.js, npm, ripgrep, and FFmpeg. The source
+installation selects the `all` Python extra, not every optional extra.
+Browsers and other optional tools use their feature-specific installation paths.
 
-| Installer                              | Code lives at                  | `hermes` binary                         | Data directory                       |
-| -------------------------------------- | ------------------------------ | --------------------------------------- | ------------------------------------ |
-| Per-user (git installer)               | `~/.hermes/hermes-agent/`      | `~/.local/bin/hermes` (symlink)         | `~/.hermes/`                         |
-| Root-mode (`sudo curl … \| sudo bash`) | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes`                 | `/root/.hermes/` (or `$HERMES_HOME`) |
+The scripts create a launcher and prepare the data directory. Interactive runs
+also invoke setup and gateway configuration. `--non-interactive` on POSIX, or
+`-NonInteractive` on Windows, skips stages that need input. The optional
+`--include-desktop` / `-IncludeDesktop` stage builds the desktop from source.
 
-The root-mode **FHS layout** (`/usr/local/lib/…`, `/usr/local/bin/hermes`) matches where other system-wide developer tools land on Linux. It's useful for shared-machine deployments where one system install should serve every user. Per-user config (auth, skills, sessions) still lives under each user's `~/.hermes/` or explicit `HERMES_HOME`.
+#### Install layout
+
+| Method | Code | CLI entry point | Default user data |
+|---|---|---|---|
+| POSIX source script | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` wrapper | `~/.hermes/` |
+| Windows source script | `%LOCALAPPDATA%\hermes\hermes-agent\` | `%LOCALAPPDATA%\hermes\bin\` | `%LOCALAPPDATA%\hermes\` |
+| Desktop bundle | Inside the installed app package | Packaged launchers; Windows execution aliases | Platform default Hermes data directory |
+| Docker | `/opt/hermes/` | Image entrypoint and `hermes` shim | Mounted `/opt/data/` |
+| Termux APT | `$PREFIX/lib/hermes-agent/` | Symlinks in `$PREFIX/bin/` | `~/.hermes/` |
+
+`HERMES_HOME` selects user data. The POSIX script's `--dir` selects its source
+checkout independently. Windows provides `-HermesHome` and `-InstallDir`.
+Running the POSIX script as root does not select an automatic FHS layout:
+it uses root's home unless you provide an explicit source path.
+
+PM's tool store and per-install Python generations have separate lifetimes.
+See [Package management](../reference/package-management.md) for their locations.
+Do not remove the data root to repair an application installation.
 
 ### After Installation
 
@@ -90,17 +128,18 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 
 ## Prerequisites
 
-**Installer:** On non-Windows platforms, the only prerequisite is **Git**. On Linux, also make sure `curl` and `xz-utils` are available (the installer downloads Node.js as a `.tar.xz` archive). The desktop app additionally requires `g++` (or `build-essential` on Debian/Ubuntu) to compile native modules. The installer automatically handles everything else:
+For the POSIX source script, provide Git, curl, tar, and SHA-256 utilities.
+Windows can bootstrap its pinned Git for Windows archive when Git is absent.
+An existing uv can bootstrap PM; otherwise the script downloads its verified pin.
 
-- **uv** (fast Python package manager)
-- **Python 3.11** (via uv, no sudo needed)
-- **Node.js v26** (for browser automation and WhatsApp bridge; existing system Node 22.22+, 24.11+, or 26+ is used as-is)
-- **ripgrep** (fast file search)
-- **ffmpeg** (audio format conversion for TTS)
+Hermes requires **Python 3.14** (`>=3.14,<3.15`). PM selects the managed tool
+versions from `pm/lock.json`; it does not adopt arbitrary system Node versions
+as the installed runtime.
 
-:::info
-You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The installer detects what's missing and installs it for you. Just make sure `git` is available (`git --version`). On Linux, ensure `curl` and `xz-utils` are installed (`sudo apt install curl xz-utils` on Debian/Ubuntu). For the desktop app, also install `build-essential` (`sudo apt install build-essential`).
-:::
+Source builds can require a native compiler and platform development libraries.
+Building Electron from source adds Node native-module requirements. These
+build prerequisites do not apply to installing a complete desktop package.
+Linux Chromium also requires system libraries supplied by the distribution.
 
 :::tip Nix users
 Nix is **no longer an explicitly supported install path** (best-effort only). If you already use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
@@ -110,54 +149,45 @@ Nix is **no longer an explicitly supported install path** (best-effort only). If
 
 ## Manual / Developer Installation
 
-If you want to clone the repo and install from source — for contributing, running from a specific branch, or having full control over the virtual environment — see the [Development Setup](../developer-guide/contributing.md#development-setup) section in the Contributing guide.
+For a source checkout, start with the
+[PM developer workflow](/reference/package-management#developer-workflow).
+It covers activation, daily commands, dependency refresh, and current bootstrap limits.
+[Development Setup](../developer-guide/contributing.md#development-setup) covers the separate test environment and checks.
 
 ---
 
 ## Non-Sudo / System Service User Installs
 
-Running Hermes as a dedicated unprivileged user (e.g. a `hermes` systemd service account, or any user without `sudo` access) is supported. The only thing on the install path that genuinely needs root is Playwright's `--with-deps` step, which `apt`-installs shared libraries (`libnss3`, `libxkbcommon`, etc.) used by Chromium. The installer detects whether sudo is available and gracefully degrades when it isn't — it will install the Chromium binary into the service user's own Playwright cache and print the exact command an administrator needs to run separately.
+Run the source installer as the intended service user. Its home, tool store,
+configuration, and launcher must belong to that user.
 
-**Recommended split (Debian/Ubuntu):**
+1. As an administrator, install the source-build prerequisites and any Linux
+   libraries needed by the selected browser backend.
+2. As the service user, run the regular installer:
 
-1. **One time, as an admin user with sudo**, install the system libraries Chromium needs:
-   ```bash
-   sudo npx playwright install-deps chromium
-   ```
-   (You can run this from anywhere — `npx` will fetch Playwright on the fly.)
-
-2. **As the unprivileged service user**, run the regular installer. It will detect the missing sudo, skip `--with-deps`, and install Chromium into the user's local Playwright cache:
    ```bash
    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
    ```
 
-   If you want to skip the Playwright step entirely — for example because you're running headless and don't need browser automation — pass `--skip-browser`:
-   ```bash
-   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
-   ```
-
-   The installer also pre-installs [`cua-driver`](../user-guide/features/computer-use.md) so the Computer Use toolset works the moment you enable it; pass `--skip-computer-use` to opt out (it will then install on demand when you enable the tool).
-
-3. **Make `hermes` available to the service user's shells.** The installer writes the launcher to `~/.local/bin/hermes`. System service accounts often have a minimal PATH that doesn't include `~/.local/bin`. Either add it to the user's environment, or symlink the launcher into a system location:
-   ```bash
-   # Option A — add to the service user's profile
-   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-
-   # Option B — symlink system-wide (run as an admin)
-   sudo ln -s /home/hermes/.hermes/hermes-agent/venv/bin/hermes /usr/local/bin/hermes
-   ```
-
-4. **Verify:** `hermes doctor` should now run cleanly. If you get `ModuleNotFoundError: No module named 'dotenv'`, you're invoking the repo source `hermes` file (`~/.hermes/hermes-agent/hermes`) with system Python instead of the venv launcher (`~/.hermes/hermes-agent/venv/bin/hermes`) — fix step 3.
-
-5. **Running the messaging gateway from this account?** A user-level service stops at logout and does not start at boot until you enable lingering for the service user:
+3. Add the actual launcher directory to the service user's shell environment:
 
    ```bash
-   sudo loginctl enable-linger <service-user>
+   export PATH="$HOME/.local/bin:$PATH"
    ```
 
-   See [Messaging Gateway](/user-guide/messaging/) for the service setup itself.
+4. Run `hermes doctor` from that account. Use the installed wrapper, not a
+   hardcoded `venv/bin/hermes` path.
+5. For a Linux user service that must survive logout, enable lingering as an administrator:
 
-The same pattern works on Arch (the installer uses pacman with the same sudo-detection logic), Fedora/RHEL, and openSUSE — those distros don't support `--with-deps` at all, so an administrator always installs the system libraries separately. The relevant `dnf`/`zypper` commands are printed by the installer.
+   ```bash
+   sudo loginctl enable-linger SERVICE_USER
+   ```
+
+The current source installer does not run Playwright's `--with-deps` step or
+provide a package-manager-specific sudo fallback. PM manages tool binaries;
+the administrator supplies system libraries. See
+[Browser automation](../user-guide/features/browser.md) and
+[Messaging Gateway](../user-guide/messaging/index.md).
 
 ---
 
@@ -193,4 +223,8 @@ an existing directory cannot establish that the intended volume is mounted.
 
 ## Install method auto-detection
 
-Hermes auto-detects whether it was installed via the git installer, Docker, or NixOS, and `hermes update` prints the matching update command for that path. There's no env var to set — the detection is based on the install layout (`~/.hermes/hermes-agent/` checkout, Docker image stamp, or Nix store path). `hermes doctor` also surfaces the detected method under its environment summary.
+The update owner depends on the running installation, not only its data home.
+Source checkouts use the managed Git update path. Desktop bundles, Docker,
+Nix, and Termux packages retain their package owner's update mechanism.
+`hermes doctor` reports installation provenance. See
+[Updating & Uninstalling](./updating.md) before changing package-owned files.

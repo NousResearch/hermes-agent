@@ -13,7 +13,8 @@ from tools import browser_tool_install as bt_install
 
 
 @pytest.fixture(autouse=True)
-def _reset_browser_caches():
+def _reset_browser_caches(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
     bt._active_sessions.clear()
@@ -74,11 +75,15 @@ class TestTimeoutErrorFormatting:
         assert "Daemon process exited" in err
 
 
-    def test_local_install_hint(self, monkeypatch):
+    @pytest.mark.parametrize("stderr", ["", "Chromium sandbox launch failed"])
+    def test_local_install_hint(self, monkeypatch, stderr):
         monkeypatch.setattr("tools.browser_tool_cloud._is_local_mode", lambda: True)
         monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
-        err = bt_session._format_browser_timeout_error("open", 60, "", "")
-        assert "agent-browser install --with-deps" in err
+        err = bt_session._format_browser_timeout_error("open", 60, "", stderr)
+        assert "playwright install-deps chromium" in err
+        assert "agent-browser install" not in err
+        if not stderr:
+            assert "hermes pm install chromium" in err
 
 
 class TestReadCommandOutputFiles:
@@ -111,7 +116,7 @@ class TestCommandTimeoutRecovery:
         supervisor_events = []
 
         monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "agent-browser")
-        monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda _cmd: False)
+        monkeypatch.setattr(bt_install, "_chromium_installed", lambda: True)
         monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
         monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda _: supervisor_events.append("ensure"))
         monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda _: supervisor_events.append("stop"))

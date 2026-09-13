@@ -14,7 +14,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from . import templates as _hs_templates
 from .embedded import _embedded_profile_env_path, _load_simple_env, _materialize_embedded_profile_env
 from .settings import (
-    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_TIMEOUT, _MIN_CLIENT_VERSION,
+    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_TIMEOUT,
     _PROVIDER_DEFAULT_MODELS,
 )
 
@@ -76,6 +76,41 @@ def _prompt_embedded_llm(llm_provider: str, provider_config: dict, env_writes: d
     env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key or _load_simple_env(hermes_env).get("HINDSIGHT_LLM_API_KEY", "")
 
 
+def _sync_client_dependency() -> bool:
+    """hindsight-client via the declared ``extra: hindsight`` (plugin.yaml).
+
+    pm's venv sync is the ONE install authority (uv.lock owns the pin) — no
+    pip against sys.executable, and no ``tools.lazy_deps`` (deleted)."""
+    try:
+        import pm
+
+        pm.sync_venv(["hindsight"], explicit=True)
+        return True
+    except Exception as e:
+        print(f"  ⚠ Install failed: {e}")
+        print("  Run manually: hermes pm install")
+        return False
+
+
+def _install_embedded_runtime() -> bool:
+    """local_embedded: install the isolated side env (hindsight-embed + the heavy
+    hindsight-api-slim[all]) via PM's isolated environment operation — never the
+    shared main venv (the protobuf floors conflict). The daemon later runs from the
+    side env's own interpreter/binary; Hermes talks HTTP with hindsight-client."""
+    from .embedded_runtime import _local_runtime_hint, ensure_sideenv, sideenv_root
+
+    try:
+        ensure_sideenv()
+    except Exception as e:
+        print(f"  ⚠ Isolated runtime install failed: {e}")
+        print(f"    {_local_runtime_hint(str(e)).strip()}")
+        return False
+    print(f"  ✓ Isolated Hindsight runtime installed at {sideenv_root()}")
+    print("    (separate environment — the Hermes venv is not modified; the daemon")
+    print("    runs from it and Hermes connects over HTTP)")
+    return True
+
+
 def run_setup(provider, hermes_home: str, config: dict) -> None:
     """Interactive wizard — installs only the deps the selected mode needs."""
     from hermes_cli.config import save_config
@@ -105,18 +140,13 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
         provider_config["llm_provider"] = llm_provider
 
     print("\n  Checking dependencies...")
-    # Environment-aware install: sealed hosted venvs redirect to the durable data volume.
-    from tools.lazy_deps import install_specs
-
-    deps = ["hindsight-all"] if mode == "local_embedded" else [f"hindsight-client>={_MIN_CLIENT_VERSION}"]
-    outcome = install_specs(deps, timeout=120)
-    if outcome.ok:
-        print("  ✓ Dependencies up to date")
-    elif outcome.blocked:
-        print(f"  ⚠ Cannot install dependencies: {outcome.reason}")
-    else:
-        print(f"  ⚠ Install failed:\n{(outcome.stderr or '').strip()}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps)}")
+    # Environment-aware install: pm's venv sync is the ONE authority for the
+    # client (declared extra, uv.lock pin); tools.lazy_deps is deleted. The
+    # local_embedded heavy stack installs into its own isolated side env.
+    if not _sync_client_dependency():
+        return
+    if mode == "local_embedded" and not _install_embedded_runtime():
+        return
 
     if mode == "cloud":
         print("\n  Get your API key at https://ui.hindsight.vectorize.io\n")
@@ -168,7 +198,7 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
         materialized_config = dict(provider_config)
         with contextlib.suppress(Exception):
             materialized_config = json.loads(
-                (Path(hermes_home) / "hindsight" / "config.json").read_text(encoding="utf-8")
+                (Path(hermes_home) / "hindsight" / "config.json").read_text(encoding="utf-8-sig")
             )
         llm_api_key = (
             env_writes.get("HINDSIGHT_LLM_API_KEY", "")

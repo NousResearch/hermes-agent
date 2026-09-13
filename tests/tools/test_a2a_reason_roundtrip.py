@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -58,8 +59,28 @@ def test_write_reply_classifies_when_reason_omitted(home):
 
 def _run_waiter(home, envelope):
     cmd = bot_relay.waiter_command(home, envelope)
+    # Resolve a launchable bash (PATH may resolve the MSIX payload copy,
+    # which WinError-5s outside its package context) and pass a complete
+    # child env — same pattern as tests/pm/test_activate_scripts.py.
+    import os
+    import shutil
+
+    bash = shutil.which("bash") or "bash"
+    if sys.platform == "win32" and "windowsapps" in str(bash).lower():
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        for rel in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
+            cand = Path(pf).joinpath(*rel) if isinstance(pf, str) else Path(pf, *rel)
+            if cand.exists():
+                bash = str(cand)
+                break
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        env.setdefault("SystemRoot", r"C:\Windows")
+        env.setdefault("ComSpec", r"C:\Windows\system32\cmd.exe")
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     return subprocess.run(
-        ["bash", "-c", cmd], capture_output=True, text=True, timeout=30
+        [bash, "-c", cmd],
+        capture_output=True, text=True, timeout=30, env=env,
     )
 
 

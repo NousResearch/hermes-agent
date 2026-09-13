@@ -60,23 +60,23 @@ export interface WaitableChild extends KillableChild {
 export async function waitForBackendExit(
   child: WaitableChild | null | undefined,
   deps: StopBackendChildDeps,
-  timeoutMs = 5000
+  timeoutMs: number = 5000
 ): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) {
     return
   }
 
-  const exited = () => child.exitCode !== null || child.signalCode !== null
+  const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
 
-  const wait = (delay: number) =>
-    new Promise<void>(resolve => {
+  const wait = (delay: number): Promise<void> =>
+    new Promise<void>((resolve: () => void): void => {
       if (exited()) {
         resolve()
 
         return
       }
 
-      const finish = () => {
+      const finish = (): void => {
         clearTimeout(timer)
         child.removeListener('exit', finish)
         resolve()
@@ -97,7 +97,7 @@ export async function waitForBackendExit(
       deps.forceKillProcessTree(child.pid as number)
     } else if (Number.isInteger(child.pid)) {
       try {
-        const killGroup = deps.killGroup ?? ((pid, signal) => process.kill(pid, signal))
+        const killGroup = deps.killGroup ?? ((pid: number, signal: string): boolean => process.kill(pid, signal))
         killGroup(-(child.pid as number), 'SIGKILL')
       } catch {
         child.kill('SIGKILL')
@@ -106,10 +106,14 @@ export async function waitForBackendExit(
       child.kill('SIGKILL')
     }
   } catch {
-    return
+    // The process may have exited while the signal was sent. Verify below.
   }
 
   await wait(1000)
+
+  if (!exited()) {
+    throw new Error(`Backend PID ${child.pid} did not exit after escalation`)
+  }
 }
 
 /**

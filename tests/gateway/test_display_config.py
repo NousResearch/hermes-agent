@@ -178,7 +178,7 @@ class TestConfigMigration:
 
     def test_migration_creates_platforms_entries(self, tmp_path, monkeypatch):
         """Old overrides are migrated into display.platforms.<plat>.tool_progress."""
-        import yaml
+        import hermes_yaml as yaml
 
         config_path = tmp_path / "config.yaml"
         config = {
@@ -190,7 +190,7 @@ class TestConfigMigration:
                 },
             },
         }
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Re-import to pick up the new HERMES_HOME

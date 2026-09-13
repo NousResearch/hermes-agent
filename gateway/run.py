@@ -400,53 +400,6 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"))
 
 
-def _ensure_windows_gateway_venv_imports() -> None:
-    """Make detached Windows gateway runs see the Hermes venv packages.
-
-    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
-    if sys.platform != "win32":
-        return
-
-    project_root = Path(__file__).resolve().parent.parent
-    candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
-
-    seen: set[str] = set()
-    for venv_dir in candidates:
-        try:
-            resolved_venv = venv_dir.resolve()
-        except OSError:
-            resolved_venv = venv_dir
-        venv_key = str(resolved_venv).lower()
-        if venv_key in seen:
-            continue
-        seen.add(venv_key)
-
-        site_packages = resolved_venv / "Lib" / "site-packages"
-        if not site_packages.exists():
-            continue
-
-        project_entry = str(project_root)
-        site_entry = str(site_packages)
-        if project_entry not in sys.path:
-            sys.path.insert(0, project_entry)
-        # addsitedir semantics matter: pywin32 (MCP SDK on Windows) needs .pth processing for pywintypes.
-        site.addsitedir(site_entry)
-        if site_entry in sys.path:
-            sys.path.remove(site_entry)
-        insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
-        sys.path.insert(insert_at, site_entry)
-
-        os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        pythonpath = [project_entry, site_entry]
-        if os.environ.get("PYTHONPATH"):
-            pythonpath.append(os.environ["PYTHONPATH"])
-        os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
-        return
-
-
 def _gateway_platform_value(platform: Any) -> str:
     """Return a normalized gateway platform value for enums or raw strings."""
     return str(getattr(platform, "value", platform) or "").strip().lower()
@@ -1504,47 +1457,16 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     return paths
 
 def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE when the system hides CA certs from Python (NixOS etc.); must run BEFORE any
-    HTTP library is imported. A set-but-missing path breaks every later httpx client: treat as unset."""
-    configured_cert = os.environ.get("SSL_CERT_FILE")
-    if configured_cert:
-        if os.path.exists(configured_cert):
-            return  # user already configured it to a real file
-        logging.getLogger(__name__).warning(
-            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist", configured_cert)
-        os.environ.pop("SSL_CERT_FILE", None)
+    """Point TLS verification at the OS trust store.
 
-    import ssl
+    truststore's own OpenSSL backend already sweeps the distro CA-bundle
+    locations when the compiled-in paths are empty, which is the NixOS /
+    non-standard-python case this used to hand-roll.
+    """
+    from agent.ssl_verify import install_truststore
 
-    # 1. Python's compiled-in defaults
-    paths = ssl.get_default_verify_paths()
-    for candidate in (paths.cafile, paths.openssl_cafile):
-        if candidate and os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
+    install_truststore()
 
-    # 2. certifi (ships its own Mozilla bundle)
-    try:
-        import certifi
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
-    except ImportError:
-        pass
-
-    # 3. Common distro / macOS locations
-    for candidate in (
-        "/etc/ssl/certs/ca-certificates.crt",               # Debian/Ubuntu/Gentoo
-        "/etc/pki/tls/certs/ca-bundle.crt",                 # RHEL/CentOS 7
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", # RHEL/CentOS 8+
-        "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
-        "/etc/ssl/cert.pem",                                 # Alpine / macOS
-        "/etc/pki/tls/cert.pem",                             # Fedora
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
-    ):
-        if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
 
 def _home_target_env_var(platform_name: str) -> str:
     """Home-target env var: built-in ``_HOME_TARGET_ENV_VARS``, plugin registry, then
@@ -1580,6 +1502,26 @@ def _clear_planned_restart_notification() -> None:
 os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
+
+# pm startup: same contract as the CLI dispatch path (hermes_cli/main.py)
+# — the gateway daemon never passes through the CLI fast-launch checks, so
+# the store's tools (git/bash/ffmpeg/...) must be on PATH here. O(1) stamp
+# checks, no network, no installs; warns, never blocks. Runs from main(),
+# not import time: importers of this module (relay runtime, platform
+# actions, enrollment) need helpers, not PATH provisioning or a pm verdict
+# on their behalf.
+def _run_pm_startup() -> None:
+    try:
+        import pm
+
+        pm.adopt()
+        problems = pm.activate()
+        if problems:
+            logging.getLogger("gateway.run").warning(
+                f"install out of sync ({'; '.join(problems)}) — run `hermes pm install`"
+            )
+    except Exception:
+        logging.getLogger("gateway.run").debug("pm startup check failed", exc_info=True)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -2724,7 +2666,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
     """Derive ``(slug, declared_name)`` from a SKILL.md; ``(None, None)`` if unreadable or no ``name:``.
     Matches ``scan_skill_commands``: the slug comes from frontmatter ``name:``, NOT the directory."""
     try:
-        content = skill_md.read_text(encoding="utf-8", errors="replace")
+        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         return None, None
     content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
@@ -2833,8 +2775,8 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     if not used_canonical:
         try:
             if config_path.exists():
-                import yaml
-                with open(config_path, 'r', encoding='utf-8') as f:
+                import hermes_yaml as yaml
+                with open(config_path, 'r', encoding='utf-8-sig') as f:
                     raw = yaml.safe_load(f) or {}
         except Exception:
             logger.debug("Could not load gateway config from %s", config_path)
@@ -3304,7 +3246,7 @@ _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
     Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
                      "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
     Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
-                       "Yuanbao: websockets not installed. Run: pip install websockets")}
+                       "Yuanbao: websockets not installed. Run: hermes pm repair")}
 
 
 def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
@@ -4552,6 +4494,16 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
+def _housekeeping_plugin_update_check() -> None:
+    """Plugin update-check cadence (plugins_cadence): due-gated by
+    plugins.auto_update_check_hours, read-only, receipt-surfaced; the
+    opt-in auto-apply rides the manual update pipeline. A network error
+    costs one warning and a stamped marker — never an apply."""
+    from hermes_cli.plugins_cadence import maybe_run_gateway_check
+
+    maybe_run_gateway_check(log=logger)
+
+
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
     is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
@@ -4638,6 +4590,7 @@ def _start_gateway_housekeeping(
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (1, "Plugin update check", _housekeeping_plugin_update_check),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim)]
 
@@ -5358,7 +5311,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
     _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
-    _ensure_windows_gateway_venv_imports()
+
 
     # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
     try:
@@ -5460,6 +5413,21 @@ def main():
     for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
 
+    # pm startup contract (PATH provisioning for the store's tools), then
+    # the post-update bootstrap: the same one-pass record-gated maintenance
+    # registry the CLI dispatch path runs (hermes_cli/main.py) — this
+    # entrypoint bypasses that dispatch, so run it here too. Never raises.
+    _best_effort(_run_pm_startup)
+    try:
+        from hermes_cli.boot_bootstrap import (
+            default_project_root,
+            maybe_run_boot_bootstrap,
+        )
+
+        maybe_run_boot_bootstrap(default_project_root())
+    except Exception:
+        logger.debug("boot bootstrap failed", exc_info=True)
+
     import argparse
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
@@ -5468,8 +5436,8 @@ def main():
 
     config = None
     if args.config:
-        import yaml
-        with open(args.config, encoding="utf-8") as f:
+        import hermes_yaml as yaml
+        with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a

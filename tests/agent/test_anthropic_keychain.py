@@ -15,11 +15,11 @@ from agent.anthropic_credentials import _read_claude_code_credentials_from_keych
 pytestmark = pytest.mark.allow_macos_keychain
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestReadClaudeCodeCredentialsFromKeychain:
     """Bug 4: macOS Keychain support for Claude Code >=2.1.114.
 
-    ``macos_only``: the reader is gated on ``platform.system() == "Darwin"``
+    ``platforms("macos")``: the reader is gated on ``platform.system() == "Darwin"``
     and shells out to the ``security`` CLI. Faking Darwin on Linux selected
     the branch but proved nothing about the host it exists for; on the real
     macOS runner only ``subprocess.run`` is mocked (via the
@@ -47,7 +47,7 @@ class TestReadClaudeCodeCredentialsFromKeychain:
 
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""
 
@@ -118,7 +118,7 @@ class TestReadClaudeCodeCredentialsPriority:
         assert creds is None
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestReadClaudeCodeCredentialsDesync:
     """Reconciliation when Keychain and JSON file disagree.
 

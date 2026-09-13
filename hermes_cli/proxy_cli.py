@@ -25,8 +25,8 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     # (name, help, handler, [(flag, add_argument kwargs), ...]) — declaration order is the
     # ``--help`` order, so keep it stable.
     commands = [
-        ("install", f"Download iron-proxy binary (v{ip._IRON_PROXY_VERSION})", cmd_install, [
-            ("--force", dict(action="store_true", help="Re-download even if a managed copy already exists")),
+        ("install", "Install the PM-pinned iron-proxy binary", cmd_install, [
+            ("--force", dict(action="store_true", help="Verify and repair the managed copy")),
         ]),
         ("setup", "Interactive wizard: install + CA + mint tokens + write config", cmd_setup, [
             ("--tunnel-port", dict(type=int, default=None,

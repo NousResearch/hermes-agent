@@ -77,11 +77,68 @@ on:
         required: false
         type: number
         default: 60
+      bundle-manifest-url:
+        type: string
+        default: ''
+      bundle-manifest-sha256:
+        description: Pinned transition manifest digest for stable acceptance
+        type: string
+        default: ''
+      bundle-arch:
+        type: string
+        default: x64
 
 permissions:
   contents: read
 
 jobs:
+  bundled-e2e:
+    name: packaged bundle (open-app-update)
+    if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
+    runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - name: Install driver dependencies and verify helpers
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Start recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+      - name: Install, update and observe native relaunch
+        shell: pwsh
+        env:
+          BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundled-e2e.ps1 -ManifestUrl $env:BUNDLE_MANIFEST -Arch $env:BUNDLE_ARCH
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Stop recording
+        if: always()
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+      - name: Upload native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-e2e-logs-${{ inputs.leg-id }}-bundle-${{ inputs.bundle-arch }}
+          path: |
+            ${{ runner.temp }}/hermes-bundled-update/proof/
+            ${{ runner.temp }}/hermes-bundled-update/home/logs/
+            ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+          if-no-files-found: error
+          retention-days: 14
   e2e:
     # Short static name on purpose: name expressions render UNEXPANDED on
     # skipped jobs.
@@ -116,6 +173,7 @@ jobs:
       # in that clone. A shallow checkout cannot serve either need.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       # One recording mechanism on every OS: the composite action installs

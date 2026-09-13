@@ -53,7 +53,7 @@ def load(paths: list[Path]) -> tuple[list[dict], list[dict]]:
     batch: list[dict] = []
     for path in paths:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError as exc:
             print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
             continue

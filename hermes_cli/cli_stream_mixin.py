@@ -199,7 +199,7 @@ class CLIStreamMixin:
             # check and read (TOCTOU), silently dropping the input.
             try:
                 # See #17666.
-                return path.read_text(encoding="utf-8")
+                return path.read_text(encoding="utf-8-sig")
             except (OSError, IOError):
                 logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
                 return match.group(0)

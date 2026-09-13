@@ -284,7 +284,7 @@ class TestIterBackupFiles:
         assert "models" in skipped
         assert "hermes-agent" in skipped
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_skips_unix_sockets(self, tmp_path, monkeypatch):
         from hermes_cli.backup import _iter_backup_files
 
@@ -438,7 +438,7 @@ class TestValidateBackupZip:
 
     def test_state_db_passes(self, tmp_path):
         """A zip containing state.db is accepted as a valid Hermes backup."""
-        from hermes_cli.backup import _validate_backup_zip
+        from hermes_cli.backup_restore import _validate_backup_zip
         zip_path = tmp_path / "backup.zip"
         self._make_zip(zip_path, ["state.db", "sessions/abc.json"])
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -470,6 +470,11 @@ class TestImport:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Windows: the native default home is %LOCALAPPDATA%\hermes, not
+        # ~\.hermes. Without redirecting LOCALAPPDATA the non-default-home
+        # guard below sees the developer's real install and (correctly)
+        # declines the auto-install, failing the test on Windows only.
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
 
         calls = []
         monkeypatch.setattr(
@@ -703,7 +708,7 @@ class TestValidation:
     def test_validate_with_config(self):
         """Zip with config.yaml passes validation."""
         import io
-        from hermes_cli.backup import _validate_backup_zip
+        from hermes_cli.backup_restore import _validate_backup_zip
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -718,7 +723,7 @@ class TestValidation:
     def test_detect_prefix_only_dirs(self):
         """Prefix detection returns empty for zip with only directory entries."""
         import io
-        from hermes_cli.backup import _detect_prefix
+        from hermes_cli.backup_restore import _detect_prefix
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
@@ -1019,7 +1024,7 @@ class TestImportAtomicWrites:
         assert target.read_text() == "model: restored\n"
         assert (target.stat().st_mode & 0o777) == 0o644
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership")
+    @pytest.mark.platforms("posix")
     def test_restore_preserves_existing_file_owner(self, tmp_path, monkeypatch):
         """A root-run import must not re-own the user's files to root.
 
@@ -1040,7 +1045,7 @@ class TestImportAtomicWrites:
 
         chown_calls: list[tuple[Path, int, int]] = []
         monkeypatch.setattr(
-            "hermes_cli.backup._preserve_file_owner",
+            "hermes_cli.backup_restore._preserve_file_owner",
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
@@ -1056,28 +1061,21 @@ class TestImportAtomicWrites:
         # state.db is newly created, so there is no prior owner to restore.
         assert chown_calls == [(target, 123, 456)]
 
-    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="needs fchmod present to remove it")
-    def test_mode_is_applied_before_the_replace_without_fchmod(self, tmp_path, monkeypatch):
-        """Covers the Windows branch: no ``fchmod``, so ``chmod`` the temp path.
-
-        Applying the mode only *after* ``atomic_replace`` leaves the published
-        file at mkstemp's 0600 until that chmod lands (and permanently if the
-        process dies in between), and ``atomic_replace``'s EXDEV/EBUSY
-        ``shutil.copystat`` fallback would copy 0600 onto the target. Mirrors
-        the transit-window fix ``atomic_yaml_write`` already carries.
-        """
+    def test_mode_is_applied_before_the_replace(self, tmp_path, monkeypatch):
+        """Publish the correct native permission bits with no permissive window."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         target = hermes_home / "config.yaml"
         target.write_text("model: original\n")
         os.chmod(target, 0o644)
+        expected_mode = target.stat().st_mode & 0o777
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {"config.yaml": "model: restored\n", "state.db": ""})
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1087,17 +1085,15 @@ class TestImportAtomicWrites:
                 staged_modes.append(os.stat(tmp).st_mode & 0o777)
             return real_replace(tmp, dst)
 
-        monkeypatch.delattr(os, "fchmod")
         monkeypatch.setattr(backup_mod, "atomic_replace", spying_replace)
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        # Without the pre-replace chmod this reads 0o600 (mkstemp's mode).
-        assert staged_modes == [0o644]
-        assert (target.stat().st_mode & 0o777) == 0o644
+        assert staged_modes == [expected_mode]
+        assert (target.stat().st_mode & 0o777) == expected_mode
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX setuid/setgid bits")
+    @pytest.mark.platforms("posix")
     def test_restore_does_not_carry_setuid_onto_archive_content(
         self, tmp_path, monkeypatch
     ):
@@ -1132,7 +1128,7 @@ class TestImportAtomicWrites:
             {"helper.sh": "#!/bin/sh\necho attacker\n", "state.db": ""},
         )
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1198,9 +1194,10 @@ class TestProfileRestoration:
         from hermes_cli.backup import run_import
         run_import(args)
 
-        # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        # Only valid profile should get a wrapper (Windows uses a .bat shim).
+        suffix = ".bat" if os.name == "nt" else ""
+        assert (wrapper_dir / f"valid{suffix}").exists()
+        assert not (wrapper_dir / f"empty{suffix}").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1230,6 +1227,8 @@ class TestSafeCopyDb:
     def test_aborts_when_source_remains_busy_past_deadline(
         self, tmp_path, monkeypatch
     ):
+        from types import SimpleNamespace
+
         from hermes_cli import backup as backup_mod
 
         src = tmp_path / "locked.db"
@@ -1269,7 +1268,8 @@ class TestSafeCopyDb:
             return next(connections)
 
         monkeypatch.setattr(backup_mod.sqlite3, "connect", fake_connect)
-        monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
+        # Rebind this module's clock; asyncio must retain the process-wide one.
+        monkeypatch.setattr(backup_mod, "time", SimpleNamespace(monotonic=lambda: next(clock)))
         monkeypatch.setattr(Path, "unlink", assert_closed_before_unlink)
 
         assert backup_mod._safe_copy_db(src, dst, timeout_seconds=1.0) is False
@@ -1660,7 +1660,7 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(s.endswith(os.path.join("boards", "work", "kanban.db")) for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -1787,7 +1787,7 @@ class TestRunPreUpdateBackup:
 
     @staticmethod
     def _set_mode(hermes_home, value):
-        import yaml
+        import hermes_yaml as yaml
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "_config_version": 22,
             "updates": {"pre_update_backup": value},
@@ -1852,7 +1852,8 @@ class TestPreMigrationBackup:
     def test_restorable_with_hermes_import(self, hermes_home, tmp_path):
         """The zip produced by pre-migration backup must be a valid Hermes
         backup — `hermes import` should accept it."""
-        from hermes_cli.backup import create_pre_migration_backup, _validate_backup_zip
+        from hermes_cli.backup import create_pre_migration_backup
+        from hermes_cli.backup_restore import _validate_backup_zip
         out = create_pre_migration_backup(hermes_home=hermes_home)
         assert out is not None
         with zipfile.ZipFile(out) as zf:
@@ -1982,7 +1983,7 @@ class TestRestoreConfigModelSettingsIfRewritten:
         return cfg
 
     def test_restores_rewritten_provider_and_dropped_moa(self, tmp_path):
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 
         hermes_home = tmp_path / ".hermes"
@@ -2033,7 +2034,7 @@ class TestRestoreConfigModelSettingsIfRewritten:
     def test_preserves_legitimate_update_writes(self, tmp_path):
         """Only protected keys are restored — a version bump or a new section
         the migration legitimately wrote must survive the restore."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 
         hermes_home = tmp_path / ".hermes"
@@ -2145,6 +2146,7 @@ class TestMemoryProviderExternalPaths:
         (outside / "leak.json").unlink()
         outside.rmdir()
 
+    @pytest.mark.platforms("linux")
     def test_import_restores_external_to_home_relative_location(self, tmp_path, monkeypatch):
         """_external/ members restore to ~/<relpath>, not under HERMES_HOME,
         and credential-shaped files get 0600."""
@@ -2413,9 +2415,12 @@ class TestImportLiveSessionDatabase:
     ):
         """A refused live-safe restore is a warning, not a counted success."""
         import hermes_cli.backup as backup_mod
+        # _import_db_member (the run_import .db publish path) lives in
+        # hermes_cli.backup_restore and resolves _safe_restore_db there.
+        import hermes_cli.backup_restore as backup_restore_mod
 
         home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
-        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        monkeypatch.setattr(backup_restore_mod, "_safe_restore_db", lambda src, dst: False)
 
         backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
 

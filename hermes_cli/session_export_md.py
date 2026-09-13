@@ -152,7 +152,7 @@ def file_sha256(path: Path | str) -> str:
 def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool, str]:
     if not Path(path).exists():
         return False, "file missing"
-    text = Path(path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8-sig")
     match = _SHA_LINE_RE.search(text)
     if not match:
         return False, "sha256 marker missing"

@@ -69,65 +69,48 @@ Esto no es una barra de calidad — es una decisión de acoplamiento y mantenimi
 
 ## Configuración del Desarrollo
 
-### Prerequisitos
+### Preparar el entorno
 
-| Requisito | Notas |
-|-----------|-------|
-| **Git** | Con la extensión `git-lfs` instalada |
-| **Python 3.11–3.13** | uv lo instalará si falta |
-| **uv** | Gestor de paquetes Python rápido ([instalar](https://docs.astral.sh/uv/)) |
-| **Node.js 20+** | Opcional — necesario para herramientas de navegador y puente WhatsApp (coincide con los engines de `package.json` raíz) |
+Se requieren Git y git-lfs. PM proporciona Python 3.14 (`>=3.14,<3.15`) y las herramientas fijadas.
+Sigue el [flujo de desarrollo de PM](website/docs/reference/package-management.md#developer-workflow).
+Selecciona un `HERMES_HOME` de desarrollo antes de preparar el checkout.
 
-### Clonar e instalar
+En Bash, desde la raíz del repositorio:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-
-# Crear venv con Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# Instalar con todos los extras (mensajería, cron, menús CLI, herramientas de desarrollo)
-uv pip install -e ".[all,dev]"
-
-# Opcional: herramientas de navegador
-npm install
+source ./activate
+python hermes --version
 ```
 
-### Configurar para desarrollo
+En PowerShell:
+
+```powershell
+. .\activate.ps1
+python hermes --version
+```
+
+### Entorno independiente de pruebas
+
+Usa el Python preparado por PM para crear un entorno nuevo:
 
 ```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-
-# Añadir al menos una clave de proveedor LLM:
-echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
+python -m pm.build_env --source . --out .venv --extra dev --group test
+scripts/run_tests.sh tests/agent/ -v
 ```
 
-### Ejecutar
+La ruta de salida no debe existir. Para regenerarla, detén sus procesos y elimina
+explícitamente solo ese entorno desechable. PM no elimina destinos existentes.
+No modifiques los entornos de Hermes con comandos directos de pip o uv.
+En Windows, ejecuta el script de pruebas mediante Bash.
+
+Si cambias `pyproject.toml`, regenera el lock con:
 
 ```bash
-# Enlace simbólico para acceso global
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-
-# Verificar
-hermes doctor
-hermes chat -q "Hola"
+python -m pm.build_env --source . --lock-only
 ```
 
-### Ejecutar tests
-
-```bash
-# Preferido — coincide con CI (entorno hermético, 4 workers xdist); ver AGENTS.md
-scripts/run_tests.sh
-
-# Alternativa (activa el venv primero). El wrapper sigue recomendándose
-# para paridad con GitHub Actions antes de abrir un PR:
-pytest tests/ -v
-```
+Para JavaScript, ejecuta `npm ci` en el workspace correspondiente. Consulta
+[CONTRIBUTING.md](CONTRIBUTING.md) para los requisitos completos.
 
 ---
 

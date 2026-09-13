@@ -20,7 +20,7 @@ from urllib.request import urlopen
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_UPDATE_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
@@ -94,7 +94,7 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
         )
 
     try:
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 120
         shim_url = None
         while time.monotonic() < deadline:
             text = output_path.read_text(encoding="utf-8", errors="replace")
@@ -137,5 +137,8 @@ def test_progress_advances_while_the_orchestrator_blocks(tmp_path: Path) -> None
         assert process.wait(timeout=60) == 0
     finally:
         if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+            )
+            process.wait(timeout=15)

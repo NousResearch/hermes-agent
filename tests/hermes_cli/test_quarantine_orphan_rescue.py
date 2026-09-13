@@ -28,7 +28,6 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import _early_recovery as er
-from hermes_cli import _install_repair as ir
 from hermes_cli import main as cli_main
 from hermes_cli import main_install_repair
 
@@ -308,12 +307,8 @@ def test_helper_is_a_noop_when_installer_wrote_a_fresh_shim(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-# ---------------------------------------------------------------------------
-# both call sites route through the helper
-# ---------------------------------------------------------------------------
-
-
-def test_main_restore_reports_on_stderr(tmp_path, capsys):
+def test_restore_reports_on_stderr(tmp_path, capsys):
+    """Restore diagnostics must not pollute a JSON-RPC stdout stream."""
     scripts = _make_scripts_dir(tmp_path)
     quarantined = scripts / "hermes.exe.old.123"
     quarantined.write_bytes(b"MZ-old-hermes")
@@ -323,26 +318,9 @@ def test_main_restore_reports_on_stderr(tmp_path, capsys):
         raise PermissionError(32, "being used by another process")
 
     with patch.object(er.os, "rename", always_locked):
-        main_install_repair._restore_quarantined_exes([(original, quarantined)])
+        failed = er.restore_quarantined_shims([(original, quarantined)], backoff_ms=(0,))
 
     captured = capsys.readouterr()
-    assert "FAILED to restore hermes.exe" in captured.err
-    assert captured.out == ""
-
-
-def test_repair_restore_reports_on_stderr(tmp_path, capsys):
-    """The early-recovery path must warn on stderr (acp speaks JSON-RPC on stdout)."""
-    scripts = _make_scripts_dir(tmp_path)
-    quarantined = scripts / "hermes.exe.old.123"
-    quarantined.write_bytes(b"MZ-old-hermes")
-    original = scripts / "hermes.exe"
-
-    def always_locked(src, dst):
-        raise PermissionError(32, "being used by another process")
-
-    with patch.object(er.os, "rename", always_locked):
-        ir._restore_quarantined_exes([(original, quarantined)])
-
-    captured = capsys.readouterr()
+    assert failed == [(original, quarantined)]
     assert "FAILED to restore hermes.exe" in captured.err
     assert captured.out == "", "stdout must stay clean for JSON-RPC"

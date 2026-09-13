@@ -11,7 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform

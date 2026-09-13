@@ -51,7 +51,7 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     bootstrap without python-dotenv); decode errors fall back to latin-1 like ``_load_dotenv_with_fallback``."""
     keys: set[str] = set()
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         try:
             text = path.read_text(encoding="latin-1", errors="replace")
@@ -332,7 +332,9 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    from hermes_constants import get_process_hermes_home
+
+    home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
     # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
@@ -554,7 +556,11 @@ def _load_secrets_config(home_path: Path) -> dict:
         except Exception:
             pass
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        import hermes_yaml as yaml
+    except ImportError:
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except Exception:  # noqa: BLE001
         return {}

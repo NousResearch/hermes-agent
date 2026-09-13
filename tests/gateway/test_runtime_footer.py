@@ -36,10 +36,12 @@ def test_model_short_drops_vendor_prefix(model, expected):
 
 def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     sub = tmp_path / "projects" / "hermes"
     sub.mkdir(parents=True)
     result = _home_relative_cwd(str(sub))
-    assert result == "~/projects/hermes"
+    assert result == os.path.join("~", "projects", "hermes")
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +50,8 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
 
 def test_format_footer_all_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "projects" / "hermes"))
     (tmp_path / "projects" / "hermes").mkdir(parents=True)
     out = format_runtime_footer(
@@ -57,7 +61,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "gpt-5.4 · 68% · " + os.path.join("~", "projects", "hermes")
 
 
 def test_format_footer_skips_missing_context_length():
@@ -71,7 +75,7 @@ def test_format_footer_skips_missing_context_length():
     # context_pct dropped silently; no "?%" artifact
     assert "%" not in out
     assert "gpt-5.4" in out
-    assert "/tmp/wd" in out
+    assert os.path.abspath("/tmp/wd") in out
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +218,8 @@ def test_format_footer_latency_zero_renders_sub_second():
 
 def test_format_footer_latency_in_field_order(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     out = format_runtime_footer(
         model="openai/gpt-5.4",
         context_tokens=68_000,
@@ -256,6 +262,9 @@ def test_build_footer_line_threads_turn_seconds(monkeypatch):
 # ---------------------------------------------------------------------------
 
 _LEGACY_DEFAULT_FIELDS = ["model", "context_pct", "cwd"]
+# An absolute path that survives _home_relative_cwd unchanged on every host
+# (os.path.abspath("/var/data") -> "C:\\var\\data" on Windows, "/var/data" on POSIX).
+_VAR_DATA = os.path.abspath("/var/data")
 
 
 def test_latency_not_in_default_fields():
@@ -275,10 +284,10 @@ def test_resolve_footer_config_default_fields_exclude_latency():
 @pytest.mark.parametrize(
     "model,tokens,window,cwd,expected",
     [
-        ("openai/gpt-5.4", 50_247, 1_000_000, "/var/data", "gpt-5.4 · 5% · /var/data"),
-        ("claude-opus-4-8", 68_000, 100_000, "/var/data", "claude-opus-4-8 · 68% · /var/data"),
-        ("m", 0, None, "/var/data", "m · /var/data"),
-        ("", 10, 100, "/var/data", "10% · /var/data"),
+        ("openai/gpt-5.4", 50_247, 1_000_000, _VAR_DATA, f"gpt-5.4 · 5% · {_VAR_DATA}"),
+        ("claude-opus-4-8", 68_000, 100_000, _VAR_DATA, f"claude-opus-4-8 · 68% · {_VAR_DATA}"),
+        ("m", 0, None, _VAR_DATA, f"m · {_VAR_DATA}"),
+        ("", 10, 100, _VAR_DATA, f"10% · {_VAR_DATA}"),
         ("m", 10, 100, "", "m · 10%"),
     ],
 )
@@ -311,9 +320,9 @@ def test_default_build_footer_line_ignores_turn_seconds(monkeypatch):
         model="openai/gpt-5.4",
         context_tokens=50_247,
         context_length=1_000_000,
-        cwd="/var/data",
+        cwd=_VAR_DATA,
     )
     baseline = build_footer_line(**common)
     with_timing = build_footer_line(**common, turn_seconds=125.0)
-    assert baseline == "gpt-5.4 · 5% · /var/data"
+    assert baseline == f"gpt-5.4 · 5% · {_VAR_DATA}"
     assert with_timing == baseline

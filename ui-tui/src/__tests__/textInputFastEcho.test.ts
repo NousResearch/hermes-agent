@@ -254,16 +254,6 @@ describe('supportsFastEchoTerminal', () => {
     expect(supportsFastEchoTerminal({ TMUX: '/private/tmp/tmux-501/default' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
-  it('tmux wins over Termux fast-echo opt-in', () => {
-    expect(
-      supportsFastEchoTerminal({
-        TMUX: '/tmp/tmux-1000/default,1234,0',
-        HERMES_TUI_TERMUX_FAST_ECHO: '1',
-        TERMUX_VERSION: '0.118.0'
-      } as NodeJS.ProcessEnv)
-    ).toBe(false)
-  })
-
   it('keeps fast-echo enabled when TMUX is empty or unset', () => {
     expect(supportsFastEchoTerminal({ TMUX: '' } as NodeJS.ProcessEnv)).toBe(true)
     expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
@@ -286,25 +276,7 @@ describe('supportsFastEchoTerminal', () => {
     expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
   })
 
-  it('disables fast-echo by default in Termux mode', () => {
-    expect(
-      supportsFastEchoTerminal({
-        TERMUX_VERSION: '0.118.0',
-        PREFIX: '/data/data/com.termux/files/usr'
-      } as NodeJS.ProcessEnv)
-    ).toBe(false)
-  })
-
-  it('allows explicit Termux fast-echo opt-in via env override', () => {
-    expect(
-      supportsFastEchoTerminal({
-        HERMES_TUI_TERMUX_FAST_ECHO: '1',
-        TERMUX_VERSION: '0.118.0'
-      } as NodeJS.ProcessEnv)
-    ).toBe(true)
-  })
-
-  it('keeps fast-echo enabled in VS Code and unknown non-Termux terminals', () => {
+  it('keeps fast-echo enabled in VS Code and unknown terminals', () => {
     expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
     expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
   })

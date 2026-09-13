@@ -725,7 +725,16 @@ Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level
 - Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
 - Terminal injection attacks
 
-Tirith auto-installs from GitHub releases on first use with SHA-256 checksum verification (and cosign provenance verification if cosign is available).
+Tirith requests a pinned [PM package](/reference/package-management#optional-security-tools)
+when enabled and absent. PM checks artifact hashes from `pm/lock.json` and
+calls the cosign checker when available. An explicit provenance rejection aborts
+installation. Startup requests installation in the background, subject to the
+lazy-install policy. PM owns durable installation state and recovery, not a
+separate `.tirith-install-failed` marker.
+
+An explicit `security.tirith_path` remains authoritative, even if the executable
+is missing. With the default name, lookup uses `PATH` before the PM selection.
+External binaries remain outside PM's hash and provenance checks.
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -738,7 +747,10 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
-Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Hermes under WSL.
+PM supports Tirith on Linux (x86_64 / aarch64) and macOS (x86_64 / arm64).
+With the default path, unsupported targets, including native Windows and
+Android/Termux, skip Tirith. Pattern-matching guards still run. To use the managed
+Tirith package on Windows, run Hermes under WSL.
 
 Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
@@ -807,6 +819,29 @@ TERMINAL_SSH_KEY=~/.ssh/hermes_agent_key
 
 The SSH connection details live in `.env` (not `config.yaml`) so they aren't checked in or shared along with profile exports. This keeps the gateway's messaging connections separate from the agent's command execution.
 
+## TLS certificate trust
+
+Hermes initializes the platform verifier through `truststore`. Windows uses
+its certificate store, macOS uses its system trust services, and Linux uses
+the OpenSSL system trust paths. If initialization fails, Hermes logs the
+failure and falls back to OpenSSL defaults.
+
+For a corporate TLS proxy, install its root through your organization's
+operating-system trust procedure. Hermes' provider resolver no longer selects
+trust through `HERMES_CA_BUNDLE` or the old CA-environment-variable ladder.
+Sandboxed subprocesses can have their own separate CA configuration.
+
+A custom provider can declare `ssl_ca_cert` for its endpoint. That bundle
+replaces platform trust for chat, model metadata, and model catalog probes.
+A missing file produces a warning and falls back to platform trust.
+`ssl_verify: false` disables certificate verification and is unsafe for
+untrusted networks. Do not use it as a permanent fix for a missing corporate root.
+
+Provider HTTP clients keep proxy configuration separate from certificate
+selection. A stale ambient CA-file path cannot prevent those clients from
+starting. PM index credentials are sent only to their exact HTTPS origin;
+redirects to another origin do not receive them.
+
 ## Supply-chain advisory checking
 
 Hermes ships with a built-in advisory scanner that flags Python packages in the active venv that match a curated catalog of known-compromised versions (supply-chain worms like the May 2026 `mistralai 2.4.6` poisoning). Implementation lives in `hermes_cli/security_advisories.py`.
@@ -829,35 +864,47 @@ The check itself is stdlib-only and runs from one `importlib.metadata.version()`
 
 ### Lazy install of optional dependencies
 
-Many features (Mistral TTS, ElevenLabs, Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **lazily** on first use rather than eagerly under `hermes-agent[all]`. The implementation lives in `tools/lazy_deps.py`.
+PM manages optional Python features as extras from `pyproject.toml`.
+Source installers select the `all` extra. Native bundles include all extras
+supported by their target. These are different feature sets.
 
-The trade-off this fixes:
+When a backend requests an unavailable extra, `pm.ensure_import("extra-name")`
+uses the same dependency transaction as plugin admission:
 
-- **Fragility.** When one extra's transitive dependency becomes unavailable on PyPI (quarantined for malware, yanked, broken upload), the entire `[all]` resolve would fail and fresh installs would silently fall back to a stripped tier — losing 10+ unrelated extras at once. Lazy install isolates each backend so one poisoned dep can't break unrelated features.
-- **Bloat.** A user who only ever talks to one provider no longer pulls hundreds of packages they will never import.
+1. PM checks platform support and `security.allow_lazy_installs`.
+2. PM prepares a complete environment with the existing extras and enabled plugin requirements.
+3. Without plugin members, it uses the committed lock unchanged. With members, it resolves from the previous selection before a frozen workspace sync.
+4. It validates the candidate before publishing its selection. A failed candidate leaves the previous environment selected.
+5. If the current process uses the previous environment, PM reports that Hermes must restart. It does not replace imported libraries in place.
 
-How it works:
+Shipped source, locks, and signed payloads remain unchanged. Additional tools
+and Python environments use writable storage outside the base artifact.
+Plugin dependencies share the complete environment; they are not isolated
+Python sandboxes. Compatible transitive dependencies can change, but declared
+constraints and exact pins remain binding.
 
-1. A backend module calls `ensure("feature.name")` at the top of its first-import path.
-2. If the deps are missing, `ensure` checks `security.allow_lazy_installs` in `config.yaml` (default `true`) and runs a venv-scoped `pip install` for the allowlisted specs.
-3. If the install fails or the user has disabled lazy installs, the call raises `FeatureUnavailable` with the actual pip stderr and a pointer at `hermes tools`.
-
-Security guarantees enforced by `tools/lazy_deps.py`:
-
-| Guarantee | What it means |
+| Control | Behavior |
 |---|---|
-| Venv-scoped only | Installs target `sys.executable` in the active venv — never the system Python |
-| PyPI by name only | Specs accept `"package>=1.0,<2"` syntax. No `--index-url`, `git+https://`, or file: paths — a malicious `config.yaml` cannot redirect the install |
-| Allowlist | Only specs that appear in the in-tree `LAZY_DEPS` map can be installed via this path. A typo in a feature name does NOT get install-anything semantics |
-| Opt-out | Set `security.allow_lazy_installs: false` to disable runtime installs entirely. Useful for restricted networks or strict security postures |
-| No silent retries | Failures surface as `FeatureUnavailable` — no caching of bad state, no retry storms |
+| Declared extras | The helper accepts project extra names, not arbitrary pip commands. The removed `LAZY_DEPS` feature-name registry is not used. |
+| Verified tools | Managed tool archives have versions and SHA-256 hashes in `pm/lock.json`. |
+| Atomic selection | Preparation and validation precede publication of the new runtime selection. |
+| Failure reporting | Failures raise `pm.InstallError`. PM sync receipts include failed steps and policy refusals. |
+| No automatic plugin removal | A failed dependency union does not silently disable or delete installed plugins. |
 
-To disable runtime installs:
+To disable on-demand installations, run:
 
-```yaml
-# ~/.hermes/config.yaml
-security:
-  allow_lazy_installs: false
+```bash
+hermes config set security.allow_lazy_installs false
 ```
 
-When disabled, backends that need optional deps will tell the user to run the install manually (`pip install …`) or pick a different backend via `hermes tools`.
+Already installed dependencies remain usable. Explicit PM install commands
+are separate from on-demand installation. A bundle's frozen feature list,
+when present with lazy installs disabled, restricts requested Python extra
+names. This setting is not a blanket ban on explicit plugin admission or
+manual package-manager commands. The official Docker image also disables
+on-demand installs through its internal environment policy.
+
+For missing dependencies, use `hermes tools` and `hermes doctor` to identify
+the requirement. Do not run pip against a signed payload or the system Python.
+See [Package management](../reference/package-management.md) for installation
+ownership, diagnostics, and command boundaries.

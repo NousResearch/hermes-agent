@@ -8,6 +8,9 @@ These tests mock /proc/version so they reproduce the WSL path on any host.
 """
 import builtins
 import io
+import pytest
+
+pytestmark = pytest.mark.platforms("linux")
 from unittest.mock import MagicMock
 
 WSL = "Linux version 5.15.0-microsoft-standard-WSL2 (oe-user@oe-host)"

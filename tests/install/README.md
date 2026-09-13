@@ -2,7 +2,11 @@
 
 These tests answer one question: can a user on a released version get to this commit?
 
-Each test leg installs an old released version, then updates it to HEAD. The install and the update run the real user surfaces. The legs do not use mocks and do not use headless proxies of GUI flows.
+Each leg installs a released version and updates it through the real user
+surface. Source legs target the selected checkout revision; packaged legs use
+explicit old/new signed artifacts. The harness can use a mock LLM provider for
+onboarding and interaction. It does not substitute a mock installer, updater,
+or headless proxy for a native GUI flow.
 
 ## The layers
 
@@ -17,11 +21,18 @@ To declare a new method, edit the generator. To implement a method, flip the gat
 
 ## The isolation trick
 
-The drivers do not touch the network for git operations. Each driver makes a bare clone of the checkout at `serve.git`. Then it points every git process at this clone. The mechanism is a driver-owned `GIT_CONFIG_GLOBAL` file with `url.<file://serve.git>.insteadOf` rewrites for both canonical repository URLs.
+Source drivers redirect canonical Hermes Git URLs to a local bare clone at
+`serve.git`, using a driver-owned `GIT_CONFIG_GLOBAL` rewrite. This controls
+the source install/update boundary, not all network access: tool/dependency
+downloads and published bootstrap artifacts can still use the network.
+Packaged-update legs instead use verified signed downloads and a temporary feed.
 
 The driver parks the `main` branch of `serve.git` at the old release. The installer runs and lands on the old release. Then the driver moves `main` to HEAD. An update becomes available in the same way that it does for a real user.
 
-The installer script is not downloaded. The install leg runs the copy from the old git ref. This is the copy that a user of that version executed. The update leg runs the copy from HEAD.
+For script-install legs, the installer comes from the old Git ref. A
+script-reinstall update uses the target revision's script. A `hermes-update`
+leg starts the old release's updater, and app-update legs start its app flow.
+These paths are intentionally different.
 
 ## What one leg does
 
@@ -29,11 +40,15 @@ Each leg with the script drivers has these phases:
 
 1. Stage: make the bare clone, park `main` at the old release.
 2. Install: run the old release's own installer script. Make sure that the checkout is at the old commit and that `hermes --version` works.
-3. Desktop smoke: run `hermes desktop --build-only` from the installed CLI. This proves that the installed version can build the desktop app. If the installed version does not have this flag, the phase reports a skip and continues.
-4. Update: move `main` to HEAD. Apply one update method. Make sure that the checkout is at HEAD and that `hermes --version` works.
-5. Desktop smoke again, at HEAD.
+3. Update: move `main` to HEAD. Apply one update method. An app update must produce a new successful receipt or handoff result; a changed checkout alone is not completion.
+4. Verify the installed command and products before running `hermes --version`. Select the command under the installation's `.hermes/bin`; use the old venv only for a source tree without PM. Check PM currency and compiler receipts where supported. Preserve the no-desktop scenario for a plain install. Do not rebuild, remove dependencies, or force-stop an updater during verification. Historical installs without these receipts get artifact-presence checks, not a freshness claim.
 
-The windows GUI driver replaces phases 2 and 4 when the install method is `desktop-installer@latest`. It downloads the published `Hermes-Setup.exe`, clicks through the installer window with AutoHotkey, and clicks "Update now" in the running app with Playwright.
+The cheap fixture checks are `tests/scripts/test_source_driver.py` and `tests-js/source-update-observer.test.mjs`. They do not run installers or prove native GUI relaunch. The source app helper does not relaunch the updated app for it; the native packaged-update drivers own automatic-relaunch acceptance. The observer does not change source files, products, dependency selections, or facts.
+
+The Windows `desktop-installer@latest` install downloads the published
+`Hermes-Setup.exe` and drives its GUI with AutoHotkey. The selected update
+method is a separate axis. App-update methods click the running app's Update
+control; script and CLI methods use their corresponding entry points.
 
 ## Old versions
 
@@ -45,6 +60,10 @@ A leg can install a release from months back. The driver must not assume that th
 
 ## The install methods
 
+- `packaged-app`: a signed Windows MSIX bundle or macOS application ZIP.
+  This pairs only with `open-app-update`, using separately pinned package
+  inputs rather than the source-tag cross product. See [bundled update
+  acceptance](BUNDLED_UPDATES.md) for the manifest and proof contracts.
 - `installer-script`: the platform's one-liner (`curl | bash` on linux and macos, `irm | iex` on windows).
 - `installer-script+desktop`: the same one-liner with its desktop stage opted in (`--include-desktop` / `-IncludeDesktop`). The stage builds the desktop app during the install. On windows it also registers Start Menu and Desktop shortcuts. On linux and macos it builds the app inside the checkout and registers no OS entry point.
 - `desktop-installer@latest`: the published GUI installer (`Hermes-Setup.exe` on windows, `Hermes-Setup.dmg` on macos), driven through the real user flow.
@@ -70,16 +89,63 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 The matrix does not run on pull requests. One leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
 - A schedule, every 12 hours. This finds upstream drift.
-- A release tag push. This is the moment the set of start versions changes.
+- A matching release tag push.
+- A reusable workflow call from the stable release gate.
 - Manual dispatch. You can select the route and the tag count:
 
 ```
-gh workflow run install-e2e.yml --ref <branch> -f route=both -f tag-count=2
+gh workflow run install-e2e.yml --ref <branch> -f route=all -f tag-count=2
 ```
 
-Cost per run, so nobody is surprised: 41 legs per sampled tag (windows 18, macos 15, linux 8), so scheduled and release-tag runs sample 2 tags for up to 82 legs. Manual dispatch defaults to 3 tags for up to 123 legs. A typical green leg finishes in 7-15 minutes; every leg is capped at 60. Route slices for cheaper reads: `update` (linux only, 8/tag), `windows-desktop` (18/tag), `macos-desktop` (15/tag). `tag-count` is validated to 1-10. GitHub's 256-job cap applies to each OS matrix separately, not to the combined leg count; at 10 tags the matrices hold 180 windows, 150 macos, and 80 linux entries. Windows would first exceed the cap at 15 tags (270).
+The generator's output is the leg-count authority. Read the workflow's plan
+chart before dispatching a large run. Scheduled/tag runs default to two sampled
+tags; manual dispatch defaults to three. `tag-count` accepts 1–10.
+
+`all` selects every source OS. `both`, `update`, and `installer` select Linux
+source legs, not Windows plus macOS. `windows-desktop` and `macos-desktop`
+select those source/GUI routes. `windows-bundled`, `macos-bundled`, and `bundled`
+require their package manifests; they do not expand the source-tag cross product.
+`install-ref` selects one exact source baseline. Stable release calls also
+exclude the candidate tag so it cannot serve as its own old version.
+
+Per-leg timeouts and GitHub's matrix limits remain workflow constraints, not
+proof that every declared combination ran. Native package acceptance is separate
+from the deferred desktop Playwright application suite.
 
 Running the drivers locally: don't, except in a disposable VM. The windows driver kills every process named Hermes during teardown and the macos driver operates on `/Applications/Hermes.app`; on a machine with a real Hermes install they will interfere with it.
+
+## Plugin upgrade preservation
+
+Every upgrade leg also carries a plugin-survival contract: a tagged upgrade
+must not delete or modify anything under the active home's `plugins/**` tree
+or any profile's `profiles/<name>/plugins/**` tree. Destructive flows
+(explicit uninstall, plugin removal, profile or user deletion) are out of
+contract and not exercised.
+
+- `e2e-assets/verify-plugin-preservation.py` is the shared, stdlib-only,
+  read-only verifier. `snapshot` records every entry (kind, byte size +
+  sha256, link targets, and a recursive fingerprint of a symlink's external
+  target) across all plugin roots, including empty directories and the roots
+  themselves; `verify` diffs the live tree against that snapshot and fails
+  on any deletion or modification. Unreadable paths are hard errors; an
+  empty snapshot is refused as inconclusive rather than claimed as a pass.
+- `e2e-assets/preserve-plugins.sh` is the POSIX/macOS hook pair: after the
+  install phase it seeds controlled, non-dependency directory fixtures (a
+  `mnemosyne-wrapper` plugin with its marker, a symlinked runtime, a second
+  profile plugin tree, and the externally-owned sidecar witness outside the
+  home — no pyproject anywhere in the scanned root, nothing downloaded) and
+  snapshots; after the update lands it verifies and fails the leg on any
+  violation. Both shell and Windows hooks call the same Python `seed`
+  command. Existing fixtures or snapshots abort rather than masking damage
+  by reseeding. Windows uses a junction without requiring symlink privilege.
+- Unit tests live at `tests/scripts/test_verify_plugin_preservation.py` and
+  exercise the verifier against a real temp filesystem (real files, real
+  symlinks; junction fallback on Windows).
+- Stable-to-stable: the drivers accept `--update-ref REF` (Windows:
+  `-UpdateRef`), defaulting to HEAD. Pass the next release tag to target a
+  stable→stable upgrade through the same serve.git staging; only label a leg
+  stable-to-stable when BOTH the install ref and the target ref are release
+  tags. The workflow matrix itself is unchanged.
 
 ## Artifacts
 

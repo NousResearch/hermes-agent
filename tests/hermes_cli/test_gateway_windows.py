@@ -32,7 +32,7 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, tmp_path):
     """No pythonw / base-interpreter detour: the venv console python.exe is
     launched hidden (CREATE_NO_WINDOW) so descendants inherit its hidden
@@ -79,7 +79,7 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, caplog):
     """A successful breakaway spawn reports true without a warning."""
     argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]
@@ -111,7 +111,7 @@ def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, c
     assert not caplog.records
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
     monkeypatch, tmp_path, caplog
 ):
@@ -230,7 +230,7 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     """UAC handoff launches console python with SW_HIDE — a single hidden
     console, not console-less pythonw (#54220/#56747), and no visible

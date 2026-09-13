@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -45,9 +46,12 @@ class TestNormalizeWorkdir:
         result = _normalize_workdir(str(tmp_path))
         assert result == str(tmp_path.resolve())
 
+    @pytest.mark.platforms("linux")
     def test_tilde_expands(self, tmp_path, monkeypatch):
         from cron.jobs import _normalize_workdir
-        monkeypatch.setenv("HOME", str(tmp_path))
+        # expanduser keys off USERPROFILE on native Windows, HOME elsewhere.
+        home_var = "USERPROFILE" if sys.platform == "win32" else "HOME"
+        monkeypatch.setenv(home_var, str(tmp_path))
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 
@@ -155,6 +159,7 @@ class TestTickWorkdirPartition:
         ]
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
         monkeypatch.setattr(sched, "claim_job_for_fire", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "_maybe_run_worktree_maintenance", lambda: None)
 
         barrier = threading.Barrier(2, timeout=5)
         calls: list[tuple[str, str]] = []
@@ -211,7 +216,7 @@ class TestRunJobTerminalCwd:
                 observed["terminal_cwd_during_run"] = os.environ.get(
                     "TERMINAL_CWD", "_UNSET_"
                 )
-                return {"final_response": "done", "messages": []}
+                return {"final_response": "done", "messages": [{"role": "assistant", "content": "done"}]}
 
             def get_activity_summary(self):
                 return {"seconds_since_activity": 0.0}
@@ -253,7 +258,7 @@ class TestRunJobTerminalCwd:
         whatever value was present before the call should be present after.
 
         We don't assert on the *content* of TERMINAL_CWD (other tests in the
-        same xdist worker may leave it set to something like '.'); we just
+        same process may leave it set to something like '.'); we just
         check it's unchanged by run_job.
         """
         import os

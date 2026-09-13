@@ -79,7 +79,7 @@ class Recipe:
 
 def _read_text(root: Path, name: str) -> str | None:
     try:
-        return (root / name).read_text(encoding="utf-8")
+        return (root / name).read_text(encoding="utf-8-sig")
     except OSError:
         return None
 

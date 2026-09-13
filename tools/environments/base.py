@@ -10,13 +10,14 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 import json
 import logging
 import os
+import re
 import shlex
 import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, IO, Iterable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
@@ -118,10 +119,12 @@ def get_sandbox_dir() -> Path:
 
 def _load_json_store(path: Path) -> dict:
     """Load a JSON file as a dict, returning ``{}`` on any error."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+    return {}
 
 
 def _save_json_store(path: Path, data: dict) -> None:
@@ -137,6 +140,103 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return (st.st_mtime, st.st_size)
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# ProcessHandle protocol
+# ---------------------------------------------------------------------------
+
+
+class ProcessHandle(Protocol):
+    """Duck type that every backend's _run_bash() must return.
+
+    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona)
+    return _ThreadedProcessHandle which adapts their blocking calls.
+    """
+
+    def poll(self) -> int | None: ...
+    def kill(self) -> None: ...
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    @property
+    def stdout(self) -> IO[str] | None: ...
+
+    @property
+    def returncode(self) -> int | None: ...
+
+
+class _ThreadedProcessHandle:
+    """Adapter for SDK backends (Modal, Daytona) that have no real subprocess.
+
+    Wraps a blocking ``exec_fn() -> (output_str, exit_code)`` in a background
+    thread and exposes a ProcessHandle-compatible interface.  An optional
+    ``cancel_fn`` is invoked on ``kill()`` for backend-specific cancellation
+    (e.g. Modal sandbox.terminate, Daytona sandbox.stop).
+    """
+
+    def __init__(
+        self,
+        exec_fn: Callable[[], tuple[str, int]],
+        cancel_fn: Callable[[], None] | None = None,
+    ):
+        self._cancel_fn = cancel_fn
+        self._done = threading.Event()
+        self._returncode: int | None = None
+        self._error: Exception | None = None
+
+        # Pipe for stdout — drain thread in _wait_for_process reads the read end.
+        read_fd, write_fd = os.pipe()
+        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")  # windows-footgun: ok (pipe is BOM-free)
+        self._write_fd = write_fd
+
+        def _worker():
+            try:
+                output, exit_code = exec_fn()
+                self._returncode = exit_code
+                # Write output into the pipe so drain thread picks it up.
+                try:
+                    os.write(self._write_fd, output.encode("utf-8", errors="replace"))
+                except OSError:
+                    pass
+            except Exception as exc:
+                self._error = exc
+                self._returncode = 1
+            finally:
+                try:
+                    os.close(self._write_fd)
+                except OSError:
+                    pass
+                self._done.set()
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    @property
+    def stdout(self):
+        return self._stdout
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def poll(self) -> int | None:
+        return self._returncode if self._done.is_set() else None
+
+    def kill(self):
+        if self._cancel_fn:
+            try:
+                self._cancel_fn()
+            except Exception:
+                pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        self._done.wait(timeout=timeout)
+        return self._returncode
+
+
+# ---------------------------------------------------------------------------
+# BaseEnvironment
+# ---------------------------------------------------------------------------
 
 
 class BaseEnvironment(ABC):
@@ -163,8 +263,12 @@ class BaseEnvironment(ABC):
     _profile_scoped_passthrough: bool = False
 
     def get_temp_dir(self) -> str:
-        """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
-        LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
+        """Return the backend temp directory used for session artifacts.
+
+        Most sandboxed backends use ``/tmp`` inside the target environment.
+        LocalEnvironment overrides this on hosts where ``/tmp`` may be missing
+        and ``TMPDIR`` is the portable writable location.
+        """
         return "/tmp"
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
@@ -342,7 +446,7 @@ class BaseEnvironment(ABC):
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
@@ -362,7 +466,8 @@ class BaseEnvironment(ABC):
         reads feeding the patch engine, code-execution RPC reads, log reads — where truncation would corrupt
         data. See #64435.
         """
-        output = _new_output_collector(proc, bounded_capture)
+        if output is None:
+            output = _new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
         drain_thread = _start_drain_thread(proc, output, drain_stop)
         _now = time.monotonic()
@@ -526,15 +631,18 @@ class BaseEnvironment(ABC):
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
         proc_holder: list = []
+        output_holder: list = []
 
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
             spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
             proc_holder.append(spawned)
+            output = _new_output_collector(spawned, bounded_capture)
+            output_holder.append(output)
             return self._wait_for_process(
                 spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                watch_interrupt_tid=parent_tid,
+                watch_interrupt_tid=parent_tid, output=output,
                 **({"yield_handler": yield_handler} if yield_handler is not None else {}))
 
         def _on_timeout() -> None:
@@ -562,9 +670,15 @@ class BaseEnvironment(ABC):
             _on_timeout()
             raise
 
-        result = (
-            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
-            if bounded.timed_out else bounded.value)
+        if bounded.timed_out:
+            suffix = f"\n[Command timed out after {effective_timeout}s]"
+            if output_holder:
+                collector = output_holder[0]
+                result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
+            else:
+                result = {"output": suffix.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
         return result
 

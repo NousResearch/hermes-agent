@@ -1,0 +1,1878 @@
+name: Desktop Bundled Release
+
+# Builds the bundled desktop installer for each (os, arch) target.
+#
+#   tag admission (shape + pyproject lockstep + ancestry on origin/main,
+#   resolved to an IMMUTABLE full SHA) → per-OS builder jobs → stage
+#   files + receipts to R2 (releases/tag/<tag>/) → gated publish jobs write
+#   feeds → builds table. Stable candidates stop before feed publication.
+#
+# Per-OS topology (MSIX work is gated on the WINDOWS build only — mac/linux
+# legs never block the win32 feed or Store submission):
+#
+#   build-win32 (win32-x64 + win32-arm64)   → stage packages + receipts to R2
+#   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
+#     dmg/zip/blockmap + per-arch feed inputs to the R2 tag archive
+#   build-linux                              → DISABLED for now (dummy skips)
+#   publish-win32-updater                   → App Installer feed
+#     (needs build-win32): releases/win32/<stable|canary>/*.appinstaller +
+#       *.msixbundle (stage-msixbundle.mjs --variant bundled)
+#   publish-win32-store                     → Windows Store submission
+#     (needs build-win32, PARALLEL with the updater feed): bundle the two
+#     Store-*.msix into one universal Store .msixbundle and submit via the
+#     MSStore CLI. Only stable is eligible, gated on MS_STORE_PRODUCT_ID.
+#   publish-darwin-updater                  → macOS electron-updater feed
+#     (needs BOTH darwin legs): scripts.releases.r2 finalize merges the per-arch
+#     ymls into releases/darwin/<channel>/<channel>-mac.yml — the feed
+#     pointer is written LAST, and the job's concurrency group serializes
+#     same-channel publications.
+#
+# Feed layout (matches apps/desktop/electron/app-updater.ts's arms):
+#   releases/win32/<stable|canary>/<ch>.appinstaller   App Installer feed
+#     releases/win32/<stable|canary>/*.msixbundle      (publish-win32-updater)
+#   releases/darwin/<stable|canary>/<channel>-mac.yml  electron-updater feed
+#     (dmg/zip live once in releases/tag/<tag>/; the merged feed points at
+#     them with absolute object keys)
+# The publish jobs write the feeds ONCE after their whole build matrix is
+# green, so a failed leg can never publish a partial channel. Stable candidate
+# jobs only stage tag-scoped objects; stable-release.yml gates feed promotion
+# on package acceptance and artifact publication. No GitHub job artifacts
+# carry release files. Non-publishing tag builds leave output on the runner.
+# Commit builds stage under releases/commit/<sha>/ and write a run summary.
+# They never publish a release, updater feed, Store submission, or APT channel.
+#
+# Payload staging is `hermes pm bundle` on the native runner. There is
+# no cross-target staging. The darwin legs sign (CSC_LINK) and notarize
+# (afterSign notarize.mjs) when the release-signing environment carries the
+# Apple credentials. Downloadable commit artifacts require the same signing
+# checks as release artifacts. Unsigned tag builds cannot publish.
+#
+# scripts/bundles/desktop.py is the one driver. Local and CI run
+# the same command. This workflow adds caching and upload only.
+#
+# Manual dispatch selects a tag or a pushed full commit. Commit dispatches
+# use the default-branch workflow and require maintainer permission.
+#
+# R2 secrets (repo-level or the release-signing environment): the R2
+# account id + an R2 API token (S3-compatible) with read/write on the
+# release bucket; CLOUDFLARE_R2_BUCKET and CLOUDFLARE_R2_PUBLIC_URL are
+# non-secret vars. scripts/releases/r2.py derives the S3 endpoint from
+# the account id. Upload/list operations need only Python; feed operations use ruamel.yaml.
+#
+# Windows Store submission (publish-win32-store): MSStore CLI via
+# microsoft/microsoft-store-apppublisher. Credentials live in the
+# release-signing environment:
+#     secrets: MS_STORE_TENANT_ID, MS_STORE_SELLER_ID, MS_STORE_CLIENT_ID,
+#              MS_STORE_CLIENT_SECRET
+#     vars:    MS_STORE_PRODUCT_ID (the Partner Center product ID)
+#   msstore reconfigure → (delete pending) → msstore publish
+#   <Store-*.msixbundle> -id <productId>
+# The Store bundle is UNSIGNED on purpose — Partner Center re-signs on
+# ingestion (see sign-msix.mjs).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      release-phase:
+        required: true
+        type: string
+      manifest-sha256:
+        default: ''
+        type: string
+    outputs:
+      manifest-url:
+        value: ${{ jobs.candidate-manifest.outputs.manifest-url }}
+        description: Immutable candidate manifest
+      manifest-sha256:
+        value: ${{ jobs.candidate-manifest.outputs.manifest-sha256 }}
+        description: Digest of the candidate manifest
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to bundle (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS). Must exist on the repo.'
+        required: false
+        type: string
+        default: ''
+      build_commit:
+        description: 'Commit-only build: EXACT full 40-hex SHA already pushed to this repo (workflow_dispatch from the default branch only). Mutually exclusive with tag.'
+        required: false
+        type: string
+        default: ''
+      bundle_env:
+        description: 'Commit desktop bundles only: JSON object of non-secret defaults (strings) or forced clears (null). Runtime values win over defaults, not clears.'
+        required: false
+        type: string
+        default: '{}'
+      termux_only:
+        description: 'Build and publish only the Termux package'
+        required: false
+        type: boolean
+        default: false
+      termux_upgrade_from_tag:
+        description: 'Published release tag whose R2 Termux package must upgrade to this build'
+        required: false
+        type: string
+        default: ''
+      upload_release:
+        description: 'Upload artifacts to the R2 release bucket (staging + feeds)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: desktop-bundled-release-${{ inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate the build source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      # Resolve the build source once. Every privileged job uses this SHA,
+      # not a mutable tag or the dispatch branch.
+      # The tag's channel (stable | canary). publish-darwin-updater scopes
+      # its concurrency group on this so two dispatches for the SAME
+      # channel can never race their feed writes (a stable and a canary
+      # publish in parallel by design — different feed files).
+      channel: ${{ steps.admission.outputs.channel }}
+      sha: ${{ steps.admission.outputs.sha }}
+      payload-version: ${{ steps.admission.outputs.payload-version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.build_commit != '' && github.sha || inputs.tag }}
+          # Full history: the admission gate below runs merge-base against
+          # origin/main, which needs the shared ancestry, not a depth-1 tip.
+          fetch-depth: 0
+          fetch-tags: true
+          filter: tree:0
+          sparse-checkout: |
+            pyproject.toml
+            scripts/releases
+          sparse-checkout-cone-mode: false
+
+      - name: Validate tag shape, pyproject lockstep, and ancestry on origin/main
+        id: admission
+        env:
+          TAG: ${{ inputs.tag }}
+          BUILD_COMMIT: ${{ inputs.build_commit }}
+          BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          UPLOAD_RELEASE: ${{ inputs.upload_release }}
+          TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$BUILD_COMMIT" ]; then
+            # Reject mixed inputs before loading code from the checkout.
+            if [ -n "$TAG" ] || [ -n "$RELEASE_PHASE" ] || [ -n "$TERMUX_UPGRADE_FROM_TAG" ] || [ "$UPLOAD_RELEASE" != false ]; then
+              echo '::error::commit builds cannot select release publication or upgrade inputs'
+              exit 1
+            fi
+            if ! [[ "$BUILD_COMMIT" =~ ^[a-f0-9]{40}$ ]]; then
+              echo '::error::commit builds require an exact full SHA'
+              exit 1
+            fi
+            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ] || [ "$GITHUB_WORKFLOW_REF" != "$GITHUB_REPOSITORY/.github/workflows/desktop-bundled-release.yml@refs/heads/$DEFAULT_BRANCH" ]; then
+              echo '::error::commit builds require the default-branch dispatch workflow'
+              exit 1
+            fi
+            python -m scripts.releases.commit_build admit
+            exit 0
+          fi
+          if [ -n "${BUNDLE_ENV_JSON:-}" ] && [ "$BUNDLE_ENV_JSON" != '{}' ]; then
+            echo '::error::bundle environment defaults require a commit build'; exit 1
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::either tag or build_commit is required"; exit 1
+          fi
+          case "$RELEASE_PHASE" in
+            candidate|publish|promote)
+              [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+              [ "$GITHUB_REF" = "refs/tags/$TAG" ] || exit 1
+              [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || exit 1
+              ;;
+            '') [[ "$TAG" == *-canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
+            *) echo 'Unknown release phase' >&2; exit 1 ;;
+          esac
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*-canary.20[0-9][0-9][0-9][0-9][0-9][0-9]*)
+              echo "canary tag: $TAG"
+              ;;
+            v[0-9]*.[0-9]*.[0-9]*)
+              echo "tag: $TAG"
+              PYVER=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
+              if [ "$TAG" != "v$PYVER" ]; then
+                echo "::error::tag $TAG does not match pyproject.toml version $PYVER"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::'$TAG' is not a release tag (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS)"
+              exit 1
+              ;;
+          esac
+          SHA="$(git rev-parse --verify "$TAG^{commit}")"
+          if [ -z "$SHA" ]; then
+            echo "::error::could not resolve $TAG to a commit"
+            exit 1
+          fi
+          # A correctly-shaped tag on an unreviewed commit is NOT a valid
+          # build input for a release-signing workflow: only a commit that
+          # is already an ancestor of origin/main may be built.
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::tag $TAG (${SHA:0:12}) is not an ancestor of origin/main — refusing to build from an unreviewed commit"
+            exit 1
+          fi
+          echo "tag $TAG resolves to $SHA (on origin/main)"
+          case "$TAG" in
+            *-canary.*) echo "channel=canary" >> "$GITHUB_OUTPUT" ;;
+            *)          echo "channel=stable" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  # ── Windows builders (REAL) ───────────────────────────────────────────────
+  # Windows assembly and publication depend on these native Windows legs.
+  archive-inputs:
+    name: Archive every pinned input
+    if: inputs.release-phase == '' || inputs.release-phase == 'candidate'
+    needs: [validate]
+    uses: ./.github/workflows/archive-inputs.yml
+    with:
+      sha: ${{ needs.validate.outputs.sha }}
+    secrets: inherit
+
+  build-win32:
+    name: bundled ${{ matrix.target.label }}
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+    needs: [validate, archive-inputs]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    timeout-minutes: 900
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: win32-x64
+            runner: windows-2025
+          - label: win32-arm64
+            runner: windows-11-arm
+    env:
+      HERMES_DESKTOP_VARIANT: bundled
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - name: Exclude build write paths from Defender scanning
+        shell: powershell
+        run: |
+          $paths = @(
+            $env:GITHUB_WORKSPACE,
+            $env:RUNNER_TEMP,
+            (npm config get cache)
+          )
+          foreach ($p in $paths) {
+            try {
+              Add-MpPreference -ExclusionPath $p
+              Write-Host "Defender exclusion added for $p"
+            } catch {
+              Write-Host "Defender exclusion not applied for $p ($($_.Exception.Message)) - continuing"
+            }
+          }
+          try {
+            Set-MpPreference -DisableRealtimeMonitoring $true
+          } catch {
+            Write-Host "Could not disable windows defender"
+          }
+
+      # Check out the SHA the validate job admitted — never the tag ref,
+      # which a force-push can move between jobs. This is the privileged
+      # (release-signing) build; it must run the reviewed bytes.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-tags: true
+
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          archive-inputs: true
+          # The payload tools cache does not include uv's built wheels.
+          cache-python: true
+          save-python-cache: false
+
+      - name: Resolve toolchain cache key
+        id: toolchain
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const el = l.packages["apps/desktop/node_modules/electron"].version
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!el || !eb) process.exit(1)
+            console.log(`electron=${el}`)
+            console.log(`builder=${eb}`)
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Cache verified payload signatures
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder-payload-signatures
+          # Each run saves additions. Content and signing policy select entries.
+          key: payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-
+            payload-signatures-v1-${{ runner.os }}-
+
+      - name: Set up native ARM64 build dependencies
+        if: matrix.target.label == 'win32-arm64'
+        uses: ./.github/actions/setup-windows-build-deps
+
+      - name: Cache pm store
+        # Tag-dispatched runs (every canary) scope actions/cache under the
+        # dispatch ref, which GitHub mangles to refs/heads/refs/tags/<tag> —
+        # a different scope per tag, so an exact key can never be restored
+        # by a later canary. The content key below is stable across tags
+        # when pm/lock.json + uv.lock are unchanged; the restore-keys prefix
+        # (which ignores the tag entirely) rescues the previous canary's
+        # store when the locks DID move.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apps/desktop/build/agent-payload/tools
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+          restore-keys: |
+            pm-store-v2-${{ matrix.target.label }}-
+
+      - name: Retrieve pinned payload inputs from R2
+        shell: bash
+        run: python -m scripts.ci.archive_inputs --target '${{ matrix.target.label }}' --store apps/desktop/build/agent-payload/tools
+
+      - name: Resolve electron's default download cache path
+        shell: bash
+        run: |
+          # @electron/get does NOT honor ELECTRON_CACHE/electron_config_cache:
+          # the electron-builder build's electron zip download uses the
+          # default env-paths cache root. It must be in the actions/cache
+          # path list or every build re-downloads electron (~115MB).
+          case "$RUNNER_OS" in
+            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
+            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
+            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Cache electron + electron-builder toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+            ${{ env.ELECTRON_DEFAULT_CACHE }}
+          # eb2: bumped from eb- (2026-08-28) — the old eb- caches never
+          # contained the electron zip (it lives in @electron/get's default
+          # cache root, which wasn't in the path list), so every build
+          # re-downloaded electron. The new key forces a fresh save that
+          # includes the default cache root.
+          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          # An electron/builder bump misses the exact key, but the previous
+          # dist is still mostly reusable (electron's postinstall skips the
+          # download when dist/ exists) — restore it and let npm ci top up.
+          restore-keys: |
+            eb2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore prepared desktop dependencies
+        id: node-modules-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          # No partial restore: npm ci deletes both the tree and native outputs.
+          key: desktop-node-deps-v1-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', 'apps/*/package.json', 'ui-tui/package.json', 'ui-tui/packages/*/package.json', 'web/package.json', 'tests-js/package.json', '.npmrc', 'scripts/build/node-deps.mjs') }}
+
+      - name: Prepare desktop dependencies
+        shell: bash
+        run: node scripts/build/node-deps.mjs --source . --workspace apps/desktop --workspace ui-tui --workspace web --reuse
+
+      # Save before packaging: a later build/signing failure must not lose this work,
+      # and builder mutations must not become the next job's dependency input.
+      - name: Save prepared desktop dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
+
+      - name: Azure login (OIDC)
+        if: vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Mint federated token for the signing dlib
+        if: vars.AZURE_CLIENT_ID != ''
+        shell: bash
+        run: |
+          file="$RUNNER_TEMP/azure-federated-token"
+          mint() {
+            curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+              | jq -r .value > "$file.tmp" && mv -f "$file.tmp" "$file"
+          }
+          mint
+          ( while sleep 240; do mint || true; done ) &
+          echo "AZURE_FEDERATED_TOKEN_FILE=$file" >> "$GITHUB_ENV"
+
+      - name: Pin CMake < 4 for sdist builds
+        # python-olm (matrix extra) builds libolm from sdist on non-Linux
+        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
+        # compat (removed in CMake 4, which the darwin + win32 runners
+        # ship). Pin a CMake 3.x first on PATH for those legs so the sdist
+        # build configures. Linux uses the manylinux wheel — no build, no
+        # cmake needed. The pip cmake package ships a binary wheel for
+        # every non-Linux target (macos universal2, win_amd64, win_arm64).
+        shell: bash
+        run: |
+          python -m scripts.ci.python_packages cmake==3.31.6
+
+      - name: Build and package
+        shell: powershell
+        timeout-minutes: 900
+        env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          PYTHONUTF8: '1'
+          AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
+          AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
+          AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
+          AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_TOKEN_CREDENTIALS: prod
+        run: |
+          if ($env:HERMES_BUILD_COMMIT) {
+              python scripts/bundles/desktop.py --commit="$env:HERMES_BUILD_COMMIT" --variant=bundled
+          } else {
+              python scripts/bundles/desktop.py --tag="$env:HERMES_PAYLOAD_TAG" --variant=bundled
+              # The official Store identity is stable-only. Canary must never
+              # replace it, even in a Store flight ring.
+              if ($env:HERMES_PAYLOAD_TAG -notlike "*-canary.*") {
+                  python scripts/bundles/desktop.py --tag="$env:HERMES_PAYLOAD_TAG" --variant=store
+              }
+          }
+
+      - name: Save warmed Python dependencies even after a packaging failure
+        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
+        uses: ./.github/actions/save-pm-cache
+        with:
+          python: ${{ steps.pm.outputs.python-path }}
+          path: ${{ steps.pm.outputs.uv-cache-path }}
+          key: ${{ steps.pm.outputs.python-cache-key }}
+
+      - name: Verify native signature cache contracts
+        shell: bash
+        working-directory: apps/desktop
+        run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
+
+      - name: Audit bundle architecture
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          node apps/desktop/scripts/audit-bundle-arch.mjs \
+            --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
+
+      - name: Stage Windows packages to R2
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target.label }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        # The tag archive is the handoff, never an update feed. The receipt
+        # appears only after both normal and Store packages are uploaded.
+        run: |
+          args=(--include '*.msix')
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
+              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
+            args+=(--include 'metadata-*.json')
+          fi
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            # Commit-only mode: schema-2 receipts under releases/commit/<sha>/.
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          else
+            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          fi
+
+  # ── macOS builders (REAL) ──────────────────────────────────────────────────
+  # Native per-arch darwin builds via scripts/bundles/desktop.py (the
+  # one driver: same `--mac dmg zip` pass a local mac build runs). Each leg
+  # signs (CSC_LINK) and notarizes (afterSign notarize.mjs) when the
+  # release-signing environment carries the Apple credentials; a publishing
+  # run FAILS the leg instead of shipping unsigned (no silent unsigned
+  # publish). Binaries stage to releases/tag/<tag>/; the per-arch feed ymls
+  # travel as workflow artifacts (arch-prefixed so both legs survive the
+  # merge-multiple download) and publish-darwin-updater merges them into
+  # releases/darwin/<channel>/<channel>-mac.yml — artifacts first, feed
+  # pointer last, whole channel green before anything publishes.
+  build-darwin:
+    name: bundled ${{ matrix.target.label }}
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+    needs: [validate, archive-inputs]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: darwin-arm64
+            runner: macos-15
+          - label: darwin-x64
+            runner: macos-15-intel
+    env:
+      HERMES_DESKTOP_VARIANT: bundled
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - name: Disable Spotlight indexing for DMG staging
+        # Spotlight indexes the freshly-mounted dmg staging image past
+        # hdiutil's detach retries (per-VM, not a cross-job race).
+        shell: bash
+        run: |
+          sudo mdutil -a -i off || true
+
+      # Check out the SHA the validate job admitted — never the tag ref,
+      # which a force-push can move between jobs. This is the privileged
+      # (release-signing) build; it must run the reviewed bytes.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          archive-inputs: true
+          # The payload tools cache does not include uv's built wheels.
+          cache-python: true
+          save-python-cache: false
+
+      - name: Resolve toolchain cache key
+        id: toolchain
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const el = l.packages["apps/desktop/node_modules/electron"].version
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!el || !eb) process.exit(1)
+            console.log(`electron=${el}`)
+            console.log(`builder=${eb}`)
+          ' >> "$GITHUB_OUTPUT"
+
+      - name: Cache pm store
+        # Tag-dispatched runs (every canary) scope actions/cache under the
+        # dispatch ref, which GitHub mangles to refs/heads/refs/tags/<tag> —
+        # a different scope per tag, so an exact key can never be restored
+        # by a later canary. The content key below is stable across tags
+        # when pm/lock.json + uv.lock are unchanged; the restore-keys prefix
+        # (which ignores the tag entirely) rescues the previous canary's
+        # store when the locks DID move.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apps/desktop/build/agent-payload/tools
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+          restore-keys: |
+            pm-store-v2-${{ matrix.target.label }}-
+
+      - name: Retrieve pinned payload inputs from R2
+        shell: bash
+        run: python -m scripts.ci.archive_inputs --target '${{ matrix.target.label }}' --store apps/desktop/build/agent-payload/tools
+
+      - name: Resolve electron's default download cache path
+        shell: bash
+        run: |
+          # @electron/get does NOT honor ELECTRON_CACHE/electron_config_cache:
+          # the electron-builder build's electron zip download uses the
+          # default env-paths cache root. It must be in the actions/cache
+          # path list or every build re-downloads electron (~115MB).
+          case "$RUNNER_OS" in
+            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
+            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
+            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Cache electron + electron-builder toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+            ${{ env.ELECTRON_DEFAULT_CACHE }}
+          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          # An electron/builder bump misses the exact key, but the previous
+          # dist is still mostly reusable (electron's postinstall skips the
+          # download when dist/ exists) — restore it and let npm ci top up.
+          restore-keys: |
+            eb2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore prepared desktop dependencies
+        id: node-modules-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          # No partial restore: npm ci deletes both the tree and native outputs.
+          key: desktop-node-deps-v1-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', 'apps/*/package.json', 'ui-tui/package.json', 'ui-tui/packages/*/package.json', 'web/package.json', 'tests-js/package.json', '.npmrc', 'scripts/build/node-deps.mjs') }}
+
+      - name: Prepare desktop dependencies
+        shell: bash
+        run: node scripts/build/node-deps.mjs --source . --workspace apps/desktop --workspace ui-tui --workspace web --reuse
+
+      # Save before packaging: a later build/signing failure must not lose this work,
+      # and builder mutations must not become the next job's dependency input.
+      - name: Save prepared desktop dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
+
+      # Commit artifacts are downloadable too. Require signing for them,
+      # candidates, and published tags before building any payload.
+      - name: Require signing credentials when publishing
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          missing=()
+          [ -z "$CSC_LINK" ] && missing+=(CSC_LINK)
+          [ -z "$CSC_KEY_PASSWORD" ] && missing+=(CSC_KEY_PASSWORD)
+          [ -z "$APPLE_API_KEY_P8" ] && missing+=(APPLE_API_KEY_P8)
+          [ -z "$APPLE_API_KEY_ID" ] && missing+=(APPLE_API_KEY_ID)
+          [ -z "$APPLE_API_ISSUER" ] && missing+=(APPLE_API_ISSUER)
+          [ -z "$CLOUDFLARE_R2_PUBLIC_URL" ] && missing+=(CLOUDFLARE_R2_PUBLIC_URL)
+          [ -z "$CLOUDFLARE_R2_BUCKET" ] && missing+=(CLOUDFLARE_R2_BUCKET)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::required signing/notarization credentials are missing from release-signing: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Write App Store Connect key for notarytool
+        # notarytool takes a FILE PATH for --key; raw .p8 content in argv
+        # dies with `Invalid option: ***`. The build step must NOT re-declare
+        # APPLE_API_KEY in its env: step env shadows GITHUB_ENV.
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple-api-key.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
+
+      - name: Pin CMake < 4 for sdist builds
+        # python-olm (matrix extra) builds libolm from sdist on non-Linux
+        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
+        # compat (removed in CMake 4, which the darwin runners ship). Pin a
+        # CMake 3.x first on PATH so the sdist build configures.
+        shell: bash
+        run: |
+          python -m scripts.ci.python_packages cmake==3.31.6
+
+      - name: Build and package
+        shell: bash
+        timeout-minutes: 330
+        env:
+          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          GITHUB_SHA: ${{ needs.validate.outputs.sha }}
+          GITHUB_REF_NAME: ${{ inputs.tag }}
+          PYTHONUTF8: '1'
+          # electron-osx-sign*/electron-notarize* keep the sign+notarize
+          # phase visible: without them NOTHING logs between "signing
+          # file=..." and a queue-wait timeout, so a slow notary queue is
+          # indistinguishable from a hang.
+          DEBUG: 'electron-osx-sign*,electron-notarize*'
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          # Sign + notarize of a bundled-payload app runs long (Apple scans
+          # every Mach-O) — raise the fd limit and let DEBUG show progress.
+          ulimit -n 16384 2>/dev/null || true
+          echo "file descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=bundled
+          else
+            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
+          fi
+
+      - name: Save warmed Python dependencies even after a packaging failure
+        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
+        uses: ./.github/actions/save-pm-cache
+        with:
+          python: ${{ steps.pm.outputs.python-path }}
+          path: ${{ steps.pm.outputs.uv-cache-path }}
+          key: ${{ steps.pm.outputs.python-cache-key }}
+
+      - name: Audit bundle architecture
+        shell: bash
+        run: |
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          node apps/desktop/scripts/audit-bundle-arch.mjs \
+            --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
+
+      - name: Verify the build is signed and notarized
+        # The backstop against a silent unsigned publish: assess the packed
+        # app against the real Gatekeeper policy (requires a Developer ID
+        # signature AND a stapled notarization ticket to pass offline).
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(apps/desktop/release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "::error::no packed .app found under apps/desktop/release to verify"
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            codesign --verify --strict --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            spctl -a -vv -t exec "$app"
+            echo "signed + notarized: $app"
+          done
+
+      - name: Rename the feed yml per arch
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate'
+        # electron-builder writes the channel feed yml (stable-mac.yml /
+        # canary-mac.yml) with the SAME name on both legs; prefix the arch
+        # so the R2 tag archive keeps both and finalize can merge them
+        # into <channel>-mac.yml after both native legs pass. The
+        # channel token is preserved verbatim in the staged name
+        # (arm64-stable-mac.yml / x64-canary-mac.yml …).
+        shell: bash
+        run: |
+          shopt -s nullglob
+          MATRIX_LABEL="${{ matrix.target.label }}"
+          arch="${MATRIX_LABEL##*-}"
+          channel="${{ needs.validate.outputs.channel }}"
+          f="apps/desktop/release/${channel}-mac.yml"
+          test -s "$f"
+          mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
+
+      - name: Stage macOS packages and feed inputs to R2
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target.label }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        # Per-arch feed inputs stay in the tag archive until both legs pass.
+        run: |
+          args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
+            args+=(--include 'metadata-*.json')
+          fi
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            # Commit-only mode: binaries only — no feed yml exists without a tag.
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release \
+              --include '*.dmg' --include '*.zip' --include '*.blockmap'
+          else
+            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name "$TARGET" --root apps/desktop/release "${args[@]}"
+          fi
+
+  # ── Linux builders (DISABLED for now) ─────────────────────────────────────
+  build-linux:
+    name: bundled linux (disabled for now)
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { label: linux-x64 } # runner: ubuntu-24.04
+          - { label: linux-arm64 } # runner: ubuntu-24.04-arm
+    steps:
+      - name: Disabled
+        shell: bash
+        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+
+  # ── Windows updater channels (REAL — gated on build-win32 only) ──────────
+  publish-win32-updater:
+    name: Assemble Windows bundle and optionally publish canary feed
+    needs: [validate, build-win32]
+    if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 45
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+      AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
+      AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
+      AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
+      AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
+    steps:
+      # Full checkout: stage-msixbundle.mjs imports ./msix-shared.mjs and the
+      # job runs it with no checkout at all today — ERR_MODULE_NOT_FOUND.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Privileged job: pin to the SHA validate admitted, not the tag.
+          ref: ${{ needs.validate.outputs.sha }}
+          # stage-msixbundle derives the canary MSIX build number as
+          # minutes-since-the-last-stable from git tags — must see them.
+          fetch-tags: true
+
+      - name: Set up the locked build toolchain
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          archive-inputs: true
+          cache-python: false
+
+      - name: Install the locked Windows bundle tooling
+        uses: ./.github/actions/retry
+        with:
+          # No Electron/native postinstalls: only the builder's SDK downloader.
+          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Resolve toolchain cache key
+        id: toolchain
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const el = l.packages["apps/desktop/node_modules/electron"].version
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!el || !eb) process.exit(1)
+            console.log(`electron=${el}`)
+            console.log(`builder=${eb}`)
+          ' >> "$GITHUB_OUTPUT"
+
+      # Cache reuse is optional. Bundle scripts provision the pinned SDK
+      # and signing dependencies through electron-builder on a cache miss.
+      # Keep the path list identical to the build legs for warm reuse.
+      - name: Resolve electron's default download cache path
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
+            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
+            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Cache electron + electron-builder toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+            ${{ env.ELECTRON_DEFAULT_CACHE }}
+          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          restore-keys: |
+            eb2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Retrieve Windows packages from R2
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff fetch --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
+          else
+            python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Mint federated token for the signing dlib
+        shell: bash
+        run: |
+          file="$RUNNER_TEMP/azure-federated-token"
+          mint() {
+            curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+              | jq -r .value > "$file.tmp" && mv -f "$file.tmp" "$file"
+          }
+          mint
+          ( while sleep 240; do mint || true; done ) &
+          echo "AZURE_FEDERATED_TOKEN_FILE=$file" >> "$GITHUB_ENV"
+
+      - name: Bundle + stage the MSIX feeds
+        shell: bash
+        env:
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          AZURE_TOKEN_CREDENTIALS: prod
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          # Candidate mode builds the bundles without writing a feed.
+          # Canary mode publishes the App Installer bundle and pointer.
+          # Commit mode assembles only the sideload product, without a feed.
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            node scripts/stage-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION" --variant bundled --no-upload
+            exit 0
+          fi
+          args=()
+          if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
+          node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG"
+          fi
+
+      - name: Stage universal bundles to R2
+        if: inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+              --commit "$RELEASE_COMMIT" \
+              --name windows-universal --root apps/desktop/release --include '*.msixbundle'
+          else
+            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --name windows-universal --root apps/desktop/release --include '*.msixbundle'
+          fi
+
+  # ── Windows Store submission (REAL — PARALLEL with publish-win32-updater) ─
+  # Bundles the two Store-*.msix into one universal Store .msixbundle and
+  # submits it to the Windows Store via the MSStore CLI.
+  #
+  # Only stable releases can claim the official Partner Center identity.
+  # Canary and commit builds are sideload-only, even when a flight exists.
+  publish-win32-store:
+    name: Publish the stable Windows Store submission
+    needs: [validate, build-win32]
+    if: |
+      inputs.build_commit == ''
+      && inputs.upload_release == true
+      && vars.MS_STORE_PRODUCT_ID != ''
+      && contains(inputs.tag, '-canary.') == false
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 60
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+      MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+      MS_STORE_SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
+      MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+      MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+      MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Privileged job: pin to the SHA validate admitted, not the tag.
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-tags: true
+
+      - name: Set up the locked build toolchain
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          archive-inputs: true
+          cache-python: false
+
+      - name: Install the locked Windows bundle tooling
+        uses: ./.github/actions/retry
+        with:
+          # No Electron/native postinstalls: only the builder's SDK downloader.
+          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Resolve toolchain cache key
+        id: toolchain
+        shell: bash
+        run: |
+          node -e '
+            const l = require("./package-lock.json")
+            const el = l.packages["apps/desktop/node_modules/electron"].version
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!el || !eb) process.exit(1)
+            console.log(`electron=${el}`)
+            console.log(`builder=${eb}`)
+          ' >> "$GITHUB_OUTPUT"
+
+      # Reuse the build cache when available. The bundle script also works
+      # cold by provisioning the same SDK through the pinned builder.
+      - name: Resolve electron's default download cache path
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
+            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
+            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Cache electron + electron-builder toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/electron-builder
+            ${{ github.workspace }}/.cache/electron
+            ${{ env.ELECTRON_DEFAULT_CACHE }}
+          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          restore-keys: |
+            eb2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Retrieve Store packages from R2
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name win32-x64 --name win32-arm64 --root apps/desktop/release --include 'Store-*.msix'
+
+      - name: Bundle the Store submission MSIX
+        id: storebundle
+        shell: bash
+        run: |
+          # The SDK downloader logs to stdout; the path has its own output.
+          result="$RUNNER_TEMP/store-bundle-path"
+          node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --output-file "$result"
+          bundle="$(< "$result")"
+          test -f "$bundle"
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          echo "Store bundle: $bundle"
+
+      - name: Archive the Store bundle to the tag dir
+        shell: bash
+        run: |
+          # The per-arch Store-*.msix are already in the immutable archive
+          # (uploaded by the build legs); keep the assembled universal bundle
+          # there too as the record of exactly what was submitted.
+          python -m scripts.releases.r2 put \
+            --tag "$HERMES_PAYLOAD_TAG" \
+            --key "$(basename "${{ steps.storebundle.outputs.bundle }}")" \
+            --file "${{ steps.storebundle.outputs.bundle }}"
+
+      - name: Setup MSStore CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+
+      - name: Configure Store credentials
+        shell: bash
+        run: |
+          msstore reconfigure \
+            --tenantId "$MS_STORE_TENANT_ID" \
+            --sellerId "$MS_STORE_SELLER_ID" \
+            --clientId "$MS_STORE_CLIENT_ID" \
+            --clientSecret "$MS_STORE_CLIENT_SECRET"
+
+      - name: Publish the Store submission
+        shell: bash
+        run: |
+          # The universal Store .msixbundle is accepted directly by msstore
+          # publish (PackageFilesExtensionInclude: .msix/.msixbundle/.msixupload).
+          # Partner Center signs on ingestion — no signing here.
+          #
+          # Partner Center allows one pending submission. Clear that draft
+          # before publishing. Only the publish result gates this step.
+          bundle="${{ steps.storebundle.outputs.bundle }}"
+          msstore submission delete "$MS_STORE_PRODUCT_ID" --no-confirm \
+            || echo "no pending submission to clear"
+          msstore publish "$bundle" -id "$MS_STORE_PRODUCT_ID"
+
+  # ── macOS updater channel (REAL) ───────────────────────────────────────────
+  # Merges the per-arch feed ymls (arm64-stable-mac.yml / x64-stable-mac.yml
+  # …) into releases/darwin/<channel>/<channel>-mac.yml via
+  # scripts/releases/r2.py finalize. The binaries were staged by the build
+  # legs (releases/tag/<tag>/); the feed POINTER is written here, last, only
+  # after BOTH darwin legs are green — a failed leg can never publish a
+  # partial channel. The concurrency group is scoped to the channel so two
+  # dispatches for the same channel serialize their feed writes (r2-release
+  # finalize also refuses backward publication); stable and canary still
+  # publish in parallel by design (distinct feed files).
+  publish-darwin-updater:
+    name: Publish the macOS updater feed
+    needs: [validate, build-darwin]
+    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.termux_only != true
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 15
+    concurrency:
+      group: darwin-updater-feed-${{ needs.validate.outputs.channel }}
+      cancel-in-progress: false
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Privileged job: pin to the SHA validate admitted, not the tag.
+          ref: ${{ needs.validate.outputs.sha }}
+
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+
+      - name: Retrieve macOS feed inputs from R2
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name darwin-x64 --name darwin-arm64 --root staged --include '*-mac.yml'
+
+      - name: Assert the per-arch feeds are present
+        shell: bash
+        # finalize merges *-mac.yml and (feed-side) rejects mixed versions
+        # and conflicting digests; here we fail fast if a leg never
+        # produced its yml so a single-arch feed can never publish.
+        run: |
+          shopt -s nullglob
+          ymls=(staged/*-mac.yml)
+          if [ ${#ymls[@]} -ne 2 ]; then
+            echo "::error::expected the arm64 AND x64 feed ymls in the staged artifacts, found ${#ymls[@]}: ${ymls[*]}"
+            exit 1
+          fi
+          archs=()
+          for f in "${ymls[@]}"; do archs+=("$(basename "$f" | cut -d- -f1)"); done
+          printf '%s\n' "${archs[@]}" | sort -u | grep -qx arm64 || { echo "::error::arm64 feed yml missing"; exit 1; }
+          printf '%s\n' "${archs[@]}" | sort -u | grep -qx x64   || { echo "::error::x64 feed yml missing"; exit 1; }
+          echo "staged feeds: ${ymls[*]}"
+
+      - name: Finalize the macOS updater feeds
+        # Writes releases/darwin/<channel>/<channel>-mac.yml pointing at the
+        # already-staged /releases/tag/<tag>/ binaries. Immutable objects
+        # referenced by the feed are verified before the pointer uploads
+        # (feed-side); the pointer upload is the last write of the run.
+        shell: bash
+        run: |
+          python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
+
+  termux-deb:
+    name: Build + publish the termux .deb (aarch64)
+    needs: [validate, archive-inputs]
+    if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+    runs-on: ubuntu-24.04-arm
+    environment: release-signing
+    timeout-minutes: 90
+    env:
+      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      HERMES_BUILD_COMMIT: ${{ needs.validate.outputs.sha && inputs.build_commit != '' && needs.validate.outputs.sha || '' }}
+      # termux_build.sh gates on `gh release view <tag>` (refuse to build
+      # before the release exists); gh needs GH_TOKEN or it errors out and
+      # the gate misreads that as "release not found".
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      # Use the admitted commit, not a tag that can move after validation.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up the locked build toolchain
+        id: pm
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          archive-inputs: true
+          cache-python: false
+
+      - name: Derive the channel from the tag
+        id: channel
+        if: inputs.build_commit == ''
+        shell: bash
+        # Single source of truth: deb_version.py --channel uses the same
+        # _TAG_RE as the Debian version derivation, so the channel and the
+        # .deb version can never disagree about the tag's shape.
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          echo "channel=$(python3 scripts/termux/deb_version.py --channel "$TAG")" >> "$GITHUB_OUTPUT"
+
+      - name: Read the termux-docker digest pin
+        id: pins
+        shell: bash
+        # The digest is pinned in pm/lock.json (the termux-docker package)
+        # beside every other third-party pin; the build scripts re-read it
+        # themselves. This step surfaces the effective pin in the run log
+        # and fails fast if the lock row is missing.
+        run: |
+          echo "digest=$(python3 -c 'import sys; sys.path.insert(0, "."); from pm.lock import termux_docker_digest; print(termux_docker_digest())')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the CPython + node + uv payload builds
+        # Restore/save are split: the save runs right after staging (with
+        # `always()`), so a later phase's failure cannot throw away 20+
+        # minutes of builds. The exact key is content-only on pm/lock.json +
+        # the stagers, so it is stable across dispatches; the restore-keys
+        # prefix rescues the previous pin's builds when the lock moved.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            termux-build/payload/python
+            termux-build/payload/node
+            termux-build/payload/uv
+            termux-build/payload/npm
+            termux-build/payload/ffmpeg
+            termux-build/payload/ripgrep
+            termux-build/payload/runtime-libs
+          key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
+          restore-keys: |
+            termux-payload-
+
+      - name: Preserve and retrieve pinned inputs
+        shell: bash
+        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
+
+      - name: Build CPython into the payload
+        shell: bash
+        run: bash scripts/termux/build_cpython.sh termux-build/payload
+
+      - name: Build node into the payload
+        shell: bash
+        run: bash scripts/termux/build_node.sh termux-build/payload
+
+      - name: Stage the runtime libs into the payload
+        shell: bash
+        # The payload interpreters' runtime libs (python's C-extension deps,
+        # node's, uv's zstd) ship INSIDE the sealed deb: the device's termux
+        # tree may have none of them installed. Pin table derived from the
+        # suppliers' own Depends metadata (see runtime_libs.json).
+        run: python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+
+      - name: Stage uv into the payload
+        shell: bash
+        # The wheelhouse resolver + runtime lazy-install tool: pm stages
+        # the bionic uv .deb beside python/node (no PATH install; the
+        # payload env composition exposes it, desktop payload model).
+        run: bash scripts/termux/build_uv.sh termux-build/payload
+
+      - name: Stage the remaining CLI runtime tools
+        shell: bash
+        run: |
+          for tool in npm ffmpeg ripgrep; do
+            bash scripts/termux/termux_pkg_build.sh "$tool" "$tool" termux-build/payload
+          done
+
+      - name: Save the payload builds
+        # Save regardless of the wheelhouse/deb phases' outcome: the staged
+        # tool payload is only stale when the lock or a stager changes, and
+        # losing it to a downstream failure re-pays the full stage cost.
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            termux-build/payload/python
+            termux-build/payload/node
+            termux-build/payload/uv
+            termux-build/payload/npm
+            termux-build/payload/ffmpeg
+            termux-build/payload/ripgrep
+            termux-build/payload/runtime-libs
+          key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
+
+      - name: Ensure the derived builder image (toolchain pre-baked)
+        id: builder_image
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        # Content-addressed off the pm lock digest: builds once per lock
+        # bump, then no-ops. The wheelhouse container phase boots this
+        # instead of the bare base, skipping the ~10-min toolchain apt.
+        run: |
+          mkdir -p termux-build
+          # The builder script prints progress (build logs, smoke output)
+          # plus the image ref on the LAST line -- command substitution
+          # would swallow all of it into one $GITHUB_OUTPUT value.
+          bash scripts/termux/build_builder_image.sh | tee termux-build/.builder-image.log
+          img="$(tail -n1 termux-build/.builder-image.log)"
+          echo "builder image: $img"
+          echo "image=$img" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the wheelhouse
+        # The manufactured native wheels are the expensive artifact of this
+        # job. build_wheels.py skips any dist whose exact-pinned wheel is
+        # already present, so a restored wheelhouse turns the 20-minute
+        # native compile phase into a cache-hit verification.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            termux-build/payload/wheelhouse
+            termux-build/payload/index.json
+            termux-build/payload/SHA256SUMS
+            termux-build/payload/.work/resolved.txt
+            termux-build/payload/.work/build_set.txt
+          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
+          restore-keys: |
+            termux-wheelhouse-
+
+      - name: Build the wheelhouse
+        shell: bash
+        env:
+          TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
+        # termux_build.sh lands wheelhouse/ + index.json + SHA256SUMS in the
+        # payload root, where build_deb.sh's --no-index pip install finds it.
+        run: |
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            # The checkout is the admitted commit. No release tag is required.
+            bash scripts/termux/termux_build.sh \
+              --repo . \
+              --commit "$HERMES_BUILD_COMMIT" \
+              --out termux-build/payload
+          else
+            bash scripts/termux/termux_build.sh \
+              --repo . \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --out termux-build/payload
+          fi
+
+      - name: Save the wheelhouse
+        # Only proven wheels enter the cache. Saving before deb assembly
+        # preserves them if a later packaging step fails.
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            termux-build/payload/wheelhouse
+            termux-build/payload/index.json
+            termux-build/payload/SHA256SUMS
+            termux-build/payload/.work/resolved.txt
+            termux-build/payload/.work/build_set.txt
+          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
+
+      - name: Assemble the .deb
+        shell: bash
+        env:
+          TERMUX_BUILDER_IMAGE: ${{ steps.builder_image.outputs.image }}
+        # The driver prepares locked TUI dependencies and builds the shared
+        # TUI product before handing the staged bionic payload to build_deb.sh.
+        # Native dependency staging stays above; .deb validation still runs
+        # in a fresh pinned container with no opt-out.
+        run: |
+          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+            python3 scripts/termux/build.py \
+              --repo . \
+              --commit "$HERMES_BUILD_COMMIT" \
+              --payload termux-build/payload \
+              --out termux-build/deb
+          else
+            python3 scripts/termux/build.py \
+              --repo . \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --payload termux-build/payload \
+              --out termux-build/deb
+          fi
+
+      - name: Retrieve the previous published Termux package from R2
+        if: inputs.termux_upgrade_from_tag != ''
+        env:
+          PREVIOUS_TAG: ${{ inputs.termux_upgrade_from_tag }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          from scripts.releases.handoff import fetch
+          from scripts.releases.semver import is_valid_version
+          tag = os.environ['PREVIOUS_TAG']
+          if not tag.startswith('v') or not is_valid_version(tag[1:]):
+              raise ValueError('Invalid previous release tag')
+          release = json.loads(subprocess.check_output([
+              'gh', 'release', 'view', tag, '--repo', os.environ['GITHUB_REPOSITORY'],
+              '--json', 'tagName,isDraft'], text=True))
+          if release['tagName'] != tag or release['isDraft']:
+              raise ValueError('Previous package must come from a published release')
+          commit = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
+          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          fetch(tag, commit, ['termux'], Path('termux-build/previous'), ['deb/*.deb'])
+          PY
+
+      - name: Stage the commit-build deb to R2
+        if: inputs.build_commit != ''
+        shell: bash
+        run: |
+          python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+            --name termux --root termux-build --include 'deb/*.deb'
+
+      - name: Write the APT signing key
+        if: inputs.build_commit == ''
+        shell: bash
+        env:
+          TERMUX_APT_GPG_KEY: ${{ secrets.TERMUX_APT_GPG_KEY }}
+        run: |
+          if [ -z "$TERMUX_APT_GPG_KEY" ]; then
+            echo "::error::TERMUX_APT_GPG_KEY secret not set — the APT repo would stage unsigned"
+            exit 1
+          fi
+          printf '%s\n' "$TERMUX_APT_GPG_KEY" > "$RUNNER_TEMP/termux-apt-gpg.asc"
+
+      - name: Stage the APT repo and publish to R2
+        if: inputs.build_commit == ''
+        shell: bash
+        env:
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+          PREVIOUS_TAG: ${{ inputs.termux_upgrade_from_tag }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          # Passphrase-protected signing keys only; unset for bare keys.
+          TERMUX_APT_GPG_PASSPHRASE: ${{ secrets.TERMUX_APT_GPG_PASSPHRASE }}
+        run: |
+          # stage_apt_repo.py builds dists/<suite>/ + pool/ under --out and
+          # signs Release/InRelease with the key file. Exit 3 (unsigned
+          # Release) must fail the run.
+          python3 scripts/termux/stage_apt_repo.py \
+            --pool termux-build/deb \
+            --out termux-build/apt \
+            --suite "hermes-$CHANNEL" \
+            --gpg-key-file "$RUNNER_TEMP/termux-apt-gpg.asc"
+
+          debs=(termux-build/deb/*.deb)
+          test "${#debs[@]}" -eq 1
+          version=$(dpkg-deb --field "${debs[0]}" Version)
+          digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')
+          docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+            -v "$PWD/termux-build/apt:/apt:ro" \
+            -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
+            -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
+            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            previous=(termux-build/previous/deb/*.deb)
+            test "${#previous[@]}" -eq 1
+            docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+              -v "$PWD/termux-build/apt:/apt:ro" \
+              -v "$PWD/${previous[0]}:/previous.deb:ro" \
+              -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
+              -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
+              "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+          fi
+
+          args=(--include 'deb/*.deb' --include 'apt/**/*')
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            python -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
+              --root termux-build --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --out termux-build/metadata-termux-aarch64.json
+            args+=(--include 'metadata-*.json')
+          fi
+          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name termux --root termux-build "${args[@]}"
+          if [ "$RELEASE_PHASE" = candidate ]; then exit 0; fi
+          # --key-is-full is MANDATORY on every feed-dir upload: without it
+          # scripts.releases.r2 re-prefixes the key into the tag archive
+          # (releases/tag/<tag>/) and the APT feed never lands at
+          # releases/termux/<channel>/.
+          shopt -s globstar nullglob
+          # cd into the staged repo for the glob, but resolve the r2 client
+          # absolutely first -- after the cd, scripts/ is no longer in the
+          # cwd and a bare `python -m scripts.releases.r2` would ENOENT.
+          export PYTHONPATH="$GITHUB_WORKSPACE"
+          cd termux-build/apt
+          files=(pool/**/*.deb "dists/hermes-$CHANNEL"/main/binary-aarch64/by-hash/*/* key.asc
+                 "dists/hermes-$CHANNEL/main/binary-aarch64/Packages"
+                 "dists/hermes-$CHANNEL/main/binary-aarch64/Packages.gz"
+                 "dists/hermes-$CHANNEL/Release"
+                 "dists/hermes-$CHANNEL/Release.gpg"
+                 "dists/hermes-$CHANNEL/InRelease")
+          # APT reads InRelease first. Publish it only after every referenced
+          # index and package has been uploaded and read back successfully.
+          for f in "${files[@]}"; do
+            test -f "$f"
+            python3 -m scripts.releases.r2 put \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --key "releases/termux/$CHANNEL/$f" \
+              --file "$f" \
+              --key-is-full
+          done
+
+          # Verify the public CDN path, not only the object-store origin.
+          public_repo="${CLOUDFLARE_R2_PUBLIC_URL%/}/releases/termux/$CHANNEL"
+          curl --fail --silent --show-error "$public_repo/key.asc" -o "$RUNNER_TEMP/termux-public-key.asc"
+          cmp key.asc "$RUNNER_TEMP/termux-public-key.asc"
+          docker run --rm --platform linux/arm64 --user 1000:1000 \
+            -v "$PWD:/apt:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
+            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version" "$public_repo"
+
+  builds-pending:
+    name: Mark the builds table as in progress
+    needs: validate
+    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.termux_only != true
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - name: Render the placeholder
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if ! gh release view "$HERMES_PAYLOAD_TAG" >/dev/null 2>&1; then
+            echo "::error::no release exists for $HERMES_PAYLOAD_TAG — cannot mark the builds table"
+            exit 1
+          fi
+          python3 scripts/render-builds-table.py \
+            --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pending-run-url "$RUN_URL"
+
+  builds-table:
+    name: Render the release builds table
+    needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, publish-darwin-updater, termux-deb]
+    # Failed builds still get a per-tag diagnostic page. The renderer only
+    # advances the channel landing page when every prerequisite succeeded.
+    if: |
+      always() && inputs.build_commit == '' && inputs.upload_release == true && inputs.release-phase == ''
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Privileged job: pin to the SHA validate admitted. A bare checkout
+          # here would land on the dispatch branch, not the release bytes.
+          ref: ${{ needs.validate.outputs.sha }}
+      - name: Render
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+        run: |
+          python3 scripts/render-builds-table.py \
+            --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
+
+      # publish-canary consumes this job's result. Publish diagnostics first,
+      # then retain the original all-needs-success release gate.
+      - name: Preserve release success gate
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from scripts.releases.stable import require_success
+          needs = json.loads(os.environ['RELEASE_NEEDS'])
+          require_success(needs, list(needs))
+          PY
+
+  commit-builds-summary:
+    name: Commit build summary (every binary, built or not)
+    needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, termux-deb]
+    if: |
+      always() && inputs.build_commit != ''
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Runs from the admitted commit so the renderer matches the built bytes.
+          ref: ${{ needs.validate.outputs.sha }}
+      - name: Render the full expected-binary matrix
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # Render failed admitted builds too. Only receipt-listed objects
+        # receive download links. Rendering does not alter job results.
+        run: |
+          set -e
+          failed=$(python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ["RELEASE_NEEDS"])
+          failed = [name for name, info in needs.items()
+                    if info.get("result") not in ("success", "skipped")]
+          print(",".join(sorted(failed)))
+          PY
+          )
+          python3 scripts/render-builds-table.py \
+            --summary-commit "$RELEASE_COMMIT" \
+            --summary-out "$GITHUB_STEP_SUMMARY" \
+            --summary-failed-legs "$failed" --run-url "$RUN_URL"
+
+  candidate-manifest:
+    name: Stage verified stable candidate artifacts
+    needs: [validate, build-win32, build-darwin, publish-win32-updater, termux-deb]
+    if: inputs.release-phase == 'candidate'
+    runs-on: ubuntu-latest-32-core
+    environment: release-signing
+    timeout-minutes: 90
+    outputs:
+      manifest-url: ${{ steps.manifest.outputs.manifest-url }}
+      manifest-sha256: ${{ steps.manifest.outputs.manifest-sha256 }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Retrieve candidate receipts and native metadata from R2
+        env:
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+        run: |
+          python -m scripts.releases.handoff fetch --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" \
+            --name win32-x64 --name win32-arm64 --name darwin-x64 --name darwin-arm64 \
+            --name termux --name windows-universal --root candidates \
+            --include 'metadata-*.json' --include '*.msixbundle'
+      - id: manifest
+        run: python -m scripts.bundles.release_artifacts assemble --root candidates --out release-candidates.json
+
+  stable-publish:
+    name: Verify published candidate files
+    needs: validate
+    if: inputs.release-phase == 'publish'
+    runs-on: ubuntu-latest-32-core
+    environment: release-signing
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.bundles.release_artifacts publish --root verified
+
+  stable-store:
+    name: Submit the verified Store package
+    needs: [validate, stable-publish]
+    if: inputs.release-phase == 'publish'
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+      MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}
+      MS_STORE_SELLER_ID: ${{ secrets.MS_STORE_SELLER_ID }}
+      MS_STORE_CLIENT_ID: ${{ secrets.MS_STORE_CLIENT_ID }}
+      MS_STORE_CLIENT_SECRET: ${{ secrets.MS_STORE_CLIENT_SECRET }}
+      MS_STORE_PRODUCT_ID: ${{ vars.MS_STORE_PRODUCT_ID }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Retrieve the exact Store candidate
+        shell: bash
+        run: python -m scripts.bundles.release_artifacts materialize --root verified --store-only
+      - uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+      - name: Submit without rebuilding
+        shell: bash
+        run: |
+          test -n "$MS_STORE_PRODUCT_ID"
+          msstore reconfigure --tenantId "$MS_STORE_TENANT_ID" --sellerId "$MS_STORE_SELLER_ID" --clientId "$MS_STORE_CLIENT_ID" --clientSecret "$MS_STORE_CLIENT_SECRET"
+          files=(verified/Store-*.msixbundle)
+          test "${#files[@]}" -eq 1
+          test -f "${files[0]}"
+          msstore publish "${files[0]}" -id "$MS_STORE_PRODUCT_ID"
+
+  stable-promote:
+    name: Promote verified stable bundle channels
+    needs: validate
+    if: inputs.release-phase == 'promote'
+    runs-on: ubuntu-latest-32-core
+    environment: release-signing
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.bundles.release_artifacts promote --root verified
+      - run: python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+  stable-phase-result:
+    name: Stable bundle phase completed
+    if: always() && inputs.release-phase != ''
+    needs:
+      [
+        validate,
+        build-win32,
+        build-darwin,
+        publish-win32-updater,
+        termux-deb,
+        candidate-manifest,
+        stable-publish,
+        stable-store,
+        stable-promote
+      ]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - name: Require every phase job
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from scripts.releases.stable import require_success
+          phases = {
+              'candidate': ['validate', 'build-win32', 'build-darwin', 'publish-win32-updater', 'termux-deb', 'candidate-manifest'],
+              'publish': ['validate', 'stable-publish', 'stable-store'],
+              'promote': ['validate', 'stable-promote'],
+          }
+          require_success(json.loads(os.environ['RELEASE_NEEDS']), phases[os.environ['RELEASE_PHASE']])
+          PY
+
+  publish-canary:
+    name: Publish the canary release
+    needs: [build-win32, build-darwin, build-linux, builds-table, publish-win32-updater, publish-darwin-updater]
+    if: |
+      always()
+      && inputs.build_commit == ''
+      && inputs.upload_release == true
+      && contains(inputs.tag, '-canary.')
+      && needs.build-win32.result == 'success'
+      && needs.build-darwin.result == 'success'
+      && needs.build-linux.result == 'success'
+      && needs.builds-table.result == 'success'
+      && needs.publish-win32-updater.result == 'success'
+      && needs.publish-darwin-updater.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "Published $TAG"

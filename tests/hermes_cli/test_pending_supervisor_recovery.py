@@ -7,7 +7,7 @@ import pytest
 from hermes_cli import gateway, main, update_cmd_fleet as fleet
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("failure", ["listing", "timeout", "missing", "restart", "inactive", "running", None])
 def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path, failure):
     monkeypatch.setattr(main, "_purge_stale_hermes_modules", lambda: None)

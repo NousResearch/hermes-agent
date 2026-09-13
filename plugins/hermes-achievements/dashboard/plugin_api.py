@@ -161,7 +161,10 @@ def _data_file(name: str) -> Path:
         legacy = get_hermes_home() / "plugins" / "hermes-achievements" / name
         if legacy.exists():
             try:
-                path.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+                # Two statements so the read (utf-8-sig, tolerates a BOM)
+                # and the write (utf-8, never emits one) stay distinct.
+                legacy_text = legacy.read_text(encoding="utf-8-sig")
+                path.write_text(legacy_text, encoding="utf-8")
             except Exception:
                 pass
     return path
@@ -171,7 +174,7 @@ def _read_json(name: str) -> Any:
     """Parsed data file, or ``None`` when missing/unreadable."""
     path = _data_file(name)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 

@@ -202,11 +202,8 @@ def test_reap_orphans_kills_only_our_parentless_binaries(tmp_path, monkeypatch):
         AccessDenied=_NoSuch,
     )
     monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
-    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.server_binary",
-                        lambda install_dir: exe)
-
     sup = LlamaServerSupervisor.__new__(LlamaServerSupervisor)
-    sup.install_dir = tmp_path
+    sup.binary = exe
     sup.proc = None
     sup._reap_orphaned_children()
 

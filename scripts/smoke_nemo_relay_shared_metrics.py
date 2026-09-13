@@ -434,9 +434,9 @@ def _validate_packages(
         raise RuntimeError(
             "The Hermes development environment requires jsonschema"
         ) from exc
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
     packages = [
-        json.loads(package_path.read_text(encoding="utf-8"))
+        json.loads(package_path.read_text(encoding="utf-8-sig"))
         for package_path in package_paths
     ]
     for package in packages:

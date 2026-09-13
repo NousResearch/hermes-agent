@@ -315,7 +315,7 @@ def reap_orphaned_lightpanda() -> int:
     for record_path in sorted(state_dir.glob("*.json")):
         session_name = record_path.stem
         try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record = json.loads(record_path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             record_path.unlink(missing_ok=True)
             continue

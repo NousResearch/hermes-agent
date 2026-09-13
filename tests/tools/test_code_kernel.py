@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Tests for execute_code's session kernel mode.
+"""Tests for execute_code's session kernel.
 
-``code_execution.kernel_mode: session`` keeps one Python child alive per
-(task, mode, interpreter, cwd, tool-set) so state survives across calls.
-These tests pin the contract:
+Session kernels are always on (the ``code_execution.kernel_mode`` key is
+retired): each (task, mode, interpreter, cwd, tool-set) owner keeps one
+Python child alive so state survives across calls. These tests pin the
+contract:
 
-  - default stays per-call (no state carries over unless opted in)
   - state persists across cells and reset=true discards it
   - a raised exception keeps the kernel (and its state) alive
   - a timeout kills the kernel; the next call gets a fresh one
   - fd-level output from user-spawned subprocesses reaches the result
   - sys.exit() inside a cell ends the kernel deliberately
 
-Mode is sourced from ``code_execution.kernel_mode`` in config.yaml only;
+Mode is sourced from ``code_execution.mode`` in config.yaml only;
 tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 """
 
@@ -36,7 +36,7 @@ os.environ["TERMINAL_ENV"] = "local"
 
 @pytest.fixture(autouse=True)
 def _force_local_terminal(monkeypatch):
-    """Mirror test_code_execution.py — guarantee local backend under xdist."""
+    """Mirror test_code_execution.py — guarantee local backend."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
@@ -46,8 +46,10 @@ from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 @contextmanager
 def _kernel_config(**overrides):
-    """Pin code_execution config; strict mode keeps the test hermetic."""
-    config = {"mode": "strict", "kernel_mode": "session", "timeout": 30}
+    """Pin code_execution config; strict mode keeps the test hermetic.
+    ``mode`` (strict/project) is the only config knob — session kernels are
+    always on; the retired ``kernel_mode`` key is ignored by the tool."""
+    config = {"mode": "strict", "timeout": 30}
     config.update(overrides)
     with patch("tools.code_execution_tool._load_config", return_value=config):
         yield
@@ -338,26 +340,42 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         """Parallel cells for one owner race the first spawn. Each racer
         used to see proc=None as 'dead', replace the registry entry, and
         orphan the winner's process — 110 live kernels under a 4-capped
-        process (Sep 2026). Every kernel process must stay registry-owned."""
-        import subprocess
+        process (Sep 2026). Every kernel process must stay registry-owned.
+
+        Capture actual children so an unregistered spawn cannot hide behind
+        the registry count. The owned process must exit on teardown."""
         import threading
 
+        spawned = []
+        real_popen = subprocess.Popen
+
+        def _capturing_popen(args, **kwargs):
+            proc = real_popen(args, **kwargs)
+            spawned.append((proc, list(args)))
+            return proc
+
         results = []
-        with _kernel_config():
-            def _cell():
-                results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
-            threads = [threading.Thread(target=_cell) for _ in range(6)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        with patch("tools.code_kernel.subprocess.Popen", side_effect=_capturing_popen):
+            with _kernel_config():
+                def _cell():
+                    results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
+                threads = [threading.Thread(target=_cell) for _ in range(6)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
-        live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        runners = [proc for proc, args in spawned
+                   if len(args) == 2 and Path(args[1]).name == "hermes_kernel_runner.py"]
+        self.assertEqual(len(runners), 1, "parallel cells spawned an unowned kernel")
+        kernel = next(iter(_KERNELS.values()))
+        self.assertIs(kernel.proc, runners[0])
+        self.assertIsNone(kernel.proc.poll())
+        shutdown_all_kernels()
+        for proc in runners:
+            proc.wait(timeout=10)
+            self.assertIsNotNone(proc.returncode)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

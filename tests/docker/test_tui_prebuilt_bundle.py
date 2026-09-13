@@ -5,8 +5,7 @@ Chat tab died with a 502 / "[session ended]". Root cause: the image installs
 only a subset of the npm monorepo workspaces (root/web/ui-tui, never apps/*),
 so the actualized node_modules permanently disagrees with the canonical
 package-lock.json. Without HERMES_TUI_DIR set, ``_make_tui_argv`` falls
-through to ``_tui_need_npm_install`` (which returns True forever) and tries a
-runtime ``npm install`` that can never converge and races itself across
+through to source dependency preparation, racing itself across
 concurrent /api/pty connections → ENOTEMPTY.
 
 The fix is ``ENV HERMES_TUI_DIR=/opt/hermes/ui-tui`` in the Dockerfile, which
@@ -31,7 +30,7 @@ def _exec_py(image: str, py: str) -> str:
     # Drop to the hermes user (UID 10000) so we exercise the same path the
     # dashboard PTY child runs as — not root.
     cmd = [
-        "docker", "run", "--rm", "--entrypoint", "su", image,
+        "docker", "run", "--rm", "--network=none", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -52,18 +51,35 @@ def test_hermes_tui_dir_env_is_set(built_image: str) -> None:
     )
 
 
+def test_photon_baked_dependencies_load_without_writes_or_network(built_image: str) -> None:
+    """The non-root runtime uses the baked sidecar, including its npm patch."""
+    py = '''
+import subprocess
+from plugins.platforms.photon.sidecar_paths import SOURCE_SIDECAR_DIR, resolve_sidecar_dir, dir_writable
+sidecar = resolve_sidecar_dir()
+assert sidecar == SOURCE_SIDECAR_DIR, sidecar
+assert not dir_writable(sidecar / 'node_modules')
+child = subprocess.run(['node', '--input-type=module', '-e',
+    "import {patchSpectrumTs} from './patch-spectrum-mixed-attachments.mjs'; "
+    "patchSpectrumTs(); await import('spectrum-ts'); console.log('PHOTON_LOADED')"],
+    cwd=sidecar, capture_output=True, text=True, timeout=30)
+assert child.returncode == 0, child.stderr
+print(child.stdout.strip())
+'''
+    assert _exec_py(built_image, py).endswith('PHOTON_LOADED')
+
+
 def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> None:
     """The launcher must (a) find the prebuilt bundle and (b) NOT want an
     npm install — i.e. it takes the same path as a nix/packaged release."""
     py = (
         "import json\n"
         "from pathlib import Path\n"
-        "from hermes_cli.main_tui_launch import _tui_need_npm_install, _find_bundled_tui, _make_tui_argv\n"
+        "from hermes_cli.main_tui_launch import _make_tui_argv\n"
         "ui = Path('/opt/hermes/ui-tui')\n"
         "argv, cwd = _make_tui_argv(ui, tui_dev=False)\n"
         "out = {\n"
         "  'dist_entry_exists': (ui / 'dist' / 'entry.js').is_file(),\n"
-        "  'need_npm_install': _tui_need_npm_install(ui),\n"
         "  'argv': argv,\n"
         "  'uses_prebuilt': ('dist/entry.js' in ' '.join(argv)) and ('npm' not in argv[0].lower()),\n"
         "}\n"

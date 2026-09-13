@@ -1656,12 +1656,16 @@ class TestAuthorizationEmailMatch:
     back without a test failing.
     """
 
-    def test_allowlist_matches_when_user_id_is_email(self, monkeypatch):
+    def test_allowlist_matches_when_user_id_is_email(self, monkeypatch, tmp_path):
         """Email allowlist match — the canonical case.
 
         The adapter assigns ``user_id = sender_email`` so the generic
         check_ids path picks it up. No platform-specific bridge needed.
         """
+        from pathlib import Path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
         from gateway.session import SessionSource

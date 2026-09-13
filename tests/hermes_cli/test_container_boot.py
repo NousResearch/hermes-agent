@@ -19,6 +19,8 @@ from hermes_cli.container_boot import (
     reconcile_profile_gateways,
 )
 
+pytestmark = pytest.mark.platforms("linux")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers

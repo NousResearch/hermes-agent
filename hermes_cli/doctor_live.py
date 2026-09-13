@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
 
@@ -56,27 +57,11 @@ def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float]
 
 def _browser_available() -> bool:
     """Is the local browser automation backend (agent-browser) installed?"""
-    import shutil
-    if shutil.which("agent-browser"):
-        return True
     try:
-        from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT
-        if (PROJECT_ROOT / "node_modules" / "agent-browser").exists():
-            return True
-        for candidate in (HERMES_HOME / "node" / "bin", HERMES_HOME / "node", HERMES_HOME / "node_modules" / ".bin"):
-            if shutil.which("agent-browser", path=str(candidate)):
-                return True
-    except Exception:
-        pass
-    # agent-browser resolves lazily via npx on the default install, invisible to the PATH/node_modules
-    # probes above. Mirror the rung hermes_cli.doctor uses so this probe can't diverge from it, including
-    # the Termux carve-out (bare npx is too fragile to advertise as ready there).
-    try:
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel, _requires_real_termux_browser_install
-        browser_cmd = _find_agent_browser(validate=False)
+        from tools.browser_tool_install import _find_agent_browser
+        return bool(_find_agent_browser(validate=False))
     except Exception:
         return False
-    return _is_npx_agent_browser_sentinel(browser_cmd) and not _requires_real_termux_browser_install(browser_cmd)
 
 
 def _launch_browser_probe(timeout: float) -> tuple:
@@ -87,7 +72,10 @@ def _launch_browser_probe(timeout: float) -> tuple:
     except ImportError:
         return (False, "playwright not installed")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, timeout=timeout * 1000)
+        browser = p.chromium.launch(
+            channel="chromium", executable_path=chromium_executable(),
+            headless=True, timeout=timeout * 1000,
+        )
         try:
             browser.new_page().goto("about:blank", timeout=timeout * 1000)
         finally:

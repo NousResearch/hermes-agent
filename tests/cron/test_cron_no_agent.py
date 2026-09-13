@@ -95,7 +95,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     from cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+    script_path.write_text("#!/usr/bin/env bash\necho 'RAM 92% on host'\n")
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
@@ -125,7 +125,7 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load)
 
     script_path = hermes_env / "scripts" / "probe.sh"
-    script_path.write_text('#!/bin/bash\necho "ok"\n')
+    script_path.write_text('#!/usr/bin/env bash\necho "ok"\n')
 
     job = create_job(
         prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"

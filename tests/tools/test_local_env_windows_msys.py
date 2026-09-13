@@ -23,9 +23,9 @@ False *on Windows*, and the fake had to recreate that condition by hand
 on a host where the path semantics, the drive letters, the path
 separator, and Git Bash itself are all absent.
 
-So the Windows-behaviour tests are ``windows_only`` and run on the
+So the Windows-behaviour tests are ``platforms("windows")`` and run on the
 Windows CI job against a real Git Bash layout. The "no-op off Windows"
-cases assert genuine POSIX behaviour and are ``linux_only`` — on that
+cases assert genuine POSIX behaviour and are ``platforms("linux")`` — on that
 host ``_IS_WINDOWS`` is already False, so no patching is needed at all.
 """
 
@@ -56,19 +56,19 @@ from tools.environments.local import (
 # ---------------------------------------------------------------------------
 
 class TestMsysToWindowsPath:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_noop_on_non_windows(self):
         # On a non-Windows host the function must never rewrite the path
         # — POSIX-style paths are real paths there.
         assert _msys_to_windows_path("/c/Users/NVIDIA") == "/c/Users/NVIDIA"
         assert _msys_to_windows_path("/home/teknium") == "/home/teknium"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_translates_drive_path(self):
         assert _msys_to_windows_path("/c/Users/NVIDIA") == r"C:\Users\NVIDIA"
         assert _msys_to_windows_path("/d/Projects/foo bar") == r"D:\Projects\foo bar"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_empty_string(self):
         assert _msys_to_windows_path("") == ""
 
@@ -78,11 +78,11 @@ class TestMsysToWindowsPath:
 # ---------------------------------------------------------------------------
 
 class TestWindowsToMsysPath:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_noop_on_non_windows(self):
         assert _windows_to_msys_path(r"C:\Users\NVIDIA") == r"C:\Users\NVIDIA"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_does_not_translate_non_drive_path(self):
         assert _windows_to_msys_path("/tmp/foo") == "/tmp/foo"
         assert _windows_to_msys_path(r"\\server\share") == r"\\server\share"
@@ -92,7 +92,7 @@ class TestWindowsToMsysPath:
 # _bash_safe_path / _quote_bash_path — shell-script interpolation
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestBashSafePath:
     def test_native_windows_path_becomes_msys(self):
         assert _bash_safe_path(r"C:\Users\alice\notes.txt") == "/c/Users/alice/notes.txt"
@@ -109,7 +109,7 @@ class TestBashSafePath:
 # _resolve_safe_cwd — Windows fast path
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestResolveSafeCwdWindows:
     def test_msys_path_resolves_to_native_when_native_exists(self, tmp_path):
         """The whole point of this fix: a Git Bash ``/c/Users/x`` value
@@ -130,7 +130,7 @@ class TestResolveSafeCwdWindows:
 # End-to-end: _update_cwd via stdout marker
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestUpdateCwdWindowsMsys:
     def test_marker_output_msys_path_stored_in_native_form(self, tmp_path):
         """When Git Bash emits ``/c/Users/x`` in the cwd marker on Windows,
@@ -166,7 +166,7 @@ class TestUpdateCwdWindowsMsys:
 # End-to-end: _extract_cwd_from_output rollback when marker is invalid
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestExtractCwdFromOutputWindowsMsys:
     def test_stale_msys_marker_does_not_clobber_cwd(self, tmp_path):
         """When the cwd marker in stdout points at a non-existent path,
@@ -218,7 +218,7 @@ class TestExtractCwdFromOutputWindowsMsys:
 # MSYS_NO_PATHCONV — native Windows command flags (#56700)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWindowsMsysPathconvDefaults:
     def test_make_run_env_sets_msys_no_pathconv_on_windows(self):
         run_env = _make_run_env({})
@@ -247,7 +247,7 @@ class TestGitBashCoreutilsOnPath:
         existing = {e.replace("\\", "/") for e in existing}
         return lambda p: p.replace("\\", "/") in existing
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_derives_dirs_from_portablegit_layout(self, monkeypatch):
         """The PortableGit layout probe, run on the real OS.
 
@@ -277,12 +277,12 @@ class TestGitBashCoreutilsOnPath:
         # Non-existent dirs (mingw32, usr/local/bin) are excluded.
         assert "/pg/mingw32/bin" not in norm
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_empty_off_windows(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
         assert _git_bash_bin_dirs() == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_make_run_env_noop_on_posix(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
         run_env = _make_run_env({"PATH": "/usr/bin:/bin"})
@@ -294,7 +294,7 @@ class TestGitBashCoreutilsOnPath:
 # Command wrapping — native Windows cwd must be Git Bash-friendly for cd
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWrapCommandWindowsNativeCwd:
     def test_wrap_command_converts_native_cwd_for_builtin_cd(self):
         with patch.object(

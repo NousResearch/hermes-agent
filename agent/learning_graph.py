@@ -57,7 +57,7 @@ def _load_usage() -> dict[str, dict[str, Any]]:
         return load_usage()
     except Exception:
         try:
-            return json.loads((get_hermes_home() / "skills" / ".usage.json").read_text(encoding="utf-8"))
+            return json.loads((get_hermes_home() / "skills" / ".usage.json").read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
 
@@ -86,7 +86,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
             if _SKIP_PARTS.intersection(skill_md.parts):
                 continue
             try:
-                text = skill_md.read_text(encoding="utf-8")[:4000]
+                text = skill_md.read_text(encoding="utf-8-sig")[:4000]
             except OSError:
                 continue
             try:
@@ -134,7 +134,7 @@ def _memory_cards() -> list[dict[str, Any]]:
     for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
         path = base / fname
         try:
-            text, file_ts = path.read_text(encoding="utf-8").strip(), _to_int_ts(path.stat().st_mtime)
+            text, file_ts = path.read_text(encoding="utf-8-sig").strip(), _to_int_ts(path.stat().st_mtime)
         except OSError:
             continue
         for chunk_idx, chunk in enumerate(c.strip() for c in text.split("\n§\n")):

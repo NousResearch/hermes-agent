@@ -371,7 +371,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     for sub, globs, recursive, files_only in _LINKED_FILE_SPECS if skill_dir else ():
         base = skill_dir / sub
         found = [
-            str(f.relative_to(skill_dir)) for g in globs if base.exists()
+            f.relative_to(skill_dir).as_posix() for g in globs if base.exists()
             for f in (base.rglob(g) if recursive else base.glob(g))
             if not files_only or f.is_file()]
         if found:
@@ -577,6 +577,34 @@ def skill_view(
                 org_provenance, header = _org_provenance_header(skill_dir, active_skills_dir)
             except Exception:
                 logger.debug("Could not resolve org provenance for %s", skill_name, exc_info=True)
+
+        # ── pm tool deps (`deps: [ffmpeg]` frontmatter) ──────────────
+        # Loading the skill IS the activation moment: ensure each declared
+        # pm package now so the skill's commands work when the model runs
+        # them. Failure never blocks the skill content — the note carries
+        # the remedy.
+        deps_note = None
+        declared_deps = frontmatter.get("deps") or []
+        if isinstance(declared_deps, str):
+            declared_deps = [declared_deps]
+        if isinstance(declared_deps, list) and declared_deps:
+            failed_deps = []
+            for dep in [str(d).strip() for d in declared_deps if str(d).strip()]:
+                try:
+                    import pm
+
+                    pm.ensure(dep)
+                except Exception as exc:
+                    failed_deps.append(f"{dep}: {exc}")
+            if failed_deps:
+                deps_note = (
+                    "Tool dependencies could not be installed — "
+                    + "; ".join(failed_deps)
+                    + ". Run `hermes pm install "
+                    + " ".join(str(d) for d in declared_deps)
+                    + "` and reload."
+                )
+
         result = {
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": header + rendered_content,
@@ -588,6 +616,8 @@ def skill_view(
             # Internal: absolute source path for the repeat-view dedup fingerprint.
             "_source_path": str(skill_md),
             **readiness_extras}
+        if deps_note:
+            result["deps_note"] = deps_note
         _mark_background_review_read(skill_md)
         if frontmatter.get("compatibility"):  # agentskills.io optional fields
             result["compatibility"] = frontmatter["compatibility"]

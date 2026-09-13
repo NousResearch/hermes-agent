@@ -5,17 +5,16 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
 1. **No credential env vars.** All provider/credential-shaped env vars
    (ending in _API_KEY, _TOKEN, _SECRET, _PASSWORD, _CREDENTIALS, etc.)
    are unset before every test. Local developer keys cannot leak in.
-2. **Isolated HERMES_HOME.** HERMES_HOME points to a per-test tempdir so
-   code reading ``~/.hermes/*`` via ``get_hermes_home()`` can't see the
-   real one. (We do NOT also redirect HOME — that broke subprocesses in
-   CI. Code using ``Path.home() / ".hermes"`` instead of the canonical
-   ``get_hermes_home()`` is a bug to fix at the callsite.)
+2. **Isolated Hermes homes.** HERMES_HOME and the platform-default root
+   resolve inside a per-test tempdir. Profile/root resolution can inspect
+   both without probing production state. HOME and Path.home() stay intact
+   for subprocesses and non-Hermes paths. Explicit test overrides still win.
 3. **Deterministic runtime.** TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0.
 4. **No HERMES_SESSION_* inheritance** — the agent's current gateway
    session must not leak into tests.
 
 These invariants make the local test run match CI closely. Gaps that
-remain (CPU count, xdist worker count) are addressed by the canonical
+remain (CPU count, worker count) are addressed by the canonical
 test runner at ``scripts/run_tests.sh``.
 """
 
@@ -60,6 +59,11 @@ if str(PROJECT_ROOT) not in sys.path:
 _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
+# Capture before any test fixture can override Path.home()/LOCALAPPDATA.
+from hermes_constants import _get_platform_default_hermes_home
+
+_NATIVE_HERMES_PARENT = _get_platform_default_hermes_home().parent
+
 
 def _hermes_home_points_at_production(value: str) -> bool:
     """True when a pre-set HERMES_HOME resolves to the real production root.
@@ -90,7 +94,24 @@ def _hermes_home_points_at_production(value: str) -> bool:
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+    # Marker for re-imported conftest module bodies (xdist workers exec this
+    # file more than once): the second import sees the already-redirected
+    # sandbox in the env and must not register it as a guarded "real" root.
+    os.environ["HERMES_TEST_SANDBOX_HOME"] = _SESSION_HERMES_HOME
     atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
+
+# PYTHONPYCACHEPREFIX is a bytecode-mirror escape hatch: when set (the
+# bundled desktop app exports it as %LOCALAPPDATA%\hermes\pycache),
+# importlib/pytest write .pyc files to <prefix>/<absolute source path>
+# instead of next to the sources. Un-scrubbed, that mirror lands under
+# the REAL hermes home and trips the real-home tripwire on any module
+# imported after sandboxing (test_find_shell was the first to bite).
+# Clear it so bytecode goes back beside the (already sandboxed) sources.
+os.environ.pop("PYTHONPYCACHEPREFIX", None)
+try:
+    sys.pycache_prefix = None
+except AttributeError:
+    pass
 
 # Subprocess-surviving isolation marker (#82770). PYTEST_CURRENT_TEST /
 # PYTEST_VERSION are pytest's own vars, and tests that spawn children
@@ -115,20 +136,16 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 
-# ── Per-file process isolation ──────────────────────────────────────────────
-# Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
-# ``python -m pytest <file>`` subprocess per test file. Cross-file state
-# leakage (module-level dicts, ContextVars, caches) is impossible: each
-# file gets a clean Python interpreter. Intra-file ordering is the test
-# author's responsibility — if test A in foo.py mutates state that test B
-# in foo.py reads, that's a real bug to fix in the file (it would also
-# bite anyone running ``pytest tests/foo.py`` directly).
+# ── File-level scheduling isolation ──────────────────────────────────────────
+# Tests run via ``scripts/run_tests.sh``, which runs the per-file runner
+# (``scripts/run_tests_parallel.py``) on every host: every file in its own
+# freshly-spawned ``python -m pytest <file>`` subprocess — cross-file state
+# leakage is impossible. Intra-file ordering is the test author's
+# responsibility on every host — if test A in foo.py mutates state that
+# test B in foo.py reads, that's a real bug to fix in the file (it would
+# also bite anyone running ``pytest tests/foo.py`` directly).
 #
-# This replaces the historic _reset_module_state autouse fixture (manual
-# state clearing) and the brief experiment with subprocess-per-test
-# isolation (too slow at ~17k tests).
-#
-# See ``scripts/run_tests_parallel.py`` for the runner.
+# See ``scripts/run_tests.sh`` for the runner.
 
 
 # ── Credential env-var filter ──────────────────────────────────────────────
@@ -476,16 +493,24 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # custom host resolution override/delete this explicitly.
     monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes")
 
-    # 3. Redirect HERMES_HOME to a per-test tempdir. Code that reads
-    #    ``~/.hermes/*`` via ``get_hermes_home()`` now gets the tempdir.
-    #
-    #    NOTE: We do NOT also redirect HOME. Doing so broke CI because
-    #    some tests (and their transitive deps) spawn subprocesses that
-    #    inherit HOME and expect it to be stable. If a test genuinely
-    #    needs HOME isolated, it should set it explicitly in its own
-    #    fixture. Any code in the codebase reading ``~/.hermes/*`` via
-    #    ``Path.home() / ".hermes"`` instead of ``get_hermes_home()``
-    #    is a bug to fix at the callsite.
+    # 3. Isolate both inputs to profile/root resolution. HERMES_HOME alone
+    #    is insufficient: get_default_hermes_root() resolves the native root
+    #    too, to distinguish standard profiles from custom deployments.
+    #    Patch only the Hermes default, not HOME/Path.home(). Subprocesses need
+    #    a stable HOME. Hardcoded real-home I/O must still trip the guard.
+    import hermes_constants
+
+    platform_default = hermes_constants._get_platform_default_hermes_home
+
+    def isolated_platform_default() -> Path:
+        root = platform_default()
+        # Explicit Path.home()/LOCALAPPDATA overrides in individual tests
+        # still select their own layout. Suffix changes retain their name.
+        return tmp_path / root.name if root.parent == _NATIVE_HERMES_PARENT else root
+
+    monkeypatch.setattr(
+        hermes_constants, "_get_platform_default_hermes_home", isolated_platform_default
+    )
     fake_hermes_home = tmp_path / "hermes_test"
     fake_hermes_home.mkdir()
     (fake_hermes_home / "sessions").mkdir()
@@ -535,14 +560,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
-    # Lazy feature deps (tools/lazy_deps.py) pip-install on demand by design —
+    # On-demand extras (pm.sync_venv) install mid-test-run by design —
     # _allow_lazy_installs() fails open for users. Unit tests must never reach
     # pip/the network: with the SDK absent, any agent init whose tool checks
     # touch a lazy feature (e.g. check_tts_requirements →
     # ensure("tts.elevenlabs")) spawns a real pip install — which hangs to the
     # suite timeout under tests that set fake proxy env vars. The kill-switch
     # makes ensure() raise FeatureUnavailable immediately instead.
-    # tests/tools/test_lazy_deps.py overrides this var in both directions.
+    # extras tests override this var in both directions.
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
@@ -797,16 +822,14 @@ def _state_db_write_guard(request, monkeypatch):
     yield
 
 
-# ── Module-level state reset — replaced by per-file process isolation ──────
+# ── Module-level state reset — replaced by per-file process isolation ───────
 #
-# Each test FILE runs in a freshly-spawned ``python -m pytest <file>``
-# subprocess via ``scripts/run_tests_parallel.py``, so module-level dicts /
-# sets / ContextVars from tests in one file cannot leak into tests in
-# another file. No manual per-module clearing needed.
-#
-# Within a single file, ordering is the author's responsibility. If your
-# tests in the same file share mutable state, either reset it explicitly
-# in a fixture or split them across files.
+# ``scripts/run_tests_parallel.py`` runs each test FILE in its own freshly
+# spawned pytest subprocess, so heavy co-scheduling pollution (module-level
+# dicts / sets / ContextVars shared by many files) cannot cross file
+# boundaries at all. Within a single file, ordering is the author's
+# responsibility. If your tests in the same file share mutable state, either
+# reset it explicitly in a fixture or split them across files.
 #
 # The skill ``test-suite-cascade-diagnosis`` documents the cascade patterns
 # this replaces; the running example was ``test_command_guards`` failing
@@ -1021,6 +1044,9 @@ _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
 _GATEWAY_LOOKALIKE_MARK = "spawns_gateway_lookalike"
 _REQUIRES_WAL_MARK = "requires_wal"
 
+# Tests may designate a temporary repo to exercise the real guard safely.
+_LIVE_GUARD_PROTECTED_GIT_ROOTS = (PROJECT_ROOT,)
+
 
 def _wal_is_usable() -> bool:
     """True when Hermes will actually put a database into WAL mode here.
@@ -1122,12 +1148,12 @@ _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 # So: a test whose subject is genuinely OS-specific declares the OS it
 # belongs to and runs there for real —
 #
-#   @pytest.mark.windows_only   → only on native Windows (``sys.platform == "win32"``)
-#   @pytest.mark.macos_only     → only on macOS (``sys.platform == "darwin"``)
-#   @pytest.mark.linux_only     → only on Linux (``sys.platform.startswith("linux")``)
+#   @pytest.mark.platforms("windows")   → only on native Windows (``sys.platform == "win32"``)
+#   @pytest.mark.platforms("macos")     → only on macOS (``sys.platform == "darwin"``)
+#   @pytest.mark.platforms("linux")     → only on Linux (``sys.platform.startswith("linux")``)
 #
 # Elsewhere the test is skipped, not faked. CI runs a dedicated macOS job
-# (``-m macos_only``) and a dedicated Windows job (``-m windows_only``) so
+# (``-m platforms("macos")``) and a dedicated Windows job (``-m platforms("windows")``) so
 # those markers are actually exercised on their own host rather than
 # quietly skipped everywhere.
 #
@@ -1147,20 +1173,78 @@ _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 # another OS in order to pass, it belongs on that OS.
 # ---------------------------------------------------------------------------
 
-_OS_MARKS = {
-    "linux_only": (
-        lambda: sys.platform.startswith("linux"),
-        "Linux",
-    ),
-    "macos_only": (
-        lambda: sys.platform == "darwin",
-        "macOS",
-    ),
-    "windows_only": (
-        lambda: sys.platform == "win32",
-        "native Windows",
-    ),
+_PLATFORM_ALIASES = {
+    "linux": ("linux",),
+    "macos": ("darwin", "macos"),
+    "windows": ("win32", "windows"),
+    "posix": ("linux", "darwin"),
+    "any": (),
 }
+
+
+def _platform_machine() -> str:
+    import platform as _platform
+
+    machine = (_platform.machine() or "").lower()
+    return {"amd64": "x86_64", "x86": "x86_64", "aarch64": "arm64"}.get(machine, machine)
+
+
+def _host_matches_platforms(conditions, arch=None, arch_negate=False):
+    """Evaluate a platforms() marker payload against the running host.
+
+    Returns ``(ok, skip_reason)``.
+    """
+    host = sys.platform.lower()
+    machine = _platform_machine()
+    specs = [str(c).strip().lower() for c in conditions if str(c).strip()]
+    if not specs:
+        return True, "platforms() with no specs matches every host"
+    for spec in specs:
+        negate = spec.startswith("not ")
+        leaf = spec[4:].strip() if negate else spec
+        if leaf not in _PLATFORM_ALIASES:
+            return False, f"platforms(): unknown spec {spec!r}"
+        wanted = _PLATFORM_ALIASES[leaf]
+        matched = (not wanted) or host in wanted
+        if negate:
+            matched = not matched
+        if matched:
+            break
+    else:
+        return False, f"platforms({', '.join(specs)}); host is {sys.platform}"
+    if arch is not None:
+        arch_l = str(arch).lower()
+        arch_hit = machine == arch_l or (
+            arch_l in {"arm64", "aarch64"} and machine == "arm64"
+        )
+        if arch_negate:
+            arch_hit = not arch_hit
+        if not arch_hit:
+            return False, (
+                f"platforms(arch={'not ' if arch_negate else ''}{arch}); "
+                f"host machine is {machine or 'unknown'}"
+            )
+    return True, ""
+
+
+def _platforms_gate_reason(item):
+    """Skip reason when the item's platforms() gating excludes this host."""
+    for mark in item.iter_markers("platforms"):
+        kwargs = dict(mark.kwargs)
+        conds = list(mark.args)
+        ok, reason = _host_matches_platforms(
+            conds,
+            arch=kwargs.pop("arch", None),
+            arch_negate=kwargs.pop("arch_negate", False),
+        )
+        if kwargs:
+            raise pytest.UsageError(
+                f"{item.nodeid}: platforms() got unexpected keyword(s) "
+                f"{sorted(kwargs)} — valid: arch, arch_negate"
+            )
+        if not ok:
+            return reason
+    return None
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -1170,6 +1254,9 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
+    )
+    config.addinivalue_line(
+        "markers", "allow_real_home_io: explicitly bypass the test-only home I/O guard."
     )
     config.addinivalue_line(
         "markers",
@@ -1196,6 +1283,18 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     )
     config.addinivalue_line(
         "markers",
+        "platforms(*specs, arch=None, arch_negate=False): run only on hosts "
+        "matching at least one spec — linux/macos/windows/posix/any, "
+        "'not X' negation, optional arch filter (e.g. arch='arm64')",
+    )
+    config.addinivalue_line(
+        "markers",
+        "platforms(*specs, arch=None, arch_negate=False): run only on hosts "
+        "matching at least one spec — linux/macos/windows/posix/any, "
+        "'not X' negation, optional arch filter (e.g. arch='arm64')",
+    )
+    config.addinivalue_line(
+        "markers",
         f"{_ALLOW_MACOS_KEYCHAIN_MARK}: allow a test to exercise the macOS "
         "Keychain credential reader with its own subprocess/platform mocks.",
     )
@@ -1211,7 +1310,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
     )
-    # NOTE: linux_only / macos_only / windows_only are declared in
+    # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
     # project's public marker vocabulary (``pytest --markers``, and the CI
     # lanes select on them), whereas the marks above are conftest-internal
@@ -1257,52 +1356,51 @@ def pytest_runtest_setup(item):
             )
 
 
-def _reject_multiple_os_marks(items):
-    """Fail collection when one test carries two host-OS markers.
+def _reject_contradictory_platform_marks(items):
+    """Fail collection when one test carries two platforms() markers.
 
-    Every marker in ``_OS_MARKS`` skips on all but one host, so two of them
-    on the same item means it is skipped on *every* host — a test that never
-    runs anywhere, reported as green by both the Linux suite and the
-    tests-os lanes. That is the exact silent-coverage-loss the markers were
-    introduced to remove, so it is a hard collection error rather than a
-    warning nobody reads.
+    Two markers are ANDed by the gate, so a stacked pair is not always wrong
+    in principle — but the historic failure this guard exists for (a
+    module-level gate stacking with a per-test gate so the test is skipped
+    on every host while both lanes report green) is only diagnosable at
+    collection time. A test that needs a compound condition writes ONE
+    marker: platforms("linux", arch="arm64").
     """
     offenders = []
     for item in items:
-        marks = sorted({m.name for m in item.iter_markers() if m.name in _OS_MARKS})
+        marks = list(item.iter_markers("platforms"))
         if len(marks) > 1:
-            offenders.append(f"  {item.nodeid}: {', '.join(marks)}")
+            offenders.append(f"  {item.nodeid}: {len(marks)} platforms() marks")
     if offenders:
         raise pytest.UsageError(
-            "a test may carry at most one host-OS marker "
-            f"({', '.join(_OS_MARKS)}); these carry several and would be "
-            "skipped on every host:\n" + "\n".join(offenders)
+            "a test may carry at most one platforms() marker — combine the "
+            'specs into one call (platforms("linux", arch="arm64") instead '
+            "of stacking two markers); these carry several:\n"
+            + "\n".join(offenders)
         )
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
-    OS gating: a test marked ``linux_only`` / ``macos_only`` /
-    ``windows_only`` runs only on that host. See the ``_OS_MARKS`` block
-    comment above for why these tests are skipped rather than run against a
-    patched ``sys.platform``.
+    OS gating: a test marked ``platforms(...)`` runs only on hosts its
+    specs match. See the platform-gating block comment above for why these
+    tests are skipped rather than run against a patched ``sys.platform``.
 
     WAL gating is cheaper and more honest than each test hand-rolling a
     version check: the reason string names the actual linked version so the
     skip is diagnosable rather than mysterious.
     """
-    _reject_multiple_os_marks(items)
+    _reject_contradictory_platform_marks(items)
 
-    for mark_name, (is_host, label) in _OS_MARKS.items():
-        if is_host():
-            continue
-        skip_os = pytest.mark.skip(
-            reason=f"{label}-only test (marked {mark_name}); host is {sys.platform}"
-        )
-        for item in items:
-            if item.get_closest_marker(mark_name) is not None:
-                item.add_marker(skip_os)
+    # platforms() gating: skip items whose specs exclude this host. The skip
+    # markers (not -m expressions) are the authoritative host filter on
+    # every lane, so a lane selects with plain ``-m platforms`` and lets the
+    # specs decide per-test.
+    for item in items:
+        reason = _platforms_gate_reason(item)
+        if reason is not None:
+            item.add_marker(pytest.mark.skip(reason=reason))
 
     if _wal_is_usable():
         return
@@ -1337,7 +1435,9 @@ def _live_system_guard(request, monkeypatch):
     tokens[0]), so ``bash -c "systemctl restart hermes-gateway"``,
     ``sudo systemctl ...``, ``env systemctl ...``, ``setsid systemctl ...``
     are all caught. ``pkill``/``killall``/``taskkill`` invocations
-    targeting hermes/python patterns are also blocked.
+    targeting hermes/python patterns are also blocked. Bare ``git``
+    commands may not mutate a protected checkout. Git writes against
+    temporary repositories and read-only Git commands remain allowed.
     """
     if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK):
         yield
@@ -1531,7 +1631,17 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
-    def _check_subprocess_cmd(name, cmd):
+    from tests.git_safety import blocked_git_mutation
+
+    def _check_subprocess_cmd(name, cmd, kwargs=None):
+        git_verb = blocked_git_mutation(cmd, kwargs, _LIVE_GUARD_PROTECTED_GIT_ROOTS)
+        if git_verb is not None:
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked "
+                f"subprocess.{name}({cmd!r}) — `git {git_verb}` would mutate "
+                "the protected checkout. Use a temporary repository or mock "
+                "the update boundary; live_system_guard_bypass is for deliberate live tests."
+            )
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -1615,7 +1725,7 @@ def _live_system_guard(request, monkeypatch):
 
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
-            _check_subprocess_cmd(name, cmd)
+            _check_subprocess_cmd(name, cmd, kwargs)
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -1633,7 +1743,7 @@ def _live_system_guard(request, monkeypatch):
 
         class _GuardedPopen(real):  # type: ignore[misc, valid-type]
             def __init__(self, cmd, *args, **kwargs):
-                _check_subprocess_cmd("Popen", cmd)
+                _check_subprocess_cmd("Popen", cmd, kwargs)
                 super().__init__(cmd, *args, **kwargs)
 
         _GuardedPopen.__name__ = "Popen"
@@ -1677,7 +1787,7 @@ def _live_system_guard(request, monkeypatch):
         return real_os_system(command)
 
     def _guarded_os_popen(cmd, *args, **kwargs):
-        _check_subprocess_cmd("os.popen", cmd)
+        _check_subprocess_cmd("os.popen", cmd, kwargs)
         return real_os_popen(cmd, *args, **kwargs)
 
     monkeypatch.setattr(_os, "system", _guarded_os_system)
@@ -1690,7 +1800,7 @@ def _live_system_guard(request, monkeypatch):
             real_pty_spawn = _pty.spawn
 
             def _guarded_pty_spawn(argv, *args, **kwargs):
-                _check_subprocess_cmd("pty.spawn", argv)
+                _check_subprocess_cmd("pty.spawn", argv, kwargs)
                 return real_pty_spawn(argv, *args, **kwargs)
 
             monkeypatch.setattr(_pty, "spawn", _guarded_pty_spawn)
@@ -1705,12 +1815,12 @@ def _live_system_guard(request, monkeypatch):
 
         async def _guarded_async_exec(program, *args, **kwargs):
             _check_subprocess_cmd(
-                "asyncio.create_subprocess_exec", [program, *args]
+                "asyncio.create_subprocess_exec", [program, *args], kwargs
             )
             return await real_async_exec(program, *args, **kwargs)
 
         async def _guarded_async_shell(cmd, *args, **kwargs):
-            _check_subprocess_cmd("asyncio.create_subprocess_shell", cmd)
+            _check_subprocess_cmd("asyncio.create_subprocess_shell", cmd, kwargs)
             return await real_async_shell(cmd, *args, **kwargs)
 
         monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
@@ -1816,3 +1926,79 @@ def _moa_caches_isolated():
     yield
     moa._preset_cache.clear()
     moa._runtime_cache.clear()
+
+
+# ── Real-home tripwire (universal read/write guard) ──────────────────────────
+# The hermetic sandbox redirects get_hermes_home(), but TWO escape classes
+# remain: (a) code hardcoding Path.home()/".hermes" (the exact restatement
+# class AGENTS.md bans — the Path.home()/.hermes/profiles bug the 2026-09-03
+# deployment review caught in pm/plugins_state.py), and (b) imports freezing
+# real-home paths before fixtures run. The kanban guard (#69283) covers one
+# subsystem; this covers EVERY file operation: any open()/mkdir/stat-family
+# call resolving under the REAL hermes root fails the test immediately
+# with a message naming the path — reads AND writes (a read of production
+# state is as much a leak as a write: it drags fixture rows and real config
+# into test assertions).
+#
+# The real root is captured at conftest import (pre-sandbox), honoring a
+# genuinely-custom pre-set HERMES_HOME exactly like the kanban deny-list
+# (_hermes_home_points_at_production governs which values count).
+_REAL_HERMES_ROOT_CANDIDATES: list[Path] = []
+
+
+def _capture_real_hermes_root() -> list[Path]:
+    """The real root(s) to refuse: the default ~/.hermes plus a pre-sandbox
+    custom HERMES_HOME when one was set. Both are guarded — the default
+    because hardcoded restatements hit it; the custom one because
+    deployment-shaped tests (Docker /opt/data) must not touch the operator's
+    real custom root either."""
+    import platform
+
+    roots: list[Path] = []
+    try:
+        default_root = (Path.home() / ".hermes").resolve()
+        roots.append(default_root)
+    except Exception:
+        pass
+    # native-Windows default: %LOCALAPPDATA%\hermes (get_hermes_home's
+    # platform-native path) — guard it too
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    if localappdata:
+        try:
+            win_root = (Path(localappdata) / "hermes").resolve()
+            if win_root not in roots:
+                roots.append(win_root)
+        except Exception:
+            pass
+    if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
+        _PRE_SANDBOX_HERMES_HOME
+    ):
+        try:
+            custom = Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
+            # The live session sandbox is test-owned, never a guarded root
+            # (a re-imported conftest body sees it as _PRE_SANDBOX_HERMES_HOME).
+            sandbox = os.environ.get("HERMES_TEST_SANDBOX_HOME", "")
+            if sandbox and custom == Path(sandbox).expanduser().resolve():
+                return roots
+            if custom not in roots:
+                roots.append(custom)
+        except Exception:
+            pass
+    return roots
+
+
+_REAL_HERMES_ROOT_CANDIDATES = _capture_real_hermes_root()
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_hermes_home_io(monkeypatch, request):
+    """Guard Python file/metadata/deletion calls and SQLite against real state.
+
+    Native libraries and subprocesses still need their own temporary-home
+    contracts. The opt-out is for explicit guard tests, never implicit repair.
+    """
+    if request.node.get_closest_marker("allow_real_home_io"):
+        return
+    from tests.home_io_guard import HomeIOGuard
+
+    HomeIOGuard(lambda: _REAL_HERMES_ROOT_CANDIDATES).install(monkeypatch)

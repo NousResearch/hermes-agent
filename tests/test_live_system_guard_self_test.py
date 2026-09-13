@@ -106,6 +106,7 @@ def test_fail_closed_probe_classifies_raw_builtin_as_unguarded():
 # ──────────────────── kill primitives ─────────────────────────
 
 
+@pytest.mark.platforms("linux")
 def test_os_kill_blocks_foreign_pid():
     with pytest.raises(RuntimeError, match="live-system guard"):
         os.kill(FOREIGN_PID, signal.SIGTERM)
@@ -219,6 +220,7 @@ def test_os_popen_systemctl_blocked():
 # ──────────────────── pty.spawn ────────────────────────────────
 
 
+@pytest.mark.platforms("linux")
 def test_pty_spawn_systemctl_blocked():
     import pty
     with pytest.raises(RuntimeError, match="live-system guard"):

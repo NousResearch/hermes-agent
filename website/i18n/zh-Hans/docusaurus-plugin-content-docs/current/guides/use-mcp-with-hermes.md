@@ -6,6 +6,9 @@ description: "将 MCP 服务器连接到 Hermes Agent、过滤其工具并在实
 
 # 在 Hermes 中使用 MCP
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 本指南介绍如何在日常工作流中实际使用 Hermes Agent 的 MCP 功能。
 
 如果功能页面解释的是 MCP 是什么，本指南则关注如何快速、安全地从中获取价值。
@@ -37,13 +40,13 @@ description: "将 MCP 服务器连接到 Hermes Agent、过滤其工具并在实
 
 ## 第一步：安装 MCP 支持
 
-如果你使用标准安装脚本安装了 Hermes，MCP 支持已包含在内（安装程序会运行 `uv pip install -e ".[all]"`）。
+如果你使用标准安装脚本安装了 Hermes，MCP 支持已包含在内。PM 选择声明的 `all` extra。
 
 如果你在没有附加组件的情况下安装，需要单独添加 MCP：
 
 ```bash
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
+python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
 对于基于 npm 的服务器，请确保 Node.js 和 `npx` 可用。

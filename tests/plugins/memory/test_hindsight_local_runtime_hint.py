@@ -1,45 +1,36 @@
-"""NousResearch/hermes-agent#7718 — actionable message when local_embedded
-runtime (`hindsight-all`) is missing.
+"""The install hint for an unavailable local_embedded side runtime.
 
-`local_embedded` imports `from hindsight import HindsightEmbedded`, provided
-only by `hindsight-all`. When it's absent the provider disables itself; the
-disable warning should point the user at the fix rather than just echoing
-`No module named 'hindsight'`.
+The embedded stack lives in the isolated side env (embedded_runtime); the fix
+is always 'hermes memory setup' (Local Embedded) — the main Hermes environment
+is never a pip target for it.
 """
-
-import sys
 
 import plugins.memory.hindsight as hs
 from plugins.memory.hindsight import HindsightMemoryProvider, _local_runtime_hint
 
 
-def test_hint_for_missing_hindsight_all():
+def test_hint_for_missing_runtime_names_the_isolated_install():
     hint = _local_runtime_hint("No module named 'hindsight'")
-    assert "hindsight-all" in hint
     assert "hermes memory setup" in hint
-    assert sys.executable in hint
+    assert "hindsight-embed==0.9.2" in hint
+    assert "hindsight-api-slim[all]==0.9.2" in hint
 
 
-def test_hint_for_missing_hindsight_embed():
-    hint = _local_runtime_hint("No module named 'hindsight_embed.daemon_embed_manager'")
-    assert "hindsight-all" in hint
+def test_hint_includes_probe_reason():
+    hint = _local_runtime_hint("Illegal instruction (NumPy SIMD)")
+    assert "NumPy SIMD" in hint  # truthful: reinstall may not fix a CPU limit
+    assert "hermes memory setup" in hint
 
 
-def test_no_hint_for_unrelated_runtime_error():
-    # e.g. the NumPy-on-old-CPU failure _check_local_runtime also guards against
-    assert _local_runtime_hint("Illegal instruction (NumPy SIMD)") == ""
-    assert _local_runtime_hint(None) == ""
-
-
-# unavailable_reason() — surfaces the hint through the reachable path (#7718):
-# is_available() gates initialize() out, so the hint must come from here.
+def test_hint_without_reason_still_actionable():
+    assert "hermes memory setup" in _local_runtime_hint(None)
 
 
 def test_unavailable_reason_surfaces_hint_for_local_embedded(monkeypatch):
     monkeypatch.setattr(hs, "_load_config", lambda: {"mode": "local_embedded"})
     monkeypatch.setattr(hs, "_check_local_runtime", lambda: (False, "No module named 'hindsight'"))
     reason = HindsightMemoryProvider().unavailable_reason()
-    assert "hindsight-all" in reason
+    assert "hermes memory setup" in reason
     assert reason == reason.strip()  # no leading/trailing whitespace
 
 

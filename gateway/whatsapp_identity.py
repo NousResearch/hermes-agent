@@ -73,8 +73,10 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
             if not mapping_path.exists():
                 continue
             try:
-                raw = json.loads(mapping_path.read_text(encoding="utf-8"))
-                mapped = normalize_whatsapp_identifier(raw)
+                # utf-8-sig: our fix for BOM'd lid-mapping files written on Windows.
+                mapped = normalize_whatsapp_identifier(
+                    json.loads(mapping_path.read_text(encoding="utf-8-sig"))
+                )
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
                 continue

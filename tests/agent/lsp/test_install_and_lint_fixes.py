@@ -2,11 +2,9 @@
 
 Covers:
 
-1. ``typescript-language-server`` install recipe pulls in ``typescript``
-   alongside the server, so the npm install command targets both.
-2. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
+1. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
    bash-language-server is installed but ``shellcheck`` is missing.
-3. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
+2. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
    command exists on PATH but couldn't actually run — e.g. ``npx tsc``
    without the typescript SDK installed.  This is what unblocks the
    LSP semantic tier on TypeScript files when the user doesn't also
@@ -20,75 +18,31 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.lsp.install import INSTALL_RECIPES
 
-
-# ---------------------------------------------------------------------------
-# Fix 1: typescript install recipe carries the typescript SDK
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-def test_install_npm_works_without_extras(tmp_path, monkeypatch):
-    """Backwards compat: pyright-style recipes (no extras) still install."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stderr="")
-
+def test_install_python_server_uses_pm_tool_environment(tmp_path, monkeypatch):
+    import pm
     from agent.lsp import install as install_mod
 
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(install_mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
+    binary = tmp_path / "environment" / "fake-language-server"
+    calls = []
+    selected = []
 
-    install_mod._install_npm("pyright", "pyright-langserver")
+    def ensure(name, requirements, executable, **kwargs):
+        calls.append((name, requirements, executable, kwargs))
+        selected.append(binary)
+        return binary
 
-    cmd = captured["cmd"]
-    assert "pyright" in cmd
-    # Should not blow up when extra_pkgs is omitted/None
-    install_targets = [c for c in cmd if not c.startswith("-") and c not in {
-        "install", "--prefix", str(install_mod.hermes_lsp_bin_dir().parent),
-        "/usr/bin/npm",
-    }]
-    assert install_targets == ["pyright"]
-
-
-
-
-@pytest.mark.windows_only
-def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
-    """pip console scripts can land in Scripts/ on native Windows.
-
-    ``windows_only``: the ``Scripts/`` layout and the ``.exe`` launcher are
-    what pip actually produces on Windows. Faking ``_is_windows()`` on Linux
-    made the test assert against a directory tree the test itself created, on
-    a host where pip would never lay it out that way.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    from agent.lsp import install as install_mod
-
-    def fake_run(cmd, **kwargs):
-        scripts_dir = install_mod.hermes_lsp_bin_dir().parent / "python-packages" / "Scripts"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        launcher = scripts_dir / "fake-language-server.exe"
-        launcher.write_text("launcher\n")
-        launcher.chmod(0o755)
-        return MagicMock(returncode=0, stderr="")
-
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-
-    resolved = install_mod._install_pip("fake-lsp", "fake-language-server")
-
-    assert resolved is not None
-    assert resolved.endswith("fake-language-server.exe")
-    assert (install_mod.hermes_lsp_bin_dir() / "fake-language-server.exe").exists()
+    monkeypatch.setattr(pm, "ensure_python_tool", ensure)
+    monkeypatch.setattr(pm, "python_tool", lambda *a, **kw: selected[0] if selected else None)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(install_mod, "INSTALL_RECIPES", {
+        "fake-lsp": {"strategy": "pip", "pkg": "fake-lsp==1.0", "bin": "fake-language-server"},
+    })
+    monkeypatch.setattr(install_mod, "_install_results", {})
+    monkeypatch.setattr(install_mod.shutil, "which", lambda *a, **kw: None)
+    assert install_mod.try_install("fake-lsp") == str(binary)
+    assert calls == [("lsp-fake-language-server", ["fake-lsp==1.0"], "fake-language-server", {"timeout": 300})]
+    assert install_mod.detect_status("fake-lsp") == "installed"
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +105,12 @@ def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
 
 
 
-def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
+def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path, monkeypatch):
     """Sanity: real TypeScript errors still go through the error path."""
+    from pathlib import Path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
 

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# ============================================================================
+# venv-style activation for the Hermes dev environment (pm-managed tools).
+#
+#   source ./activate      (bash / zsh, repo root)
+#   .\activate.ps1         (PowerShell)
+#
+# Emits the composed pm env (PATH + tool vars) into the CURRENT shell, with
+# save/restore: `deactivate` undoes exactly what activation changed.
+#
+# Sync through setup before selecting the environment. PM owns freshness;
+# activation does not maintain a second dependency stamp.
+# ============================================================================
+_HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Setup runs in a child: failures must not exit or partially activate the
+# caller's shell, and activation must not republish launchers or shell config.
+if ! (
+    unset PYTHONHOME PYTHONPATH VIRTUAL_ENV
+    bash "$_HERMES_REPO/setup-hermes.sh" --runtime-only
+) >&2; then
+    printf '%s\n' 'activate: setup failed; shell environment unchanged' >&2
+    return 1 2>/dev/null || exit 1
+fi
+
+# Guard against double-sourcing: venv activate precedent (re-activating is a
+# no-op re-save; we keep it idempotent by deactivating first).
+if [ -n "${__HERMES_ACTIVATED:-}" ]; then
+    deactivate
+fi
+
+# Bootstrap Python only emits the environment; it does not install anything.
+_hermes_repo="$_HERMES_REPO"
+_hermes_py=""
+for _hermes_candidate in "$_hermes_repo/.venv/bin/python" "$_hermes_repo/.venv/Scripts/python.exe" \
+                         "$_hermes_repo/venv/bin/python" "$_hermes_repo/venv/Scripts/python.exe"; do
+    [ -x "$_hermes_candidate" ] && { _hermes_py="$_hermes_candidate"; break; }
+done
+if [ -z "$_hermes_py" ]; then
+    for _hermes_store in "${HERMES_RUNTIME_DIR:-}" "$_hermes_repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+        [ -n "$_hermes_store" ] || continue
+        for _hermes_candidate in "$_hermes_store"/python-*/bin/python3 "$_hermes_store"/python-*/python.exe "$_hermes_store"/python-*/bin/python "$_hermes_store"/python-*/bin/python.exe; do
+            [ -x "$_hermes_candidate" ] && { _hermes_py="$_hermes_candidate"; break; }
+        done
+        [ -n "$_hermes_py" ] && break
+    done
+fi
+if [ -z "$_hermes_py" ]; then
+    echo "activate: no bootstrap Python found; run setup-hermes.sh" >&2
+    return 1 2>/dev/null || exit 1
+fi
+
+# --- emit export lines from `pm env` ---
+_hermes_json="$(PYTHONHOME= PYTHONPATH="$_hermes_repo" "$_hermes_py" -m hermes_cli.runtime_paths)"
+if [ -z "$_hermes_json" ] || [ "${_hermes_json#*{}" = "$_hermes_json" ]; then
+    echo "activate: could not read pm env (run ./setup-hermes.sh first)" >&2
+    unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py _hermes_json
+    return 1 2>/dev/null || exit 1
+fi
+
+_hermes_keys="$(printf '%s' "$_hermes_json" | "$_hermes_py" -c 'import json,sys; print(" ".join(json.load(sys.stdin)))' \
+    | tr ' ' '\n' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | tr '\n' ' ')"
+[ -n "$_hermes_keys" ] || _hermes_keys="PATH"
+
+# --- snapshot what we are about to change (deactivate restores this) ---
+__HERMES_ACTIVATED=1
+__HERMES_SAVED_PATH="$PATH"
+for _hermes_k in $_hermes_keys; do
+    eval "__HERMES_SAVED_$_hermes_k=\"\${$_hermes_k+set}\""
+    eval "__HERMES_PRIOR_$_hermes_k=\${$_hermes_k-__HERMES_UNSET__}"
+done
+
+eval "$(printf '%s' "$_hermes_json" | "$_hermes_py" -c '
+import json, sys, shlex, re
+for k, v in json.load(sys.stdin).items():
+    # Windows carries names like ProgramFiles(ARM) that are not valid
+    # bash identifiers — skip them (they pass through untouched).
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+        continue
+    print("export %s=%s" % (k, shlex.quote(str(v))))')"
+
+deactivate() {
+    export PATH="$__HERMES_SAVED_PATH"
+    for _hermes_k in $__HERMES_KEY_LIST; do
+        eval "_hermes_was=\"\$__HERMES_SAVED_$_hermes_k\""
+        eval "_hermes_old=\"\$__HERMES_PRIOR_$_hermes_k\""
+        if [ "$_hermes_was" != "set" ]; then
+            unset "$_hermes_k"
+        else
+            export "$_hermes_k=$_hermes_old"
+        fi
+        unset "__HERMES_SAVED_$_hermes_k" "__HERMES_PRIOR_$_hermes_k"
+    done
+    unset __HERMES_SAVED_PATH __HERMES_KEY_LIST __HERMES_ACTIVATED
+    unset -f deactivate
+    unset _hermes_k _hermes_was _hermes_old
+}
+
+# remember the key list for deactivate (kept out of the loop vars above)
+__HERMES_KEY_LIST="$_hermes_keys"
+
+unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store \
+      _hermes_py _hermes_json _hermes_keys _hermes_k _hermes_entry _hermes_venvpy \
+      _hermes_winarch

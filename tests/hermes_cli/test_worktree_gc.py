@@ -159,7 +159,8 @@ class TestReclaim:
         records = worktree_gc.audit_worktrees(str(repo), with_sizes=False)
         worktree_gc.reclaim_worktrees(str(repo), records=records)
         assert not tree.exists()
-        archive_root = Path.home() / ".hermes" / "archive" / "worktree-prune"
+        from hermes_constants import get_hermes_home
+        archive_root = get_hermes_home() / "archive" / "worktree-prune"
         archived = list(archive_root.rglob("NOTES.md"))
         assert archived, "untracked file must be archived, not destroyed"
         assert archived[0].read_text() == "important scribbles\n"

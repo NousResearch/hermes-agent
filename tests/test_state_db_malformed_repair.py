@@ -658,7 +658,7 @@ def _mode_of(db_path) -> str:
 
 
 def _configure_journal_mode(monkeypatch, tmp_path, mode) -> None:
-    import yaml
+    import hermes_yaml as yaml
 
     home = tmp_path / "hermes-home"
     home.mkdir(exist_ok=True)

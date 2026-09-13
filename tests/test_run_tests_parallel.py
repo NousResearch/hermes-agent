@@ -21,6 +21,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 from __future__ import annotations
 
 import json
+import shutil
 import os
 import subprocess
 import sys
@@ -31,15 +32,19 @@ from pathlib import Path
 import pytest
 
 
-# Both tests share the same handoff file: the leaker writes here, the
-# verifier reads here. We park it in $TMPDIR with a unique-per-run name
-# so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
-_HANDOFF_DIR.mkdir(exist_ok=True)
+@pytest.fixture(autouse=True)
+def isolated_probe_environment(monkeypatch):
+    # Probe files exercise pytest/runner mechanics, not installed third-party
+    # plugins. Autoloading the developer environment changes their startup cost.
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
 
 
-def _handoff_path_for(nonce: str) -> Path:
-    return _HANDOFF_DIR / f"grandchild-{nonce}.json"
+def _probe_root(tmp_path):
+    root = tmp_path / "runner-root"
+    scripts = root / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(__file__).resolve().parents[1] / "scripts" / "run_tests_parallel.py", scripts)
+    return root
 
 
 def _pid_alive(pid: int) -> bool:
@@ -65,7 +70,7 @@ def _pid_alive(pid: int) -> bool:
 
 def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> None:
     """Progress glyphs must not crash the runner on non-UTF-8 consoles."""
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
 
     probe_dir = tmp_path / "probe"
@@ -87,7 +92,7 @@ def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> Non
             "--file-timeout",
             "30",
         ],
-        cwd=repo_root,
+        cwd=probe_dir,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -100,7 +105,7 @@ def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> Non
     assert "1 tests passed" in proc.stdout
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
+@pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     """Run the parallel runner over a probe file and verify cleanup.
@@ -111,7 +116,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     3. Wait for the grandchild PID to vanish (poll for ~5s).
     4. Assert the runner exited cleanly AND the grandchild is dead.
     """
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     assert runner.exists(), f"runner missing at {runner}"
 
@@ -121,9 +126,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     probe_dir.mkdir()
     probe = probe_dir / "test_probe_leaker.py"
     nonce = f"{os.getpid()}-{int(time.time() * 1000)}"
-    handoff = _handoff_path_for(nonce)
-    if handoff.exists():
-        handoff.unlink()
+    handoff = tmp_path / f"grandchild-{nonce}.json"
 
     probe_src = textwrap.dedent(f"""
         import json, os, subprocess, sys, time
@@ -180,7 +183,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             "--file-timeout",
             "30",
         ],
-        cwd=repo_root,
+        cwd=probe_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
@@ -253,12 +256,12 @@ def _make_probe_dir(tmp_path: Path) -> Path:
 
 
 def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(probe_dir.parent)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     return subprocess.run(
         [sys.executable, str(runner), "--paths", str(probe_dir),
          "-j", "1", "--file-timeout", "30", *extra],
-        cwd=repo_root,
+        cwd=probe_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
@@ -297,13 +300,13 @@ def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
 def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     """A positional path arg still overrides discovery (not routed to pytest)."""
     probe_dir = _make_probe_dir(tmp_path)
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     # Pass the probe dir positionally (no --paths), plus a bare -q.
     proc = subprocess.run(
         [sys.executable, str(runner), str(probe_dir), "-j", "1",
          "--file-timeout", "30", "-q"],
-        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", timeout=60,
     )
     assert proc.returncode == 0, proc.stdout
@@ -314,7 +317,7 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
 
 def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
     """A pass-on-retry is green, loud, and retains the failing traceback."""
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     marker = tmp_path / "ran-once"
     probe = tmp_path / "test_flaky_probe.py"
@@ -346,7 +349,7 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
             "1",
             "-q",
         ],
-        cwd=repo_root,
+        cwd=tmp_path,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -386,11 +389,11 @@ def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:
     """``file.py::test_alpha`` runs that test instead of discovering nothing."""
     probe_dir = _make_probe_dir(tmp_path)
     target = probe_dir / "test_flagprobe.py"
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     proc = subprocess.run(
         [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
          f"{target}::test_alpha", "-j", "1", "--file-timeout", "30"],
-        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=60,
     )
     assert proc.returncode == 0, proc.stdout
@@ -404,12 +407,12 @@ def test_explicit_k_wins_over_node_id_inference(tmp_path: Path) -> None:
     """A caller's own ``-k`` is not overridden by the node-id translation."""
     probe_dir = _make_probe_dir(tmp_path)
     target = probe_dir / "test_flagprobe.py"
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     proc = subprocess.run(
         [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
          f"{target}::test_alpha", "-k", "test_beta",
          "-j", "1", "--file-timeout", "30"],
-        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=60,
     )
     # -k test_beta wins: one test ran, and it wasn't filtered to nothing.
@@ -430,20 +433,20 @@ def test_multiple_absolute_paths_split_on_pathsep(tmp_path: Path) -> None:
     (dir_b / "test_flagprobe_b.py").write_text(
         "def test_gamma():\n    assert True\n"
     )
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _probe_root(tmp_path)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     proc = subprocess.run(
         [sys.executable, str(runner),
          "--paths", os.pathsep.join([str(dir_a), str(dir_b)]),
          "-j", "1", "--file-timeout", "30", "-q"],
-        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", timeout=60,
     )
     assert proc.returncode == 0, proc.stdout
     assert "Discovered 2 test files" in proc.stdout, proc.stdout
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter paths")
+@pytest.mark.platforms("windows")
 def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
     """An absolute ``--paths`` value stays one root on Windows.
 

@@ -915,7 +915,7 @@ class TestDiscordVoiceChannelMethods:
         with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
-             patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
+             patch("tools.voice_mode_transcript.is_whisper_hallucination", return_value=False):
             await adapter._process_voice_input(111, 42, pcm_data)
 
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")

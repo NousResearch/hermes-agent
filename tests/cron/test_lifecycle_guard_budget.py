@@ -11,6 +11,8 @@ deterministic; ``_LifecycleScanBudget`` reads them at construction time.
 from __future__ import annotations
 
 import pytest
+import shlex
+from pathlib import Path
 
 import cron.lifecycle_guard as lifecycle_guard
 
@@ -82,8 +84,8 @@ def test_unique_path_budget_bounds_reads_and_fails_closed(monkeypatch, tmp_path)
     for i in range(3):
         (tmp_path / f"s{i}.sh").write_text("echo ok\n", encoding="utf-8")
 
-    two = " && ".join(f"bash {tmp_path}/s{i}.sh" for i in range(2))
-    three = " && ".join(f"bash {tmp_path}/s{i}.sh" for i in range(3))
+    two = " && ".join(f"bash {shlex.quote(str(tmp_path / f's{i}.sh'))}" for i in range(2))
+    three = " && ".join(f"bash {shlex.quote(str(tmp_path / f's{i}.sh'))}" for i in range(3))
 
     assert guard(two) is False
     assert guard(three) is True
@@ -94,7 +96,7 @@ def test_repeated_path_does_not_spend_unique_path_budget(monkeypatch, tmp_path):
     script = tmp_path / "s.sh"
     script.write_text("echo ok\n", encoding="utf-8")
 
-    assert guard(f"bash {script} && bash {script} && sh {script}") is False
+    assert guard(f"bash {shlex.quote(str(script))} && bash {shlex.quote(str(script))} && sh {shlex.quote(str(script))}") is False
 
 
 def test_remote_read_budget_charged_before_remote_read(monkeypatch):
@@ -112,7 +114,7 @@ def test_remote_read_budget_charged_before_remote_read(monkeypatch):
         )
         is True
     )
-    assert reads == ["/remote/a.sh"]
+    assert [Path(p) for p in reads] == [Path("/remote/a.sh").resolve()]
 
 
 def test_cumulative_text_budget_bounds_recursive_scan(monkeypatch, tmp_path):
@@ -177,7 +179,7 @@ def test_line_budget_fails_closed_before_tokenizing_every_line(
         return real_shlex(*args, **kwargs)
 
     monkeypatch.setattr(lifecycle_guard.shlex, "shlex", counting)
-    root = f"bash {script}"
+    root = f"bash {shlex.quote(str(script))}"
     assert guard(root) is True
     # Only the one-line root was tokenized (a handful of lexers across the
     # direct scans); the 10-line script never was.
@@ -229,13 +231,13 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
         child.write_text("echo step && ls -la /tmp\n" * 20, encoding="utf-8")
         children.append(child)
     hub = tmp_path / "hub.sh"
-    hub.write_text("".join(f"bash {c}\n" for c in children), encoding="utf-8")
+    hub.write_text("".join(f"bash {shlex.quote(str(c))}\n" for c in children), encoding="utf-8")
 
-    assert guard(f"bash {hub}") is False
+    assert guard(f"bash {shlex.quote(str(hub))}") is False
 
     # ...and a lifecycle command hidden behind the 200 benign scripts is still
     # found: the budget bounds work, it does not stop the walk early.
     evil = tmp_path / "evil.sh"
     evil.write_text("hermes gateway restart\n", encoding="utf-8")
-    hub.write_text(hub.read_text() + f"bash {evil}\n", encoding="utf-8")
-    assert guard(f"bash {hub}") is True
+    hub.write_text(hub.read_text() + f"bash {shlex.quote(str(evil))}\n", encoding="utf-8")
+    assert guard(f"bash {shlex.quote(str(hub))}") is True

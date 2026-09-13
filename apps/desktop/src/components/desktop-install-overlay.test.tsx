@@ -17,6 +17,7 @@ function bootstrapState(overrides: Partial<DesktopBootstrapState> = {}): Desktop
     completedAt: null,
     setupChoice: null,
     unsupportedPlatform: null,
+    bundled: false,
     ...overrides
   }
 }
@@ -93,7 +94,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('shows the remote/local choice without installer progress', async () => {
     installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -102,6 +103,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
     expect(await screen.findByText('Set up Hermes Desktop')).toBeTruthy()
     expect(screen.getByText('Connect to existing Hermes')).toBeTruthy()
     expect(screen.getByText('Install Hermes locally')).toBeTruthy()
+    expect(screen.getByText(/Will install to/i)).toBeTruthy()
     expect(screen.queryByText(/steps complete/i)).toBeNull()
     expect(screen.queryByText(/Fetching installer manifest/i)).toBeNull()
   })
@@ -109,7 +111,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('continues local bootstrap only when Install Hermes locally is selected', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -131,7 +133,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('surfaces a recoverable error when the local-bootstrap bridge is unavailable', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -150,7 +152,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('keeps the local-start error when the first snapshot commits under the click', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -173,7 +175,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('clears a stale local-start error when a repair presents a different root', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -200,7 +202,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('opens the remote connection form from the first-run choice', async () => {
     installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -216,7 +218,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('returns from the remote connection form to the first-run choice', async () => {
     installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -234,7 +236,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('requires a successful token connection test before applying remote config', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -304,7 +306,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('ignores a completed probe after the gateway URL becomes invalid', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -348,7 +350,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('does not enable Apply when credentials change during a connection test', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -401,7 +403,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('restores remote apply controls when applying the tested connection fails', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -448,7 +450,7 @@ describe('DesktopInstallOverlay first-run setup', () => {
   it('signs in, tests, and applies a password-style remote gateway', async () => {
     const desktop = installDesktopMock(
       bootstrapState({
-        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent' }
+        setupChoice: { platform: 'linux', activeRoot: '/home/me/.hermes/hermes-agent', local: 'none', bundled: false }
       })
     )
 
@@ -573,4 +575,47 @@ describe('DesktopInstallOverlay first-run setup', () => {
     await waitFor(() => expect(screen.queryByText('Gateway URL')).toBeNull())
     expect(screen.queryByText('Hermes needs a one-time install')).toBeNull()
   })
+})
+
+describe('DesktopInstallOverlay bundled / already-installed cards', () => {
+  it('shows the use-existing card for an installed runtime and hides the install-to footer', async () => {
+    installDesktopMock(
+      bootstrapState({
+        setupChoice: {
+          platform: 'win32',
+          activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent',
+          local: 'installed',
+          bundled: false
+        }
+      })
+    )
+
+    render(<DesktopInstallOverlay />)
+
+    expect(await screen.findByText('Use Hermes on this computer')).toBeTruthy()
+    expect(screen.getByText(/already installed here/i)).toBeTruthy()
+    expect(screen.queryByText(/Will install to/i)).toBeNull()
+    expect(screen.queryByText('Install Hermes locally')).toBeNull()
+  })
+
+  it('shows the bundled flavor for a healthy bundled install', async () => {
+    installDesktopMock(
+      bootstrapState({
+        setupChoice: {
+          platform: 'win32',
+          activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent',
+          local: 'bundled',
+          bundled: true
+        }
+      })
+    )
+
+    render(<DesktopInstallOverlay />)
+
+    expect(await screen.findByText('Use Hermes on this computer')).toBeTruthy()
+    expect(screen.getByText(/included with this app/i)).toBeTruthy()
+    expect(screen.queryByText(/Will install to/i)).toBeNull()
+  })
+
+
 })

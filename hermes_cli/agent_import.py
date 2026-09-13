@@ -17,7 +17,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from utils import atomic_write_text, atomic_yaml_write
 
@@ -47,7 +47,7 @@ def normalize_text(text: str) -> str:
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 class ConfigReadError(RuntimeError):

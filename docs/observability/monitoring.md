@@ -60,8 +60,9 @@ Check the posture any time:
 hermes monitoring status
 ```
 
-The OpenTelemetry SDK is an optional extra (`pip install 'hermes-agent[otlp]'`),
-lazy-installed on first use. When the SDK is missing or the endpoint is down,
+The OpenTelemetry SDK belongs to the `otlp` extra and installs on first use
+when policy permits. To request it explicitly from a prepared checkout, run
+`python -c "import pm; pm.sync_venv(['otlp'], explicit=True)"`. When the SDK is missing or the endpoint is down,
 the gateway runs unaffected: metric collection and ordinary event export stay
 off the hot path, while terminal cron events make one bounded fail-open flush
 attempt of up to one second so the final state is less likely to be lost.

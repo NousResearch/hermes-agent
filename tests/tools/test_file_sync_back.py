@@ -487,7 +487,7 @@ class TestSyncBackWindowsHost:
         assert host_file.read_bytes() == b"v2"
         assert not seen["dest"].exists()  # staging tar removed after use
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_posix_remote_keys_match_on_windows(self, tmp_path):
         host_file = tmp_path / "host" / "skill.py"
         _write_file(host_file, b"v1")

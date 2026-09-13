@@ -6,6 +6,9 @@ description: "Hermes Agent 工具概览——可用工具、工具集工作方�
 
 # 工具与工具集
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 工具是扩展 Agent 能力的函数。它们被组织为逻辑上的**工具集**，可按平台启用或禁用。
 
 ## 可用工具
@@ -118,7 +121,7 @@ hermes config set terminal.singularity_image ~/python.sif
 ### Modal（无服务器云）
 
 ```bash
-uv pip install modal
+python -c "import pm; pm.sync_venv(['modal'], explicit=True)"
 modal setup
 hermes config set terminal.backend modal
 ```
@@ -126,7 +129,7 @@ hermes config set terminal.backend modal
 ### Vercel Sandbox
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 hermes config set terminal.backend vercel_sandbox
 hermes config set terminal.vercel_runtime node24
 ```

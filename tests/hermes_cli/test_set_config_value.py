@@ -133,7 +133,7 @@ class TestConfigYamlRouting:
     ):
         set_config_value("terminal.docker_shared_container_key", "off")
 
-        import yaml
+        import hermes_yaml as yaml
 
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["docker_shared_container_key"] == "off"
@@ -193,7 +193,7 @@ class TestConfigGetUnset:
         args = argparse.Namespace(config_command="unset", key="terminal.backend")
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home)) or {}
         assert reloaded == {}
         assert "TERMINAL_ENV=" not in _read_env(_isolated_hermes_home)
@@ -212,7 +212,7 @@ class TestConfigGetUnset:
         args = argparse.Namespace(config_command="unset", key="platforms.teams.extra.access_token")
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert "access_token" not in reloaded["platforms"]["teams"]["extra"]
         assert reloaded["platforms"]["teams"]["extra"]["tenant_id"] == "tenant"
@@ -246,7 +246,7 @@ class TestListNavigation:
 
         set_config_value("custom_providers.0.api_key", "new-a")
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         # The list must still be a list
         assert isinstance(reloaded["custom_providers"], list)
@@ -274,7 +274,7 @@ class TestListNavigation:
 
         set_config_value("custom_providers.0.api_key", "rotated")
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = reloaded["custom_providers"][0]
         assert entry["api_key"] == "rotated"
@@ -299,7 +299,7 @@ class TestListNavigation:
         # the canonical path.
         set_config_value("telegram.allowlist.1.role", "admin")
 
-        import yaml
+        import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         allowlist = reloaded["telegram"]["allowlist"]
         assert isinstance(allowlist, list)
@@ -359,7 +359,7 @@ class TestStringTypedConfigValues:
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
         set_config_value("approvals.mode", value)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["approvals"]["mode"] == value
         assert isinstance(saved["approvals"]["mode"], str)
@@ -373,7 +373,7 @@ class TestStringTypedConfigValues:
     ):
         set_config_value(key, value)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         node = saved
         for part in key.split("."):
@@ -386,7 +386,7 @@ class TestStringTypedConfigValues:
         # (schema validation, #34067); coercion behavior is unchanged.
         set_config_value("custom.enabled", "off", force=True)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["custom"]["enabled"] is False
 
@@ -468,7 +468,7 @@ class TestSchemaValidation:
     def test_desktop_macos_signing_identity_is_accepted(self, _isolated_hermes_home, capsys):
         """The documented TCC signing identity setting is part of the schema."""
         set_config_value("desktop.macos_signing_identity", "Hermes Local Signing")
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
         assert "not a recognized config key" not in capsys.readouterr().out
@@ -586,8 +586,8 @@ class TestMappingGuard:
     """
 
     def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
-        (tmp_path / "config.yaml").write_text(_yaml.dump(data))
+        import hermes_yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data))
 
     def test_bare_model_shorthand_preserves_siblings(self, _isolated_hermes_home):
         """hermes config set model <id> → model.default, siblings survive."""
@@ -601,7 +601,7 @@ class TestMappingGuard:
         })
         set_config_value("model", "claude-sonnet-4-20250514")
         config_text = _read_config(_isolated_hermes_home)
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(config_text)
         assert parsed["model"]["default"] == "claude-sonnet-4-20250514"
         assert parsed["model"]["provider"] == "openai-api"
@@ -635,7 +635,7 @@ class TestMappingGuard:
             }
         })
         set_config_value("terminal", "zsh", force=True)
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["terminal"] == "zsh"
 
@@ -648,7 +648,7 @@ class TestMappingGuard:
             }
         })
         set_config_value("model.default", "claude-opus-4")
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["model"]["default"] == "claude-opus-4"
         assert parsed["model"]["provider"] == "openai-api"
@@ -663,7 +663,7 @@ class TestMappingGuard:
             }
         })
         set_config_value("model", "claude-opus-4", force=True)
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["model"] == "claude-opus-4"
 
@@ -673,7 +673,7 @@ class TestScalarModelSubKeyPreservation:
 
     def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home):
         """Seed model: gpt-4o, then set model.provider → model.default must survive."""
-        import yaml
+        import hermes_yaml as yaml
 
         set_config_value("model", "gpt-4o")
         set_config_value("model.provider", "openai")
@@ -686,7 +686,7 @@ class TestScalarModelSubKeyPreservation:
 
     def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
         """model.api_key must also preserve the existing scalar model id."""
-        import yaml
+        import hermes_yaml as yaml
 
         set_config_value("model", "claude-sonnet")
         # model.api_key is a sub-key (has a dot), so it stays in config.yaml
@@ -748,7 +748,7 @@ class TestLiteralDotKeyEscaping:
     """
 
     def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
 
     def test_split_key_path_escaped_dot(self):
@@ -778,7 +778,7 @@ class TestLiteralDotKeyEscaping:
             '{"Wafer-ZDR": "required"}',
         )
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         providers = saved["providers"]
         # No bogus ``qwen3`` nesting was created; the existing entry was updated.
@@ -807,7 +807,7 @@ class TestLiteralDotKeyEscaping:
         )
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert "qwen3.5-397b-wafer-non-zdr" not in saved["providers"]
         assert saved["providers"]["openrouter"] == {"api_key": "or-keep"}
@@ -829,7 +829,7 @@ class TestLiteralDotKeyEscaping:
         )
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         target = saved["providers"]["qwen3.5-397b-wafer-non-zdr"]
         assert "extra_headers" not in target
@@ -853,6 +853,6 @@ class TestLiteralDotKeyEscaping:
         """Nesting semantics for plain dotted keys are untouched."""
         set_config_value("terminal.backend", "docker")
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"

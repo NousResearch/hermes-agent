@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Kill all running Modal apps (sandboxes, deployments, etc.)
 #
 # Usage:

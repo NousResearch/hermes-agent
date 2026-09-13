@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
+  externalOpenFailed: {
+    title: '无法打开此链接',
+    message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
+    copyUrl: '复制链接',
+    close: '关闭'
+  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -31,7 +37,6 @@ export const zh = defineLocale({
     describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`,
     execution: '连接器工具'
   },
-
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
@@ -160,6 +165,9 @@ export const zh = defineLocale({
       back: '返回',
       openLogs: '打开日志',
       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
+      bundledReinstallHint:
+        '捆绑安装无法从应用内部自修复——重新安装 Hermes Desktop 以恢复其后端。',
+      reinstallApp: '重新安装 Hermes Desktop',
       remoteSignInHint: signInLabel =>
         `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
       signOutAndSignIn: '退出并重新登录',
@@ -184,6 +192,7 @@ export const zh = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning: '另一个 Hermes 安装实例正在使用此配置。两个实例共享此配置的设置和数据，因此更改可能发生冲突。你可以继续使用，也可以在更改前关闭另一个实例。',
     region: '通知',
     hide: '隐藏',
     show: '显示',
@@ -200,6 +209,7 @@ export const zh = defineLocale({
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 项新更改可用。`,
     updateReadyMessageUnknown: '有新更新可用。',
+    updateReadyMessageAppInstaller: 'Hermes 新版本已就绪。现在更新，Windows 会自动完成。',
     seeWhatsNew: '查看更新内容',
     mcp: {
       needsAuthTitle: 'MCP 服务器需要重新认证',
@@ -1034,39 +1044,7 @@ export const zh = defineLocale({
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `版本 ${value}`,
-      versionUnavailable: '版本不可用',
-      bundleOutOfSync: '应用构建版本过旧',
-      bundleOutOfSyncDesc:
-        'Hermes 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',
-      bundleOutOfSyncAction: '获取安装程序',
-      bundleSwapPending: '重启以完成更新',
-      bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',
-      bundleSwapPendingAction: '重启 Hermes',
       updates: '更新',
-      checkNow: '立即检查',
-      checking: '检查中…',
-      seeWhatsNew: '查看新增内容',
-      updateNow: '立即更新',
-      releaseNotes: '发行说明',
-      onLatest: '你已是最新版本。',
-      installing: '正在安装更新。',
-      cantUpdate: '此版本无法在应用内自我更新。',
-      cantReach: '无法连接更新服务器。',
-      tapCheck: '点击"立即检查"以查找更新。',
-      updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
-      updateReadyUnknown: '新更新已就绪。',
-      lastChecked: age => `上次检查:${age}`,
-      justNowSuffix: ' · 刚刚',
-      automaticUpdates: '自动更新',
-      automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
-      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
-      never: '从未',
-      justNow: '刚刚',
-      minAgo: count => `${count} 分钟前`,
-      hoursAgo: count => `${count} 小时前`,
-      daysAgo: count => `${count} 天前`
     },
     config: {
       none: '无',
@@ -1523,7 +1501,10 @@ export const zh = defineLocale({
       noRecommendationAction: '浏览模型',
       downloaded: '已下载',
       downloadAction: size => `下载 · ${size}`,
-      downloadProgress: (done, total) => `正在下载 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadPausedLabel: '已暂停',
+      downloadPauseAction: '暂停',
+      downloadResumeAction: '继续',
       downloadDoneToast: model => `${model} 已就绪。`,
       installDoneToast: '本地运行时已安装就绪。',
       useAction: '使用',
@@ -3257,6 +3238,10 @@ export const zh = defineLocale({
   },
 
   updates: {
+    channels: { stable: '稳定版', canary: '预览版' },
+    bundleSwapPending: '重启以完成更新',
+    bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',
+    bundleSwapPendingAction: '重启 Hermes',
     stages: {
       idle: '准备中…',
       prepare: '准备中…',
@@ -3285,6 +3270,7 @@ export const zh = defineLocale({
     availableTitleBackend: '后端有可用更新',
     availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
     availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
+    availableBodyAppInstaller: 'Hermes 新版本已就绪。Hermes 会关闭，Windows 完成更新后自动重新打开。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -3301,6 +3287,10 @@ export const zh = defineLocale({
       'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
     applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
+    applyingBodyAppInstaller: 'Hermes 会关闭，Windows 会完成更新，然后 Hermes 自动重新打开——无需任何操作。',
+    applyingCloseAppInstaller: '此窗口会关闭，Windows 完成更新后 Hermes 自动重新打开。',
+    checkUnknownTitleAppInstaller: '无法检查更新',
+    checkUnknownBodyAppInstaller: 'Windows 目前无法检查更新。重启 Hermes 时也会自动安装更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
     blockerTitle: '关闭本地预览以更新 Hermes？',
@@ -3330,6 +3320,48 @@ export const zh = defineLocale({
       failed: '后端更新失败。',
       noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
     }
+    ,
+    // Update-status overlay + version-details (mechanism-aware update UI).
+    appName: 'Hermes',
+    version: value => `版本 ${value}`,
+    versionUnavailable: '版本不可用',
+    checkNow: '立即检查',
+    seeWhatsNew: '查看更新内容',
+    releaseNotes: '发行说明',
+    onLatest: '已是最新版本。',
+    installing: '正在安装更新。',
+    cantReach: '无法连接更新服务器。',
+    tapCheck: '点击“立即检查”以查找更新。',
+    updateReady: count => `新更新已就绪（包含 ${count} 项变更）。`,
+    updateReadyUnknown: '新更新已就绪。',
+    availableBodyRelease: (tag: string) => `版本 ${tag} 已可安装。`,
+    lastChecked: age => `上次检查 ${age}`,
+    never: '从未',
+    justNow: '刚刚',
+    minAgo: count => `${count} 分钟前`,
+    hoursAgo: count => `${count} 小时前`,
+    daysAgo: count => `${count} 天前`,
+    justNowSuffix: ' · 刚刚',
+    bundleOutOfSync: '应用版本过旧',
+    bundleOutOfSyncDesc:
+      'Hermes 运行时已更新，但桌面应用仍是较旧的构建。请更新以获取最新修复。',
+    bundleOutOfSyncAction: '获取安装程序',
+    checkingShort: '检查中…',
+    releaseAvailable: tag => `版本 ${tag} 可用。`,
+    versionDetailsTitle: '版本详情',
+    versionDetailsBody:
+      '此安装在应用外部管理。请使用与安装时相同的方式更新。',
+    versionDetailsVersion: '版本',
+    versionDetailsCommit: '提交',
+    versionDetailsBuildOrigin: '构建来源',
+    versionDetailsDistribution: '发行版',
+    versionDetailsDistributionDesktop: '桌面应用 (MSIX)',
+    versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsRuntime: '运行时',
+    versionDetailsRuntimeEmbedded: '嵌入式（捆绑）',
+    versionDetailsRuntimeExternal: '外部',
+    versionDetailsInstallId: '安装 ID',
+    versionDetailsUncommittedChanges: '未提交的变更'
   },
 
   guidedGreeting: {
@@ -3357,8 +3389,14 @@ export const zh = defineLocale({
     connectExistingTitle: '连接到现有 Hermes',
     connectExistingShort: '连接现有环境',
     connectExistingDesc: '使用会话令牌或浏览器登录连接远程后端。不会启动本地安装。',
+    setupChoiceDescLocal:
+      '在这台电脑上安装 Hermes，或连接到已在运行的 Hermes 网关。',
+
     installLocalTitle: '本地安装 Hermes',
     installLocalDesc: '下载 Hermes，创建 Python 环境，并在这台电脑上运行后端。',
+    useLocalTitle: '使用这台电脑上的 Hermes',
+    useLocalDesc: '此电脑已安装 Hermes 运行时——一键启动，无需下载。',
+    bundledLocalDesc: '此应用自带 Hermes 运行时——捆绑后端即本地安装。',
     localStartUnavailable: '无法启动本地安装。请重启 Hermes Desktop 后重试。',
     remoteSetupTitle: '连接到现有 Hermes',
     remoteSetupDesc: '输入网关 URL。Hermes Desktop 会检测需要令牌还是浏览器登录。',
@@ -3612,6 +3650,7 @@ export const zh = defineLocale({
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      releaseAvailable: tag => `版本 ${tag} 可用。`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,
       connectionSsh: host => `SSH: ${host}`,

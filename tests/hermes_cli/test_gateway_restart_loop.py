@@ -385,7 +385,7 @@ class TestCronCreateLifecycleBlock:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         scripts_dir = tmp_path / ".hermes" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        (scripts_dir / "restart.sh").write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
             schedule="1h",
@@ -554,13 +554,14 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
         import tools.terminal_tool as tt
 
         script = tmp_path / "delayed-ops.sh"
-        script.write_text("#!/bin/bash\nsleep 45\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nsleep 45\nhermes gateway restart\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(command=f"/bin/bash {script}"))
@@ -572,7 +573,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "health-check.sh"
-        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nprintf 'healthy\\n'\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
@@ -690,6 +691,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == ["hermes gateway restart"]
 
+    @pytest.mark.platforms("linux")
     def test_blocks_launchctl_submit_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
@@ -697,7 +699,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         script = tmp_path / "wrapper.sh"
         script.write_text(
-            "#!/bin/bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n"
+            "#!/usr/bin/env bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n"
         )
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
@@ -710,7 +712,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "relative.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -725,11 +727,12 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "referenced script" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_blocks_executable_shebang_script(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
         script = tmp_path / "delayed.sh"
-        script.write_text("#!/bin/bash\nhermes gateway stop\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway stop\n", encoding="utf-8")
         script.chmod(0o700)
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
@@ -748,11 +751,12 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
 
+    @pytest.mark.platforms("linux")
     def test_shell_option_with_value_still_scans_script(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
         script = tmp_path / "options.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
@@ -765,7 +769,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         import tools.terminal_tool as tt
 
         script = tmp_path / "nested.sh"
-        script.write_text("#!/bin/bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -781,13 +785,14 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.platforms("linux")
     def test_nested_wrapper_script_is_scanned(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
         inner = tmp_path / "inner.sh"
-        inner.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        inner.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
         outer = tmp_path / "outer.sh"
-        outer.write_text("#!/bin/bash\n/bin/bash inner.sh\n", encoding="utf-8")
+        outer.write_text("#!/usr/bin/env bash\n/bin/bash inner.sh\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -801,6 +806,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.platforms("linux")
     def test_non_regular_referenced_script_fails_closed(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -834,12 +840,13 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 0
         assert calls == [command]
 
+    @pytest.mark.platforms("linux")
     def test_safe_referenced_script_passes_through(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
         calls = []
         script = tmp_path / "health-check.sh"
-        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nprintf 'healthy\\n'\n", encoding="utf-8")
 
         class _FakeEnv:
             env = {}
@@ -886,6 +893,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 class TestLifecycleGuardModule:
     """Direct tests for cron.lifecycle_guard.check_gateway_lifecycle."""
 
+    @pytest.mark.platforms("linux")
     def test_dot_operator_sourced_script_is_scanned(self, tmp_path):
         """`. ./script.sh` must reach the referenced-script scan.
 
@@ -898,12 +906,13 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is True
         )
 
+    @pytest.mark.platforms("linux")
     def test_nul_padded_script_is_still_scanned(self, tmp_path):
         """A NUL byte in a *text* script must not disable the scan.
 
@@ -916,19 +925,20 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "padded.sh"
-        script.write_bytes(b"#!/bin/bash\n# pad\x00\nhermes gateway restart\n")
+        script.write_bytes(b"#!/usr/bin/env bash\n# pad\x00\nhermes gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is True
         )
 
+    @pytest.mark.platforms("linux")
     def test_source_builtin_sourced_script_is_scanned(self, tmp_path):
         """The `source` spelling must stay blocked (it already was)."""
         from cron.lifecycle_guard import (
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"source {script}")
             is True
@@ -941,12 +951,13 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "activate.sh"
-        script.write_text("#!/bin/bash\nexport PATH=/usr/bin:$PATH\n")
+        script.write_text("#!/usr/bin/env bash\nexport PATH=/usr/bin:$PATH\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f". {script}")
             is False
         )
 
+    @pytest.mark.platforms("linux")
     def test_nul_padded_script_without_shebang_is_scanned(self, tmp_path):
         """Same bypass without a shebang — bash still runs it, so still scan.
 
@@ -997,6 +1008,7 @@ class TestLifecycleGuardModule:
                 is False
             )
 
+    @pytest.mark.platforms("linux")
     def test_oversized_nul_bearing_text_still_fails_closed(self, tmp_path):
         """An oversized *text* script must keep failing closed.
 
@@ -1007,7 +1019,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "huge.sh"
-        script.write_bytes(b"#!/bin/bash\n# \x00" + b"x" * (1024 * 1024 + 64) + b"\n")
+        script.write_bytes(b"#!/usr/bin/env bash\n# \x00" + b"x" * (1024 * 1024 + 64) + b"\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is True
@@ -1019,7 +1031,7 @@ class TestLifecycleGuardModule:
             contains_gateway_lifecycle_command_or_referenced_script,
         )
         script = tmp_path / "safe.sh"
-        script.write_bytes(b"#!/bin/bash\necho hello\n")
+        script.write_bytes(b"#!/usr/bin/env bash\necho hello\n")
         assert (
             contains_gateway_lifecycle_command_or_referenced_script(f"bash {script}")
             is False
@@ -1039,7 +1051,7 @@ class TestLifecycleGuardModule:
     def test_script_with_command_raises(self, tmp_path, monkeypatch):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "restart.sh"
-        script.write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
@@ -1047,7 +1059,7 @@ class TestLifecycleGuardModule:
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "persistent.sh"
         script.write_text(
-            "#!/bin/bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n"
+            "#!/usr/bin/env bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n"
         )
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
@@ -1063,7 +1075,7 @@ class TestLifecycleGuardModule:
     ):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "persistent.sh"
-        script.write_text(f"#!/bin/bash\n{line}\n", encoding="utf-8")
+        script.write_text(f"#!/usr/bin/env bash\n{line}\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 
@@ -1213,11 +1225,12 @@ class TestLifecycleGuardModule:
         a .sh script that itself invokes a lifecycle command is caught."""
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "wrapper.sh"
-        script.write_text("#!/bin/bash\n./deploy.sh\n", encoding="utf-8")
-        (tmp_path / "deploy.sh").write_text("#!/bin/bash\nhermes gateway stop\n", encoding="utf-8")
+        script.write_text("#!/usr/bin/env bash\n./deploy.sh\n", encoding="utf-8")
+        (tmp_path / "deploy.sh").write_text("#!/usr/bin/env bash\nhermes gateway stop\n", encoding="utf-8")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily ops", str(script))
 
+    @pytest.mark.require_symlinks
     def test_cloud_backed_symlink_fails_closed_without_opening_target(
         self, tmp_path, monkeypatch
     ):
@@ -1260,6 +1273,7 @@ class TestLifecycleGuardModule:
             str(launcher)
         ) is True
 
+    @pytest.mark.platforms("linux")
     def test_third_party_cloudstorage_path_fails_closed_without_opening(
         self, tmp_path, monkeypatch
     ):
@@ -1489,6 +1503,7 @@ class TestLifecycleGuardModule:
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------
 
+@pytest.mark.platforms("linux")
 class TestDotSourceIsScannedLikeSource:
     """`.` and `source` are the same POSIX builtin and must scan alike.
 
@@ -1547,6 +1562,7 @@ class TestDotSourceIsScannedLikeSource:
         assert self._scan(f". {clean}", cwd=str(tmp_path)) is False
 
 
+@pytest.mark.platforms("linux")
 class TestTransparentWrapperPrefixes:
     """`sudo`/`env`/`nohup`/... exec their argument tail, so the command that
     actually runs sits further right. Reading only the first token made the
@@ -1853,6 +1869,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
             lambda: inside_gateway,
         )
 
+    @pytest.mark.platforms("linux")
     def test_remote_backend_script_read_uses_env_execute(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 
@@ -1867,7 +1884,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
             def execute(self, command, **kwargs):
                 calls.append(command)
                 if "head -c" in command and "/remote/workspace/remote.sh" in command:
-                    return {"output": "#!/bin/bash\nhermes gateway restart\n", "returncode": 0}
+                    return {"output": "#!/usr/bin/env bash\nhermes gateway restart\n", "returncode": 0}
                 return {"output": "", "returncode": 0}
 
         fake_env = _RemoteEnv()
@@ -1894,8 +1911,8 @@ class TestCronCreateLifecycleBlockExtra:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         scripts_dir = tmp_path / ".hermes" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "inner.sh").write_text("#!/bin/bash\nhermes gateway restart\n", encoding="utf-8")
-        (scripts_dir / "outer.sh").write_text("#!/bin/bash\n/bin/bash inner.sh\n", encoding="utf-8")
+        (scripts_dir / "inner.sh").write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
+        (scripts_dir / "outer.sh").write_text("#!/usr/bin/env bash\n/bin/bash inner.sh\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
             schedule="1h",

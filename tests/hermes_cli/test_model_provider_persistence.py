@@ -44,7 +44,7 @@ class TestSaveModelChoiceAlwaysDict:
 
         _save_model_choice("kimi-k2.5")
 
-        import yaml
+        import hermes_yaml as yaml
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")
         assert isinstance(model, dict), (
@@ -102,7 +102,7 @@ class TestProviderPersistsAfterModelSave:
              patch("builtins.input", return_value=""):
             _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
 
-        import yaml
+        import hermes_yaml as yaml
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"

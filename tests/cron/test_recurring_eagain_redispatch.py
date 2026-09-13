@@ -47,6 +47,8 @@ def wedge_env(tmp_path, monkeypatch):
     (hermes_home / "cron" / "output").mkdir()
     (hermes_home / "scripts").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("cron.scheduler._worktree_maintenance_repos", lambda: [])
 
     import cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
@@ -80,6 +82,7 @@ class TestEAGAINRecurringRedispatches:
         """
         import cron.scheduler as sched_mod
         state = {"n": 0}
+        real_popen = sched_mod.subprocess.Popen
 
         class _OkProc:
             def __init__(self, argv, **kwargs):
@@ -95,6 +98,8 @@ class TestEAGAINRecurringRedispatches:
                 return 0
 
         def fake_popen(argv, **kwargs):
+            if str(env["home"] / "scripts" / "probe.py") not in argv:
+                return real_popen(argv, **kwargs)
             state["n"] += 1
             if state["n"] == 1:
                 raise OSError(11, "Resource temporarily unavailable")

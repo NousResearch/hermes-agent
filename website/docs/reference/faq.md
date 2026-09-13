@@ -6,6 +6,10 @@ description: "Frequently asked questions and solutions to common issues with Her
 
 # FAQ & Troubleshooting
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Quick answers and fixes for the most common questions and issues.
 
 ---
@@ -28,7 +32,7 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [Environment Variables](./environment-variables.md) reference for all provider keys.
 
-### Does it work on Windows/Android/Termux/my plataform??
+### Does it work on Windows/Android/my platform??
 See **[Platform Support](../getting-started/platform-support.md)** for the full platform availability matrix.
 
 ### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
@@ -144,20 +148,16 @@ ls ~/.local/bin/hermes
 The installer adds `~/.local/bin` to your PATH. If you use a non-standard shell config, add `export PATH="$HOME/.local/bin:$PATH"` manually.
 :::
 
-#### Python version too old
+#### Unsupported Python version
 
-**Cause:** Hermes requires Python 3.11 or newer.
+Hermes requires **Python 3.14** (`>=3.14,<3.15`), not an arbitrary newer version.
+The installer and packaged distributions provide their pinned interpreter.
 
-**Solution:**
-```bash
-python3 --version   # Check current version
-
-# Install a newer Python
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
-```
-
-The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
+For a manual source environment, use the
+[development setup](../developer-guide/contributing.md#development-setup).
+Do not replace the interpreter inside an installed app or container.
+For a managed-install error, run `hermes doctor` and use that installation's
+[update method](../getting-started/updating.md).
 
 #### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
 
@@ -437,7 +437,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install core messaging gateway dependencies
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080
@@ -563,7 +563,7 @@ hermes chat --continue
 **Solution:**
 ```bash
 # Ensure MCP dependencies are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 # For npm-based servers, ensure Node.js is available
 node --version
@@ -770,7 +770,9 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
    ```bash
    hermes backup
    ```
-   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+   This saves a zip archive at `~/hermes-backup-<timestamp>.zip`.
+   The full backup covers configuration, credentials, memories, skills, sessions,
+   and profiles under the Hermes data root. It is not an application or runtime image.
 
 3. Copy the zip to the new machine and import it:
    ```bash
@@ -797,15 +799,31 @@ hermes profile import ./work-backup.tar.gz work
 
 The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
 
-### `hermes backup` vs `hermes profile export`
+### `hermes backup` vs `hermes profile export` {#hermes-backup-vs-hermes-profile-export}
 
 | Feature | `hermes backup` | `hermes profile export` |
 | :--- | :--- | :--- |
 | **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
-| **Scope** | Global (entire `~/.hermes` directory) | Local (single profile directory) |
+| **Scope** | Hermes data root, with the exclusions listed below | Single profile directory |
 | **Includes** | All profiles, global config, API keys, sessions | Single profile: SOUL.md, memories, sessions, skills |
 | **Credentials** | **Included** (`.env` and `auth.json`) | **Excluded** (stripped for safe sharing) |
 | **Format** | `.zip` | `.tar.gz` |
+
+The full backup excludes:
+
+- The source checkout, dependency environments, and downloaded tools, models, and runtimes.
+- Build caches, checkpoints, previous backups, and quick snapshots.
+- Browser profiles, including copies of real-browser credentials.
+- Bytecode, SQLite sidecars, `gateway.pid`, `cron.pid`, and `.backup.lock`.
+
+`hermes backup --quick` saves selected state files instead of a full archive.
+It is not a replacement for the full backup before a machine migration.
+
+Full backups report files that fail to copy. An archive can therefore exist
+with missing data. Review the skipped-file report before you remove the source installation.
+Restored package declarations let PM download dependencies again. Bytecode and
+SQLite sidecars regenerate locally. The exclusions do not remove `.env` or
+`auth.json` from the full backup.
 
 **Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
 ```bash

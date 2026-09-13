@@ -33,19 +33,16 @@ When the venv is partially refreshed, or when one of those env vars points at a 
 
 ## Recovery
 
-When the guard fires during agent init, the user sees a message like:
-
-```text
-Failed to initialize OpenAI client: SSL_CERT_FILE points to a missing CA bundle: C:\path\to\missing\cacert.pem
-Repair: python -m pip install --force-reinstall certifi openai httpx
-If you configured a custom corporate CA bundle, fix or unset the broken CA bundle environment variable.
-```
-
-For a normal corrupted Hermes venv, reinstall the affected client dependencies:
+If the guard reports a broken custom CA path, fix or unset the named variable.
+For damaged Hermes dependencies, ask PM to rebuild the recorded dependency set:
 
 ```bash
-python -m pip install --force-reinstall certifi openai httpx
+hermes pm repair
 ```
+
+Restart Hermes after a successful repair. Do not modify a selected generation
+with raw pip or uv commands. For a Nix or sealed installation, rebuild or
+reinstall through its package owner.
 
 For a custom/corporate CA setup, fix the env var so it points at a real PEM bundle, or unset it if Hermes should use the bundled `certifi` store.
 

@@ -21,13 +21,16 @@
 #              hermes-desktop-app-update  capture `hermes desktop`'s spawn,
 #                                         launch the spec under Playwright,
 #                                         click Update now
-#              hermes-update              CLI update from the installed venv
+#              hermes-update              CLI update from the installed command
 #              installer-script[+desktop] re-run the current install one-liner
 #
 # Usage:
 #   tests/install/macos-desktop-e2e.sh --phase stage|install|update|all
 #     --update-method open-app-update|hermes-desktop-app-update
 #     [--install-ref REF] [--dmg-url URL]
+#     [--update-ref REF]   update target, default HEAD; pass the next
+#                          release tag for a stable-to-stable leg (label the
+#                          leg stable-to-stable only when both refs are tags)
 #
 # Requires a clean full-history checkout with release tags fetched, on a
 # macOS host with a window server (the GitHub macos runners qualify).
@@ -42,6 +45,7 @@ export TS_BASE=$SECONDS
 PHASE="all"
 UPDATE_METHOD=""
 INSTALL_REF=""
+UPDATE_REF=""
 DMG_URL="https://hermes-assets.nousresearch.com/Hermes-Setup.dmg"
 PLAYWRIGHT_VERSION="1.58.2"
 while [ "$#" -gt 0 ]; do
@@ -55,6 +59,9 @@ while [ "$#" -gt 0 ]; do
     --install-ref)
       [ "$#" -ge 2 ] || { echo 'error: --install-ref needs a value' >&2; exit 1; }
       INSTALL_REF="$2"; shift 2 ;;
+    --update-ref)
+      [ "$#" -ge 2 ] || { echo 'error: --update-ref needs a value' >&2; exit 1; }
+      UPDATE_REF="$2"; shift 2 ;;
     --dmg-url)
       [ "$#" -ge 2 ] || { echo 'error: --dmg-url needs a value' >&2; exit 1; }
       DMG_URL="$2"; shift 2 ;;
@@ -84,6 +91,10 @@ ok()   { printf '  OK %s\n' "$*"; }
 fail() { printf 'E2E ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=../e2e-assets/ts-prefix.sh
 source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { cat; }
+# shellcheck source=../install/e2e-assets/preserve-plugins.sh
+source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
+# shellcheck source=e2e-assets/source-driver.sh
+source "$(dirname "$0")/e2e-assets/source-driver.sh"
 log_group() {
   printf '::group::%s\n' "$1"
   cat "$2"
@@ -173,10 +184,20 @@ phase_stage() {
     old_ref="$(git -C "$REPO_ROOT" tag --list 'v[0-9]*' --sort=-creatordate | head -1)"
     [ -n "$old_ref" ] || fail "no release tags in the checkout to use as OLD"
   fi
-  local old_sha head_sha
+  local old_sha head_sha target_sha target_label
   old_sha="$(git -C "$REPO_ROOT" rev-parse "${old_ref}^{commit}")"
   head_sha="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-  [ "$old_sha" != "$head_sha" ] || fail "OLD ($old_ref) IS HEAD; no update would be available"
+
+  # The update target defaults to HEAD; --update-ref selects any other ref
+  # so a stable-to-stable leg can target the next release tag instead of
+  # the tip. Only call this leg stable-to-stable when BOTH refs are tags.
+  target_label="HEAD"
+  target_sha="$head_sha"
+  if [ -n "${UPDATE_REF:-}" ]; then
+    target_sha="$(git -C "$REPO_ROOT" rev-parse "${UPDATE_REF}^{commit}")"
+    target_label="$UPDATE_REF"
+  fi
+  [ "$old_sha" != "$target_sha" ] || fail "OLD ($old_ref) IS the update target ($target_label); no update would be available"
 
   git clone --bare --quiet "$REPO_ROOT" "$SERVE_REPO"
   git -C "$SERVE_REPO" update-ref refs/heads/main "$old_sha"
@@ -187,18 +208,17 @@ phase_stage() {
   mkdir -p "$HERMES_HOME"
   touch "$HERMES_HOME/.skip_upstream_prompt"
 
-  printf 'OLD_SHA=%s\nOLD_REF=%s\nHEAD_SHA=%s\n' "$old_sha" "$old_ref" "$head_sha" > "$STATE"
-  ok "serve.git main = $old_sha ($old_ref), update target $head_sha"
+  printf 'OLD_SHA=%s\nOLD_REF=%s\nHEAD_SHA=%s\nTARGET_SHA=%s\nTARGET_LABEL=%s\n' \
+    "$old_sha" "$old_ref" "$head_sha" "$target_sha" "$target_label" > "$STATE"
+  ok "serve.git main = $old_sha ($old_ref), update target $target_sha ($target_label)"
 }
 
 find_installed_app() {
-  # The bootstrap installs the packaged app; look where the product puts it
-  # (the checkout's release dir), plus /Applications for a copied bundle.
+  # Require this installation's app, never an unrelated /Applications copy.
   local cand
   for cand in \
     "$INSTALL_DIR/apps/desktop/release/mac-arm64/Hermes.app" \
-    "$INSTALL_DIR/apps/desktop/release/mac/Hermes.app" \
-    "/Applications/Hermes.app"; do
+    "$INSTALL_DIR/apps/desktop/release/mac/Hermes.app"; do
     [ -d "$cand" ] && { printf '%s' "$cand"; return 0; }
   done
   return 1
@@ -248,9 +268,11 @@ phase_install() {
   got="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
   [ "$got" = "$OLD_SHA" ] || fail "installed checkout is $got, expected OLD ($OLD_SHA)"
   ok "checkout is OLD ($OLD_SHA)"
-  local hermes="$INSTALL_DIR/venv/bin/hermes"
-  [ -x "$hermes" ] || fail "no hermes console script at $hermes"
-  "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-old.log" || fail "hermes --version failed after install"
+  local hermes
+  hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after install"
+  python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$hermes" --desktop present \
+    || fail "read-only verification failed after install"
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-old.log" || fail "hermes --version failed after install"
   ok "hermes --version works: $(head -c 120 "$LOG_DIR/version-old.log" | tr -d '\n')"
   find_installed_app >/dev/null || fail "no installed Hermes.app after the dmg bootstrap"
   ok "installed app: $(find_installed_app)"
@@ -306,12 +328,12 @@ run_playwright_update() {
   local spec="$1"
   local pw_dir
   pw_dir="$(ensure_playwright)"
-  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/window-input.cjs" "$pw_dir/"
+  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$pw_dir/"
   local rc=0
   (cd "$pw_dir" && node launch-from-spec.mjs \
     --spec "$spec" \
     --result "$HERMES_HOME/.hermes-update-result.json" \
-    --expect-sha "$HEAD_SHA" \
+    --expect-sha "$TARGET_SHA" \
     --repo-dir "$INSTALL_DIR" 2>&1 \
     | ts_prefix > "$LOG_DIR/app-update.log") || rc=$?
   log_group "app update (Playwright) transcript" "$LOG_DIR/app-update.log"
@@ -322,9 +344,12 @@ phase_update() {
   # shellcheck disable=SC1090
   . "$STATE"
   arm_redirect
-  step "advancing served main to HEAD"
-  git -C "$SERVE_REPO" update-ref refs/heads/main "$HEAD_SHA"
-  ok "serve.git main = $HEAD_SHA"
+  # Snapshot every plugin tree BEFORE the upgrade moves anything: fixtures
+  # seeded here must survive through the verify after the update lands.
+  preserve_before_upgrade
+  step "advancing served main to $TARGET_LABEL ($TARGET_SHA)"
+  git -C "$SERVE_REPO" update-ref refs/heads/main "$TARGET_SHA"
+  ok "serve.git main = $TARGET_SHA"
 
   step "updating via $UPDATE_METHOD"
   # The app must boot configured or the onboarding overlay (a fullscreen
@@ -338,9 +363,11 @@ phase_update() {
     hermes-update)
       # The CLI route a dmg user takes from a terminal. `--yes` reaches the
       # update subcommand only in later releases; ask the installed hermes.
-      local hermes="$INSTALL_DIR/venv/bin/hermes"
+      local hermes help
+      hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
       local update_cmd=("$hermes" update)
-      if "$hermes" update --help 2>&1 | grep -qF -- --yes; then
+      help="$("$hermes" update --help 2>&1)" || fail "installed update --help failed: $help"
+      if grep -qF -- --yes <<< "$help"; then
         update_cmd=("$hermes" update --yes)
       fi
       local rc=0
@@ -350,10 +377,10 @@ phase_update() {
       ;;
     installer-script)
       # A dmg user re-running today's install one-liner.
-      run_installer "$HEAD_SHA" head
+      run_installer "$TARGET_SHA" head
       ;;
     installer-script+desktop)
-      run_installer "$HEAD_SHA" head desktop
+      run_installer "$TARGET_SHA" head desktop
       # The desktop stage is this leg's claim: the rebuilt app must exist.
       head_app=""
       for cand in \
@@ -386,7 +413,8 @@ PYEOF
       ;;
     hermes-desktop-app-update)
       # The product's own launch, captured at its spawn site.
-      local hermes="$INSTALL_DIR/venv/bin/hermes"
+      local hermes
+      hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed desktop command"
       local spec="$WORK_ROOT/launch-spec.json"
       local rc=0
       (cd "$INSTALL_DIR" && \
@@ -403,8 +431,8 @@ PYEOF
 
   local got
   got="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
-  [ "$got" = "$HEAD_SHA" ] || fail "checkout is $got, expected HEAD ($HEAD_SHA)"
-  ok "checkout landed on HEAD ($HEAD_SHA)"
+  [ "$got" = "$TARGET_SHA" ] || fail "checkout is $got, expected $TARGET_LABEL ($TARGET_SHA)"
+  ok "checkout landed on $TARGET_LABEL ($TARGET_SHA)"
 
   # Install-side state BEFORE the post-update smoke: on app-update legs the
   # updater's own transcript is streamed into the app UI and otherwise lost,
@@ -423,10 +451,15 @@ PYEOF
   ls -la "$INSTALL_DIR/venv" > "$ildest/venv-ls.txt" 2>/dev/null || true
   ok "collected install-side logs to $ildest"
 
-  "$INSTALL_DIR/venv/bin/hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-head.log" \
+  local command
+  command="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after update"
+  python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$command" --desktop present \
+    || fail "read-only verification failed after update; no repair was attempted"
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$command" --version 2>&1 | ts_prefix > "$LOG_DIR/version-head.log" \
     || fail "hermes --version failed after update"
   ok "hermes --version works post-update"
-  step "PASS: $OLD_REF -> HEAD via $UPDATE_METHOD"
+  preserve_after_upgrade
+  step "PASS: $OLD_REF -> $TARGET_LABEL via $UPDATE_METHOD"
 }
 
 case "$PHASE" in

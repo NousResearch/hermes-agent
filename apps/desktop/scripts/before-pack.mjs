@@ -77,15 +77,10 @@ export function cleanStaleAppOutDir(appOutDir) {
 }
 
 /**
- * Windows rollback material (#69179): before wiping the previous unpacked
- * tree, preserve it as `<appOutDir>.bak` — but ONLY when it holds the product
- * exe (i.e. it is a previously-working build, not the corrupted partial state
- * cleanStaleAppOutDir exists to remove). If the fresh pack then produces a
- * Hermes.exe that Windows can't load (truncated PE from a corrupt cached
- * Electron zip, wrong arch), the updater's integrity gate in
- * `hermes desktop --build-only` (hermes_cli/main.py
- * `_ensure_desktop_exe_launchable`) restores this .bak instead of leaving the
- * user with "This app can't run on your computer".
+ * Keep manual recovery material for raw in-place Windows packs (#69179).
+ * Preserve `<appOutDir>.bak` only when the output holds the product executable.
+ * The CLI builds in a separate staging directory and rejects invalid output
+ * before promotion. Its live-app transaction does not consume this backup.
  *
  * Returns true when the tree was preserved (appOutDir no longer exists), false
  * when there was nothing worth preserving (caller falls through to the wipe).

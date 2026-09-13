@@ -261,7 +261,7 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_distinct_profiles_share_one_claude_refresh_without_duplicate_post(
     hermes_home,
 ):

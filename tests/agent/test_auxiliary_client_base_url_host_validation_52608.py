@@ -23,7 +23,7 @@ class TestTryAnthropicBaseUrlHostValidation:
 
     def test_openrouter_base_url_does_not_leak_into_auxiliary(self, tmp_path, monkeypatch):
         """cfg.model.base_url=https://openrouter.ai/api/v1 must NOT override aux base_url."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
@@ -58,7 +58,7 @@ class TestTryAnthropicBaseUrlHostValidation:
 
     def test_anthropic_default_host_is_preserved(self, tmp_path, monkeypatch):
         """The common case (operator sets model.base_url to api.anthropic.com) must still apply."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
@@ -90,7 +90,7 @@ class TestTryAnthropicBaseUrlHostValidation:
 
     def test_openai_base_url_does_not_leak(self, tmp_path, monkeypatch):
         """Generic non-Anthropic host must not be applied as auxiliary base_url."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
@@ -125,7 +125,7 @@ class TestTryAnthropicBaseUrlHostValidation:
 
     def test_empty_base_url_falls_back_to_default(self, tmp_path, monkeypatch):
         """Empty model.base_url must not crash and must fall back to default."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
@@ -159,7 +159,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         """A gateway exposing the Messages protocol under a ``/anthropic`` suffix
         must be honored — the same convention the primary path already trusts —
         so auxiliary/fallback calls hit the configured endpoint, not the default."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
@@ -204,7 +204,7 @@ class TestTryAnthropicBaseUrlHostValidation:
 
     def test_anthropic_host_with_path_is_preserved(self, tmp_path, monkeypatch):
         """api.anthropic.com with a path suffix must still pass the host check."""
-        import yaml
+        import hermes_yaml as yaml
         from agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({

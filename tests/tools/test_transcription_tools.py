@@ -1203,12 +1203,14 @@ class TestRunCommandSttIdleTimeout:
         from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
+        # Ticks span >2s so the idle deadline MUST be reset by progress: a
+        # one-shot timeout of 2.0s would kill the child before it exits.
         script.write_text(
             "\n".join([
                 "import sys, time",
-                "for idx in range(4):",
+                "for idx in range(6):",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.04)",
+                "    time.sleep(0.6)",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
@@ -1216,7 +1218,7 @@ class TestRunCommandSttIdleTimeout:
 
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.1,
+            timeout=2.0,
         )
 
         assert result.returncode == 0
@@ -1241,7 +1243,7 @@ class TestRunCommandSttIdleTimeout:
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_stt(
                 self._shell_command(sys.executable, "-u", str(script)),
-                timeout=0.1,
+                timeout=2.0,
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")

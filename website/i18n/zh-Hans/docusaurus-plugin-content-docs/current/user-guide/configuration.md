@@ -6,6 +6,9 @@ description: "配置 Hermes Agent — config.yaml、providers、模型、API 密
 
 # 配置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 所有设置均存储在 `~/.hermes/` 目录中，便于访问。
 
 ## 目录结构
@@ -248,7 +251,7 @@ terminal:
 **必需安装：** 安装可选 SDK 扩展：
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 ```
 
 **必需认证：** 使用 `VERCEL_TOKEN`、`VERCEL_PROJECT_ID` 和 `VERCEL_TEAM_ID` 三者全部配置访问令牌认证。这是在 Render、Railway、Docker 及类似宿主上部署和正常长期运行 Hermes 进程的受支持设置。
@@ -1338,7 +1341,7 @@ stt:
 
 Provider 行为：
 
-- `local` 使用在您机器上运行的 `faster-whisper`。使用 `pip install faster-whisper` 单独安装。静音幻觉防护默认开启:Silero VAD 过滤器让静音/噪声不会进入 Whisper,跨窗口条件预测被禁用,并且模型自己标记为"很可能不是语音"且低置信度的片段会被丢弃。设置 `stt.local.vad: false` 可用原始行为转录非语音音频(音乐、环境声)。
+- `local` 使用在您机器上运行的 `faster-whisper`。使用 `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"` 单独安装。静音幻觉防护默认开启:Silero VAD 过滤器让静音/噪声不会进入 Whisper,跨窗口条件预测被禁用,并且模型自己标记为"很可能不是语音"且低置信度的片段会被丢弃。设置 `stt.local.vad: false` 可用原始行为转录非语音音频(音乐、环境声)。
 - `groq` 使用 Groq 的 Whisper 兼容端点，读取 `GROQ_API_KEY`。
 - `openai` 使用 OpenAI 语音 API，读取 `VOICE_TOOLS_OPENAI_KEY`。
 
@@ -1449,7 +1452,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
+    command: hermes update
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader

@@ -36,9 +36,14 @@ def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
     global _anthropic_sdk
     if _anthropic_sdk is ...:
-        with suppress(Exception):  # ImportError or FeatureUnavailable — fall through to the import below
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("provider.anthropic", prompt=False)
+        try:
+            from pm import ensure_import
+            ensure_import("anthropic")
+        except ImportError:
+            pass
+        except Exception:
+            # InstallError — fall through to ImportError handling below
+            pass
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -51,7 +56,8 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
     if sdk is None:
-        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: pip install 'anthropic>=0.39.0'")
+        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
+                          "python -c \"from pm import sync_venv; sync_venv(['anthropic'], explicit=True)\"")
     return sdk
 
 
@@ -422,7 +428,7 @@ def build_anthropic_bedrock_client(region: str):
     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+        raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
     # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
     # launch profile's process env); unscoped passes nothing and keeps the default chain.
     scoped = scoped_aws_session_kwargs()

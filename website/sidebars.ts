@@ -28,6 +28,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
+        'user-guide/switching-to-source',
         'user-guide/configuration',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
@@ -835,6 +836,7 @@ const sidebars: SidebarsConfig = {
           label: 'Command Reference',
           items: [
             'reference/cli-commands',
+            'reference/package-management',
             'reference/slash-commands',
             'reference/profile-commands',
           ],

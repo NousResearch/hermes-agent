@@ -14,16 +14,24 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run: force the flake-check lane regardless of the classifier.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# PR runs collapse to the newest commit. A push to main is never cancelled:
-# each one saves the store cache that later PRs restore from, so cancelling a
-# merge would leave the next PR to build from nothing.
+# A workflow_call run (stable release) is never cancelled: its group uses
+# github.run_id so a parent rerun cannot kill this child mid-flight, and
+# cancel-in-progress is false there — each run saves the store cache that
+# later PRs restore from.
 concurrency:
-  group: nix-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: nix-${{ inputs.release == true && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true && github.event_name == 'pull_request' }}
 
 jobs:
   # A `paths:` filter cannot gate this workflow correctly. The flake packages
@@ -39,6 +47,10 @@ jobs:
       nix: ${{ steps.classify.outputs.nix }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
 
       - name: Detect affected areas
         id: classify
@@ -49,7 +61,9 @@ jobs:
   flake-check:
     name: nix flake check
     needs: [detect]
-    if: needs.detect.outputs.nix == 'true'
+    # Release runs force the lane: a stable candidate must build the flake
+    # no matter what its diff touches.
+    if: needs.detect.outputs.nix == 'true' || inputs.release == true
     # The build compiles the package and its whole dependency closure, so this
     # takes minutes and not seconds when the cache misses. `nix flake check`
     # builds 21 checks, and --max-jobs defaults to the core count. It uses the
@@ -59,6 +73,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0

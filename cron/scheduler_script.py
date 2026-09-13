@@ -105,7 +105,7 @@ def _get_session_db_timeout() -> float:
 
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     try:
-        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return {}
     return {
@@ -129,6 +129,18 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         sibling = interpreter.with_name("python.exe")
         if sibling.exists():
             interpreter = sibling
+
+    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli.runtime_paths import selected_venv, site_packages as dependency_site
+
+    repo = Path(__file__).resolve().parents[1]
+    managed_python = resolve_store_python(repo)
+    if managed_python is not None:
+        # A packaged caller may hand us the old venv launcher; select bytes
+        # from the install record rather than interpreting relocated pyvenv.cfg.
+        dependencies = dependency_site(selected_venv(repo))
+
+        return str(managed_python), {"PYTHONPATH": os.pathsep.join([str(repo), str(dependencies)])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
     home = cfg.get("home", "")
@@ -235,7 +247,9 @@ def _windows_cron_bootstrap_argv(
     the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
     editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
     ``__file__``/``sys.path[0]`` semantics). Plain invocation if the venv is unresolvable."""
-    site_packages = _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
+    site_packages = next((Path(item) for item in env_overlay.get("PYTHONPATH", "").split(os.pathsep)
+                          if Path(item).name == "site-packages"),
+                         _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages")
     if not site_packages.is_dir():
         # Warn: silent fallback would make "editable installs invisible" undiagnosable.
         logger.warning(

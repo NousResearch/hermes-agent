@@ -31,6 +31,34 @@ def test_workers_are_daemon_threads():
         pool.shutdown(wait=True)
 
 
+def test_initializer_runs_on_each_worker_before_tasks():
+    local = threading.local()
+    ready = threading.Barrier(2, timeout=10)
+    initialized = []
+    lock = threading.Lock()
+    marker = object()
+
+    def initialize(value):
+        local.value = value
+        with lock:
+            initialized.append(threading.current_thread())
+
+    def task():
+        ready.wait()
+        return local.value, threading.current_thread()
+
+    with DaemonThreadPoolExecutor(max_workers=2, initializer=initialize, initargs=(marker,)) as pool:
+        futures = [pool.submit(task) for _ in range(2)]
+        results = [future.result(timeout=10) for future in futures]
+
+    workers = {worker for _, worker in results}
+    assert len(workers) == 2
+    assert set(initialized) == workers
+    assert len(initialized) == len(workers)
+    assert all(value is marker for value, _ in results)
+    assert all(worker.daemon and worker not in _threads_queues for worker in workers)
+
+
 def test_idle_worker_reuse():
     pool = DaemonThreadPoolExecutor(max_workers=4)
     try:
@@ -70,27 +98,29 @@ def test_wedged_worker_does_not_block_interpreter_exit():
 
 
 def test_submit_propagates_caller_contextvars():
-    """Pool workers inherit contextvars set in the submitting context.
-
-    Stdlib ThreadPoolExecutor snapshots the caller's context with
-    ``copy_context()``; some bundled CPython runtime builds strip that, so
-    the daemon pool restores it explicitly.  Without the fix this returns
-    the default because the worker runs in a bare context.
-    """
+    """A reused worker must not mix profile scopes or leak task mutations."""
     from contextvars import ContextVar
 
     var = ContextVar("daemon_pool_test_var", default="unset")
 
-    pool = DaemonThreadPoolExecutor(max_workers=1)
-    try:
-        token = var.set("hello")
-        try:
-            seen = pool.submit(var.get).result(timeout=10)
-        finally:
-            var.reset(token)
-        assert seen == "hello"
-    finally:
-        pool.shutdown(wait=True)
+    def read_and_mutate():
+        seen = var.get()
+        var.set("worker mutation")
+        return seen, threading.current_thread()
+
+    with DaemonThreadPoolExecutor(max_workers=1) as pool:
+        futures = []
+        for profile in ("first", "second"):
+            token = var.set(profile)
+            try:
+                futures.append(pool.submit(read_and_mutate))
+            finally:
+                var.reset(token)
+        results = [future.result(timeout=10) for future in futures]
+        assert [seen for seen, _ in results] == ["first", "second"]
+        assert results[0][1] is results[1][1]
+        assert pool.submit(var.get).result(timeout=10) == "unset"
+        assert var.get() == "unset"
 
 
 def _repo_root():

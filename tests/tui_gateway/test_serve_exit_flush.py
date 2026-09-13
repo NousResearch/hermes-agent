@@ -67,6 +67,7 @@ def _restore_signal_state(prev_handlers):
     server._exit_flush_handlers_installed = False
 
 
+@pytest.mark.platforms("posix")
 def test_sigterm_flushes_populated_session_into_state_db(
     registered_session, tmp_path, monkeypatch
 ):
@@ -111,6 +112,7 @@ def test_sigterm_flushes_populated_session_into_state_db(
     assert agent.flush_calls, "SIGTERM must flush in-memory sessions"
     rows = db.get_messages(sid)
     assert any("survive the kill" in str(r.get("content", "")) for r in rows)
+    db.close()
 
 
 def test_exit_flush_is_bounded(registered_session):

@@ -57,7 +57,7 @@ _get_command_stt_output_format = partial(_command_output_format, formats=COMMAND
 
 def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
     """Transcript: non-empty output file > non-empty stdout (curl one-liners) > RuntimeError. JSON is returned raw."""
-    content = (output_path.read_bytes().decode("utf-8", errors="replace").strip()
+    content = (output_path.read_text(encoding="utf-8-sig", errors="replace").strip()
                if output_path.exists() else "")
     if content or (stdout or "").strip():
         return content or stdout.strip()

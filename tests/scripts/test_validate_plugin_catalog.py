@@ -1,7 +1,7 @@
 """Behavior tests for scripts/validate_plugin_catalog.py.
 
 The script is the no-install structural validator used by the plugin-catalog
-admission CI: it must run with only stdlib + pyyaml, take file paths or a
+admission CI: it must run with only stdlib + ruamel.yaml, take file paths or a
 directory, exit 0/1, and support --json machine output. These tests exercise
 the CLI contract via subprocess (the same way CI invokes it).
 """
@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "validate_plugin_catalog.py"

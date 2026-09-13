@@ -363,7 +363,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
+                           "Use an HTTP proxy instead.", proxy_url)
         return None
 
 
@@ -2620,7 +2620,8 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
                 if image_url.startswith("file://"):
-                    sender, url_kw = self.send_image_file, {"image_path": _unquote(image_url[7:])}
+                    from urllib.request import url2pathname
+                    sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}
                 elif self._is_animation_url(image_url):
                     sender, url_kw = self.send_animation, {"animation_url": image_url}
                 else:

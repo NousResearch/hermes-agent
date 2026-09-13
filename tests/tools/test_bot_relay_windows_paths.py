@@ -28,6 +28,7 @@ from pathlib import Path
 
 import tools.bot_mode_dm as bot_mode_dm
 import tools.bot_relay as bot_relay
+import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
@@ -50,6 +51,7 @@ def test_waiter_windows_path_compiles_after_backslash_folding():
     compile(folded, "<waiter>", "exec")
 
 
+@pytest.mark.platforms("linux")
 def test_waiter_posix_path_and_label_values_roundtrip():
     """On POSIX (backslash-free paths) the raw prefix changes nothing."""
     root = Path("/tmp/hermes-home")
@@ -88,6 +90,7 @@ def test_waiter_raw_prefix_keeps_injection_defense():
     assert "x'); __import__('sys').exit(2); print('x" in code
 
 
+@pytest.mark.platforms("linux")
 def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     bin_dir = tmp_path / "venv" / "bin"
     bin_dir.mkdir(parents=True)

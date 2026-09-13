@@ -824,8 +824,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
     if mode == "strict":
         cwd_note = (
-            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "Scripts run in their own temp dir, not the session's CWD — pass "
+            "absolute paths for any file that lives outside the session's "
+            "working directory, or use terminal()/read_file() to reach it."
         )
     else:
         cwd_note = (
@@ -901,32 +902,3 @@ registry.register(
     handler=_execute_code_handler, check_fn=check_sandbox_requirements, emoji="🐍",
     max_result_size_chars=100_000,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import platform  # noqa: F401,E402
-import socket  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-DEFAULT_KERNEL_MODE = "session"
-
-KERNEL_MODES = ("per-call", "session")  # legacy compat constant
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'thread_scoped_silence': ('agent.thread_scoped_output', 'thread_scoped_silence'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

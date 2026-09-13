@@ -3,7 +3,7 @@
 Sandboxes (Docker/Modal/SSH) hold only opaque proxy tokens; iron-proxy — a TLS-intercepting,
 default-deny egress firewall — swaps them for real credentials on the way out, so a leaked
 token is useless outside the trusted proxy boundary.  The pinned binary is auto-installed
-into ``<hermes_home>/bin``; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
+into the PM tool store; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
 ``<hermes_home>/proxy``.  Failures warn and never block agent startup.
 """
 
@@ -18,7 +18,6 @@ import platform
 import shutil
 import signal
 import subprocess
-import tarfile
 import tempfile
 import threading
 import time
@@ -31,15 +30,6 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Pinned: never auto-resolve "latest" — the YAML schema may change between releases.
-_IRON_PROXY_VERSION = "0.39.0"
-_IRON_PROXY_RELEASE_BASE = f"https://github.com/ironsh/iron-proxy/releases/download/v{_IRON_PROXY_VERSION}"
-_IRON_PROXY_CHECKSUM_NAME = "checksums.txt"
-# Optional GPG verification of checksums.txt (SHA-256 alone trusts the release channel).
-_IRON_PROXY_CHECKSUM_SIG_NAME = "checksums.txt.asc"
-_IRON_PROXY_PUBKEY_NAME = "public-key.asc"
-
-_DOWNLOAD_TIMEOUT = 120  # binary is ~16MB
 _RUN_TIMEOUT = 30
 _STARTUP_GRACE_SECONDS = 5
 
@@ -154,11 +144,6 @@ class TokenMapping:
     alias_env_names: Tuple[str, ...] = ()
 
 
-def _hermes_bin_dir() -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "bin"
-
-
 def _proxy_state_dir_ro() -> Path:  # without creating it (status probes, pidfile reads)
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "proxy"
@@ -172,83 +157,32 @@ def _proxy_state_dir() -> Path:
     return d
 
 
-def _platform_binary_name() -> str:
-    return "iron-proxy.exe" if platform.system() == "Windows" else "iron-proxy"
-
-
-def _platform_asset_name() -> str:
-    """Map (uname, arch) -> ``iron-proxy_<version>_<os>_<arch>.tar.gz``; no Windows builds upstream."""
-    system, machine = platform.system(), platform.machine().lower()
-    if os_name := {"Linux": "linux", "Darwin": "darwin"}.get(system):
-        arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
-        return f"iron-proxy_{_IRON_PROXY_VERSION}_{os_name}_{arch}.tar.gz"
-    if system == "Windows":
-        raise RuntimeError(f"iron-proxy does not ship native Windows binaries as of v{_IRON_PROXY_VERSION}. Run the proxy on a Linux/macOS host, or inside WSL.")
-    raise RuntimeError(f"Unsupported platform for iron-proxy auto-install: {system} {machine}")
-
-
 def find_iron_proxy(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Managed ``<hermes_home>/bin`` copy first, then PATH; optionally auto-install."""
-    managed = _hermes_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
-        return managed
+    """External tools do not require PM platform support; acquire only on a miss."""
     if system := shutil.which("iron-proxy"):
         return Path(system)
-    if not install_if_missing:
-        return None
-    try:
-        return install_iron_proxy()
-    except Exception as exc:  # noqa: BLE001 — never block startup
-        logger.warning("iron-proxy auto-install failed: %s", exc)
-        return None
+    import pm
+
+    selected = pm.installed_package("iron-proxy")
+    if selected is not None:
+        return selected.binary
+    if install_if_missing:
+        try:
+            pm.ensure("iron-proxy")
+            return pm.installed_package("iron-proxy").binary
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            logger.warning("iron-proxy auto-install failed: %s", exc)
+    return None
 
 
 def install_iron_proxy(*, force: bool = False) -> Path:
-    """Download, verify, and install the pinned binary; raises on any failure."""
-    (bin_dir := _hermes_bin_dir()).mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
-    if target.exists() and not force:
-        return target
-    asset_name = _platform_asset_name()
-    with tempfile.TemporaryDirectory(prefix="hermes-iron-proxy-") as tmpdir:
-        archive_path, checksum_path = (tmp := Path(tmpdir)) / asset_name, tmp / _IRON_PROXY_CHECKSUM_NAME
-        logger.info("Downloading %s", f"{_IRON_PROXY_RELEASE_BASE}/{asset_name}")
-        _release_asset(asset_name, archive_path)
-        _release_asset(_IRON_PROXY_CHECKSUM_NAME, checksum_path)
-        # Best-effort GPG check of checksums.txt closes the release-channel tamper gap.
-        _verify_checksums_signature(tmp, checksum_path)
-        expected, actual = _expected_sha256(checksum_path, asset_name), _sha256_file(archive_path)
-        if expected.lower() != actual.lower():
-            raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
-        with tarfile.open(archive_path, "r:gz") as tf:
-            member = _pick_tar_member(tf, _platform_binary_name())
-            # PEP 706 data filter rejects escaping links; < 3.12 relies on _pick_tar_member's sanitization.
-            try:
-                tf.extract(member, tmp, filter="data")  # noqa: S202
-            except TypeError:
-                tf.extract(member, tmp)  # noqa: S202
-            extracted = tmp / member.name
-        # Stage then atomically rename so the binary is never visible half-written.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".iron-proxy_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(staged, 0o755)
-        os.replace(staged, target)
-    # A freshly-installed binary must re-probe --version on the next get_status().
+    """Explicit setup/repair; PM verifies and repairs existing entries too."""
+    import pm
+
+    pm.ensure("iron-proxy", explicit=True)
+    target = pm.installed_package("iron-proxy").binary
     _VERSION_CACHE.pop(str(target), None)
-    logger.info("Installed iron-proxy %s at %s", _IRON_PROXY_VERSION, target)
     return target
-
-
-def _release_asset(name: str, dest: Path) -> None:
-    """Download one pinned-release asset to ``dest``; RuntimeError on any URL error."""
-    url = f"{_IRON_PROXY_RELEASE_BASE}/{name}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
-        with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp, open(dest, "wb") as f:  # noqa: S310
-            shutil.copyfileobj(resp, f)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
 
 
 def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
@@ -257,48 +191,21 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
     if not (gpg := shutil.which("gpg")):
         logger.warning("gpg not found on PATH — skipping iron-proxy release-signature verification (SHA-256 checksum check still enforced).")
         return False
-    sig_path, pubkey_path = tmp / _IRON_PROXY_CHECKSUM_SIG_NAME, tmp / _IRON_PROXY_PUBKEY_NAME
-    try:
-        _release_asset(_IRON_PROXY_CHECKSUM_SIG_NAME, sig_path)
-        _release_asset(_IRON_PROXY_PUBKEY_NAME, pubkey_path)
-    except RuntimeError as exc:
-        logger.warning("iron-proxy release signature assets unavailable (%s) — skipping GPG verification (SHA-256 checksum check still enforced).", exc)
+    sig_path, pubkey_path = tmp / "checksums.txt.asc", tmp / "public-key.asc"
+    if not sig_path.is_file() or not pubkey_path.is_file():
+        logger.warning("iron-proxy release signature assets unavailable — skipping GPG verification (SHA-256 checksum check still enforced).")
         return False
-    (gnupg_home := tmp / "gnupg").mkdir(mode=0o700, exist_ok=True)
-    gpg_base = [gpg, "--homedir", str(gnupg_home), "--batch", "--no-tty"]
-    if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
-        logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
-        return False
-    if (verify := _run([*gpg_base, "--verify", str(sig_path), str(checksum_path)], timeout=60)).returncode != 0:
-        raise RuntimeError(
-            f"iron-proxy checksums.txt failed GPG signature verification — refusing to install (possible release-channel tampering). gpg: {verify.stderr.decode('utf-8', 'replace')[:300]}"
-        )
-    logger.info("Verified iron-proxy checksums.txt GPG signature.")
-    return True
-
-
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse ``sha256sum`` output (``<hex>  <filename>``)."""
-    for line in checksum_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(f"No checksum entry for {asset_name} in {checksum_file.name}")
-
-
-def _sha256_file(path: Path) -> str:
-    with open(path, "rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
-
-
-def _pick_tar_member(tf: tarfile.TarFile, binary_name: str) -> tarfile.TarInfo:
-    """Find the binary in the archive (flat or one dir deep); reject abs paths and ``..``."""
-    candidates = [
-        m for m in tf.getmembers() if m.isfile() and not m.name.startswith("/") and ".." not in Path(m.name).parts and Path(m.name).name == binary_name
-    ]
-    if not candidates:
-        raise RuntimeError(f"Could not find {binary_name} inside downloaded archive (members: {[m.name for m in tf.getmembers()[:5]]}...)")
-    return min(candidates, key=lambda m: len(m.name))
+    with tempfile.TemporaryDirectory(prefix="hermes-iron-signature-") as gnupg_home:
+        gpg_base = [gpg, "--homedir", gnupg_home, "--batch", "--no-tty"]
+        if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
+            logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
+            return False
+        if (verify := _run([*gpg_base, "--verify", str(sig_path), str(checksum_path)], timeout=60)).returncode != 0:
+            raise RuntimeError(
+                f"iron-proxy checksums.txt failed GPG signature verification — refusing to install (possible release-channel tampering). gpg: {verify.stderr.decode('utf-8', 'replace')[:300]}"
+            )
+        logger.info("Verified iron-proxy checksums.txt GPG signature.")
+        return True
 
 
 def _allowlisted_env() -> Dict[str, str]:
@@ -380,14 +287,27 @@ def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
 def _read_text_or_none(p: Path) -> Optional[str]:
     """Stripped file contents, or None when missing/unreadable/empty."""
     try:
-        return p.read_text(encoding="utf-8").strip() or None
+        return p.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
 
+def _management_token_path() -> Path:
+    """Management-token location; resolving it never creates or changes state."""
+    return _proxy_state_dir_ro() / "management.token"
+
+
 def ensure_management_token(*, force: bool = False) -> str:
-    """Return the management-API bearer key (0600 at <proxy>/management.token), minting on first call."""
-    p = _proxy_state_dir() / "management.token"
+    """Return the management-API bearer key, minting it on first call.
+
+    Stored at the path from :func:`_management_token_path` with 0600 perms.
+    The daemon receives it via the ``HERMES_IRON_PROXY_MGMT_KEY`` env var
+    (named in the generated config's ``management.api_key_env``);
+    ``hermes egress reload`` reads the same file to authenticate.
+    """
+
+    _proxy_state_dir()
+    p = _management_token_path()
     if not force and (existing := _read_text_or_none(p)):
         return existing
     token = mint_proxy_token(prefix="hermes-mgmt")
@@ -396,9 +316,10 @@ def ensure_management_token(*, force: bool = False) -> str:
 
 
 def _yaml():
-    """PyYAML module or None (it is a Hermes dep, but never a hard requirement here)."""
+    """Shared YAML helpers or None (not a hard requirement for proxy discovery)."""
+
     try:
-        import yaml
+        import hermes_yaml as yaml
         return yaml
     except ImportError:
         return None
@@ -406,6 +327,7 @@ def _yaml():
 
 def _parse_listen(listen) -> Optional[Tuple[str, int]]:
     """``"host:port"`` -> ``(host, port)``; empty host means loopback."""
+
     if not isinstance(listen, str) or ":" not in listen:
         return None
     host, _, port_s = listen.rpartition(":")
@@ -417,11 +339,11 @@ def _parse_listen(listen) -> Optional[Tuple[str, int]]:
 
 
 def _config_listen(section: str, *keys: str, config_path: Optional[Path] = None) -> Optional[Tuple[str, int]]:
-    """``(host, port)`` from the first truthy ``proxy.yaml[section][key]``, or None (also when file/PyYAML is missing)."""
+    """``(host, port)`` from the first truthy ``proxy.yaml[section][key]``, or None (also when file/ruamel.yaml is missing)."""
     yaml, data = _yaml(), {}
     if yaml is not None:
         with suppress(OSError, yaml.YAMLError):
-            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load((config_path or (_proxy_state_dir_ro() / "proxy.yaml")).read_text(encoding="utf-8-sig")) or {}
     block = data.get(section) or {}
     return _parse_listen(next((block[k] for k in keys if block.get(k)), ""))
 
@@ -451,7 +373,7 @@ def reload_proxy() -> bool:
         raise RuntimeError(
             "The generated proxy.yaml has no management listener (written before reload support).  Re-run `hermes egress setup` and use `hermes egress restart` this one time."
         )
-    if not (token := _read_text_or_none(_proxy_state_dir_ro() / "management.token")):
+    if not (token := _read_text_or_none(_management_token_path())):
         raise RuntimeError("management.token is missing — re-run `hermes egress setup`, then `hermes egress restart`.")
     host, port = mgmt
     req = urllib.request.Request(f"http://{host}:{port}/v1/reload", method="POST", headers={"Authorization": f"Bearer {token}"}, data=b"")
@@ -590,7 +512,7 @@ def _write_state_file_atomic(state: Path, name: str, dump) -> Path:
 def write_proxy_config(config: Dict) -> Path:
     """Serialize the config dict to ``<hermes_home>/proxy/proxy.yaml`` (safe_dump, no Python tags)."""
     if (yaml := _yaml()) is None:
-        raise RuntimeError("PyYAML is required to write the iron-proxy config but is not installed.")
+        raise RuntimeError("ruamel.yaml is required to write the iron-proxy config but is not installed.")
     return _write_state_file_atomic(_proxy_state_dir(), "proxy.yaml", lambda f: yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False))
 
 
@@ -608,7 +530,7 @@ def load_mappings() -> List[TokenMapping]:
     if not (f := _proxy_state_dir() / "mappings.json").exists():
         return []
     try:
-        payload = json.loads(f.read_text(encoding="utf-8"))
+        payload = json.loads(f.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Failed to read iron-proxy mappings.json: %s", exc)
         return []
@@ -654,8 +576,9 @@ def _pidfile() -> Path:
 
 def _read_pid() -> Optional[int]:
     try:
-        pid = int(_read_text_or_none(_proxy_state_dir_ro() / "iron-proxy.pid") or "")
-    except ValueError:
+        pid = int((_proxy_state_dir_ro() / "iron-proxy.pid").read_text(encoding="utf-8-sig", errors="replace").strip())
+    except (OSError, ValueError):
+
         return None
     return pid if pid > 0 else None
 
@@ -663,7 +586,7 @@ def _read_pid() -> Optional[int]:
 def _pid_proc_starttime(pid: int) -> Optional[str]:
     """/proc/<pid>/stat starttime (field 22) on Linux, else None — cheap PID-recycling detector."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     # comm may contain spaces/parens, so split after the LAST ")"; field 22 -> tail index 19.

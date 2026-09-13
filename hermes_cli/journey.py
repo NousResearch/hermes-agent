@@ -329,7 +329,7 @@ def _open_in_editor(initial: str, *, suffix: str) -> Optional[str]:
         path = fh.name
     try:
         subprocess.call([*editor.split(), path])
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             return fh.read()
     except OSError as exc:
         print(f"  editor failed: {exc}")

@@ -90,7 +90,7 @@ def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
 
     receipt_dir = tmp_path / "update_receipts"
     monkeypatch.setattr(receipt, "_receipt_dir", lambda: receipt_dir)
-    receipt._current = None
+    token = receipt._current.set(None)
     post_purge_receipt = receipt
     try:
         receipt.begin_update_receipt()
@@ -105,8 +105,7 @@ def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
         assert latest["outcome"] == "success"
         assert latest["steps"][0]["name"] == "git_pull"
     finally:
-        receipt._current = None
-        post_purge_receipt._current = None
+        receipt._current.reset(token)
 
 
 def test_purge_leaves_prefix_lookalikes_alone():

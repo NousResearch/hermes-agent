@@ -437,14 +437,15 @@ def _(rid, params: dict) -> dict:
     hint = _cli_exec_blocked(argv)
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
-
-    # Can drive the agent → needs provider credentials; tier-1 secrets still stripped.
+    # Same-interpreter re-exec: ambient PYTHONPATH must survive the env factory's
+    # Hermes-owned strip (no-boot-through-venv).
+    _compat = _tools_mod("hermes_cli._subprocess_compat")
     return _captured_exec(
         rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
             "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
-        env=hermes_subprocess_env(inherit_credentials=True))
+        env=_compat.restore_ambient_pythonpath(hermes_subprocess_env(inherit_credentials=True)))
 
 
 @_rpc("command.resolve", 5012)
@@ -1396,7 +1397,7 @@ def _plugins_update(rid, params):
         return _err(rid, 4019, "plugins.update requires a 'name'")
     pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
     target = pc._plugins_dir() / name
-    sidecar = cat.read_catalog_sidecar(target) if target.is_dir() else None
+    sidecar = cat.catalog_install_record(target) if target.is_dir() else None
     if not sidecar:
         return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
     try:

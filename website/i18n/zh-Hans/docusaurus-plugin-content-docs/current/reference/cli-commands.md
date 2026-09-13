@@ -6,6 +6,9 @@ description: "Hermes 终端命令及命令族的权威参考"
 
 # CLI 命令参考
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 本页介绍从 shell 运行的**终端命令**。
 
 关于聊天内斜杠命令，请参阅 [斜杠命令参考](./slash-commands.md)。
@@ -63,7 +66,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes config` | 显示、编辑、迁移和查询配置文件。 |
 | `hermes pairing` | 审批或撤销消息配对码。 |
 | `hermes skills` | 浏览、安装、发布、审计和配置 skill。 |
-| `hermes bundles` | 将多个 skill 归组到单个 `/<name>` 斜杠命令下。参见 [Skill Bundles](../user-guide/features/skills.md#skill-bundles)。 |
+| `hermes bundles` | 将多个 skill 归组到单个 `/<name>` 斜杠命令下。参见 [Skill Bundles](../user-guide/features/skills.md#skill-捆绑包)。 |
 | `hermes curator` | 后台 skill 维护——状态、运行、暂停、固定。参见 [Curator](../user-guide/features/curator.md)。 |
 | `hermes memory` | 配置外部 memory provider。当对应 provider 激活时，特定于 plugin 的子命令（如 `hermes honcho`）会自动注册。 |
 | `hermes acp` | 将 Hermes 作为 ACP 服务器运行，用于编辑器集成。 |
@@ -227,7 +230,7 @@ hermes gateway <subcommand>
 | `--no-supervise` | 在 `run` 时：在 s6-overlay Docker 镜像内部，跳过 s6 自动监管，退回到 pre-s6 前台语义——gateway 作为容器主进程运行，无自动重启。在 s6 镜像之外为空操作。等同于设置 `HERMES_GATEWAY_NO_SUPERVISE=1`。 |
 
 :::tip WSL 用户
-使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails)。
+使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](/reference/faq#wsl网关持续断开连接或-hermes-gateway-start-失败)。
 :::
 
 ## `hermes lsp`
@@ -843,7 +846,7 @@ hermes skills reset google-workspace --restore --yes
 hermes bundles <subcommand>
 ```
 
-Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。调用 bundle 会将每个引用的 skill 加载到单个合并的用户消息中。存储位置：`~/.hermes/skill-bundles/<slug>.yaml`。YAML schema 和行为请参阅 [Skill Bundles](../user-guide/features/skills.md#skill-bundles)。
+Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。调用 bundle 会将每个引用的 skill 加载到单个合并的用户消息中。存储位置：`~/.hermes/skill-bundles/<slug>.yaml`。YAML schema 和行为请参阅 [Skill Bundles](../user-guide/features/skills.md#skill-捆绑包)。
 
 子命令：
 
@@ -975,7 +978,7 @@ python -m acp_adapter
 首先安装支持：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 参见 [ACP 编辑器集成](../user-guide/features/acp.md) 和 [ACP 内部原理](../developer-guide/acp-internals.md)。
@@ -998,7 +1001,7 @@ hermes mcp <subcommand>
 | `configure <name>`（别名：`config`） | 切换服务器的工具选择。 |
 | `login <name>` | 强制重新认证基于 OAuth 的 MCP 服务器。 |
 
-参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server)。
+参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#将-hermes-作为-mcp-服务器运行)。
 
 ## `hermes plugins`
 
@@ -1145,7 +1148,7 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
+启动 Web 控制台，用于管理配置、API 密钥和会话。FastAPI、Uvicorn 和平台 PTY 辅助库是核心依赖。`web` extra 提供 HTTP 栈的精确约束，标准 PM 安装通过 `all` 选择它。如依赖损坏，请运行 `hermes pm repair`。内嵌 Chat 标签页需要 POSIX PTY 环境，例如 Linux、macOS 或 WSL2。请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
 
 | 选项 | 默认值 | 说明 |
 |--------|---------|-------------|
@@ -1221,6 +1224,13 @@ hermes completion zsh >> ~/.zshrc
 # Fish
 hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
+
+## `hermes pm`
+
+PM 管理工具和 Python 依赖，不负责替换应用发布包。
+源码开发先运行一次 setup 脚本，然后用 Bash `source ./activate` 或 PowerShell `. .\activate.ps1` 激活已有环境。
+使用 `deactivate` 恢复激活前的环境。
+详见[PM 开发工作流](/reference/package-management#developer-workflow)，包括依赖更新和测试环境。
 
 ## `hermes update`
 

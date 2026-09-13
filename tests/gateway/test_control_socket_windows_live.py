@@ -107,7 +107,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     import hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": ident.get("code_sha") or "X", "version": "t"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
@@ -140,7 +140,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)

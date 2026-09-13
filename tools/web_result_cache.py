@@ -169,7 +169,7 @@ def _cache_dir() -> Optional[Path]:
 
 def _load_index() -> dict:
     try:
-        data = json.loads((_cache_dir() / _INDEX_FILENAME).read_text(encoding="utf-8"))
+        data = json.loads((_cache_dir() / _INDEX_FILENAME).read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 — missing/corrupt index == empty cache
         return {}
@@ -273,7 +273,7 @@ def extract_cache_get(url: str, format: Optional[str] = None, provider: str = ""
         # The index is plain JSON on disk; never let a tampered entry read outside cache/web.
         if cache_root.resolve() not in file_path.resolve().parents:
             return None
-        content = file_path.read_text(encoding="utf-8")
+        content = file_path.read_text(encoding="utf-8-sig")
     except Exception:  # noqa: BLE001 — evicted/pruned file == miss (or no cache dir)
         return None
     logger.info("web_extract cache hit: %s", url)

@@ -121,7 +121,7 @@ def _prepare_audio_for_transcription(file_path: str) -> tuple[Optional[str], Opt
         return file_path, None, None
     if not _HAS_PILK:
         # pilk is a tiny silk-v3 codec binding — lazy-installed on first .silk voice note.
-        _lazy_ensure_quietly("stt.silk")
+        _lazy_ensure_quietly("silk")
         if not _safe_find_spec("pilk"):
             return None, None, _error_result(
                 "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription."

@@ -122,6 +122,7 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
@@ -138,6 +139,7 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
+    @pytest.mark.platforms("linux")
     async def test_fallback_when_no_setsid(self, tmp_path):
         """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()
@@ -163,6 +165,7 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
@@ -543,4 +546,35 @@ class TestWatchUpdateProgress:
         assert "ok before" in sent
         assert "continued after" in sent
         assert "Hermes update finished" in sent
+        assert not (hermes_home / ".update_pending.json").exists()
+# ---------------------------------------------------------------------------
+# Install-method refusal gate
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCommandInstallMethodRefusal:
+    """/update on a non-git install refuses with the steward's own update
+    command instead of attempting a git-based `hermes update`."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["docker", "nix"])
+    async def test_refuses_non_git_install(self, tmp_path, method):
+        runner = _make_runner()
+        event = _make_event()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        mock_popen = MagicMock()
+
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("hermes_cli.config.detect_install_method",
+                   return_value=method), \
+             patch("hermes_cli.config.recommended_update_command_for_method",
+                   return_value=f"steward-update --{method}"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert f"does not apply to this install ({method})" in result
+        assert f"Update with: steward-update --{method}" in result
+        # No update attempt: nothing spawned, no pending marker written.
+        mock_popen.assert_not_called()
         assert not (hermes_home / ".update_pending.json").exists()

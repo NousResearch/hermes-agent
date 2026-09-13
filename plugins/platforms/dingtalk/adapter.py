@@ -101,8 +101,8 @@ def ensure_dingtalk_deps() -> bool:
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.dingtalk", prompt=False)
+        from pm.extras import ensure_import
+        ensure_import("dingtalk")
         import dingtalk_stream as _ds, httpx as _httpx  # noqa: E401
         from dingtalk_stream import ChatbotMessage as _CM
         from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM

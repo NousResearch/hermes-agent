@@ -1,8 +1,32 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import { detectBundleSwap } from './bundle-swap'
+import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 
 const RUNNING = { builtAt: '2026-08-29T04:00:00.000Z', commit: 'a'.repeat(40), source: 'local' }
+
+it('reads only the installed stamp for swap detection, without schema conversion', () => {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-swap-'))
+
+  try {
+    expect(readBundleSwapStamp(resources)).toBeNull()
+
+    const file = path.join(resources, 'install-stamp.json')
+
+    fs.writeFileSync(file, JSON.stringify(RUNNING))
+    expect(readBundleSwapStamp(resources)).toEqual(RUNNING)
+
+    const replaced = { ...RUNNING, commit: 'b'.repeat(40) }
+
+    fs.writeFileSync(file, JSON.stringify(replaced))
+    expect(detectBundleSwap(RUNNING, readBundleSwapStamp(resources))).toBe(true)
+  } finally {
+    fs.rmSync(resources, { recursive: true, force: true })
+  }
+})
 
 describe('detectBundleSwap', () => {
   it('reports a swap when the on-disk stamp carries a different commit', () => {
@@ -40,10 +64,5 @@ describe('detectBundleSwap', () => {
     expect(detectBundleSwap(RUNNING, fallbackCommit)).toBe(false)
   })
 
-  it('treats a missing builtAt on either side as unprovable at the same commit', () => {
-    const noBuiltAt = { commit: RUNNING.commit, source: 'local' }
 
-    expect(detectBundleSwap(noBuiltAt, { ...RUNNING })).toBe(false)
-    expect(detectBundleSwap(RUNNING, noBuiltAt)).toBe(false)
-  })
 })

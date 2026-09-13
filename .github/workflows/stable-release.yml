@@ -1,0 +1,286 @@
+name: Stable Release
+run-name: Stable release ${{ inputs.tag }}
+
+# Dispatch on the tag so reusable workflows and github.sha identify the same tree.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact stable tag, matching the selected workflow ref
+        required: true
+        type: string
+      baseline-manifest:
+        description: Optional HTTPS manifest of the previous published stable packages
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.admit.outputs.tag }}
+      commit: ${{ steps.admit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - id: admit
+        run: python -m scripts.releases.stable admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+
+  ci:
+    name: Full CI pipeline
+    needs: admit
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/ci.yaml
+    with:
+      release: true
+
+  docker:
+    name: Docker build and tests
+    needs: [admit, ci]
+    uses: ./.github/workflows/docker.yml
+    with:
+      release-phase: test
+      tag: ${{ needs.admit.outputs.tag }}
+
+  nix:
+    needs: [ci, docker]
+    uses: ./.github/workflows/nix.yml
+    with:
+      release: true
+
+  pm-bundle:
+    needs: [ci, docker]
+    uses: ./.github/workflows/pm-bundle.yml
+    with:
+      release: true
+      ref: ${{ github.sha }}
+
+  termux-checks:
+    needs: [ci, docker]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/termux-verify.yml
+    with:
+      release: true
+
+  windows-live:
+    needs: [ci, docker]
+    uses: ./.github/workflows/windows-venv-e2e.yml
+    with:
+      release: true
+
+  install-e2e:
+    name: Install and update E2E
+    needs: [ci, docker]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/install-e2e.yml
+    with:
+      release: true
+      route: all
+      tag-count: '3'
+      exclude-ref: ${{ inputs.tag }}
+
+  candidates:
+    name: Build signed release candidates
+    needs: [admit, ci, docker]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      release-phase: candidate
+
+  transitions:
+    name: Pin actual OLD and NEW signed packages
+    needs: [admit, candidates]
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    outputs:
+      windows: ${{ steps.plan.outputs.windows }}
+      macos: ${{ steps.plan.outputs.macos }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - id: plan
+        run: python -m scripts.releases.stable transitions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
+          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
+          BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+
+  windows-packaged:
+    name: Windows signed-package acceptance
+    needs: transitions
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.transitions.outputs.windows) }}
+    uses: ./.github/workflows/install-e2e-windows-run.yml
+    with:
+      install-method: packaged-app
+      update-method: open-app-update
+      install-ref: ${{ matrix.old }}
+      leg-id: stable-${{ matrix.id }}
+      bundle-manifest-url: ${{ matrix.manifest }}
+      bundle-manifest-sha256: ${{ matrix.manifest_sha256 }}
+      bundle-arch: ${{ matrix.arch }}
+
+  macos-packaged:
+    name: macOS signed-package acceptance
+    needs: transitions
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.transitions.outputs.macos) }}
+    uses: ./.github/workflows/install-e2e-macos-run.yml
+    with:
+      install-method: packaged-app
+      update-method: open-app-update
+      install-ref: ${{ matrix.old }}
+      leg-id: stable-${{ matrix.id }}
+      bundle-manifest-url: ${{ matrix.manifest }}
+      bundle-manifest-sha256: ${{ matrix.manifest_sha256 }}
+      bundle-arch: ${{ matrix.arch }}
+
+  acceptance:
+    name: All release acceptance checks pass
+    if: always()
+    needs: [admit, ci, docker, nix, pm-bundle, termux-checks, windows-live, install-e2e, candidates, transitions, windows-packaged, macos-packaged]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates transitions windows-packaged macos-packaged
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+
+  publish-docker:
+    name: Publish tested Docker image
+    needs: [admit, acceptance]
+    uses: ./.github/workflows/docker.yml
+    with:
+      release-phase: publish
+      tag: ${{ needs.admit.outputs.tag }}
+
+  publish-bundles:
+    name: Publish tested bundle artifacts
+    needs: [admit, acceptance, candidates]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      release-phase: publish
+      manifest-sha256: ${{ needs.candidates.outputs.manifest-sha256 }}
+
+  publication:
+    name: All artifact publication succeeded
+    if: always()
+    needs: [acceptance, publish-docker, publish-bundles]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+
+  promote-docker:
+    name: Advance stable Docker channel
+    needs: [admit, publication]
+    uses: ./.github/workflows/docker.yml
+    with:
+      release-phase: promote
+      tag: ${{ needs.admit.outputs.tag }}
+
+  promote-bundles:
+    name: Advance stable bundle channels
+    needs: [admit, publication, candidates]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      release-phase: promote
+      manifest-sha256: ${{ needs.candidates.outputs.manifest-sha256 }}
+
+  complete:
+    name: Stable release is green
+    if: always()
+    needs: [admit, ci, docker, acceptance, candidates, publication, promote-docker, promote-bundles]
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.releases.stable gate admit ci docker acceptance candidates publication promote-docker promote-bundles
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+      - name: Record accepted stable packages and publish release
+        run: python -m scripts.releases.stable complete
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
+          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}

@@ -812,7 +812,7 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
 
 
 def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     home.mkdir(parents=True, exist_ok=True)
     cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
@@ -5087,7 +5087,7 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     def _slow_teardown(_session, *, end_reason="tui_close"):
         assert end_reason == "ws_orphan_reap"
         teardown_started.set()
-        assert release_teardown.wait(timeout=2.0)
+        assert release_teardown.wait(timeout=30.0)
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
@@ -5102,15 +5102,15 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     thread.start()
     acquired = False
     try:
-        assert teardown_started.wait(timeout=1.0)
+        assert teardown_started.wait(timeout=10.0)
         assert "slow-orphan" not in server._sessions
-        acquired = server._session_resume_lock.acquire(timeout=0.2)
+        acquired = server._session_resume_lock.acquire(blocking=False)
         assert acquired, "orphan teardown kept the global resume lock held"
     finally:
         if acquired:
             server._session_resume_lock.release()
         release_teardown.set()
-        thread.join(timeout=2.0)
+        thread.join(timeout=10.0)
         server._sessions.pop("slow-orphan", None)
 
     assert not thread.is_alive()
@@ -8312,7 +8312,7 @@ def test_config_set_yolo_toggles_session_scope():
 
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8343,7 +8343,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
@@ -8363,7 +8363,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # _load_approval_mode delegates to the canonical resolver in
@@ -8382,7 +8382,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
 
 
 def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # See fail-safe test above: the canonical resolver reads via
@@ -8401,7 +8401,7 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
 def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # config.set writes via server._hermes_home, but the post-write
@@ -8436,7 +8436,7 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
     quoted YAML value kept the petdex mascot enabled against the operator's
     explicit intent.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8517,7 +8517,7 @@ def test_config_set_approval_mode_rejects_unknown_value():
 
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
     """An explicit value pins global approvals.mode regardless of prior state."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8761,7 +8761,7 @@ def test_config_get_busy_survives_non_dict_display(monkeypatch):
 
 
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"display": "broken"}))
@@ -8781,7 +8781,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -8811,7 +8811,7 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
 
 
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -8830,7 +8830,7 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
 
 
 def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -18235,8 +18235,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
     # Isolate the completion queue for the duration of this test. The poller
     # reads process_registry.completion_queue by attribute at runtime; the
     # event below carries no session_key, so any *other* poller (a leaked
-    # daemon thread from another test, or a concurrent one in the same xdist
-    # worker) is allowed to dequeue and dispatch it to its own session — whose
+    # daemon thread from another test, or a concurrent one in the same
+    # process) is allowed to dequeue and dispatch it to its own session — whose
     # agent may be a fixture double without run_conversation. A fresh Queue
     # here fully isolates this test; monkeypatch restores the original on
     # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
@@ -18301,7 +18301,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
     # Isolate the completion queue so a concurrent/leaked poller in the same
-    # xdist worker can't dequeue this session_key-less event before our poller
+    # process can't dequeue this session_key-less event before our poller
     # does. monkeypatch restores the shared singleton on teardown. (Same
     # pattern as test_notification_poller_requeues_when_busy.)
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
@@ -18343,8 +18343,8 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
 
     # Isolate the completion queue for the duration of this test. The poller
     # reads process_registry.completion_queue by attribute at runtime, so a
-    # fresh Queue here means no concurrently-running test in the same xdist
-    # worker can put/get on the shared singleton mid-run and drain the event
+    # fresh Queue means no concurrently-running test in the same
+    # process can put/get on the shared singleton mid-run and drain the event
     # we expect to be requeued. monkeypatch restores the original on teardown.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
@@ -19857,7 +19857,7 @@ def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch
     `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses
     targeted save_config_value writes instead of rewriting the whole block."""
     import types
-    import yaml
+    import hermes_yaml as yaml
     import cli
 
     cfg_path = tmp_path / "config.yaml"
@@ -19897,7 +19897,7 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
     provider with no base_url must CLEAR the stale base_url, not leave it
     pointing at the old host."""
     import types
-    import yaml
+    import hermes_yaml as yaml
     import cli
 
     cfg_path = tmp_path / "config.yaml"
@@ -21111,7 +21111,7 @@ def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
     assert "# provider rationale" in text
     assert "# trailing skin note" in text
 
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     parsed = _yaml.safe_load(text)
     assert parsed["display"]["skin"] == "mono"

@@ -44,15 +44,18 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request
+        from pm import ensure_import
+        ensure_import("web")
+        from fastapi import (
+            FastAPI, File, Form, HTTPException, Query, Request, UploadFile,
+            WebSocket, WebSocketDisconnect,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            "Run hermes pm repair, then restart Hermes."
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -72,6 +75,10 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
 )
+
+# MERGE-CHECK: upstream moved the parent-start-marker helpers into web_server_lifecycle.py
+# (imported above); our branch's in-file copies were dropped with the rest of the
+# pre-refactor block below. Parent re-verify no desktop caller needed the old in-file copies.
 
 
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
@@ -907,6 +914,9 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
     return True
 
 
+# MERGE-CHECK: ours-side of this conflict was ~13k lines of pre-#102117 endpoints
+# (elevenlabs voices, themes, plugin discovery, model/config routers) now decomposed by
+# upstream into web_routers/*, web_server_dashboard.py and audio.py; ours dropped, upstream kept.
 _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 # Cache discovered plugins per-process (refresh on explicit re-scan).
@@ -1484,7 +1494,7 @@ import shutil  # noqa: F401,E402
 import stat  # noqa: F401,E402
 import tempfile  # noqa: F401,E402
 from datetime import timezone  # noqa: F401,E402
-import yaml  # noqa: F401,E402
+import hermes_yaml as yaml  # noqa: F401,E402
 import zipfile  # noqa: F401,E402
 
 

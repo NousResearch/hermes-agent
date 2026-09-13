@@ -7,12 +7,11 @@ description = "The self-improving AI agent — creates skills from experience, i
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
 # Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
-# fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# fresh distro whose newest interpreter uv auto-picks) would otherwise select
+# a newer major. The 3.14 ceiling tracks the newest CPython line the full
+# dependency graph resolves on (py3 wheels for every target); raise it in the
+# same commit as a lock regen after verifying the new interpreter resolves.
+requires-python = ">=3.14,<3.15"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -27,35 +26,39 @@ dependencies = [
   # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
   # install in the hours before the quarantine would have pulled it.
   #
-  # When updating: bump the version below AND regenerate uv.lock with
-  # `uv lock` so the transitive resolution stays consistent. Don't
-  # introduce ranges back without a written justification.
+  # After a pin change, run `python -m pm.build_env --source . --lock-only`
+  # so the transitive resolution stays consistent. Do not introduce ranges
+  # without a written justification.
   #
   # Scope rule: only packages used by EVERY hermes session belong here.
   # Anything that's provider-specific (`anthropic`, `firecrawl-py`,
   # `exa-py`, `fal-client`, `edge-tts`, `parallel-web`) belongs in an
-  # extra and gets lazy-installed via `tools/lazy_deps.py` when the
+  # extra and gets prepared through PM when the
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
   "openai==2.24.0",
   "certifi==2026.5.20",
+  # TLS trust comes from the OS certificate store (agent/ssl_verify.py), so
+  # a corporate/internal root installed on the machine just works. certifi
+  # above stays a direct pin because httpx/requests/openai each depend on
+  # it regardless; it is no longer OUR trust source.
+  "truststore>=0.10.4,<0.11",
   "python-dotenv==1.2.2",
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
   "rich==14.3.3",
   "tenacity==9.1.4",
-  "pyyaml==6.0.3",
+  "tomli-w==1.2.0",           # Preserve relative dependency paths in staged plugin metadata.
   "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
+  "requests==2.33.0",         # CVE-2026-25645
   "jinja2==3.1.6",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,
   # OpenDocument, RTF, EPUB) + typed NeedsOcrError for scanned pages.
   # Bundled in core by maintainer decision (read_file is a core tool and
   # PDF reads are a common first-session action; the previous lazy-only
   # arrangement dated to the package's uv exclude-newer quarantine, which
-  # has long expired). tools/lazy_deps.py `tool.doc_extract` remains the
-  # self-heal path for lean/broken installs — keep the pin below and the
-  # lazy pin in lockstep.
+  # has long expired). PM's doc-extract extra repairs lean/broken installs
+  # from this same dependency declaration.
   "firecrawl-anydoc==0.2.4",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
@@ -71,15 +74,8 @@ dependencies = [
   # Applied at index AND query time so morphological variants match
   # ("issues" finds create_issue).
   "snowballstemmer==3.1.1",
-  # ``packaging`` is imported directly on three production paths but was never
-  # declared, so it only reached users transitively (pip/uv pull it for other
-  # tools). The slim official Docker image ships without it, where the
-  # try/except-ImportError fallbacks silently degrade: Hindsight's
-  # ``_meets_minimum_version`` disables update_mode='append' (#40503),
-  # tools/lazy_deps.py treats every version constraint as satisfied, and
-  # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
-  # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
-  # Pinned to the version already resolved in uv.lock (no resolution churn).
+  # Requirement and version checks must work in lean installs without
+  # relying on another package to bring packaging in transitively.
   "packaging==26.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
@@ -92,7 +88,7 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  "PyJWT[crypto]==2.13.0", # PYSEC-2026-175/177/178/179
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
@@ -107,7 +103,7 @@ dependencies = [
   # A pin here is not sufficient on its own. alibabacloud-tea-openapi caps
   # cryptography<49, so [tool.uv] also holds an override. Read that comment
   # before you move this version.
-  "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
+  "cryptography==50.0.1", # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -119,7 +115,11 @@ dependencies = [
   # macOS and Windows.  It replaces POSIX-only idioms like `os.kill(pid, 0)`
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
-  "psutil==7.2.2",
+  "psutil==7.2.2; sys_platform != 'android'",
+  # Android Python 3.13+ needs upstream #2891 for platform recognition and
+  # disk_partitions(). The fix is not in a published psutil release yet.
+  # Keep this commit until a release includes it, then remove the source pin.
+  "psutil @ git+https://github.com/giampaolo/psutil.git@380bd2b59c67b0e1b04bbf3a90b11744f4f96644 ; sys_platform == 'android'",
   # Browser CDP supervisor + browser_dialog import this directly. Keep core
   # so browser tool discovery doesn't fail on lean installs.
   "websockets==15.0.1",
@@ -134,11 +134,20 @@ dependencies = [
   # without an explicit dependency here (and in the `web` extra below).
   "python-multipart>=0.0.9,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
-  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  # Python 3.14 requires pywinpty 3.x. Version 3.0.5 includes the native
+  # binaries missing from 3.0.4 wheels on both Windows architectures.
+  "pywinpty>=3.0.5,<4; sys_platform == 'win32'",
   # Desktop SSH's Windows remote runtime (hermes_cli/windows_ssh_runtime.py)
   # imports win32security/win32file/etc. directly — declare pywin32 rather than
   # relying on the concurrent-log-handler → portalocker transitive chain.
   "pywin32>=306,<312; sys_platform == 'win32'",
+  # App Installer checks use Package from ApplicationModel. Foundation
+  # supplies the URI and async result types projected when the checker runs.
+  "winrt-windows-applicationmodel>=3.2.1,<4; sys_platform == 'win32'",
+  "winrt-windows-foundation>=3.2.1,<4; sys_platform == 'win32'",
+  # Store update queries and request results project collection interfaces.
+  "winrt-windows-foundation-collections>=3.2.1,<4; sys_platform == 'win32'",
+  "winrt-windows-services-store>=3.2.1,<4; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
   # (>5 MB or >8000px) at embed time; without it the byte AND pixel-dimension
   # shrink paths no-op, so an oversized image bakes into immutable history and
@@ -181,26 +190,74 @@ dependencies = [
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+anthropic = ["anthropic==0.87.0"] # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
+ddgs = ["ddgs==9.16.0"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.2.7"]
+# These engines' upstream Python ceilings exclude the managed interpreter.
+# Keep dependency markers and PM gates together: bundles omit them, explicit
+# setup requests report unavailable rather than succeeding with an empty set.
+neutts = ["neutts[all]==1.4.1; python_version < '3.14'"]
+kittentts = [
+  # KittenTTS requires misaki[en]>=0.9.4, whose Python ceiling is <3.13.
+  "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl ; python_version < '3.13'",
+  "soundfile==0.14.0; python_version < '3.13'",
+]
+# onnxruntime has no Intel macOS wheel. Piper has no Windows ARM64 wheel.
+piper = [
+  "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.2", "slack-bolt==1.30.0", "slack-sdk==3.44.1", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
-cron = []  # croniter is now a core dependency; this extra kept for back-compat
+google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
+dev = [
+  "debugpy==1.8.20",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.3.0",
+  "mcp==2.0.0",
+  "httpx2==2.7.0",
+  "starlette==1.3.1",
+  "ty==0.0.21",
+  "ruff==0.15.10",
+  "setuptools==83.0.0",
+] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+
+messaging = [
+  "python-telegram-bot[webhooks]==22.8",
+  "discord.py[voice]==2.7.1",
+  "aiohttp==3.14.3",
+  "brotlicffi==1.2.0.2",
+  "slack-bolt==1.30.0",
+  "slack-sdk==3.44.1",
+  "qrcode==7.4.2",
+] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.44.1", "aiohttp==3.14.3"]
-matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+# Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
+# vendored libolm (archived 2023) cannot build on Windows or modern macOS:
+# no wheels for those targets AND the sdist fails to compile on current
+# clang/MSVC (olm/list.hh const-iterator error) and on CMake >= 4. It is
+# linux-only — gate the whole extra so `uv sync --all-extras` (the bundle
+# build) doesn't try to build python-olm on the win/darwin lanes. The
+# matrix adapter degrades gracefully without mautrix (import stubs).
+matrix = [
+  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
+  "aiosqlite==0.22.1; sys_platform == 'linux'",
+  "asyncpg==0.31.0; sys_platform == 'linux'",
+  "aiohttp-socks==0.11.0; sys_platform == 'linux'",
+  "aiohttp==3.14.3; sys_platform == 'linux'",
+] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -210,38 +267,78 @@ wecom = ["defusedxml==0.7.1"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
-  "faster-whisper==1.2.1",
+  # faster-whisper's closure is prebuilt-only and missing pieces on two
+  # targets: ctranslate2 has no win_arm64 wheel/sdist (win32-arm64), and
+  # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
+  # STT path off both; sounddevice/numpy still ship.
+  "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
-# "Hey Hermes" wake word — on-device hotword detection. All engines are
-# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
-# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
-# the premium alternative. Desktop installs ([--include-desktop]) eager-install
-# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
-# first /wake; mirrored in tools/lazy_deps.py.
+# Wake engines are optional. Bundles include the engines supported by their
+# target. PM installs the selected engine on first use for source installs.
 wake = [
-  "openwakeword==0.6.0",
-  "onnxruntime==1.27.0",
-  "sherpa-onnx==1.13.4",
+  # pyopen-wakeword includes the TFLite library and shared feature models.
+  # Its universal2 wheel contains an ARM64-only library, so Intel Macs cannot
+  # load it. There is no native Windows ARM64 wheel either.
+  "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+  "sherpa-onnx==1.13.8",
+  # text2token imports both tokenizers even for English phrases.
   "sentencepiece==0.2.2",
+  "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
-  # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
-  # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
-  # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
-  # macOS equivalent, bridged in tools/wake_word.py.
-  "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
 ]
 honcho = ["honcho-ai==2.2.0"]
-# Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
-# (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
-# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
-# excluded from [all] like honcho/hindsight so a quarantined upstream release
-# can't break fresh installs.
+# Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
+# only real extras (contract: tests/pm/test_extras.py). Each is
+# lazy-installed at first use via pm.ensure_import(name) and therefore
+# deliberately NOT in [all] (see tests/test_project_metadata.py's
+# lazy_covered_extras list — keep that list in sync when adding here).
+telegram = ["python-telegram-bot[webhooks]==22.8"]
+discord = ["discord.py[voice]==2.7.1"]
+# stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
+stt-whisper = [
+  "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
+]
+audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
+# WeChat voice decode (tools/transcription_tools.py self-heal path).
+silk = ["pilk==0.2.4"]
+# Wake-engine sub-extras — lazy per-engine installs so a user who only wants
+# sherpa-onnx doesn't pull the whole [wake] bundle. Pins match [wake].
+wake-openwakeword = [
+  "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
+]
+wake-sherpa = [
+  "sherpa-onnx==1.13.8",
+  "sentencepiece==0.2.2",
+  "pypinyin==0.55.0",
+]
+wake-porcupine = ["pvporcupine==4.0.3"]
+# Google Chat service account push (gateway/platforms/google_chat) — pubsub
+# subscriber for the Chat API's Cloud Pub/Sub delivery.
+# grpcio (pubsub's native transitive) has no win_arm64 wheel, so win32-arm64
+# would build its sdist and fail — gate the whole extra off there like
+# faster-whisper. The adapter's pubsub import is lazy, so this just makes the
+# google-chat platform unavailable on win32-arm64.
+google-chat = [
+  "google-cloud-pubsub==2.39.2; platform_machine != 'ARM64' or sys_platform != 'win32'",
+]
+# Document extraction (read_file anydoc converter self-heal) — core already
+# bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
+# can re-sync exactly the pin from core.
+doc-extract = ["firecrawl-anydoc==0.2.4"]
+trace-upload = ["huggingface-hub==1.24.0"]
+# Cloud memory providers are opt-in PM extras. They stay outside [all],
+# like honcho/hindsight, so a quarantined release cannot break fresh installs.
 supermemory = ["supermemory==3.50.0"]
-mem0 = ["mem0ai==2.0.10"]
+# mem0ai pulls qdrant-client → grpcio, which has no win_arm64 wheel — same
+# win32-arm64 gate as google-chat. mem0 is lazy-installed, so on arm64 the
+# provider is simply unavailable.
+mem0 = [
+  "mem0ai==2.0.10; platform_machine != 'ARM64' or sys_platform != 'win32'",
+]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -268,33 +365,46 @@ pty = []
 # resolution. Hermes' own `httpx[socks]==0.28.1` in [dependencies] is
 # unaffected — the two distributions install side by side under different
 # module names.
-mcp = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+mcp = [
+  "mcp==2.0.0",
+  "httpx2==2.7.0",
+  "starlette==1.3.1",
+] # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
 homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
-# Computer use — macOS background desktop control via cua-driver (MCP stdio).
-# The cua-driver binary itself is installed via `hermes tools` post-setup
-# (curl install script); this extra just pins the MCP client used to talk
-# to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+teams = [
+  "microsoft-teams-apps==2.0.13.4",
+  "aiohttp==3.14.3",
+] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+# Computer use talks to PM's pinned cua-driver over MCP stdio. This extra
+# provides the MCP client, independently of the native driver package.
+computer-use = [
+  "mcp==2.0.0",
+  "httpx2==2.7.0",
+  "starlette==1.3.1",
+] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
 # 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
 # project is serving clean releases again (2.4.7 2026-05-25, 2.4.8 2026-05-28).
 # Like other opt-in TTS/STT backends, this is lazy-installed via
-# tools/lazy_deps.py (stt.mistral / tts.mistral) at first use — deliberately
+# pm (stt.mistral / tts.mistral) at first use — deliberately
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
 # OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
 # OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
-# tools/lazy_deps.py on first use; never a core dependency and deliberately
+# PM on first use; never a core dependency and deliberately
 # NOT in [all].
-otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
+otlp = [
+  "opentelemetry-sdk==1.39.1",
+  "opentelemetry-exporter-otlp-proto-http==1.39.1",
+]
+langfuse = ["langfuse==4.15.2"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
@@ -308,7 +418,7 @@ termux = [
 ]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
-  # only includes extras that aren't covered by `tools/lazy_deps.py`.
+  # only includes extras that are not prepared on demand by PM.
   # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
   # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
@@ -318,13 +428,16 @@ termux-all = [
   "hermes-agent[web]",
   "hermes-agent[pty]",
 ]
-dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
+dingtalk = [
+  "dingtalk-stream==0.24.3",
+  "alibabacloud-dingtalk==2.2.42",
+  "qrcode==7.4.2",
+]
 feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
-  # Sheets, Docs).  Declared here so dev environments (`uv sync --extra google`)
-  # and packagers ship them without hitting runtime `pip install` paths that
-  # fail in environments without pip (e.g. Nix-managed Python).
+  # Sheets, Docs). Declared here so PM environments and independent
+  # packagers can include them without mutating an application's runtime.
   "google-api-python-client==2.194.0",
   "google-auth==2.55.1",
   "google-auth-oauthlib==1.3.1",
@@ -339,22 +452,27 @@ google = [
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
-  # Without this declaration uv sync omits the package and both skills fail
+  # Without this declaration dependency sync omits the package and both skills fail
   # at first invocation with ModuleNotFoundError (issue #22243).
   "youtube-transcript-api==1.2.4",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.3.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.32"]
+web = [
+  "fastapi==0.133.1",
+  "uvicorn[standard]==0.41.0",
+  "starlette==1.3.1",
+  "python-multipart==0.0.32",
+]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
-  # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
+  # CAN'T be prepared on demand by PM — i.e. things every
   # session can use, things needed before the agent loop is alive
   # (terminal/CLI), and skill deps that dev environments need.
   # Anything an opt-in backend (provider, search, TTS, image, memory,
   # messaging platform, terminal sandbox) needs MUST live exclusively in
-  # `LAZY_DEPS` and resolve at first use — otherwise one quarantined PyPI
+  # opt-in extras and resolve at first use — otherwise one quarantined PyPI
   # release breaks every fresh install.
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
@@ -380,10 +498,17 @@ all = [
   "hermes-agent[youtube]",
 ]
 
+[dependency-groups]
+# Build tooling is not a runtime extra: payloads select --all-extras.
+# --only-group supplies Pillow without installing the Hermes application.
+icon-build = ["Pillow==12.3.0", "resvg-py==0.4.0"]
+# Native launcher acceptance is required in test environments, not payloads.
+test = ["distlib==0.4.3; sys_platform == 'win32'"]
+
 [build-system]
 # setuptools.build_meta + our setup.py bdist_wheel guard import wheel during
-# PEP 517 isolated builds (uv sync / uv pip install -e .). Without wheel in
-# requires, the isolation sandbox only gets setuptools and Windows installer
+# PEP 517 isolated builds. Without wheel in
+# requires, the isolation sandbox only gets setuptools and the build
 # fails with ModuleNotFoundError: wheel.cli (#96488).
 requires = ["setuptools==83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -392,6 +517,27 @@ build-backend = "setuptools.build_meta"
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+
+# Per-extra platform gates (settled 2026-09-02): an extra listed here is
+# only installable on platforms matching the marker. pm consults this
+# table (pm.extras.extra_supported) — ensure_import/sync_venv refuse a
+# gated-off extra with a clear message instead of resolving it to an
+# empty set. The per-package markers inside the extra stay (uv's
+# resolver needs them for --all-extras); this table is the readable
+# single-authority for WHICH extra is supported WHERE.
+[tool.hermes.extras-platforms]
+# mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
+matrix = "sys_platform == 'linux'"
+# grpcio (via google-cloud-pubsub) has no win_arm64 wheel.
+google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
+# qdrant-client → grpcio (via mem0ai) has no win_arm64 wheel.
+mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
+# Match the engine dependency markers so PM refuses an unsupported install.
+wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
+# NeuTTS excludes Python 3.14. KittenTTS's misaki dependency excludes 3.13+.
+neutts = "python_version < '3.14'"
+kittentts = "python_version < '3.13'"
+piper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
 
 [tool.uv]
 override-dependencies = [
@@ -405,8 +551,10 @@ override-dependencies = [
   # and its three advisories (see the cryptography pin in
   # [project].dependencies). The package uses cryptography only to sign
   # requests with RSA and AES, and that API did not break in 49 or 50.
+  # Keep this exact version equal to the direct dependency. uv overrides
+  # replace that requirement too, not only the vendor's upper bound.
   # Remove this line when alibabacloud-tea-openapi lifts the cap.
-  "cryptography>=50,<51",
+  "cryptography==50.0.1",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
@@ -456,9 +604,12 @@ exclude-newer = "14 days"
 # (Termux/Android) it must build from sdist, and the isolated build
 # environment resolves under the same cutoff ("Failed to resolve
 # requirements from build-system.requires ... maturin>=1.9,<2").
+#
+# google-cloud-pubsub: same exact-pin shape (==2.39.2, google-chat adapter).
+# The pin bump WAS the review; exclude-newer only filters it because the
+# 14-day window is younger than the reviewed release.
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false
-ai-edge-litert = false
 aiohttp = false
 aiohttp-socks = false
 aiosqlite = false
@@ -473,6 +624,7 @@ concurrent-log-handler = false
 croniter = false
 cryptography = false
 daytona = false
+ddgs = "2026-08-26T21:52:34Z"
 debugpy = false
 defusedxml = false
 dingtalk-stream = false
@@ -490,6 +642,7 @@ google-api-python-client = false
 google-auth = false
 google-auth-httplib2 = false
 google-auth-oauthlib = false
+google-cloud-pubsub = false
 h2 = false
 hindsight-client = false
 honcho-ai = false
@@ -498,6 +651,7 @@ httpx = false
 httpx2 = false
 huggingface_hub = false
 jinja2 = false
+langfuse = "2026-09-09T16:01:26Z"
 lark-oapi = false
 markdown = false
 maturin = false
@@ -508,16 +662,16 @@ microsoft-teams-apps = false
 mistralai = false
 modal = false
 nemo-relay = false
+neutts = "2026-07-22T14:54:23Z"
 numpy = false
-onnxruntime = false
 openai = false
 opentelemetry-exporter-otlp-proto-http = false
 opentelemetry-sdk = false
-openwakeword = false
 packaging = false
 parallel-web = false
 pathspec = false
 pillow = false
+piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false
 psutil = false
 pvporcupine = false
@@ -540,11 +694,14 @@ sentencepiece = false
 setuptools = false
 setuptools-rust = false
 wheel = false
-sherpa-onnx = false
+sherpa-onnx = "2026-09-10T17:00:04Z"
+# The core is exact-pinned by sherpa-onnx. Admit all wheels of that release.
+sherpa-onnx-core = "2026-09-10T15:58:47Z"
 slack-bolt = false
 slack-sdk = false
 snowballstemmer = false
 sounddevice = false
+soundfile = "2026-06-06T08:58:48Z"
 starlette = false
 supermemory = false
 tenacity = false
@@ -556,7 +713,6 @@ vercel = false
 websockets = false
 youtube-transcript-api = false
 
-
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the
 # source tree (see the ``_root_py_modules`` helper there). A static
@@ -564,10 +720,38 @@ youtube-transcript-api = false
 # and the drift broke installed wheels. Do not add the list back.
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = [
+  "agent",
+  "agent.*",
+  "tools",
+  "tools.*",
+  "hermes_cli",
+  "hermes_cli.*",
+  "hermes_wisdom",
+  "hermes_wisdom.*",
+  "gateway",
+  "gateway.*",
+  "tui_gateway",
+  "tui_gateway.*",
+  "cron",
+  "cron.*",
+  "acp_adapter",
+  "plugins",
+  "plugins.*",
+  "providers",
+  "providers.*",
+  "pm",
+  "pm.*",
+  "tools",
+  "tools.*",
+]
 
 [tool.setuptools.package-data]
-hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
+hermes_cli = [
+  "observability/schemas/*.json",
+  "data/*.json",
+  "local_runtime/*.json",
+]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram
@@ -578,19 +762,21 @@ gateway = ["assets/**/*"]
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
 plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
+# Without it a sealed wheel installs the pm package but has no pins to
+# realize — the pm store would be empty.
+pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: marks tests requiring external services (API keys, Modal, etc.)",
-    "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
-    "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
-    "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
-    "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
-    "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
-    "linux_only: exercises Linux-specific behaviour; skipped on other hosts",
-    "macos_only: exercises macOS-specific behaviour; skipped on other hosts",
-    "windows_only: exercises native-Windows behaviour; skipped on other hosts",
+  "integration: marks tests requiring external services (API keys, Modal, etc.)",
+  "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
+  "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
+  "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
+  "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
+  "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
+  "platforms(*specs, arch=None, arch_negate=False): run only on hosts matching at least one spec — linux/macos/windows/posix/any, 'not X' negation, optional arch filter",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"
@@ -603,7 +789,7 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ruff]
-preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+preview = true # required for PLW1514 (unspecified-encoding) — preview rule
 
 [tool.ruff.lint]
 # All other lints are intentionally disabled (see comment history on this
@@ -628,11 +814,27 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real
 # but ~180 legacy sites deep; they graduate to this list once the backlog
 # is burned down (see per-file-ignores below for the frozen baseline).
-select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
+select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pm.uv".msg = "Use PM's semantic Python operations, not an installer executable."
+"pm.client.uv".msg = "Use PM's semantic Python operations."
+"pm.ensure.uv".msg = "The raw uv bridge was removed; use PM operations."
+"pm._uv".msg = "Tool acquisition is private to PM."
+"pm.environment".msg = "The environment engine is private; use PM operations."
+"pm.runtime_stage".msg = "Use pm.stage_manager_runtime for build-time bootstrap."
 
 [tool.ruff.lint.per-file-ignores]
+"pm/**" = ["TID251"]
 # Tests can intentionally exercise locale-encoding edge cases.
-"tests/**" = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
+"tests/**" = [
+  "PLW1514",
+  "ASYNC210",
+  "ASYNC220",
+  "ASYNC221",
+  "ASYNC251",
+  "TID251",
+]
 # Skills and plugins are partially user-authored — their own conventions.
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]

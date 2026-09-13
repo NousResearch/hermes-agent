@@ -153,7 +153,8 @@ def write_remote_roster(root: Path | str, rows: Any) -> int:
 def read_remote_roster(root: Path | str) -> list[dict]:
     """The current remote roster (possibly empty). Never raises."""
     try:
-        data = json.loads((relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8"))
+        raw = (relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
         agents = data.get("agents") if isinstance(data, dict) else None
         return [r for r in map(_normalize_roster_row, agents) if r] if isinstance(agents, list) else []
     except FileNotFoundError:
@@ -237,7 +238,7 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     """True when the outbox envelope is older than ``ttl``; writes the 'queued_expired'
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
-        env = json.loads(path.read_text(encoding="utf-8"))
+        env = json.loads(path.read_text(encoding="utf-8-sig"))  # MERGE-CHECK: utf-8-sig kept (pm-era BOM-tolerant read fix)
         created = float(env.get("created_at") or path.stat().st_mtime)
     except (OSError, ValueError):
         return False
@@ -272,7 +273,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            out.append(json.loads(claimed.read_text(encoding="utf-8")))
+            out.append(json.loads(claimed.read_text(encoding="utf-8-sig")))
     return out
 
 
@@ -343,7 +344,7 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
-        "        d = json.load(open(p, encoding='utf-8'))\n"
+        "        d = json.load(open(p, encoding='utf-8-sig'))\n"
         "        if d.get('error'):\n"
         # Typed reason code rides ahead of the free text so the sender can
         # branch on it without parsing provider prose.

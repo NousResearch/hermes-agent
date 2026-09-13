@@ -45,7 +45,8 @@ import { fileURLToPath } from 'node:url';
  *   -IncludeDesktop), which also builds the desktop app -- on windows it
  *   registers Start Menu / Desktop shortcuts too, on linux/macos it
  *   builds into the checkout without registering an OS entry point;
- *   packaged-app is declared but not used by any OS spec yet.
+ *   packaged-app installs a signed bundle. Its native in-app update pair
+ *   is declared separately, not crossed with source-checkout update methods.
  * @typedef {InstallMethod | 'hermes-update' | 'open-app-update' | 'hermes-desktop-app-update'} UpdateMethod
  *   Every install method doubles as an update method (re-run it over the
  *   existing install), plus the updater CLI and the two app-update
@@ -89,6 +90,17 @@ import { fileURLToPath } from 'node:url';
  */
 export function legId(name) {
   return name.replace(/[^A-Za-z0-9._-]+/g, '-');
+}
+
+/** One pinned package transition; source-release sampling does not apply.
+ * @param {'windows' | 'macos'} os
+ * @param {string} oldTag
+ * @returns {{include: MatrixEntry[]}}
+ */
+export function bundledMatrix(os, oldTag) {
+  const name = `${os}: packaged-app -> open-app-update (${oldTag} -> HEAD)`;
+  return { include: [{ name, leg_id: legId(name), install_method: 'packaged-app',
+    update_method: 'open-app-update', install_ref: oldTag, tag_has_desktop: true }] };
 }
 
 /** @type {Record<Os, OsSpec>} */

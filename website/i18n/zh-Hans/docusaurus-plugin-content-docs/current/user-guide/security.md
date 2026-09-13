@@ -73,7 +73,7 @@ YOLO 模式在 CLI 和 gateway 会话中均可使用。在内部，它会设置 
 YOLO 模式会禁用会话中**所有**危险命令安全检查——**但硬性黑名单除外**（见下文）。仅在完全信任所生成命令的情况下使用（例如，在一次性环境中经过充分测试的自动化脚本）。
 :::
 
-对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands)。
+对于破坏性会话斜杠命令（`/clear`、`/new` / `/reset`、`/undo`、`/exit --delete`），CLI 在执行前也会提示确认。参见[斜杠命令——破坏性命令的确认提示](../reference/slash-commands.md#破坏性命令的确认提示)。
 
 ### 硬性黑名单（始终生效的底线）
 
@@ -495,7 +495,7 @@ security:
 
 当请求被阻止的 URL 时，工具会返回一条错误，说明该域名已被策略阻止。黑名单在 `web_search`、`web_extract`、`browser_navigate` 及所有支持 URL 的工具中均强制执行。
 
-完整详情请参见配置指南中的[网站黑名单](/user-guide/configuration#website-blocklist)。
+完整详情请参见配置指南中的[网站黑名单](/user-guide/configuration#网站黑名单)。
 
 ### SSRF 防护
 
@@ -630,35 +630,33 @@ hermes doctor --ack <advisory-id>
 
 ### 可选依赖的懒加载安装
 
-许多功能（Mistral TTS、ElevenLabs、Honcho 记忆、Bedrock、Slack、Matrix 等）依赖并非每个用户都需要的 Python 包。Hermes 在首次使用时**懒加载**安装这些包，而非在 `hermes-agent[all]` 下急切安装。实现位于 `tools/lazy_deps.py`。
+PM 通过 `pyproject.toml` 中的 extras 管理可选 Python 功能。
+源码安装选择 `all` extra，原生桌面包预装目标平台支持的所有 extras。
+这两种集合并不相同。
 
-此方案解决的权衡问题：
+当功能请求缺失的 extra 时，`pm.ensure_import("extra-name")` 使用与插件准入相同的依赖事务：
 
-- **脆弱性。** 当某个额外依赖的传递依赖在 PyPI 上不可用时（因恶意软件被隔离、被撤回、上传损坏），整个 `[all]` 解析会失败，新安装会静默回退到精简版本——同时丢失 10 个以上不相关的额外功能。懒加载安装将每个后端隔离，使一个受损依赖不会破坏不相关的功能。
-- **臃肿。** 只使用一个提供商的用户不再需要拉取数百个永远不会导入的包。
+1. 检查平台支持和 `security.allow_lazy_installs`。
+2. 在候选环境中统一准备核心依赖、现有 extras 和已启用插件的依赖。
+3. 没有插件成员时保持提交的锁文件不变；有成员时从先前选择开始解析，然后执行冻结同步。
+4. 验证候选环境后才发布新选择。失败会保留原环境，不会自动禁用或删除其他插件。
+5. 若当前进程仍使用旧环境，则提示重启，不在进程中直接替换已导入的库。
 
-工作原理：
+已发布的源码、锁文件和签名载荷保持不变。新增依赖使用包外的可写存储。
+插件依赖共享完整 Python 环境，不是相互隔离的沙箱。
+兼容的传递依赖可以更新，但声明的约束和精确固定版本仍有效。
+失败通过 `pm.InstallError` 和同步记录报告。
 
-1. 后端模块在其首次导入路径的顶部调用 `ensure("feature.name")`。
-2. 若依赖缺失，`ensure` 检查 `config.yaml` 中的 `security.allow_lazy_installs`（默认 `true`），并为允许列表中的规格运行 venv 作用域的 `pip install`。
-3. 若安装失败或用户已禁用懒加载安装，调用会抛出 `FeatureUnavailable`，附带实际的 pip stderr 和指向 `hermes tools` 的提示。
+关闭按需安装：
 
-`tools/lazy_deps.py` 强制执行的安全保证：
-
-| 保证 | 含义 |
-|---|---|
-| 仅限 venv 作用域 | 安装目标为活跃 venv 中的 `sys.executable`——绝不安装到系统 Python |
-| 仅按名称从 PyPI 安装 | 规格接受 `"package>=1.0,<2"` 语法。不允许 `--index-url`、`git+https://` 或 `file:` 路径——恶意的 `config.yaml` 无法重定向安装 |
-| 允许列表 | 只有出现在内置 `LAZY_DEPS` 映射中的规格才能通过此路径安装。功能名称中的拼写错误**不会**获得任意安装语义 |
-| 可选退出 | 设置 `security.allow_lazy_installs: false` 可完全禁用运行时安装。适用于受限网络或严格安全态势 |
-| 无静默重试 | 失败以 `FeatureUnavailable` 形式呈现——不缓存错误状态，不发生重试风暴 |
-
-禁用运行时安装：
-
-```yaml
-# ~/.hermes/config.yaml
-security:
-  allow_lazy_installs: false
+```bash
+hermes config set security.allow_lazy_installs false
 ```
 
-禁用后，需要可选依赖的后端会提示用户手动运行安装（`pip install …`）或通过 `hermes tools` 选择其他后端。
+已安装的依赖仍可使用。显式安装命令与按需安装不同。
+关闭懒加载且存在包内冻结功能列表时，请求的 Python extra 名称仍受该列表限制。
+该设置不是禁止显式插件准入或手动包管理命令的沙箱。
+官方 Docker 镜像还通过内部策略关闭按需安装，仅更改配置不能覆盖它。
+
+用 `hermes tools` 和 `hermes doctor` 检查缺失需求。
+不要向签名载荷或系统 Python 执行 pip 安装。详见[包管理](/reference/package-management)。

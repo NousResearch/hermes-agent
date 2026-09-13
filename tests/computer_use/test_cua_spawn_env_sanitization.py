@@ -7,8 +7,7 @@ full parent environment (provider API keys included):
 
 - ``cua_backend_driver._resolve_mcp_invocation`` (``cua-driver manifest``) — no
   ``env=`` at all
-- ``cua_backend_driver.cua_driver_update_check`` (``check-update --json``) —
-  telemetry env but no secret sanitization
+- ``cua_backend_driver.cua_driver_runtime_contract_status`` (``manifest``)
 - ``doctor._drive_health_report`` (``<binary> mcp``) — telemetry env only
 - ``permissions._run`` (every permission probe) — telemetry env only
 """
@@ -97,7 +96,7 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     assert captured["creationflags"] == CREATE_NO_WINDOW
 
 
-def test_update_check_sanitizes_env(monkeypatch):
+def test_runtime_contract_check_sanitizes_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
@@ -107,21 +106,11 @@ def test_update_check_sanitizes_env(monkeypatch):
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend)
-    payload = json.dumps({
-        "current_version": "1.0.0",
-        "latest_version": "1.0.0",
-        "update_available": False,
-    })
-    # PATH is pinned to /usr/bin:/bin above, so the driver won't resolve;
-    # pin it so the check reaches the (sanitized) subprocess spawn.
     monkeypatch.setattr(
-        cua_backend_driver, "resolve_cua_driver_cmd", lambda *a, **k: "cua-driver"
-    )
-    monkeypatch.setattr(
-        cua_backend.subprocess, "run", _capture_run(captured, stdout=payload)
+        cua_backend.subprocess, "run", _capture_run(captured, stdout="{}")
     )
 
-    cua_backend_driver.cua_driver_update_check(timeout=1.0)
+    cua_backend_driver.cua_driver_runtime_contract_status("cua-driver")
     _assert_sanitized(captured)
     assert captured["creationflags"] == CREATE_NO_WINDOW
 

@@ -373,7 +373,7 @@ class TestSlashCommand:
 class TestBundledDiscovery:
     def _write_enabled_config(self, hermes_home, names):
         """Write plugins.enabled allow-list to config.yaml."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = hermes_home / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
 
@@ -393,7 +393,7 @@ class TestBundledDiscovery:
 
     def test_disabled_beats_enabled(self, _isolate_env):
         """plugins.disabled wins even if the plugin is also in plugins.enabled."""
-        import yaml
+        import hermes_yaml as yaml
         cfg_path = _isolate_env / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({
             "plugins": {

@@ -3,10 +3,10 @@
 When TTS/STT packages (edge-tts, elevenlabs, mistralai) installed outside
 the venv but importable on sys.path (e.g. via PYTHONPATH, Docker layered
 filesystems), the lazy-import helpers must fall through to the raw import
-instead of re-raising lazy_deps.ensure() failures as ImportError.
+instead of re-raising pm.ensure_import() failures as ImportError.
 
 Uses sys.modules fixtures so builtins.__import__ stays intact — patching
-__import__ replaces the helper's own ``from tools.lazy_deps import ...``
+__import__ replaces the helper's own ``from pm import ...``
 and defeats the purpose of the test.
 """
 
@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.lazy_deps import FeatureUnavailable
+from pm import InstallError as FeatureUnavailable
 
 
 @pytest.fixture(autouse=True)
@@ -34,19 +34,19 @@ def _clean_tts_modules():
 
 
 class TestEdgeTtsPythonpathFallback:
-    def test_falls_through_on_lazy_deps_failure(self):
+    def test_falls_through_on_install_failure(self):
         """FeatureUnavailable from ensure() must not prevent raw import."""
         mock_edge_tts = MagicMock()
         with patch.dict(sys.modules, {"edge_tts": mock_edge_tts}), \
-             patch("tools.lazy_deps.ensure",
-                   side_effect=FeatureUnavailable("tts.edge", (), "test")):
+             patch("pm.ensure_import",
+                   side_effect=FeatureUnavailable("edge-tts", "test")):
             from tools.tts_tool import _import_edge_tts
             result = _import_edge_tts()
         assert result is mock_edge_tts
 
     def test_raises_when_package_truly_missing(self):
         """When the package is truly absent, ImportError must propagate."""
-        with patch("tools.lazy_deps.ensure"), \
+        with patch("pm.ensure_import"), \
              patch.dict(sys.modules, {"edge_tts": None}):
             from tools.tts_tool import _import_edge_tts
             with pytest.raises(ImportError):
@@ -54,7 +54,7 @@ class TestEdgeTtsPythonpathFallback:
 
 
 class TestElevenLabsPythonpathFallback:
-    def test_falls_through_on_lazy_deps_failure(self):
+    def test_falls_through_on_install_failure(self):
         """FeatureUnavailable from ensure() must not prevent raw import."""
         mock_cls = MagicMock()
         mock_client_pkg = MagicMock()
@@ -62,15 +62,15 @@ class TestElevenLabsPythonpathFallback:
         with patch.dict(sys.modules, {
             "elevenlabs": mock_client_pkg,
             "elevenlabs.client": mock_client_pkg,
-        }), patch("tools.lazy_deps.ensure",
-                  side_effect=FeatureUnavailable("tts.elevenlabs", (), "test")):
+        }), patch("pm.ensure_import",
+                  side_effect=FeatureUnavailable("tts-premium", "test")):
             from tools.tts_tool import _import_elevenlabs
             result = _import_elevenlabs()
         assert result is mock_cls
 
     def test_raises_when_package_truly_missing(self):
         """When the package is truly absent, ImportError must propagate."""
-        with patch("tools.lazy_deps.ensure"), \
+        with patch("pm.ensure_import"), \
              patch.dict(sys.modules, {"elevenlabs": None,
                                       "elevenlabs.client": None}):
             from tools.tts_tool import _import_elevenlabs
@@ -79,7 +79,7 @@ class TestElevenLabsPythonpathFallback:
 
 
 class TestMistralPythonpathFallback:
-    def test_falls_through_on_lazy_deps_failure(self):
+    def test_falls_through_on_install_failure(self):
         """FeatureUnavailable from ensure() must not prevent raw import."""
         mock_cls = MagicMock()
         mock_mistralai = MagicMock()
@@ -87,15 +87,15 @@ class TestMistralPythonpathFallback:
         with patch.dict(sys.modules, {
             "mistralai": mock_mistralai,
             "mistralai.client": mock_mistralai,
-        }), patch("tools.lazy_deps.ensure",
-                  side_effect=FeatureUnavailable("tts.mistral", (), "test")):
+        }), patch("pm.ensure_import",
+                  side_effect=FeatureUnavailable("mistral", "test")):
             from tools.tts_tool import _import_mistral_client
             result = _import_mistral_client()
         assert result is mock_cls
 
     def test_raises_when_package_truly_missing(self):
         """When the package is truly absent, ImportError must propagate."""
-        with patch("tools.lazy_deps.ensure"), \
+        with patch("pm.ensure_import"), \
              patch.dict(sys.modules, {"mistralai": None,
                                       "mistralai.client": None}):
             from tools.tts_tool import _import_mistral_client
@@ -107,10 +107,10 @@ class TestMistralPythonpathFallback:
 
 
 class TestMistralSttPythonpathFallback:
-    def test_transcribe_mistral_falls_through_on_lazy_deps_failure(
+    def test_transcribe_mistral_falls_through_on_install_failure(
         self, tmp_path,
     ):
-        """FeatureUnavailable from ensure('stt.mistral') must not block
+        """InstallError from ensure_import('mistral') must not block
         transcription when mistralai is importable via PYTHONPATH."""
         from tools.transcription_tools import _transcribe_mistral
 
@@ -137,8 +137,8 @@ class TestMistralSttPythonpathFallback:
         with patch.dict(sys.modules, {
             "mistralai": mock_mistralai,
             "mistralai.client": mock_mistralai,
-        }), patch("tools.lazy_deps.ensure",
-                  side_effect=FeatureUnavailable("stt.mistral", (), "test")), \
+        }), patch("pm.ensure_import",
+                  side_effect=FeatureUnavailable("mistral", "test")), \
              patch("tools.transcription_tools.get_env_value",
                    return_value="test-key"):
             result = _transcribe_mistral(str(audio_file), "mistral-large-latest")

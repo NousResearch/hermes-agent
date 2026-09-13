@@ -94,6 +94,7 @@ jobs:
       # in that clone. A shallow clone cannot serve either need.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       # One recording mechanism on every OS (Xvfb gives headless linux a

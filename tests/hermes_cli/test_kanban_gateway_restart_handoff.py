@@ -49,7 +49,7 @@ def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     return workspace, task
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -90,7 +90,7 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert "ANTHROPIC_API_KEY" not in captured_env
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,7 +106,7 @@ def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     assert popen_calls == []
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,7 +141,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     assert captured_cmd[:3] == ["hermes", "-p", "coder"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_real_user_systemd_scope_preserves_worker_context(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:

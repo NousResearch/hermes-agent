@@ -6,9 +6,8 @@
  * resolve the running app bundle/exe so a detached cleanup script can remove
  * it after the app quits, and build that cleanup script for each OS.
  *
- * Kept standalone (no ` import 'electron'`) so it can be unit-tested with
- * `node --test` — same pattern as connection-config.ts / backend-probes.ts.
- * main.ts requires these and wires them into the electron-coupled IPC layer.
+ * Kept electron-free so Vitest can exercise the registered IPC handlers.
+ * main.ts supplies the local install stamp and process callbacks.
  *
  * The three modes mirror the CLI's options exactly:
  *   - 'gui'  → remove ONLY the Chat GUI, keep the agent + all user data.
@@ -28,7 +27,176 @@
 
 import path from 'node:path'
 
-const UNINSTALL_MODES = ['gui', 'lite', 'full']
+import type { InstallStamp } from './install-stamp'
+
+export interface UninstallSummaryDetails {
+  hermes_home: string
+  agent_installed: boolean
+  gui_installed: boolean
+  source_built_artifacts: string[]
+  packaged_app_paths: string[]
+  userdata_dir: string
+  userdata_exists: boolean
+  platform: string
+  running_app_path?: string | null
+  probe?: string
+}
+
+export interface DesktopUninstallSummary extends UninstallSummaryDetails {
+  code_removal_allowed: boolean
+}
+
+export interface DesktopUninstallResult {
+  ok: boolean
+  mode?: string
+  willRemoveAppBundle?: boolean
+  scriptPath?: string
+  error?: string
+  message?: string
+}
+
+export interface DesktopUninstallIpcDeps {
+  ipcMain: {
+    handle: (channel: string, handler: (event: unknown, payload?: unknown) => Promise<unknown>) => void
+  }
+  stamp: Readonly<Partial<Pick<InstallStamp, 'distribution' | 'source' | 'payload' | 'updateMechanism'>>> | null
+  fallbackSummary: () => UninstallSummaryDetails
+  probeSummary: () => Promise<UninstallSummaryDetails>
+  runUninstall: (mode: string) => Promise<DesktopUninstallResult>
+}
+
+export function registerDesktopUninstallIpc({
+  ipcMain,
+  stamp,
+  fallbackSummary,
+  probeSummary,
+  runUninstall
+}: DesktopUninstallIpcDeps): void {
+  const kind: InstallKind = resolveInstallKind(stamp ?? {})
+  const codeRemovalAllowed: boolean = installKindAllowsCodeRemoval(kind)
+
+  ipcMain.handle('hermes:uninstall:summary', async (): Promise<DesktopUninstallSummary> => {
+    const summary: UninstallSummaryDetails = codeRemovalAllowed ? await probeSummary() : fallbackSummary()
+
+    // The local artifact owns this decision, not the Python summary.
+    return { ...summary, code_removal_allowed: codeRemovalAllowed }
+  })
+  ipcMain.handle(
+    'hermes:uninstall:run',
+    async (_event: unknown, payload?: unknown): Promise<DesktopUninstallResult> => {
+      // Every cleanup mode can remove the bundle, including a hidden data request.
+      if (!codeRemovalAllowed) {
+        return {
+          ok: false,
+          error: 'externally-managed',
+          message: 'This desktop install must be removed through its installer or package manager.'
+        }
+      }
+
+      const mode: unknown = payload && typeof payload === 'object' && 'mode' in payload ? payload.mode : payload
+      const requestedMode: string = String(mode || '')
+
+      if (!allowedUninstallModes(kind).includes(requestedMode)) {
+        return { ok: false, error: 'invalid-mode', message: `Unknown uninstall mode: ${requestedMode}` }
+      }
+
+      return runUninstall(requestedMode)
+    }
+  )
+}
+
+const UNINSTALL_MODES: string[] = ['gui', 'lite', 'full', 'data']
+
+// The baked install stamp determines who owns removal:
+//   'nix'      — a Nix build (stamp distribution 'nix'). The store is
+//                immutable and the install is owned by Nix tooling, so the
+//                app must not remove any code, its own bundle included.
+//   'bundled'  — a bundled or light artifact. The OS owns app removal.
+//   'external' — another package manager owns updates and removal.
+//   'standard' — everything else: the git-clone install the desktop
+//                installer bootstraps, or a `hermes desktop` source build.
+//                The classic script flow (venv python + rm the bundle) works.
+//
+// Only 'standard' installs may use the desktop cleanup script.
+const INSTALL_KINDS = ['nix', 'bundled', 'external', 'standard'] as const
+type InstallKind = (typeof INSTALL_KINDS)[number]
+
+/**
+ * Classify the install from the stamp. Pure so it can be unit-tested:
+ * callers pass the baked stamp, never the connected backend's install facts.
+ * `distribution` is authoritative; `source` is the schema-1 fallback.
+ * The 'bundled' and 'light' artifact kinds both classify as the managed
+ * 'bundled' flow — neither has agent code the app may remove, and the OS
+ * owns app removal.
+ */
+function resolveInstallKind({
+  distribution,
+  source,
+  payload = 'bootstrap',
+  updateMechanism
+}: NonNullable<DesktopUninstallIpcDeps['stamp']> = {}): InstallKind {
+  if (distribution === 'nix' || source === 'nix') {
+    return 'nix'
+  }
+
+  if (payload === 'bundled' || payload === 'light') {
+    return 'bundled'
+  }
+
+  if (updateMechanism === 'external') {
+    return 'external'
+  }
+
+  return 'standard'
+}
+
+/** True when this install kind lets the app remove code (agent / bundle). */
+function installKindAllowsCodeRemoval(kind: InstallKind): boolean {
+  return kind === 'standard'
+}
+
+/**
+ * Desktop cleanup always removes the bundle. No mode is safe for an install
+ * owned by another installer, including the CLI's data-only mode.
+ */
+function allowedUninstallModes(kind: InstallKind): string[] {
+  return installKindAllowsCodeRemoval(kind) ? ['gui', 'lite', 'full'] : []
+}
+
+/**
+ * Human instructions for removing the app itself the native way. Used when
+ * the install kind forbids code removal: Windows owns the bundled app
+ * through Apps & Features, macOS through the Trash, a Linux AppImage is a
+ * single file the user placed somewhere, and a Nix install belongs to the
+ * flake / profile that made it. `appPath` is the resolveRemovableAppPath()
+ * result (the AppImage path on Linux), used only to name the exact file.
+ */
+function nativeRemovalInstructions(kind, platform, appPath = null) {
+  if (kind === 'nix') {
+    return (
+      'This Hermes desktop app was installed by Nix. Uninstall it the same way you installed it: ' +
+      'remove hermes-agent from your flake or profile, then rebuild.'
+    )
+  }
+
+  if (platform === 'win32') {
+    return 'To uninstall, go to Windows Settings → Apps → Installed apps.'
+  }
+
+  if (platform === 'darwin') {
+    return 'Quit the app and drag Hermes.app from Applications to the Trash.'
+  }
+
+  if (appPath && /\.appimage$/i.test(String(appPath))) {
+    return `Delete the AppImage file at ${appPath}.`
+  }
+
+  if (appPath) {
+    return `Delete the app directory at ${appPath}.`
+  }
+
+  return 'Delete the Hermes AppImage (or app directory) from wherever you saved it.'
+}
 
 /**
  * Map an uninstall mode to the `python -m hermes_cli.uninstall` argv (after the
@@ -37,7 +205,7 @@ const UNINSTALL_MODES = ['gui', 'lite', 'full']
  * lite/full delete — see the Finding-3 note in buildWindowsCleanupScript.
  * Throws on an unknown mode so a typo can't silently become a full wipe.
  */
-function uninstallArgsForMode(mode) {
+function uninstallArgsForMode(mode: string) {
   if (!UNINSTALL_MODES.includes(mode)) {
     throw new Error(`Unknown uninstall mode: ${mode}`)
   }
@@ -45,14 +213,14 @@ function uninstallArgsForMode(mode) {
   return ['-m', 'hermes_cli.uninstall', '--mode', mode]
 }
 
-/** True when `mode` removes the agent (lite/full), false for gui-only. */
-function modeRemovesAgent(mode) {
+/** True when `mode` removes the agent code (lite/full), false otherwise. */
+function modeRemovesAgent(mode: string) {
   return mode === 'lite' || mode === 'full'
 }
 
-/** True when `mode` removes user data (full only). */
-function modeRemovesUserData(mode) {
-  return mode === 'full'
+/** True when `mode` removes user data (full and data). */
+function modeRemovesUserData(mode: string) {
+  return mode === 'full' || mode === 'data'
 }
 
 /**
@@ -142,7 +310,7 @@ function buildPosixCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoot,
   const q = s => `'${String(s).replace(/'/g, `'\\''`)}'`
 
   const lines = [
-    '#!/bin/bash',
+    '#!/usr/bin/env bash',
     'set -u',
     '# Wait (up to ~30s) for the desktop process to exit so the venv python',
     '# and the app bundle are no longer in use.',
@@ -257,10 +425,15 @@ function buildWindowsCleanupScript({
 }
 
 export {
+  allowedUninstallModes,
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  INSTALL_KINDS,
+  installKindAllowsCodeRemoval,
   modeRemovesAgent,
   modeRemovesUserData,
+  nativeRemovalInstructions,
+  resolveInstallKind,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   UNINSTALL_MODES,

@@ -6,6 +6,10 @@ description: "Set up Hermes Agent as a Microsoft Teams bot"
 
 # Microsoft Teams Setup
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Teams delivers messages by calling a **public HTTPS webhook**, so your instance needs a publicly reachable endpoint — either a dev tunnel (local dev) or a real domain (production).
 
 Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](/user-guide/messaging/teams-meetings).
@@ -28,9 +32,7 @@ For source or local installs, include the Teams extra so the bundled adapter can
 import the Microsoft Teams SDK:
 
 ```bash
-uv sync --extra teams
-# or, for editable installs:
-uv pip install -e ".[teams]"
+python -c "import pm; pm.sync_venv(['teams'], explicit=True)"
 ```
 
 ## Step 1: Install the Teams CLI
@@ -120,11 +122,13 @@ hermes gateway restart
 # or foreground: hermes gateway run
 ```
 
-The Teams SDK is optional; when Teams is enabled, the gateway lazy-installs it into Hermes' own venv on first start (do **not** use system `pip install` on Ubuntu 24.04 — that hits PEP 668 `externally-managed-environment`). To install manually into the Hermes venv:
+The Teams SDK is optional. When policy permits, the gateway requests the
+`teams` extra through PM on first start. PM prepares a complete environment
+instead of modifying the running interpreter. To request the extra explicitly
+from the prepared source checkout:
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/pip install microsoft-teams-apps aiohttp
-# or from a clone of the agent: uv sync --extra teams
+python -c "import pm; pm.sync_venv(['teams'], explicit=True)"
 ```
 
 The default webhook port is `3978` (override with `TEAMS_PORT`). Check that it's running:
@@ -257,7 +261,7 @@ Make sure the public HTTPS endpoint is reachable from the internet and uses a va
 | Problem | Solution |
 |---------|----------|
 | `Can't find a suitable configuration file` from `docker compose` | You are not in the repo that has `docker-compose.yml`, or you are on a native install — use `hermes gateway restart` instead, or `cd` into the clone first |
-| `requirements not met` / `Teams SDK missing` / `No adapter available for teams` | Restart gateway so lazy-install can run, or install into the **Hermes venv**: `~/.hermes/hermes-agent/venv/bin/pip install microsoft-teams-apps aiohttp`. System `pip` fails on Ubuntu 24.04 (PEP 668) and would not affect the service anyway |
+| `requirements not met` / `Teams SDK missing` / `No adapter available for teams` | Request the `teams` extra through PM as shown above, then restart the gateway. Do not install into a system Python or mutate the Hermes environment. |
 | `health` endpoint works but bot doesn't respond | Check that your tunnel is still running and the bot's messaging endpoint matches the tunnel URL |
 | Logs show `"UNKNOWN / HTTP/1.0" 400` when Teams sends a message | The tunnel or reverse proxy is forwarding HTTPS to Hermes' plain HTTP listener. Terminate TLS at the proxy and forward HTTP to port `3978` |
 | `KeyError: 'teams'` in logs | Restart the container — this is fixed in the current version |

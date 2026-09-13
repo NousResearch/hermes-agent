@@ -21,7 +21,7 @@ Hermes discovers memory providers from four sources, in this precedence order:
 | Bundled | `plugins/memory/<name>/` | Ships with Hermes. Closed to new providers — see [CONTRIBUTING](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md). |
 | User | `$HERMES_HOME/plugins/<name>/` | Dropped in by the user, per profile. |
 | Project | `./.hermes/plugins/<name>/` | Opt-in via `HERMES_ENABLE_PROJECT_PLUGINS=1`. |
-| Package | `hermes_agent.memory_providers` entry point | `pip install`, nothing to copy. |
+| Package | `hermes_agent.memory_providers` entry point | Distribution supplied by the installation owner; nothing to copy. |
 
 Earlier sources win on a name collision, so a directory dropped into a working
 tree can never shadow a shipped provider.
@@ -34,6 +34,20 @@ silently redirect the agent's memory rather than merely override a tool.
 
 Discovery only *enumerates* — it never imports a provider. Nothing runs until
 `memory.provider` names it.
+
+Entry-point discovery does not install packages. Do not inject a provider into
+Hermes's selected environment with pip. On PM-managed installations, ship a
+directory provider with declared Python dependencies; plugin admission and
+`hermes memory setup` prepare them through PM before use. Owner-managed builds
+(such as Nix) can include an entry-point distribution declaratively.
+
+CLI and dashboard setup share candidate preparation. PM includes the provider's
+`pyproject.toml` or legacy `pip_dependencies` / `python_dependencies` alongside
+the active plugin union; an importable module does not bypass declared version
+constraints. Dashboard readiness checks the same inputs without installing
+anything. A successful preparation may require restarting Hermes before the
+running process can use the selected dependency generation. External sidecar
+checks and setup commands remain separate from the Python union.
 
 ### Directory Provider
 
@@ -412,3 +426,13 @@ plugins/memory/my-provider/
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.
+
+## `HERMES_HOME` survival contract (what wrappers can rely on)
+
+For wrapper-style providers that keep their runtime in a sidecar venv outside Hermes-managed Python (no dependency surface — no `pyproject.toml`, `pip_dependencies`, or `python_dependencies` — at the scanned plugin root; a `pyproject.toml` belonging solely to an external or nested sidecar is not scanned):
+
+- **Location.** `$HERMES_HOME/plugins/<name>/` is the profile-scoped plugin location, and `HERMES_HOME` follows the active context override, then `$HERMES_HOME`, then the platform default. Propagate `HERMES_HOME` when launching the wrapper or sidecar so profile isolation holds; `MemoryManager.initialize_all` injects the active `hermes_home` into every provider.
+- **Survival.** Ordinary Hermes updates — including managed-venv rebuild/replacement by pm — do not delete or rewrite `$HERMES_HOME/plugins/**`. An installed wrapper directory and its marker file (e.g. `mnemosyne-wrapper.json`) survive. Explicit plugin updates and deletion flows (`hermes uninstall`, `hermes plugins remove`, profile deletion, user deletion) are excluded from this guarantee.
+- **Sidecar isolation.** A plugin root with no dependency surface never joins the pm workspace dependency union; a resync or venv rebuild neither provisions deps for it nor touches its tree.
+- **Conflicts.** For native shared-venv plugins, an unsatisfiable dependency union fails loudly: the candidate plugin stays unenabled and unimported (the admission authority refuses before publishing config, reporting the plugin identity plus the resolver's reason, with a re-enable/retry path and a machine-readable pm receipt). Dependency resolution does not automatically disable other plugins or run a bisect. Explicit plugin updates, removal, and independent security gates are separate operations.
+

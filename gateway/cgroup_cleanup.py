@@ -21,7 +21,7 @@ from pathlib import Path
 def _own_cgroup_path() -> str | None:
     """Return the cgroup v2 path for the calling process, or None."""
     try:
-        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     match = re.search(r"^0::(.+)$", text, re.MULTILINE)
@@ -30,7 +30,7 @@ def _own_cgroup_path() -> str | None:
 
 def _read_cgroup_pids(cgroup_path: str) -> list[int]:
     try:
-        raw = Path(f"/sys/fs/cgroup{cgroup_path}/cgroup.procs").read_text(encoding="utf-8")
+        raw = Path(f"/sys/fs/cgroup{cgroup_path}/cgroup.procs").read_text(encoding="utf-8-sig")
     except OSError:
         return []
     pids: list[int] = []

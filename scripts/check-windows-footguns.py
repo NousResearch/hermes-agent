@@ -22,6 +22,11 @@ Exit status:
     0 — no Windows footguns found (or all matches suppressed)
     1 — at least one unsuppressed match
 
+Encoding policy: READS pass encoding='utf-8-sig' (Windows tooling —
+PowerShell Set-Content/Out-File, some editors — BOM-prefixes files it
+touches; utf-8-sig reads BOM'd and BOM-less files alike). WRITES pass
+encoding='utf-8' (never emit a BOM ourselves).
+
 Suppress an intentional use (e.g. tests or platform-gated code) with:
     os.kill(pid, 0)  # windows-footgun: ok — only called on POSIX
 """
@@ -153,12 +158,13 @@ FOOTGUNS: list[Footgun] = [
         message=(
             "open() without an explicit encoding= uses the platform default "
             "(UTF-8 on POSIX, cp1252/mbcs on Windows) — files round-tripped "
-            "between hosts get mojibake. Always pass encoding='utf-8' for "
-            "text files, or use open(path, 'rb')/'wb' for binary."
+            "between hosts get mojibake. Always pass encoding= explicitly: "
+            "'utf-8-sig' for reads (tolerates a BOM), 'utf-8' for writes "
+            "(never emit one), or open(path, 'rb')/'wb' for binary."
         ),
         fix=(
-            "open(path, 'r', encoding='utf-8')  # or 'utf-8-sig' if the "
-            "file may have a BOM"
+            "reads: open(path, 'r', encoding='utf-8-sig')  writes: "
+            "open(path, 'w', encoding='utf-8')"
         ),
         # Filter: only flag if mode is missing-or-text AND the line doesn't
         # already pass encoding=. Skip binary mode (contains "b").
@@ -192,7 +198,8 @@ FOOTGUNS: list[Footgun] = [
             "fdopen, so this checker is the only gate."
         ),
         fix=(
-            "os.fdopen(fd, 'w', encoding='utf-8')  # or mode 'wb' for binary"
+            "reads: os.fdopen(fd, 'r', encoding='utf-8-sig')  writes: "
+            "os.fdopen(fd, 'w', encoding='utf-8')  binary: mode 'rb'/'wb'"
         ),
         post_filter=lambda m, line: (
             "b" not in (m.group("mode") or "")
@@ -416,7 +423,7 @@ FOOTGUNS: list[Footgun] = [
             "crashes with UnicodeDecodeError or writes mojibake. "
             "See issue #37423 and the #71014 / read_text campaign."
         ),
-        fix='path.read_text(encoding="utf-8") / path.write_text(data, encoding="utf-8")',
+        fix='path.read_text(encoding="utf-8-sig") / path.write_text(data, encoding="utf-8")',
         post_filter=lambda m, line: (
             "encoding=" not in line
             and "encoding =" not in line
@@ -430,6 +437,54 @@ FOOTGUNS: list[Footgun] = [
             # lives in the gateway guard test.
             and _call_closes_on_line(line, m.end())
         ),
+    ),
+    Footgun(
+        name="read with encoding='utf-8' (BOM-intolerant — use 'utf-8-sig')",
+        # Fires when a READ-shaped call passes plain utf-8. Windows tooling
+        # (PowerShell Set-Content/Out-File, some editors) BOM-prefixes files
+        # it touches; a plain-utf-8 read then hands '\ufeff{...' to
+        # json.load, which dies with "Expecting value". utf-8-sig reads
+        # BOM'd and BOM-less files identically, so it is strictly safer on
+        # the read side. Live case: PR #3 — Set-Content BOM'd
+        # install-stamp.json and read_build_info demoted the tree to
+        # `unknown`. The quote pattern stops at the closing quote, so
+        # 'utf-8-sig' itself never matches.
+        pattern=re.compile(
+            r"""encoding\s*=\s*['"]utf[-_]?8['"]""", re.IGNORECASE
+        ),
+        message=(
+            "Reading with encoding='utf-8' breaks on BOM-prefixed files — "
+            "Windows tooling (PowerShell Set-Content/Out-File, some "
+            "editors) BOMs files it touches, and json.load on the result "
+            "fails with 'Expecting value'. encoding='utf-8-sig' reads "
+            "BOM'd and BOM-less files alike. Policy: reads utf-8-sig, "
+            "writes utf-8."
+        ),
+        fix=(
+            "path.read_text(encoding='utf-8-sig') / "
+            "open(path, 'r', encoding='utf-8-sig')"
+        ),
+        post_filter=lambda m, line: _is_read_shaped(line),
+    ),
+    Footgun(
+        name="write with encoding='utf-8-sig' (emits a BOM)",
+        # The inverse direction: utf-8-sig on a WRITE emits the BOM — the
+        # exact bytes the read-side rule exists to tolerate. Never produce
+        # them ourselves.
+        pattern=re.compile(
+            r"""encoding\s*=\s*['"]utf[-_]?8[-_]sig['"]""", re.IGNORECASE
+        ),
+        message=(
+            "Writing with encoding='utf-8-sig' EMITS a UTF-8 BOM — the "
+            "exact bytes that break plain-utf-8 readers and non-Python "
+            "tooling. Policy: reads utf-8-sig, writes utf-8 (never emit "
+            "a BOM)."
+        ),
+        fix=(
+            "path.write_text(data, encoding='utf-8') / "
+            "open(path, 'w', encoding='utf-8')"
+        ),
+        post_filter=lambda m, line: _is_write_shaped(line),
     ),
 ]
 
@@ -589,6 +644,80 @@ def _looks_like_string_literal(line: str, match: "re.Match") -> bool:
             in_d = not in_d
         i += 1
     return in_s or in_d
+
+
+# Mode-extraction for file-opening calls, so the encoding-direction rules
+# can tell a read from a write. Three shapes, first match wins:
+#   builtin open(path, "r") / os.fdopen(fd, "w")  — mode is the SECOND arg
+#   path.open("a")                                — Path.open: mode is FIRST
+#   open(..., mode="w")                           — keyword anywhere
+# The capture is constrained to Python file-mode characters so a
+# nested-call first argument (``open(os.path.join(root, "x.json"), ...)``)
+# can't donate its string literal as a phantom mode — that exact line in
+# _startup_fast.py false-positived the write rule during the first live
+# sweep. The Path.open row exists because its first-arg mode made
+# ``path.open("a", encoding=...)`` unclassifiable and the read-side
+# fallback rewrote an APPEND to utf-8-sig (BOM'd gateway-exit-diag.log,
+# caught by test_lifecycle_ledger).
+_OPEN_MODE_RES = (
+    re.compile(r"""\bmode\s*=\s*['"]([rwaxbtU+]{1,3})['"]"""),
+    re.compile(r"""(?<![.\w])(?:open|fdopen)\s*\([^)]*?,\s*['"]([rwaxbtU+]{1,3})['"]"""),
+    re.compile(r"""\bfdopen\s*\([^)]*?,\s*['"]([rwaxbtU+]{1,3})['"]"""),
+    re.compile(r"""\.open\s*\(\s*['"]([rwaxbtU+]{1,3})['"]"""),
+)
+
+
+def _extract_mode(line: str) -> str | None:
+    for rx in _OPEN_MODE_RES:
+        m = rx.search(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _is_read_shaped(line: str) -> bool:
+    """Heuristic: does this line READ a file (so utf-8-sig applies)?
+
+    read_text() is a read by name; write_text() a write. For open()/
+    fdopen()/Path.open() the mode string decides: anything containing
+    w/a/x/+ can write, plain 'r' is a read. A bare builtin open()/fdopen()
+    with the mode omitted defaults to 'r' — but an omitted-mode `.open(`
+    METHOD call is NOT classified (we can't know the receiver; Path.open
+    defaults to read, but the sweep must never rewrite on a guess).
+    Lines with no file-opening call at all (subprocess encoding=,
+    TextIOWrapper, ...) are NOT classified as reads — the rule stays
+    quiet rather than guess.
+    """
+    if ".read_text(" in line:
+        return True
+    if ".write_text(" in line:
+        return False
+    mode = _extract_mode(line)
+    if mode is not None:
+        return not any(c in mode for c in "wax+")
+    # open()/fdopen() with the mode omitted defaults to 'r'. Builtin-call
+    # boundary only: `.open(`-method calls without a recognizable mode
+    # stay unclassified (the Path.open("a") lesson above).
+    return bool(re.search(r"(?<![.\w])(?:open|fdopen)\s*\(", line)) or bool(
+        re.search(r"\bfdopen\s*\(", line)
+    )
+
+
+def _is_write_shaped(line: str) -> bool:
+    """Heuristic: does this line WRITE a file (so a BOM would be emitted)?
+
+    The mirror of _is_read_shaped, with the same conservative default:
+    unclassifiable lines return False so the write rule never fires on
+    non-file-call sites.
+    """
+    if ".write_text(" in line:
+        return True
+    if ".read_text(" in line:
+        return False
+    mode = _extract_mode(line)
+    if mode is not None:
+        return any(c in mode for c in "wax+")
+    return False
 
 
 def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footgun]]:

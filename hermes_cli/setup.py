@@ -362,7 +362,9 @@ def _print_banner(*lines: str) -> None:
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
 
-# ── Section 1: Model & Provider Configuration ──
+# =============================================================================
+# Section 1: Model & Provider Configuration
+# =============================================================================
 
 
 def setup_model_provider(config: dict, *, quick: bool = False):
@@ -391,7 +393,18 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     save_config(config)
 
 
-# ── Section 3: Agent Settings ──
+# =============================================================================
+# Section 1b: TTS Provider Configuration
+
+
+def _check_espeak_ng() -> bool:
+    """Check if espeak-ng is installed."""
+    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
+
+
+# =============================================================================
+# Section 3: Agent Settings
+# =============================================================================
 
 
 def _apply_default_agent_settings(config: dict):

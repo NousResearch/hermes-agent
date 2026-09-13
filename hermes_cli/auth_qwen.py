@@ -32,7 +32,7 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
     if not auth_path.exists():
         raise _qwen_err("Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.", "qwen_auth_missing")
     try:
-        data = json.loads(auth_path.read_text(encoding="utf-8"))
+        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         raise _qwen_err(
             f"Failed to read Qwen CLI credentials from {auth_path}: {exc}", "qwen_auth_read_failed",

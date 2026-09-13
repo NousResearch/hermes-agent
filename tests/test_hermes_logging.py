@@ -25,14 +25,14 @@ def _reset_logging_state():
     """Reset the module-level sentinel and clean up root logger handlers
     added by setup_logging() so tests don't leak state.
 
-    Under xdist (-n auto) other test modules may have called setup_logging()
-    in the same worker process, leaving RotatingFileHandlers on the root
-    logger.  We strip ALL RotatingFileHandlers before each test so the count
-    assertions are stable regardless of test ordering.
+    Under a shared-process run, other test modules may have called
+    setup_logging() in the same process, leaving RotatingFileHandlers on the
+    root logger.  We strip ALL RotatingFileHandlers before each test so the
+    count assertions are stable regardless of test ordering.
     """
     hermes_logging._logging_initialized = False
     # File handlers now live behind the async QueueListener, not on the root
-    # logger; tear down any leaked from other xdist tests in this worker.
+    # logger; tear down any leaked from other tests in this process.
     hermes_logging._reset_queued_handlers()
     root = logging.getLogger()
     prev_root_level = root.level
@@ -138,18 +138,17 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text()
 
 
 
 
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
-        import yaml
+        import hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG"}}
-        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
 
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="WARNING")
 
@@ -371,6 +370,12 @@ class TestAddRotatingHandler:
         assert "[factory_test]" in content
 
         # Clean up
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
+
+    @pytest.mark.platforms("linux")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")
@@ -407,7 +412,7 @@ class TestWindowsConcurrentLogLockTimeout:
         logger.addHandler(handler)
         return logger, handler
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_helper_only_matches_windows_concurrent_lock_timeout(self):
         # Windows-only: concurrent-log-handler (and therefore its cross-process
         # lock timeout) is only installed on Windows — faking sys.platform
@@ -419,7 +424,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("some other logging failure")
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_helper_never_matches_off_windows(self):
         # On POSIX the suppression must stay inert: stdlib RotatingFileHandler
         # is in use, so this RuntimeError text is never a CLH lock timeout.
@@ -427,7 +432,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("Cannot acquire lock after 20 attempts")
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
         """Mirror CLH's real control flow.
 
@@ -436,7 +441,8 @@ class TestWindowsConcurrentLogLockTimeout:
         RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
         to ``handleError`` with the exception live in ``sys.exc_info()``.  We
         invoke ``handleError`` the same way CLH would and assert no traceback
-        reaches stderr (the slash-worker surface).
+        reaches stderr (the slash-worker surface) — but the suppression must
+        still surface once through the logging system, not stay a black hole.
 
         Windows-only: the suppression is keyed on the real host, and only on
         Windows is the base handler CLH at all — the fake platform gave us the
@@ -445,7 +451,21 @@ class TestWindowsConcurrentLogLockTimeout:
         record = logger.makeRecord(
             logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
         )
+        captured_warnings: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured_warnings.append(record)
+
+        listener = _Capture()
+        logging.getLogger("hermes_logging").addHandler(listener)
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(hermes_logging, "_windows_lock_timeout_warned", False)
         try:
+            try:
+                raise RuntimeError("Cannot acquire lock after 20 attempts")
+            except RuntimeError:
+                handler.handleError(record)
             try:
                 raise RuntimeError("Cannot acquire lock after 20 attempts")
             except RuntimeError:
@@ -454,8 +474,71 @@ class TestWindowsConcurrentLogLockTimeout:
             captured = capsys.readouterr()
             assert "Cannot acquire lock after 20 attempts" not in captured.err
             assert "--- Logging error ---" not in captured.err
+            # One-shot warning: the second suppressed emit must not re-warn.
+            assert len(captured_warnings) == 1
+            assert "concurrent-log-handler" in captured_warnings[0].getMessage()
         finally:
+            monkeypatch.undo()
+            logging.getLogger("hermes_logging").removeHandler(listener)
             logger.removeHandler(handler)
+            handler.close()
+
+    def test_lock_timeout_warning_is_one_shot(self, caplog):
+        """The suppressed-timeout warning is exactly-once per process.
+
+        Every emit after the first CLH lock failure raises the same
+        RuntimeError, so warn-once is what keeps errors.log from being spammed
+        as badly as the stderr noise the suppression replaces."""
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(hermes_logging, "_windows_lock_timeout_warned", False)
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_logging"):
+                hermes_logging._warn_windows_lock_timeout_once()
+                hermes_logging._warn_windows_lock_timeout_once()
+        finally:
+            monkeypatch.undo()
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "concurrent-log-handler" in warnings[0].getMessage()
+
+    def test_portalocker_probe_false_when_lock_raises(self, monkeypatch):
+        """The import-time probe catches a dead portalocker (the sealed-bundle
+        pywintypes failure) instead of letting CLH drop records silently."""
+
+        class FakePortalocker:
+            LOCK_EX = 2
+
+            @staticmethod
+            def lock(f, flags):
+                raise ImportError("pywintypes is required for Win32Locker but not found")
+
+            @staticmethod
+            def unlock(f):
+                return None
+
+        monkeypatch.setitem(sys.modules, "portalocker", FakePortalocker)
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert hermes_logging._portalocker_probe() is False
+        assert "pywintypes" in hermes_logging._WINDOWS_CLH_FALLBACK_REASON
+
+    def test_portalocker_probe_true_off_windows(self):
+        # Off Windows the probe is a no-op: stdlib rotation is already in use.
+        assert hermes_logging._portalocker_probe() is True
+
+    def test_fallback_handler_disables_rollover(self, tmp_path, monkeypatch):
+        """The stdlib fallback must not roll over: multi-process append
+        handles make Windows renames fail with WinError 32, pinning the file
+        and spamming stderr on every emit (#44873)."""
+        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK", True)
+        handler = hermes_logging._new_file_handler(
+            tmp_path / "agent.log", level=logging.INFO,
+            max_bytes=5 * 1024 * 1024, backup_count=3,
+            formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            assert handler.maxBytes == 0
+            assert handler.backupCount == 0
+        finally:
             handler.close()
 
 
@@ -470,9 +553,9 @@ class TestReadLoggingConfig:
         assert backup is None
 
     def test_reads_logging_section(self, hermes_home):
-        import yaml
+        import hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
-        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
 
         level, max_size, backup = hermes_logging._read_logging_config()
         assert level == "DEBUG"

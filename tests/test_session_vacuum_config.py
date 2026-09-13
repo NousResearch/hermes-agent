@@ -72,7 +72,7 @@ def test_shipped_template_does_not_pin_sessions_keys():
     uncommented ``sessions:`` value there becomes an EXPLICIT user setting that
     would freeze the retention defaults. The template must leave them commented
     so code defaults (and future flips) apply."""
-    import yaml
+    import hermes_yaml as yaml
 
     template = Path(__file__).resolve().parents[1] / "cli-config.yaml.example"
     data = yaml.safe_load(template.read_text(encoding="utf-8")) or {}

@@ -6,6 +6,9 @@ description: "通过 iLink Bot API 将 Hermes Agent 连接到个人微信账号"
 
 # 微信（Weixin / WeChat）
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 将 Hermes 连接到 [微信](https://weixin.qq.com/)（WeChat），腾讯的个人即时通讯平台。该适配器使用腾讯的 **iLink Bot API** 对接个人微信账号——与企业微信（WeCom）不同。消息通过长轮询（long-polling）方式传递，无需公网端点或 webhook。
 
 :::info
@@ -32,9 +35,9 @@ description: "通过 iLink Bot API 将 Hermes Agent 连接到个人微信账号"
 安装所需依赖：
 
 ```bash
-pip install aiohttp cryptography
+python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 # 可选：用于终端二维码显示
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 ```
 
 ## 配置步骤
@@ -296,7 +299,7 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 
 | 问题 | 解决方法 |
 |---------|-----|
-| `Weixin startup failed: aiohttp and cryptography are required` | 安装两者：`pip install aiohttp cryptography` |
+| `Weixin startup failed: aiohttp and cryptography are required` | 安装两者：`python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `Weixin startup failed: WEIXIN_TOKEN is required` | 运行 `hermes gateway setup` 完成扫码登录，或手动设置 `WEIXIN_TOKEN` |
 | `Weixin startup failed: WEIXIN_ACCOUNT_ID is required` | 在 `.env` 中设置 `WEIXIN_ACCOUNT_ID`，或运行 `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Weixin token` | 先停止另一个网关实例——每个 token 只允许一个轮询器 |
@@ -309,4 +312,4 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | 语音消息显示为文本 | 若微信提供了转录文本，适配器会使用文本内容，这是预期行为 |
 | 消息出现重复 | 适配器通过消息 ID 去重。若仍出现重复，检查是否有多个网关实例在运行 |
 | `iLink POST ... HTTP 4xx/5xx` | iLink 服务返回 API 错误。检查 token 有效性和网络连通性 |
-| 终端二维码无法渲染 | 使用 messaging 扩展重新安装：`cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`。或者，打开二维码上方打印的 URL |
+| 终端二维码无法渲染 | 使用 messaging 扩展重新安装：`cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`。或者，打开二维码上方打印的 URL |

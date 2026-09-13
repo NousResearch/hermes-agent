@@ -106,8 +106,8 @@ class TestResolveStorageDir:
 
     def test_uses_env_temp_dir_when_available(self):
         env = MagicMock()
-        env.get_temp_dir.return_value = "/data/data/com.termux/files/usr/tmp"
-        assert _resolve_storage_dir(env) == "/data/data/com.termux/files/usr/tmp/hermes-results"
+        env.get_temp_dir.return_value = "/var/host/tmp"
+        assert _resolve_storage_dir(env) == "/var/host/tmp/hermes-results"
 
 
 class TestSafeResultFilename:

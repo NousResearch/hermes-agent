@@ -90,7 +90,7 @@ class _StalledSummaryWorker:
             fence.finish_commit()
 
 
-def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=0.2):
+def _run(worker, *, chain, timeouts, messages, idle=2.0, ceiling=5.0):
     with _patch_chain(chain):
         return run_compress_context_with_progress_timeout(
             worker=worker,
@@ -151,8 +151,8 @@ def test_retry_runs_on_a_host_published_fence():
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="degraded-prompt",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=0.2,
+                idle_timeout_seconds=2.0,
+                total_ceiling_seconds=5.0,
                 new_fence=_new_fence,
             )
     finally:
@@ -181,8 +181,8 @@ def test_hard_interrupt_suppresses_the_fallback_attempt():
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="degraded-prompt",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=0.2,
+                idle_timeout_seconds=2.0,
+                total_ceiling_seconds=5.0,
                 on_timeout=lambda *args: timeouts.append(args),
                 telemetry_agent=agent,
             )
@@ -217,7 +217,7 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
         [{"role": "user", "content": "unused"}], stall_attempts=2
     )
     timeouts = []
-    entry = dict(CHAIN_ENTRY, timeout=0.05)
+    entry = dict(CHAIN_ENTRY, timeout=2.0)
 
     try:
         msgs, prompt = _run(worker, chain=[entry], timeouts=timeouts, messages=original)

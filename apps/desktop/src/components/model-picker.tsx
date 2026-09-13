@@ -8,12 +8,12 @@ import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalModelLoadProgress, ModelOptionProvider, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
-import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
@@ -387,21 +387,33 @@ const LOCAL_PROVIDER_SLUG = 'llamacpp'
 function DownloadingModelRow({ jobId, target }: { jobId: string; target: string }) {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const copyLocal = t.settings.localModels
 
   const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
+
+  const paused = useStoreSelector(
+    $localRuntimeJobs,
+    jobs => jobs.find(job => job.job_id === jobId)?.status === 'paused'
+  )
 
   return (
     <CommandItem className="flex items-center gap-2 pl-6 font-mono opacity-60" disabled value={`downloading:${jobId}`}>
       <span className="min-w-0 flex-1 truncate">{target}</span>
-      <span className="flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+      <span
+        className="flex shrink-0 items-center gap-1.5"
+        title={paused ? copyLocal.downloadPausedLabel : copy.downloading}
+      >
         <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
           <span
-            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            className={cn(
+              'block h-full rounded-full',
+              paused ? 'bg-muted-foreground/60' : 'bg-primary transition-[width] duration-500'
+            )}
             style={{ width: `${Math.max(2, percent ?? 0)}%` }}
           />
         </span>
         <span className="text-[0.62rem] tabular-nums text-muted-foreground">
-          {typeof percent === 'number' ? `${percent}%` : copy.downloading}
+          {paused ? copyLocal.downloadPausedLabel : typeof percent === 'number' ? `${percent}%` : copy.downloading}
         </span>
       </span>
     </CommandItem>

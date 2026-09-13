@@ -66,10 +66,13 @@ def _local_config_path() -> Path:
 
 
 def _read_config() -> dict:
-    try:
-        return json.loads(_config_path().read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    path = _config_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            pass
+    return {}
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:
@@ -466,6 +469,29 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
 
 # ── setup wizard ───────────────────────────────────────────────────────────
 
+def _honcho_pin() -> str:
+    """The pinned honcho-ai version from the pyproject extra — the single
+    authority (a hardcoded message string would drift on every bump)."""
+    try:
+        import tomllib
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[3]
+        with (repo / "pyproject.toml").open("rb") as f:
+            data = tomllib.load(f)
+        specs = (
+            data.get("project", {})
+            .get("optional-dependencies", {})
+            .get("honcho", [])
+        )
+        for spec in specs:
+            if isinstance(spec, str) and spec.startswith("honcho-ai=="):
+                return spec.split("==", 1)[1]
+    except Exception:
+        pass
+    return "latest"  # never block the prompt on metadata lookup
+
+
 def _ensure_sdk_installed() -> bool:
     """Check honcho-ai is importable; offer to install if not. Returns True if ready."""
     try:
@@ -473,19 +499,26 @@ def _ensure_sdk_installed() -> bool:
         return True
     except ImportError:
         pass
+
+    pin = _honcho_pin()
     print("  honcho-ai is not installed.")
-    if not _yes(_prompt("Install it now? (honcho-ai==2.2.0)", default="y")):
-        print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
+    answer = _prompt(f"Install it now? (honcho-ai=={pin})", default="y")
+    if answer.lower() not in {"y", "yes"}:
+        print(f"  Skipping install. Run: pip install 'honcho-ai=={pin}'\n")
         return False
     print("  Installing honcho-ai...", flush=True)
-    from tools.lazy_deps import install_specs  # env-aware: sealed hosted venvs redirect to the data volume
-    result = install_specs(["honcho-ai==2.2.0"])
-    if result.ok:
+    import pm
+
+    try:
+        pm.sync_venv(["honcho"], explicit=True)
         print("  Installed.\n")
         return True
-    print(f"  Cannot install: {result.reason}\n" if result.blocked else
-          f"  Install failed:\n{(result.stderr or '').strip()}\n  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
-    return False
+    except Exception as exc:
+        print(f"  Install failed: {exc}")
+        print("  Run manually: hermes pm install\n")
+        return False
+
+
 
 
 def _device_login_available() -> bool:
@@ -1105,8 +1138,10 @@ Honcho identity management
 
     p = Path(file_path).expanduser()
     if not p.exists():
-        return print(f"  File not found: {p}\n")
-    content = p.read_text(encoding="utf-8").strip()
+        print(f"  File not found: {p}\n")
+        return
+
+    content = p.read_text(encoding="utf-8-sig").strip()
     if not content:
         return print(f"  File is empty: {p}\n")
     if mgr.seed_ai_identity(session_key, content, source=p.name):
@@ -1133,7 +1168,7 @@ def _migrate_upload(mgr, session_key: str, user_files: list[Path]) -> None:
 
 def _migrate_seed(mgr, session_key: str, agent_files: list[Path]) -> None:
     for f in agent_files:
-        content = f.read_text(encoding="utf-8").strip()
+        content = f.read_text(encoding="utf-8-sig").strip()
         if content:
             ok = mgr.seed_ai_identity(session_key, content, source=f.name)
             print(f"    {f.name}: {'seeded' if ok else 'failed'}")
@@ -1234,7 +1269,25 @@ Step 4  Seed AI identity files → Honcho AI peer
         print(f"  Found: {', '.join(f.name for f in agent_files)}")
         print()
         if has_key:
-            _offer("  Seed AI identity from all detected files now?", _migrate_seed, agent_files)
+            answer = _prompt("  Seed AI identity from all detected files now?", default="y")
+            if answer.lower() in {"y", "yes"}:
+                try:
+                    from plugins.memory.honcho.client import (
+                        HonchoClientConfig,
+                        get_honcho_client,
+                        reset_honcho_client,
+                    )
+                    from plugins.memory.honcho.session import HonchoSessionManager
+
+                    reset_honcho_client()
+                    hcfg = HonchoClientConfig.from_global_config()
+                    client = get_honcho_client(hcfg)
+                    mgr = HonchoSessionManager(honcho=client, config=hcfg)
+                    session_key = hcfg.resolve_session_name()
+                    mgr.get_or_create(session_key)
+                    _migrate_seed(mgr, session_key, agent_files)
+                except Exception as e:
+                    print(f"  Failed: {e}")
         else:
             print("  Run 'hermes honcho setup' first, then seed manually:")
             print("\n".join(f"    hermes honcho identity {f}" for f in agent_files))

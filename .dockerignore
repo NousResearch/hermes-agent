@@ -12,6 +12,8 @@ __pycache__
 *.egg-info/
 dist/
 build/
+!scripts/build/
+!scripts/build/**
 
 # Virtual environments
 venv/
@@ -27,6 +29,8 @@ node_modules
 .notebooklm-playwright/
 .pip-cache/
 .uv-cache/
+.cache/
+.build/
 
 # Built artifacts that are regenerated inside the image.  Excluded so local
 # rebuilds on the developer's machine don't invalidate the npm-install layer
@@ -58,6 +62,8 @@ htmlcov/
 
 # Documentation
 *.md
+!skills/**/*.md
+!optional-skills/**/*.md
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
@@ -84,8 +90,14 @@ tests/
 website/
 docs/
 
-# Assets only used by the GitHub README
+# Keep the source artwork needed by web's icon-generation prebuild.
 assets/
+!assets/
+assets/*
+!assets/nous-girl-black.svg
+!assets/nous-girl-white.svg
+!assets/backgrounds/
+!assets/backgrounds/**
 infographic/
 
 # Plugin-level docs (hermes-achievements ships docs/ but the runtime doesn't read them)
@@ -100,6 +112,7 @@ packaging/
 # Design and planning documents
 plans/
 .plans/
+.hermes/
 
 # Repo-level dotfiles that are git-only or dev-tooling config
 .envrc

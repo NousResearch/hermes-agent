@@ -109,106 +109,111 @@ A well-built third-party-product plugin can clear automated review and still be 
 | Requirement | Notes |
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
-| **Python 3.11–3.13** | uv will install it if missing |
-| **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+| **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
-### Install with the standard installer
+### PM developer environment
 
-For most contributors, the best development bootstrap is the same path users
-take: run the standard installer, then work inside the repository it cloned.
-The installer creates the Hermes venv, wires the `hermes` command, stamps the
-install method for `hermes update`, and clones the full git project into
-`$HERMES_HOME/hermes-agent` (usually `~/.hermes/hermes-agent`). That keeps your
-development environment on the same layout the CLI, updater, lazy dependency
-installer, gateway, and docs assume.
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
+dependency changes, and test environments. Select your development
+home before setup so experimental code does not migrate production data.
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+Activate from the repository root in each new shell. Activation runs setup's
+runtime-only path, so it provisions a fresh checkout and syncs stale dependencies.
 
-# Add dev/test extras on top of the standard install.
-uv pip install -e ".[all,dev]"
-
-# Optional: docs site + workspace dependencies.
-npm install
-```
-
-After that, create branches and run tests from that checkout:
+Bash:
 
 ```bash
-git checkout -b fix/description
-scripts/run_tests.sh
+source ./activate
+python hermes --version
 ```
 
-### Manual clone fallback
+PowerShell:
 
-Use this only if you intentionally do not want Hermes' managed install layout
-(for example, a throwaway clone inside a container or CI job). If you install
-this way, make sure you run the `hermes` entrypoint from this venv; running the
-system `python3 -m hermes_cli.main` can pick up unrelated system Python
-packages.
+```powershell
+. .\activate.ps1
+python hermes --version
+```
 
-Create the venv **outside** the cloned source tree. A venv that lives inside
-the directory the agent operates from can be wiped by a relative-path command
-the agent runs against its own checkout (`rm -rf venv`, `uv venv venv`, etc.),
-which silently destroys the running runtime mid-session. Keeping it outside the
-tree means no relative path from the workspace resolves to it.
+Run `python hermes` for this checkout, not a global `hermes` alias. PM activation
+syncs tools and Python dependencies before adding them to the shell. It does not
+install JS workspaces or rewrite launchers and shell configuration. `deactivate`
+restores the prior shell environment.
+
+### Manual development and test environment
+
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
+Run these commands from that checkout with its prepared Python. Keep the same
+development `HERMES_HOME`. PM must be able to start before it can build another
+environment. On Windows, initialize the native C++ build environment for your
+architecture before building source dependencies.
+
+Build an independent interpreter for tests and editor tools:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-
-# Create venv with Python 3.11, OUTSIDE the source tree
-uv venv ~/.hermes/venvs/hermes-dev --python 3.11
-export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
-
-# Optional: workspace / docs dependencies
-npm install
+python -m pm.build_env --source . --out .venv --extra dev --group test
 ```
 
-### Configure for development
+PM builds from the committed lock and checks dependency consistency before
+returning the new interpreter. The `test` group includes native launcher test
+dependencies and does not enter the application runtime. If tests require
+another declared feature, add its `--extra`.
+
+The output must not exist, even as an empty directory or symlink. To regenerate
+it after a dependency change, stop its processes and intentionally remove only
+that disposable environment first. PM does not delete an existing destination.
+Do not run raw pip or uv commands to change a PM-built environment.
+
+To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
+path. Set `HERMES_PYTHON` to that environment's interpreter:
+
+- POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
+- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
+
+The canonical runner discovers repository `.venv` automatically. It clears
+`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
+This test environment does not replace PM's application selection or tool
+store. Do not point a bundled app at it or install into an MSIX payload.
+
+For an isolated development instance, select a disposable `HERMES_HOME` before
+starting the source command. Use `python hermes setup` to configure it rather
+than copying production credentials into the checkout.
+
+### JavaScript workspaces and website
+
+From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
+shared JS workspaces. The website is separate:
 
 ```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-
-# Add at minimum an LLM provider key:
-echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
+npm ci --prefix website
+npm run build:fast --prefix website
 ```
 
-### Run
+Use a Node/npm version accepted by the corresponding `package.json` engines.
+Native desktop dependencies can also require the platform build toolchain.
 
-```bash
-# The standard installer already put `hermes` on PATH.
-hermes doctor
-hermes chat -q "Hello"
-```
-
-If you used the manual clone fallback, run `./hermes` from the checkout or
-symlink this clone's venv explicitly:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
+Logos and icons are generated from `assets/nous-girl-*.svg` and
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` uses the locked,
+isolated `icon-build` dependency group. Do not commit generated PNG/ICO/ICNS
+outputs or add icon renderers to production dependencies.
 
 ### Run tests
 
-```bash
-# Preferred — matches CI (hermetic `env -i`, per-file subprocess isolation
-# via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
-scripts/run_tests.sh
+Use the canonical runner on every host:
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+```bash
+scripts/run_tests.sh
+scripts/run_tests.sh tests/agent/ -v
 ```
+
+On Windows, run the script through Bash. When no local `.venv` or `venv`
+contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
+clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
+subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
+
+Run the relevant JS workspace checks for JS changes. Native install/update
+E2E runs on disposable CI hosts, never against the developer's live app.
+See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.
 
 ---
 
@@ -713,7 +718,7 @@ that touches the OS, assume *any* platform can hit your code path.
    ```
 
    If you specifically need the hermes wrapper (it has a stdlib fallback
-   for scaffold-phase imports before pip install finishes), use
+   for scaffold-phase imports before PM finishes dependency preparation), use
    `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
    dance on Windows only when psutil is somehow missing.
@@ -842,15 +847,19 @@ that touches the OS, assume *any* platform can hit your code path.
 
 ### Testing cross-platform
 
-Tests that excercise behavior on specific platforms must run on their target platforms.
+Tests of host-specific behavior must run on that host. Apply one `platforms`
+marker to each test, rather than changing `sys.platform`:
 
 ```python
-@pytest.mark.linux_only
-@pytest.mark.macos_only
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows", arch="arm64")
+def test_native_windows_arm64_behavior():
+    ...
 ```
-Avoid monkeypatching `sys.platform` unless absolutely needed, but if you do, also patch `platform.system()` / `platform.release()` / `platform.mac_ver()`.
-Symlinks, 0o600 permissions, SIGALRM, os.setsid/fork are all unix-only.
+
+For several supported hosts, use one marker with multiple arguments, such as
+`@pytest.mark.platforms("linux", "macos")`. Do not stack host markers.
+Tests of pure functions that accept a platform as data need no host marker.
+See [AGENTS.md](AGENTS.md#dont-fake-the-host-os) for the complete contract.
 
 ---
 
@@ -937,7 +946,7 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
+1. **Run tests**: use `scripts/run_tests.sh` for the same environment and per-file isolation as CI.
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.

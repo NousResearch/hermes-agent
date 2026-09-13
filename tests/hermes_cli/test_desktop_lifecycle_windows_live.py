@@ -128,7 +128,7 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
         return out
 
     monkeypatch.setattr(
-        "hermes_cli.main._detect_venv_python_processes", fake_holders
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes", fake_holders
     )
 
     # serve-shaped holder with a live parent (us) → owns
@@ -138,7 +138,7 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     serve_like.kill()
     serve_like.wait()
     monkeypatch.setattr(
-        "hermes_cli.main._detect_venv_python_processes",
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes",
         lambda: [fake_holders()[1]],
     )
     assert update_cmd._desktop_owns_gateway_lifecycle() is False

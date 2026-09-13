@@ -109,9 +109,84 @@ def _memory_store_flags(hermes_home: Path) -> tuple:
     return get_builtin_memory_store_flags({"memory": _doctor_memory_config(hermes_home)})
 
 
+def check_legacy_desktop_checkout() -> None:
+    """Report the unused legacy checkout under an embedded desktop install.
+
+    Before the embedded runtime existed, the desktop app installed a git
+    checkout at $HERMES_HOME/hermes-agent. An embedded app never uses it,
+    so it sits on disk (1-2 GB of tree + venv). Doctor only REPORTS the
+    checkout and its size — it never suggests a deletion command, and
+    never deletes anything itself: a pristineness probe cannot prove no
+    other client uses the tree or that every local commit is published,
+    so the review-and-decide step belongs to the user.
+    """
+    from hermes_cli.steward import STEWARD_DESKTOP, sealed_steward
+
+    try:
+        from hermes_cli.main import PROJECT_ROOT
+    except Exception:
+        return
+
+    if sealed_steward(Path(PROJECT_ROOT)) != STEWARD_DESKTOP:
+        return
+
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+
+    checkout = HERMES_HOME / "hermes-agent"
+    if not (checkout / ".git").exists():
+        return
+
+    _section("Legacy Desktop Checkout")
+
+    def _git(*args: str):
+        try:
+            return subprocess.run(
+                ["git", "-C", str(checkout), *args],
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    status = _git("status", "--porcelain")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    stashes = _git("stash", "list")
+
+    # Conservative pristineness: every probe must succeed AND come back
+    # clean. Any probe failure counts as "has local work".
+    pristine = (
+        status is not None and status.returncode == 0 and status.stdout.strip() == ""
+        and branch is not None and branch.returncode == 0 and branch.stdout.strip() == "main"
+        and stashes is not None and stashes.returncode == 0 and stashes.stdout.strip() == ""
+    )
+
+    size_note = ""
+    try:
+        total = sum(f.stat().st_size for f in checkout.rglob("*") if f.is_file())
+        size_note = f" (~{total / 1_000_000_000:.1f} GB)"
+    except OSError:
+        pass
+
+    if pristine:
+        check_warn(
+            f"Unused checkout at {_DHH}/hermes-agent{size_note}",
+            "(the desktop app runs embedded and does not use it; the tree is clean)",
+        )
+        print("    Review it and decide whether to keep or remove it — doctor does not delete anything.")
+    else:
+        check_info(
+            f"A checkout exists at {_DHH}/hermes-agent but holds local work "
+            "(changes, a branch, or stashes). The desktop app does not use "
+            "it; review it before you remove anything."
+        )
+
+
 @doctor_check()
 def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     """HERMES_HOME, expected subdirs, SOUL.md, and the enabled built-in memory files."""
+    try:
+        check_legacy_desktop_checkout()
+    except Exception:
+        pass  # best-effort report; must never break the directory check
     from hermes_cli.doctor import HERMES_HOME, _DHH
     hermes_home = HERMES_HOME
     ensure_dir(f, should_fix, hermes_home, f"{_DHH} directory exists", f"Created {_DHH} directory", f"{_DHH} not found")
@@ -124,7 +199,7 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     # SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():
-        lines = soul_path.read_text(encoding="utf-8").strip().splitlines()
+        lines = soul_path.read_text(encoding="utf-8-sig").strip().splitlines()
         if any(l.strip() and not l.strip().startswith(("<!--", "-->", "#")) for l in lines):
             check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
         else:  # template comments only (no real content)
@@ -147,7 +222,7 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
                f"{_DHH}/memories/ not found")
     for fname in [n for on, n in ((_memory_enabled, "MEMORY.md"), (_user_profile_enabled, "USER.md")) if on and existed]:
         if (memories_dir / fname).exists():
-            check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
+            check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8-sig').strip())} chars)")
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
 
@@ -297,12 +372,58 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
     _state_db_wal(f, should_fix, state_db_path)
 
 
+def _plugin_provenance_rows(plugins_dir) -> list:
+    """Report local provenance using the update checker's admission rules."""
+    from hermes_cli.plugins_provenance import ProvenanceClass, plugins_provenance
+    from hermes_cli.plugins_updates import check_local_provenance
+
+    if plugins_dir is None or not Path(plugins_dir).is_dir():
+        return [("info", "No plugins directory yet (nothing to check provenance for)", "")]
+    try:
+        provenances = plugins_provenance(Path(plugins_dir))
+    except (OSError, ValueError, RuntimeError) as exc:
+        return [("warn", "Plugin provenance could not be read", str(exc))]
+    rows = []
+    for provenance in provenances:
+        result = check_local_provenance(provenance)
+        detail = result.needs_fixing or result.reason
+        if result.needs_fixing or provenance.klass is ProvenanceClass.DRIFT:
+            rows.append(("warn", f"Plugin '{provenance.name}': {detail}", ""))
+        elif provenance.klass is ProvenanceClass.MANUAL:
+            rows.append(("info", f"Plugin '{provenance.name}' installed manually", detail))
+        elif provenance.klass is ProvenanceClass.SELF_CLONED:
+            rows.append(("info", f"Plugin '{provenance.name}': self-cloned", detail))
+        else:
+            rows.append(("ok", f"Plugin '{provenance.name}': provenance in good standing", detail))
+    return rows or [("info", "No provenanced plugins found", "")]
+
+
+@doctor_check("")
+def _check_update_provenance(should_fix: bool, f: Finding) -> None:
+    """Inspect local plugin update provenance without network or writes."""
+    from hermes_constants import get_hermes_home
+
+    printers = {"warn": check_warn, "ok": check_ok, "info": lambda text, detail: check_info(f"{text} {detail}".rstrip())}
+    for kind, text, detail in _plugin_provenance_rows(get_hermes_home() / "plugins"):
+        printers[kind](text, detail)
+
+
 def _gh_authenticated() -> bool:
-    """Check if gh CLI is authenticated via token file or device flow."""
+    """Check if gh CLI is authenticated via token file or device flow.
+
+    Availability is resolved through shutil.which (the same probe every
+    other doctor tool check uses); the spawn itself treats any OS-level
+    launch failure (a Store/MSIX shim, a deleted binary) as "not
+    authenticated" rather than crashing the Skills Hub check.
+    """
+    from hermes_cli.doctor_tools import _safe_which
+
+    if not _safe_which("gh"):
+        return False
     try:
         result = subprocess.run(["gh", "auth", "status", "--json", "authenticated"], capture_output=True, timeout=10)
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -315,7 +436,7 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
         if lock_file.exists():
             with warn_on_error("Lock file", "(corrupted or unreadable)"):
                 import json
-                count = len(json.loads(lock_file.read_text(encoding="utf-8")).get("installed", {}))
+                count = len(json.loads(lock_file.read_text(encoding="utf-8-sig")).get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")
         quarantine = hub_dir / "quarantine"
         q_count = sum(1 for d in quarantine.iterdir() if d.is_dir()) if quarantine.exists() else 0
@@ -366,10 +487,10 @@ def _memory_provider_mem0(issues: list) -> None:
 
 # provider -> (checker, ImportError row, ImportError issue, label for "check failed")
 _MEMORY_PROVIDER_CHECKS = {
-    "honcho": (_memory_provider_honcho, ("honcho-ai not installed", "pip install honcho-ai"),
-               "Honcho is set as memory provider but honcho-ai is not installed", "Honcho"),
-    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "pip install mem0ai"),
-             "Mem0 is set as memory provider but mem0ai is not installed", "Mem0"),
+    "honcho": (_memory_provider_honcho, ("honcho-ai not installed", "run hermes memory setup"),
+               "Honcho dependencies missing — run hermes memory setup, then restart Hermes", "Honcho"),
+    "mem0": (_memory_provider_mem0, ("Mem0 plugin not loadable", "run hermes memory setup"),
+             "Mem0 dependencies missing — run hermes memory setup, then restart Hermes", "Mem0"),
 }
 
 
@@ -426,6 +547,6 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             if not wrapper.is_file():
                 continue
             with warn_on_error(""):
-                _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8"))
+                _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8-sig"))
                 if _m and not profile_exists(_m.group(1)):
                     check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")

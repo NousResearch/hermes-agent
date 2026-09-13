@@ -27,7 +27,7 @@ from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
 from hermes_cli import main_dashboard
 from hermes_cli import update_cmd
-from hermes_cli.update_cmd import _finish_dashboard_update_cleanup
+from hermes_cli import update_cmd_maint
 from hermes_cli.main_dashboard import _restart_managed_dashboard_service
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes as _warn_stale_dashboard_processes
 
@@ -37,18 +37,16 @@ def _refresh_bindings_against_live_module():
     """Rebind module-level names to the *current* defining modules.
 
     Other tests in the suite reload modules from ``sys.modules``; when that
-    happens on the same xdist worker before we run, our top-of-file bindings
+    happens in the same process before we run, our top-of-file bindings
     end up pointing at the *old* module object and ``patch("<module>.X")``
     patches the *new* one, so every patch becomes a no-op and the kill path
     silently returns early. Refreshing the bindings keeps them consistent.
     """
-    global _finish_dashboard_update_cleanup
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
     global _restart_managed_dashboard_service
     global _warn_stale_dashboard_processes
 
-    _finish_dashboard_update_cleanup = update_cmd._finish_dashboard_update_cleanup
     _find_stale_dashboard_pids = main_dashboard._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = dashboard_procs._kill_stale_dashboard_processes
     _restart_managed_dashboard_service = main_dashboard._restart_managed_dashboard_service
@@ -164,11 +162,11 @@ class TestFindStaleDashboardPids:
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_ps_timeout_returns_empty_linux(self):
         self._assert_ps_timeout_returns_empty()
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_ps_timeout_returns_empty_macos(self):
         self._assert_ps_timeout_returns_empty()
 
@@ -267,9 +265,9 @@ class TestKillStaleDashboardPosix:
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_taskkill_invoked_for_each_pid(self, capsys):
-        """``windows_only``: ``taskkill.exe`` only exists on Windows, and the
+        """``platforms("windows")``: ``taskkill.exe`` only exists on Windows, and the
         faked platform also silently skipped the POSIX-only cgroup/argv
         snapshot the real Windows path must not take.
         """
@@ -316,7 +314,7 @@ class TestDashboardUpdateCleanup:
             return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
                           "unrecovered": []},
         ):
-            _finish_dashboard_update_cleanup([])
+            update_cmd_maint._refresh_dashboard_after_update()
 
         assert "stopped during update" not in capsys.readouterr().out
 
@@ -837,9 +835,9 @@ class TestCmdlineCapture:
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_returns_none_on_windows(self):
-        """``windows_only``: the contract is "no graceful-argv capture on a
+        """``platforms("windows")``: the contract is "no graceful-argv capture on a
         real Windows host" — asserting it against a faked platform only
         restated the branch condition.
         """
@@ -860,7 +858,7 @@ class TestPostUpdateStaleModuleReload:
     """
 
     def test_cleanup_reloads_before_scanning(self):
-        """_finish_dashboard_update_cleanup must reload the process-scan
+        """Dashboard refresh must reload the process-scan
         modules BEFORE calling _kill_stale_dashboard_processes, on every
         call path (git update and ZIP fallback both route here)."""
         from hermes_cli import update_cmd
@@ -873,21 +871,9 @@ class TestPostUpdateStaleModuleReload:
             "hermes_cli.main._kill_stale_dashboard_processes",
             side_effect=lambda **kw: order.append("kill") or {"unrecovered": []},
         ):
-            update_cmd._finish_dashboard_update_cleanup([])
+            update_cmd_maint._refresh_dashboard_after_update()
 
         assert order == ["reload", "kill"]
-
-    def test_node_failures_skip_reload_and_kill(self):
-        """A failed Node refresh leaves the running dashboard untouched —
-        no reload, no kill (existing safety rule preserved)."""
-        from hermes_cli import update_cmd
-
-        with patch.object(update_cmd, "_reload_process_scan_modules") as mock_reload, \
-             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill:
-            update_cmd._finish_dashboard_update_cleanup(["dashboard"])
-
-        mock_reload.assert_not_called()
-        mock_kill.assert_not_called()
 
     def test_reload_restores_missing_symbol(self):
         """Simulate the stale-module state: strip ``bounded_probe_run`` off

@@ -1716,6 +1716,7 @@ export interface MemoryProviderExternalDependency {
 
 export interface MemoryProviderSetupInfo {
   pip_dependencies: string[];
+  python_dependencies_declared?: boolean;
   external_dependencies: MemoryProviderExternalDependency[];
   required_env: string[];
   dependencies_installed: boolean;

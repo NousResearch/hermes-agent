@@ -65,14 +65,11 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Set up locked Node and npm
+        id: node
+        uses: ./.github/actions/setup-pm
         with:
-          node-version: 26
-          cache: npm
-
-      - name: grab npm 12
-        run: |
-          npm i -g npm@12
+          toolchain: node
 
       # --ignore-scripts: eslint only needs TS sources + eslint packages.
       - uses: ./.github/actions/retry

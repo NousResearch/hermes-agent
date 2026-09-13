@@ -56,4 +56,3 @@ class TestPostSetupGate:
 
         monkeypatch.setitem(tools_config._POST_SETUP_INSTALLED, "cua_driver", _boom)
         assert tools_config._post_setup_already_installed("cua_driver") is True
-

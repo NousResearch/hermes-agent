@@ -76,7 +76,7 @@ def _read_mem0_json(config_path: Path) -> dict:
     """Best-effort read of mem0.json; missing/corrupt file -> {}."""
     if config_path.exists():
         with suppress(Exception):
-            return json.loads(config_path.read_text(encoding="utf-8"))
+            return json.loads(config_path.read_text(encoding="utf-8-sig"))
     return {}
 
 
@@ -187,8 +187,8 @@ class Mem0MemoryProvider(MemoryProvider):
         # Lazy-install the mem0 SDK before the backend imports it (honors security.allow_lazy_installs);
         # on failure the backend import raises the canonical error, captured below.
         with suppress(Exception):
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("memory.mem0", prompt=False)
+            from pm import ensure_import
+            ensure_import("mem0")
         try:
             from . import _backend
             if self._mode == "oss":

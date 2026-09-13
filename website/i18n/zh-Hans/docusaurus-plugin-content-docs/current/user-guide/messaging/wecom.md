@@ -6,6 +6,9 @@ description: "通过 AI Bot WebSocket 网关将 Hermes Agent 连接到 WeCom"
 
 # WeCom（企业微信）
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 将 Hermes 连接到 [WeCom](https://work.weixin.qq.com/)（企业微信），腾讯的企业即时通讯平台。该适配器使用 WeCom 的 AI Bot WebSocket 网关实现实时双向通信——无需公开端点或 webhook。
 
 ## 前提条件
@@ -199,7 +202,7 @@ WeCom 对部分入站媒体附件使用 AES-256-CBC 加密。适配器会自动�
 - 当入站媒体项包含 `aeskey` 字段时，适配器下载加密字节并使用带 PKCS#7 填充的 AES-256-CBC 进行解密。
 - AES 密钥是 `aeskey` 字段的 base64 解码值（必须恰好为 32 字节）。
 - IV 由密钥的前 16 字节派生。
-- 此功能需要 `cryptography` Python 包（`pip install cryptography`）。
+- 此功能需要 `cryptography` Python 包（`hermes pm repair`）。
 
 无需任何配置——收到加密媒体时解密会自动透明地进行。
 
@@ -277,14 +280,14 @@ WeCom 对部分入站媒体附件使用 AES-256-CBC 加密。适配器会自动�
 | 问题 | 解决方法 |
 |---------|-----|
 | `WECOM_BOT_ID and WECOM_SECRET are required` | 设置两个环境变量，或在设置向导中配置 |
-| `WeCom startup failed: aiohttp not installed` | 安装 aiohttp：`pip install aiohttp` |
-| `WeCom startup failed: httpx not installed` | 安装 httpx：`pip install httpx` |
+| `WeCom startup failed: aiohttp not installed` | 安装 aiohttp：`python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
+| `WeCom startup failed: httpx not installed` | 安装 httpx：`hermes pm repair` |
 | `invalid secret (errcode=40013)` | 验证 secret 是否与机器人凭据匹配 |
 | `Timed out waiting for subscribe acknowledgement` | 检查到 `openws.work.weixin.qq.com` 的网络连通性 |
 | 机器人在群组中不响应 | 检查 `group_policy` 设置，并确保群组 ID 在 `group_allow_from` 中 |
 | 机器人忽略群组中的某些用户 | 检查 `groups` 配置节中按群组的 `allow_from` 列表 |
-| 媒体解密失败 | 安装 `cryptography`：`pip install cryptography` |
-| `cryptography is required for WeCom media decryption` | 入站媒体已被 AES 加密。安装：`pip install cryptography` |
+| 媒体解密失败 | 安装 `cryptography`：`hermes pm repair` |
+| `cryptography is required for WeCom media decryption` | 入站媒体已被 AES 加密。安装：`hermes pm repair` |
 | 语音消息作为文件发送 | WeCom 原生语音仅支持 AMR 格式，其他格式会自动降级为文件。 |
 | `File too large` 错误 | WeCom 对所有文件上传有 20 MB 的绝对限制。请压缩或拆分文件。 |
 | 图片作为文件发送 | 图片 > 10 MB 超过原生图片限制，会自动降级为文件附件。 |

@@ -237,7 +237,7 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
                      "Use the default shared setting (51200 MB).", disk)
         return False
     if importlib.util.find_spec("vercel") is None:
-        logger.error("vercel is required for the Vercel Sandbox terminal backend: pip install vercel")
+        logger.error("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
         return False
     from agent.secret_scope import get_secret
     if get_secret("VERCEL_OIDC_TOKEN"):
@@ -284,7 +284,7 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,
-              "module": ("modal", "modal is required for direct modal terminal backend: pip install modal")},
+              "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
 }

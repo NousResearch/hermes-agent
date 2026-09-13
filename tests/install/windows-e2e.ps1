@@ -23,7 +23,7 @@
 #                            target sha, marker cleanup, result JSON (when
 #                            the script path wrote one), working hermes,
 #                            and the relaunched app window.
-#                 update     run `hermes update` from the installed venv
+#                 update     run `hermes update` from the installed command
 #                            (the CLI route a GUI user might take).
 #                 installer  re-run the bootstrap installer over the
 #                            existing install (download Hermes-Setup.exe
@@ -98,6 +98,10 @@ param(
     # swallows an empty-string argument ('Missing an argument for
     # parameter'), so the workflow cannot pass "".
     [string]$InstallRef = "auto",
+    # Update target ref (default HEAD). A stable-to-stable leg passes the
+    # next release tag here; only label the leg stable-to-stable when BOTH
+    # refs are release tags.
+    [string]$UpdateRef = "HEAD",
 
     # Repo checkout whose HEAD is the update target.
     [string]$RepoRoot = "",
@@ -189,7 +193,7 @@ function Set-GitRedirect {
     }
     # first, get the set origin url
     $actualGitUrl = Invoke-Git @("-C", $RepoRoot, "remote", "get-url", "origin")
-    # then override it 
+    # then override it
     @"
 [url "$fileUrl"]
 	insteadOf = $actualGitUrl
@@ -317,10 +321,24 @@ function Save-InstallSideState([string]$Label) {
 
 function Test-HermesRuns([string]$Label) {
     Save-InstallSideState $Label
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
-    Assert-True (Test-Path -LiteralPath $hermesExe) "$Label -- venv\Scripts\hermes.exe exists"
-    & $hermesExe --version 2>&1 | ForEach-Object { Write-Host "    hermes --version| $_" }
-    Assert-True ($LASTEXITCODE -eq 0) "$Label -- hermes --version exits 0"
+    $hermesExe = Get-SourceHermes $InstallDir
+    & python -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
+    Assert-True ($LASTEXITCODE -eq 0) "$Label -- read-only install verification (no repair)"
+    $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
+    $prevBytecode = $env:PYTHONDONTWRITEBYTECODE
+    $prevEap = $ErrorActionPreference
+    try {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = '1'
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        $ErrorActionPreference = 'Continue'
+        & $hermesExe --version 2>&1 | ForEach-Object { Write-Host "    hermes --version| $_" }
+        $versionExit = $LASTEXITCODE
+    } finally {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = $prevLazy
+        $env:PYTHONDONTWRITEBYTECODE = $prevBytecode
+        $ErrorActionPreference = $prevEap
+    }
+    Assert-True ($versionExit -eq 0) "$Label -- hermes --version exits 0"
 }
 
 # ----------------------------------------------------------------------------
@@ -330,6 +348,7 @@ function Test-HermesRuns([string]$Label) {
 # ----------------------------------------------------------------------------
 # shellcheck source=../e2e-assets/ts-prefix.ps1
 . (Join-Path $PSScriptRoot "e2e-assets\ts-prefix.ps1")
+. (Join-Path $PSScriptRoot "e2e-assets\source-driver.ps1")
 
 function Write-LogGroup([string]$Title, [string]$LogPath) {
     Write-Host "::group::$Title"
@@ -368,12 +387,17 @@ function Assert-DesktopArtifact([string]$Label) {
 }
 
 function Invoke-HermesUpdate {
-    # The venv updater. --yes reaches the update subcommand only in later
+    # --yes reaches the update subcommand only in later
     # releases; ask the installed binary, never parse its source.
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
+    $hermesExe = Get-SourceHermes $InstallDir
     $updateArgs = @("update")
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     $helpText = & $hermesExe update --help 2>&1 | Out-String
+    $helpExit = $LASTEXITCODE
+    if ($helpExit -ne 0) {
+        $ErrorActionPreference = $prevEap
+        throw "Installed update --help failed: $helpText"
+    }
     if ($helpText -match '--yes') { $updateArgs += "--yes" }
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\update.log"
@@ -394,7 +418,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     # real pipeline; the driver intercepts the product's final spawn
     # (argv/cwd/env captured by e2e-assets/launch-capture/sitecustomize.py)
     # and re-executes it under Playwright, which clicks Update now.
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
+    $hermesExe = Get-SourceHermes $InstallDir
     $spec = Join-Path $WorkRoot "launch-spec.json"
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\desktop-launch-capture.log"
@@ -435,6 +459,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Assert-True ($npmExit -eq 0) "npm install @playwright/test@$PlaywrightVersion into the driver dir"
 
     Copy-Item (Join-Path $AssetsDir "launch-from-spec.mjs") (Join-Path $driverDir "launch-from-spec.mjs") -Force
+    Copy-Item (Join-Path $AssetsDir "source-update-observer.mjs") (Join-Path $driverDir "source-update-observer.mjs") -Force
     Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $driverDir
@@ -546,7 +571,8 @@ function Invoke-PhaseStage {
     # bare-clone below (and everything after) sees the redirect file.
     Set-GitRedirect
 
-    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "HEAD")
+    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "${UpdateRef}^{commit}")
+    $targetLabel = if ($UpdateRef -eq "HEAD") { "HEAD" } else { $UpdateRef }
     Write-Host "  HEAD (update target): $current"
 
     # OLD: explicit -InstallRef, or the newest release tag -- the version a
@@ -580,7 +606,7 @@ function Invoke-PhaseStage {
     Invoke-Git @("-C", $ServeRepo, "config", "uploadpack.allowAnySHA1InWant", "true") | Out-Null
     Write-Host "  serve.git: uploadpack.allowAnySHA1InWant=true (installer commit pin, if any)"
 
-    @{ old = $old; old_ref = $oldRef; current = $current } |
+    @{ old = $old; old_ref = $oldRef; current = $current; target_label = $targetLabel } |
         ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding UTF8
     Write-Host "  state written: $StatePath"
     New-Item -ItemType Directory -Path $ProofRoot -Force | Out-Null
@@ -881,11 +907,44 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
     }
 }
 
+# --- plugin upgrade-preservation hooks -------------------------------------
+# A tagged upgrade must not delete or modify anything under the active
+# home's plugins/** or any profile's plugins/** tree: wrapper markers
+# (mnemosyne-wrapper.json), symlinked runtimes, and the externally-owned
+# sidecar witness outside the home. Fixtures are directory-only (no
+# pyproject in the scanned root, nothing downloaded). Snapshot is taken
+# after install, verified after update.
+function Seed-PreservationFixtures {
+    $external = Join-Path $WorkRoot "external-mnemosyne-runtime"
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") seed --home $HermesHome --external $external
+    if ($LASTEXITCODE -ne 0) { throw "could not seed fresh preservation fixtures (exit $LASTEXITCODE)" }
+}
+
+function Invoke-PreserveSnapshot {
+    $out = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    if (Test-Path -LiteralPath $out) { throw "refusing to overwrite an existing preservation snapshot" }
+    Seed-PreservationFixtures
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") snapshot --home $HermesHome --out $out
+    if ($LASTEXITCODE -ne 0) { throw "plugin preservation snapshot failed (exit $LASTEXITCODE)" }
+
+    Write-Host "  pre-upgrade plugin snapshot: $out"
+}
+
+function Invoke-PreserveVerify {
+    $snap = Join-Path $WorkRoot "plugin-preservation-snapshot.json"
+    if (-not (Test-Path -LiteralPath $snap)) { throw "no pre-upgrade plugin snapshot at $snap; cannot verify preservation" }
+    & python (Join-Path $AssetsDir "verify-plugin-preservation.py") verify --home $HermesHome --snapshot $snap `
+        --report (Join-Path $WorkRoot "logs\plugin-preservation-report.json")
+    if ($LASTEXITCODE -ne 0) { throw "plugin preservation violated by the upgrade (exit $LASTEXITCODE); see the report for deleted/modified entries" }
+    Write-Host "  plugins/** and profile plugin trees survived the upgrade intact"
+}
+
 function Invoke-PhaseInstall {
     # Dispatch on the install axis. Each arm ends with the same contract:
     # checkout at OLD, hermes runs, and state carries how OLD landed so any
     # update arm can follow any install arm.
     $state = Read-State
+    $script:ExpectedDesktop = if ($InstallMethod -eq 'installer-script') { 'absent' } else { 'present' }
     # Isolated install target for every arm; serve.git's file:// origin
     # looks like a fork to the updater, whose "add the official repo as
     # upstream?" prompt would hang a headless run - the marker is the
@@ -914,6 +973,9 @@ function Invoke-PhaseInstall {
 
 function Invoke-PhaseUpdate {
     $state = Read-State
+    $script:ExpectedDesktop = if ($InstallMethod -ne 'installer-script' -or $Route -in @(
+        'installer-script+desktop', 'desktop-installer@latest', 'open-app-update', 'hermes-desktop-app-update'
+    )) { 'present' } else { 'absent' }
     $env:HERMES_HOME = $HermesHome
     # Match the POSIX driver's explicit opt-out when a detached updater bypasses
     # the PATH shim and sees our local transport as a fork.
@@ -923,6 +985,8 @@ function Invoke-PhaseUpdate {
     # remote's main moves forward. The GUI route re-advances harmlessly
     # (same sha); script routes need it here because only the GUI arm's
     # helper used to own this step.
+    # Snapshot every plugin tree BEFORE the upgrade moves anything.
+    Invoke-PreserveSnapshot
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $state.current) | Out-Null
     Write-Host "  serve.git main advanced to $($state.current)"
 
@@ -968,6 +1032,7 @@ function Invoke-PhaseUpdate {
 
     Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on HEAD"
     Test-HermesRuns "post-update"
+    Invoke-PreserveVerify
 }
 
 function Invoke-CheckedPhaseUpdate {

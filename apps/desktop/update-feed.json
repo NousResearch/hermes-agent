@@ -1,0 +1,10 @@
+{
+  "stable": {
+    "bundled": {"directory": "releases/darwin/stable", "channel": "stable", "fileName": "stable-mac.yml", "allowPrerelease": false},
+    "light": {"directory": "releases/darwin/light/stable", "channel": "stable", "fileName": "stable-mac.yml", "allowPrerelease": false}
+  },
+  "canary": {
+    "bundled": {"directory": "releases/darwin/canary", "channel": "canary", "fileName": "canary-mac.yml", "allowPrerelease": true},
+    "light": {"directory": "releases/darwin/light/canary", "channel": "canary", "fileName": "canary-mac.yml", "allowPrerelease": true}
+  }
+}

@@ -27,7 +27,7 @@ from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 # ``sqlite3.Connection.execute`` is a C-level slot and can't be monkeypatched
 # directly (``'sqlite3.Connection' object attribute 'execute' is read-only``).
 # A factory-built subclass lets us intercept journal_mode=WAL per-test with
-# its own mutable counter, avoiding the xdist-parallel class-state race.
+# its own mutable counter, avoiding a parallel-run class-state race.
 def _make_blocking_factory(reason: str, attempt_counter: list):
     """Return a sqlite3.Connection subclass that raises on PRAGMA journal_mode=WAL."""
 

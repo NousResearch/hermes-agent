@@ -9,7 +9,7 @@ and that the clamp gate honours the flag.
 
 import os
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
 from hermes_cli.config import DEFAULT_CONFIG

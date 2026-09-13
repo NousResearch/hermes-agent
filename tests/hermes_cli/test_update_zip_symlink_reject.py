@@ -49,6 +49,7 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
     from hermes_cli.update_cmd import _update_via_zip
 
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
+    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
 
     args = type("Args", (), {})()
 
@@ -108,6 +109,7 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     from hermes_cli import main as hermes_main
 
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
+    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
 
     args = type("Args", (), {})()
 

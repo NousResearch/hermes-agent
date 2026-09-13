@@ -47,7 +47,7 @@ AI 原生的跨会话用户建模，具备辩证推理、会话范围上下文�
 | | |
 |---|---|
 | **适合场景** | 具有跨会话上下文的多 Agent 系统、用户-Agent 对齐 |
-| **依赖** | `pip install honcho-ai` + [API key](https://app.honcho.dev) 或自托管实例 |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Honcho SDK；[API key](https://app.honcho.dev) 或自托管实例 |
 | **数据存储** | Honcho Cloud 或自托管 |
 | **费用** | Honcho 定价（云端）/ 免费（自托管） |
 
@@ -197,7 +197,7 @@ hermes honcho sync
 
 通过 [Honcho 控制台](https://app.honcho.dev) 设置的服务端开关优先于本地默认值——在会话初始化时同步回来。
 
-参见 [Honcho 页面](./honcho.md#observation-directional-vs-unified) 获取完整的 observation 参考。
+参见 [Honcho 页面](./honcho.md#观察模式定向-vs-统一) 获取完整的 observation 参考。
 
 <details>
 <summary>完整 honcho.json 示例（多 profile）</summary>
@@ -267,7 +267,7 @@ hermes honcho sync
 | | |
 |---|---|
 | **适合场景** | 具有结构化浏览功能的自托管知识管理 |
-| **依赖** | `pip install openviking` + 运行中的服务器 |
+| **依赖** | 独立部署的 OpenViking 服务器；通过 `hermes memory setup` 准备 Hermes 端依赖 |
 | **数据存储** | 自托管（本地或云端） |
 | **费用** | 免费（开源，AGPL-3.0） |
 
@@ -275,8 +275,9 @@ hermes honcho sync
 
 **安装：**
 ```bash
-# 先启动 OpenViking 服务器
-pip install openviking
+# 使用独立部署的 OpenViking 服务器，不要安装到 Hermes 的依赖环境
+openviking-server init
+openviking-server doctor
 openviking-server
 
 # 然后配置 Hermes
@@ -300,7 +301,7 @@ echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 | | |
 |---|---|
 | **适合场景** | 免维护的记忆管理——Mem0 自动处理提取 |
-| **依赖** | `pip install mem0ai` + API key |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Mem0 SDK；API key 或自托管/OSS 服务配置 |
 | **数据存储** | Mem0 Cloud |
 | **费用** | Mem0 定价 |
 
@@ -344,15 +345,18 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-安装向导会自动安装依赖，并仅安装所选模式所需的内容（云端用 `hindsight-client`，本地用 `hindsight-all`）。需要 `hindsight-client >= 0.4.22`（会话启动时若版本过旧则自动升级）。
+安装向导通过 PM 的 `hindsight` extra 准备客户端。
+`local_embedded` 模式使用独立环境，选择记录位于
+`$HERMES_HOME/profiles/Hindsight/env/active.json`，不把 `hindsight-all` 安装到 Hermes 主环境。
+`local_external` 连接已有服务。各模式的平台限制仍适用。
 
-**本地模式 UI：** `hindsight-embed -p hermes ui start`
+详见[插件 README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md)。
 
 **配置：** `$HERMES_HOME/hindsight/config.json`
 
 | 键 | 默认值 | 描述 |
 |-----|---------|-------------|
-| `mode` | `cloud` | `cloud` 或 `local` |
+| `mode` | `cloud` | `cloud`、`local_embedded` 或 `local_external` |
 | `bank_id` | `hermes` | 记忆库标识符 |
 | `recall_budget` | `mid` | 召回彻底程度：`low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid`（上下文 + 工具）、`context`（仅自动注入）、`tools`（仅工具） |
@@ -467,7 +471,7 @@ hermes config set memory.provider byterover
 | | |
 |---|---|
 | **适合场景** | 带用户 profile 和会话级图谱构建的语义召回 |
-| **依赖** | `pip install supermemory` + [云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
+| **依赖** | `hermes memory setup` 通过 PM 准备 Supermemory SDK；[云端 API key](http://app.supermemory.ai/integrations?connect=hermes)，或[自托管服务器](https://supermemory.ai/docs/self-hosting/overview) |
 | **数据存储** | Supermemory 云端或自托管 |
 | **费用** | 云端按 Supermemory 定价 / 自托管免费 |
 

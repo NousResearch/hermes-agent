@@ -35,7 +35,7 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
     )
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "git")
@@ -105,7 +105,7 @@ class TestCollectInventory:
 
         for target in (
             "hermes_cli.config.detect_install_method",
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             "hermes_cli.profiles._get_default_hermes_home",
             "hermes_cli.gateway._get_service_pids",
             "hermes_cli.gateway.find_profile_gateway_processes",
@@ -160,7 +160,7 @@ class TestReceiptIntegration:
         home = tmp_path / "receipt_home"
         home.mkdir()
         monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: home, raising=False)
-        ur._current = None
+        ur._current.set(None)
         ur.begin_update_receipt()
         plan = ui.collect_runtime_inventory()
         ui.record_plan_in_receipt(plan)
@@ -172,5 +172,5 @@ class TestReceiptIntegration:
     def test_noop_without_active_receipt(self, fleet):
         import hermes_cli.update_receipt as ur
 
-        ur._current = None
+        ur._current.set(None)
         ui.record_plan_in_receipt(ui.collect_runtime_inventory())  # must not raise

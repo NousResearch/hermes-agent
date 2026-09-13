@@ -1,11 +1,11 @@
 """Hermetic tests for the iron-proxy egress integration.
 
 Covers the pure-function surface (token mint, mapping discovery, config build,
-config + mappings I/O), the binary install path (HTTP downloads + tar
-extraction + checksum verification fully mocked), the subprocess lifecycle
+config + mappings I/O), the subprocess lifecycle
 (spawn / PID / pid_alive / stop, with subprocess.Popen mocked), and the
 docker backend's egress arg builder.
 
+PM acquisition has real loopback/worker coverage in test_security_consumers.
 Live network and the real ``iron-proxy`` binary are NEVER touched.  See
 ``tests/test_iron_proxy_e2e.py`` (gated behind a marker) for the real-binary
 smoke test.
@@ -13,10 +13,8 @@ smoke test.
 
 from __future__ import annotations
 
-import io
 import os
 import sys
-import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -53,6 +51,24 @@ def test_mint_proxy_token_has_prefix_and_length():
     t = ip.mint_proxy_token("alpha")
     assert t.startswith("alpha-")
     assert len(t) >= len("alpha-") + 32
+
+
+def test_management_token_path_is_single_authority(hermes_home):
+    """One token path: <hermes_home>/proxy/management.token, shared by mint, reuse and readers."""
+    assert ip._management_token_path() == ip._proxy_state_dir_ro() / "management.token"
+    assert not (hermes_home / "proxy").exists()
+
+    token = ip.ensure_management_token()
+    assert token
+    p = ip._management_token_path()
+    assert p.is_file()
+    assert p.read_text(encoding="utf-8-sig").strip() == token
+    # 0600-style private write: reuse without minting a second token.
+    assert ip.ensure_management_token() == token
+    # Forced rotation mints a new token at the same single path.
+    rotated = ip.ensure_management_token(force=True)
+    assert rotated != token
+    assert ip._management_token_path().read_text(encoding="utf-8-sig").strip() == rotated
 
 
 
@@ -194,16 +210,6 @@ def test_load_mappings_handles_corrupt_json(hermes_home):
 
 
 
-def _make_fake_tar(binary_name: str, payload: bytes = b"#!/bin/sh\necho ok\n") -> bytes:
-    """Build a tar.gz with one file at the root, named ``binary_name``."""
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name=binary_name)
-        info.size = len(payload)
-        info.mode = 0o755
-        tf.addfile(info, io.BytesIO(payload))
-    return buf.getvalue()
 
 
 
@@ -230,19 +236,6 @@ def test_verify_checksums_signature_skips_without_gpg(hermes_home, monkeypatch, 
 
 
 
-def test_pick_tar_member_rejects_path_traversal():
-    """A malicious tar that escapes via '..' must be refused."""
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name="../iron-proxy")
-        info.size = 1
-        info.mode = 0o755
-        tf.addfile(info, io.BytesIO(b"x"))
-    buf.seek(0)
-    with tarfile.open(fileobj=buf, mode="r:gz") as tf:
-        with pytest.raises(RuntimeError, match="Could not find iron-proxy"):
-            ip._pick_tar_member(tf, "iron-proxy")
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +334,7 @@ def test_subprocess_env_strips_unrelated_secrets(hermes_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("linux")
 def test_ca_key_created_with_0o600(hermes_home, monkeypatch):
     """The CA private key must NEVER exist on disk with default umask
     permissions, even transiently.  Fix: open with explicit mode=0o600
@@ -376,6 +370,7 @@ def test_ca_key_created_with_0o600(hermes_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("linux")
 def test_ensure_audit_log_creates_with_0o600(hermes_home, tmp_path):
     audit = tmp_path / "audit.log"
     ip.ensure_audit_log(audit)
@@ -384,6 +379,7 @@ def test_ensure_audit_log_creates_with_0o600(hermes_home, tmp_path):
     assert mode == 0o600
 
 
+@pytest.mark.platforms("linux")
 def test_ensure_audit_log_tightens_existing_perms(hermes_home, tmp_path):
     audit = tmp_path / "audit.log"
     audit.write_text("preexisting content\n")
@@ -398,6 +394,7 @@ def test_ensure_audit_log_tightens_existing_perms(hermes_home, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("linux")
 def test_proxy_state_dir_is_0o700(hermes_home):
     state = ip._proxy_state_dir()
     mode = state.stat().st_mode & 0o777
@@ -485,6 +482,7 @@ def test_mappings_roundtrip_preserves_headers_and_aliases(hermes_home):
 
 
 
+@pytest.mark.platforms("linux")
 def test_ensure_management_token_persists_and_is_stable(hermes_home):
     t1 = ip.ensure_management_token()
     t2 = ip.ensure_management_token()
@@ -539,6 +537,7 @@ def test_reload_proxy_posts_bearer_to_management_endpoint(hermes_home, monkeypat
     assert captured["auth"] == f"Bearer {token}"
 
 
+@pytest.mark.platforms("linux")
 def test_start_proxy_injects_management_key_env(hermes_home, monkeypatch):
     """When the generated config has a management listener, start_proxy
     must inject the bearer key env var — v0.39 refuses to start when

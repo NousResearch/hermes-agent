@@ -445,7 +445,7 @@ def migrate(
     new_text = managed_block
     if target.exists():
         try:
-            existing = target.read_text(encoding="utf-8")
+            existing = target.read_text(encoding="utf-8-sig")
         except Exception as exc:
             report.errors.append(f"could not read {target}: {exc}")
             return report

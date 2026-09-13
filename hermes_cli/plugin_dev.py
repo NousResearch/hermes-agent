@@ -267,8 +267,8 @@ def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
     if missing:
         report.warning(
             "declared python_dependencies not installed: " + ", ".join(missing)
-            + " — Hermes never auto-installs plugin dependencies; install manually: pip install "
-            + " ".join(f"'{m}'" for m in missing))
+            + " — install and enable the plugin with hermes plugins. "
+            "For an enabled plugin, run hermes pm repair, then restart Hermes.")
 
     schema = getattr(manifest, "config_schema", {}) or {}
     if schema:

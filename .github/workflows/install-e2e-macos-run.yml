@@ -47,6 +47,20 @@ on:
         required: false
         type: string
         default: https://hermes-assets.nousresearch.com/Hermes-Setup.dmg
+      bundle-manifest-url:
+        description: 'URL of the JSON schema-1 bundle manifest for the packaged-app arm. Empty (default) means the bundled arm does not run — native packaged coverage only runs when the caller pins a real signed OLD/NEW pair.'
+        required: false
+        type: string
+        default: ''
+      bundle-manifest-sha256:
+        description: Pinned transition manifest digest for stable acceptance
+        type: string
+        default: ''
+      bundle-arch:
+        description: 'Architecture of the bundled pair: arm64 (macos-15) or x64 (macos-15-intel).'
+        required: false
+        type: string
+        default: arm64
       timeout-minutes:
         description: 'Job timeout. App-update legs do a full Electron build.'
         required: false
@@ -91,6 +105,7 @@ jobs:
       # installer/updater talk to.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Start screen recording
@@ -151,6 +166,84 @@ jobs:
         if: always()
         run: |
           echo "name=install-e2e-logs-${{ inputs.leg-id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ runner.temp }}/e2e-logs
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ---- arm 3: the real signed bundle pair, in-app update ------------------
+  # Runs ONLY when the caller passes a bundle-manifest-url: the parent's
+  # matrix job owns resolving + pinning the OLD/NEW signed release pair.
+  # The driver itself re-guards on Darwin + GITHUB_ACTIONS and refuses to
+  # run anywhere native coverage would be fake.
+  bundled-e2e:
+    name: packaged bundle (open-app-update)
+    if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
+    runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install driver dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Start screen recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      - name: Install OLD signed bundle (${{ inputs.install-ref }})
+        run: |
+          set -euo pipefail
+          bash tests/install/macos-bundled-e2e.sh --phase install \
+            --manifest-url "$BUNDLE_MANIFEST" --arch "$BUNDLE_ARCH"
+        env:
+          BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      - name: Update to NEW via About -> Update now (${{ inputs.bundle-arch }})
+        run: |
+          set -euo pipefail
+          bash tests/install/macos-bundled-e2e.sh --phase update \
+            --manifest-url "$BUNDLE_MANIFEST" --arch "$BUNDLE_ARCH"
+        env:
+          BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
+          BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      - name: Stop screen recording
+        if: always()
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      - name: Remux recording for browser playback
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "${{ runner.temp }}/e2e-logs/recording.mkv" ]; then
+            ffmpeg -y -hide_banner -loglevel error -i "${{ runner.temp }}/e2e-logs/recording.mkv" \
+              -c copy "${{ runner.temp }}/e2e-logs/recording.mp4"
+          fi
+
+      - name: Build artifact name
+        id: artifact
+        if: always()
+        run: |
+          echo "name=install-e2e-logs-${{ inputs.leg-id }}-bundle-${{ inputs.bundle-arch }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload logs
         if: always()

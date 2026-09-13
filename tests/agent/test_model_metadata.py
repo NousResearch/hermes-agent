@@ -11,9 +11,10 @@ Coverage levels:
 """
 
 import time
+from contextlib import contextmanager
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
@@ -429,7 +430,7 @@ class TestCodexOAuthContextLength:
         }
 
         with patch(
-            "agent.model_metadata.requests.get",
+            "agent.model_metadata_http.get",
             side_effect=[first_response, second_response],
         ) as mock_get, patch("agent.model_metadata.save_context_length") as mock_save:
             first = get_model_context_length(
@@ -470,7 +471,7 @@ class TestCodexOAuthContextLength:
         fake_response.status_code = 401
         fake_response.json.return_value = {}
 
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -499,8 +500,8 @@ class TestCodexOAuthContextLength:
         base_url = "https://chatgpt.com/backend-api/codex"
         stale_key = f"gpt-5.5@{base_url}"
         other_key = "other-model@https://api.openai.com/v1/"
-        import yaml as _yaml
-        cache_file.write_text(_yaml.dump({"context_lengths": {
+        import hermes_yaml as _yaml
+        cache_file.write_text(_yaml.safe_dump({"context_lengths": {
             stale_key: stale_context,
             other_key: 128_000,
         }}))
@@ -513,7 +514,7 @@ class TestCodexOAuthContextLength:
         # Exercise real persistence here: this test verifies that a live value
         # replaces the stale on-disk entry. Failure-path tests below mock the
         # writer because they assert that fallback values are not persisted.
-        with patch("agent.model_metadata.requests.get", return_value=fake_response) as mock_get:
+        with patch("agent.model_metadata_http.get", return_value=fake_response) as mock_get:
             ctx = mm.get_model_context_length(
                 model="gpt-5.5",
                 base_url=base_url,
@@ -552,7 +553,7 @@ class TestCodexOAuthContextLength:
         fake_response.json.return_value = {
             "models": [{"slug": slug, "context_window": 272_000}]
         }
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -585,7 +586,7 @@ class TestCodexOAuthContextLength:
         }
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -610,7 +611,7 @@ class TestCodexOAuthContextLength:
             }
             import agent.model_metadata as mm
             mm._codex_oauth_context_cache = {}
-            with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+            with patch("agent.model_metadata_http.get", return_value=fake_response), \
                  patch("agent.model_metadata.get_cached_context_length", return_value=None), \
                  patch("agent.model_metadata.save_context_length"):
                 ctx = get_model_context_length(
@@ -633,7 +634,7 @@ class TestCodexOAuthContextLength:
         fake_response.json.return_value = {
             "models": [{"slug": slug, "context_window": 272_000}]
         }
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -654,7 +655,7 @@ class TestCodexOAuthContextLength:
         fake_response = MagicMock()
         fake_response.status_code = 401
         fake_response.json.return_value = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -674,7 +675,7 @@ class TestCodexOAuthContextLength:
         fake_response = MagicMock()
         fake_response.status_code = 401
         fake_response.json.return_value = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -732,7 +733,7 @@ class TestCodexOAuthContextLength:
         }
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
-        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+        with patch("agent.model_metadata_http.get", return_value=fake_response), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(
@@ -751,6 +752,20 @@ class TestCodexOAuthContextLength:
 # =========================================================================
 
 class TestFetchEndpointModelMetadata:
+    @pytest.fixture(autouse=True)
+    def streamed_responses(self, monkeypatch):
+        from agent import model_metadata_http
+
+        @contextmanager
+        def stream(*args, **kwargs):
+            response = model_metadata_http.get(*args, **kwargs)
+            try:
+                yield response
+            finally:
+                response.close()
+
+        monkeypatch.setattr(model_metadata_http, "stream", stream)
+
     def setup_method(self):
         import agent.model_metadata as mm
         mm._endpoint_model_metadata_cache.clear()
@@ -764,12 +779,12 @@ class TestFetchEndpointModelMetadata:
         response.status_code = status_code
         response.raise_for_status.side_effect = RuntimeError(str(status_code))
 
-        with patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+        with patch("agent.model_metadata_http.get", return_value=response) as mock_get:
             result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
 
         assert result == {}
         mock_get.assert_called_once()
-        assert mock_get.call_args.kwargs["stream"] is True
+        response.read.assert_not_called()
         response.raise_for_status.assert_not_called()
         response.json.assert_not_called()
         response.close.assert_called_once()
@@ -781,7 +796,7 @@ class TestFetchEndpointModelMetadata:
         response.status_code = 401
         response.raise_for_status.side_effect = RuntimeError("401")
 
-        with patch("agent.model_metadata.requests.get", return_value=response) as mock_get:
+        with patch("agent.model_metadata_http.get", return_value=response) as mock_get:
             first = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
             second = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
 
@@ -802,7 +817,7 @@ class TestFetchEndpointModelMetadata:
         }
 
         with patch(
-            "agent.model_metadata.requests.get",
+            "agent.model_metadata_http.get",
             side_effect=[not_found, success],
         ) as mock_get:
             result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
@@ -813,7 +828,8 @@ class TestFetchEndpointModelMetadata:
             "https://custom.example/v1/models",
             "https://custom.example/models",
         ]
-        assert all(call.kwargs["stream"] is True for call in mock_get.call_args_list)
+        not_found.read.assert_not_called()
+        success.read.assert_called_once()
         not_found.json.assert_not_called()
         not_found.close.assert_called_once()
         success.close.assert_called_once()
@@ -831,7 +847,7 @@ class TestFetchEndpointModelMetadata:
         success.status_code = 200
         success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
 
-        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+        with patch("agent.model_metadata_http.get", return_value=success) as mock_get:
             assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
             # "New process": drop the in-memory cache only.
             mm._endpoint_model_metadata_cache.clear()
@@ -843,7 +859,7 @@ class TestFetchEndpointModelMetadata:
         mm._endpoint_model_metadata_cache.clear()
         mm._endpoint_model_metadata_cache_time.clear()
         with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
-            "agent.model_metadata.requests.get", return_value=success
+            "agent.model_metadata_http.get", return_value=success
         ) as mock_get:
             mm.fetch_endpoint_model_metadata("https://custom.example/v1")
         mock_get.assert_called_once()
@@ -950,7 +966,7 @@ class TestNousPortalContextResolution:
         base_url = "https://inference-api.nousresearch.com/v1"
         stale_key = f"qwen3.6-plus@{base_url}"
         other_key = "other-model@https://api.openai.com/v1"
-        cache_file.write_text(yaml.dump({"context_lengths": {
+        cache_file.write_text(yaml.safe_dump({"context_lengths": {
             stale_key: 1_000_000,     # pre-fix OR-derived value
             other_key: 128_000,       # unrelated, must survive
         }}))
@@ -1338,7 +1354,7 @@ class TestFetchModelMetadata:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("agent.model_metadata.requests.get", return_value=mock_response):
+        with patch("agent.model_metadata_http.get", return_value=mock_response):
             fetch_model_metadata(force_refresh=True)
 
         assert cache_path.exists()
@@ -1355,12 +1371,12 @@ class TestFetchModelMetadata:
         import os
         os.utime(cache_path, (old, old))
 
-        with patch("agent.model_metadata.requests.get", side_effect=Exception("Network error")):
+        with patch("agent.model_metadata_http.get", side_effect=Exception("Network error")):
             result = fetch_model_metadata(force_refresh=True)
 
         assert result["stale/model"]["context_length"] == 50000
 
-    @patch("agent.model_metadata.requests.get")
+    @patch("agent.model_metadata_http.get")
     def test_caches_result(self, mock_get):
         self._reset_cache()
         mock_response = MagicMock()
@@ -1380,7 +1396,7 @@ class TestFetchModelMetadata:
 
 
 
-    @patch("agent.model_metadata.requests.get")
+    @patch("agent.model_metadata_http.get")
     def test_canonical_slug_aliasing(self, mock_get):
         """Models with canonical_slug get indexed under both IDs."""
         self._reset_cache()

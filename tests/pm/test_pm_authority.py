@@ -1,0 +1,583 @@
+"""pm authority spine: digest-bound facts, tree_digest + doctor re-hash,
+adopt() verification gate, repair logging.
+
+Same conventions as test_pm_core: real loopback server, real archives,
+real store — no mocked stores. Assertions are relationships (identity
+matches lock, digest matches bytes), not snapshots."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import shutil
+from pathlib import Path
+
+import pytest
+
+import pm.paths as paths
+import pm.registry as registry
+from pm.lock import Facts, Lockfile
+from pm.package import Package
+from pm.packages import BinaryPackage
+from pm.store import Store, current_target, tree_digest
+from tests.pm._fixtures import make_tar, served as served
+
+
+class FakeTool(BinaryPackage):
+    name = "faketool"
+    probe_version = False
+    binary_rel = {"win32": "bin/faketool", "posix": "bin/faketool"}
+
+    def fetch_url(self, version, target):
+        return f"{FakeTool.base_url}/{self.name}-{version}.tar.gz"
+
+
+@pytest.fixture
+def pm_env(tmp_path, served, monkeypatch):
+    docroot, base_url = served
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    import importlib
+
+    ensure_mod = importlib.import_module("pm.ensure")
+    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
+
+    saved = dict(registry._packages)
+    registry._packages.clear()
+    registry._packages[FakeTool.name] = FakeTool()
+    FakeTool.base_url = base_url
+
+    lock_dir = tmp_path / "repo-lock"
+    lock_dir.mkdir()
+    lockfile_path = lock_dir / "lock.json"
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lockfile_path)
+
+    name, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
+    lockfile = Lockfile(lockfile_path)
+    lockfile.set_pin(
+        "faketool", "1.0",
+        {"any": {"url": f"{base_url}/faketool-1.0.tar.gz", "sha256": digest}},
+    )
+    lockfile.save()
+
+    yield {
+        "lockfile_path": lockfile_path,
+        "runtime": runtime,
+        "docroot": docroot,
+        "base_url": base_url,
+        "digest": digest,
+        "tmp_path": tmp_path,
+        "monkeypatch": monkeypatch,
+    }
+
+    registry._packages.clear()
+    registry._packages.update(saved)
+
+
+def _pin(env, name: str, version: str, digest: str) -> None:
+    lockfile = Lockfile(env["lockfile_path"])
+    url = f"{env['base_url']}/{name}-{version}.tar.gz"
+    lockfile.set_pin(name, version, {"any": {"url": url, "sha256": digest}})
+    lockfile.save()
+
+
+# ── item 1: digest-bound facts ────────────────────────────────────────
+
+
+def test_same_version_different_sha_is_not_installed_and_repaired(pm_env):
+    """The witness: same version, different artifact sha. Version/path
+    matching cannot see this; identity matching must — check() reports
+    it and ensure() replaces the entry bytes."""
+    from pm.ensure import check, ensure, is_installed
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    assert is_installed("faketool")
+
+    _, digest_b = make_tar(env["docroot"], "faketool-1.0-b.tar.gz", {"bin/faketool": "#!B"})
+    # Same VERSION, different archive (different url + sha) — the
+    # version-only check would accept this re-pin.
+    lockfile = Lockfile(env["lockfile_path"])
+    lockfile.set_pin(
+        "faketool", "1.0",
+        {"any": {"url": f"{env['base_url']}/faketool-1.0-b.tar.gz", "sha256": digest_b}},
+    )
+    lockfile.save()
+    assert not is_installed("faketool")
+    assert check() == ["faketool: not installed or outdated"]
+
+    runner = ensure("faketool", base_env={})
+    assert is_installed("faketool")
+    fact = Facts(paths.facts_path()).get("faketool")
+    entry_bin = paths.store_root() / fact["entry"] / "bin" / "faketool"
+    with open(entry_bin, "rb") as f:
+        assert f.read() == b"#!B"
+
+    # The fact now binds the new identity, not the old one.
+    fact = Facts(paths.facts_path()).get("faketool")
+    assert fact["target"] == current_target()
+    assert fact["artifacts"] == [digest_b]
+
+
+@pytest.mark.parametrize("matching_fact", [False, True])
+@pytest.mark.parametrize("damage", ["missing-binary", "changed-bytes", "entry-is-file"])
+def test_install_repairs_corrupt_entry_from_verified_archive(pm_env, matching_fact, damage):
+    from pm.cli import cmd_doctor
+    from pm.ensure import ensure
+
+    ensure("faketool", base_env={})
+    facts_path = paths.facts_path()
+    fact = Facts(facts_path).get("faketool")
+    entry = paths.store_root() / fact["entry"]
+    binary = entry / "bin" / "faketool"
+    if damage == "missing-binary":
+        binary.unlink()
+    elif damage == "changed-bytes":
+        binary.write_bytes(b"corrupted")
+    else:
+        shutil.rmtree(entry)
+        entry.write_bytes(b"not a directory")
+    if not matching_fact:
+        data = json.loads(facts_path.read_text())
+        data["packages"]["faketool"].pop("artifacts")
+        facts_path.write_text(json.dumps(data))
+
+    ensure("faketool", explicit=True, base_env={})
+
+    assert binary.read_bytes() == b"#!x"
+    assert cmd_doctor(None) == 0
+    assert Facts(facts_path).get("faketool")["digest"] == tree_digest(binary.parent.parent)
+
+
+@pytest.mark.parametrize("replacement", ["invalid", "publish-failure", "interrupted", "facts-failure"])
+def test_failed_replacement_preserves_entry_and_facts(pm_env, monkeypatch, replacement):
+    from pm.ensure import ensure
+    from pm.package import InstallError
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    facts_path = paths.facts_path()
+    old_facts = facts_path.read_bytes()
+    old = Facts(facts_path).get("faketool")
+    binary = paths.store_root() / old["entry"] / "bin" / "faketool"
+    files = {"bin/unrelated": "bad layout"} if replacement == "invalid" else {"bin/faketool": "#!new"}
+    _, digest = make_tar(env["docroot"], "replacement.tar.gz", files)
+    lockfile = Lockfile(env["lockfile_path"])
+    lockfile.set_pin("faketool", "1.0", {"any": {
+        "url": f"{env['base_url']}/replacement.tar.gz", "sha256": digest,
+    }})
+    lockfile.save()
+    if replacement in ("publish-failure", "interrupted"):
+        original = Store.publish
+
+        def fail_package_publish(self, staged, name):
+            if name == old["entry"]:
+                if replacement == "interrupted":
+                    raise KeyboardInterrupt()
+                raise OSError("replacement publication failed")
+            return original(self, staged, name)
+
+        monkeypatch.setattr(Store, "publish", fail_package_publish)
+    elif replacement == "facts-failure":
+        def fail_record(*args, **kwargs):
+            raise OSError("facts write failed")
+        monkeypatch.setattr(Facts, "record", fail_record)
+
+    expected_error = KeyboardInterrupt if replacement == "interrupted" else InstallError
+    with pytest.raises(expected_error):
+        ensure("faketool", explicit=True, base_env={})
+
+    assert binary.read_bytes() == b"#!x"
+    assert facts_path.read_bytes() == old_facts
+
+
+def test_killed_replacement_recovers_on_next_install(pm_env):
+    """A process exit between moving old bytes and publishing new bytes is recoverable."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    from pm.ensure import ensure
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    old_fact = Facts(paths.facts_path()).get("faketool")
+    _, digest = make_tar(env["docroot"], "replacement.tar.gz", {"bin/faketool": "#!new"})
+    lockfile = Lockfile(env["lockfile_path"])
+    lockfile.set_pin("faketool", "1.0", {"any": {
+        "url": f"{env['base_url']}/replacement.tar.gz", "sha256": digest,
+    }})
+    lockfile.save()
+    code = textwrap.dedent("""
+        import os, sys
+        from pathlib import Path
+        import pm.paths as paths
+        import pm.registry as registry
+        from pm.store import Store
+        from tests.pm.test_pm_authority import FakeTool
+        from pm.ensure import ensure
+        paths.lockfile_path = lambda: Path(sys.argv[1])
+        registry._packages[FakeTool.name] = FakeTool()
+        publish = Store.publish
+        def crash(self, staged, name):
+            if name.startswith('faketool-'):
+                os._exit(17)
+            return publish(self, staged, name)
+        Store.publish = crash
+        ensure('faketool', explicit=True, base_env={})
+    """)
+    child = subprocess.run(
+        [sys.executable, "-c", code, str(env["lockfile_path"])],
+        env=dict(os.environ), capture_output=True, text=True, timeout=30,
+    )
+    assert child.returncode == 17, child.stderr
+    assert Facts(paths.facts_path()).get("faketool") == old_fact
+    ensure("faketool", explicit=True, base_env={})
+    fact = Facts(paths.facts_path()).get("faketool")
+    entry = paths.store_root() / fact["entry"]
+    assert (entry / "bin" / "faketool").read_bytes() == b"#!new"
+    assert fact["digest"] == tree_digest(entry)
+
+
+def test_failed_restore_preserves_both_interrupted_versions(pm_env, monkeypatch):
+    from pm.ensure import ensure
+    from pm.package import InstallError
+
+    ensure("faketool", base_env={})
+    fact = Facts(paths.facts_path()).get("faketool")
+    entry = paths.store_root() / fact["entry"]
+    previous = entry.with_name(".previous-" + entry.name)
+    previous.mkdir()
+    (previous / "saved").write_text("previous")
+    (entry / "bin" / "faketool").write_text("uncommitted replacement")
+    real_rename = Path.rename
+    def fail_restore(self, target):
+        if self == previous:
+            raise PermissionError("restore refused")
+        return real_rename(self, target)
+    monkeypatch.setattr(Path, "rename", fail_restore)
+    with pytest.raises((PermissionError, InstallError), match="restore refused"):
+        ensure("faketool", explicit=True, base_env={})
+    assert (entry / "bin" / "faketool").read_text() == "uncommitted replacement"
+    assert (previous / "saved").read_text() == "previous"
+
+
+@pytest.mark.parametrize("poisoned", [False, True], ids=["warm", "corrupt"])
+def test_fetch_cache_verification_is_owned_by_downloader(pm_env, monkeypatch, poisoned):
+    """Real cached bytes are checked in planning and under the partial lock;
+    corrupt bytes must be replaced, without an extra Store-layer hash."""
+    import pm.downloader as downloader
+    import pm.store as store_mod
+
+    env = pm_env
+    store = Store(env["runtime"] / "scratch-store")
+    url = f"{env['base_url']}/faketool-1.0.tar.gz"
+    digest = env["digest"]
+    with store.scratch() as scratch:
+        first = store.fetch(url, digest, scratch)
+    assert sha_of(first) == digest
+    size = first.stat().st_size
+    if poisoned:
+        first.write_bytes(b"poisoned")
+
+    hashes = []
+    for module, symbol in [(store_mod, "sha256_file"), (downloader, "_sha256_file")]:
+        original = getattr(module, symbol)
+
+        def counted(path, original=original, owner=module.__name__):
+            hashes.append((owner, path.stat().st_size))
+            return original(path)
+
+        monkeypatch.setattr(module, symbol, counted)
+
+    with store.scratch() as scratch:
+        second = store.fetch(url, digest, scratch)
+    assert second == first
+    assert sha_of(second) == digest
+    expected_sizes = [len(b"poisoned"), len(b"poisoned"), size] if poisoned else [size, size]
+    assert hashes == [("pm.downloader", size) for size in expected_sizes]
+
+
+def sha_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_legacy_fact_without_identity_is_not_installed(pm_env):
+    """Facts written before identity existed read back fine but are NOT
+    vouchable: installed() with identity returns False and forces one
+    reinstall."""
+    from pm.ensure import ensure, is_installed
+
+    env = pm_env
+    ensure("faketool", base_env={})
+
+    facts_path = paths.facts_path()
+    data = json.loads(facts_path.read_text(encoding="utf-8"))
+    data["packages"]["faketool"] = {
+        "entry": data["packages"]["faketool"]["entry"],
+        "version": "1.0",
+        "env": data["packages"]["faketool"]["env"],
+    }
+    facts_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert not is_installed("faketool")
+    # ensure() repairs it: reinstalls and records the full identity.
+    ensure("faketool", base_env={})
+    assert is_installed("faketool")
+    fact = Facts(paths.facts_path()).get("faketool")
+    assert fact["artifacts"] == [env["digest"]]
+
+
+def test_doctor_flags_legacy_fact(pm_env, capsys):
+    from pm.cli import cmd_doctor
+    from pm.ensure import ensure
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    facts_path = paths.facts_path()
+    data = json.loads(facts_path.read_text(encoding="utf-8"))
+    for key in ("target", "artifacts", "digest"):
+        data["packages"]["faketool"].pop(key, None)
+    facts_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert cmd_doctor(None) == 1
+    assert "legacy fact: no recorded identity" in capsys.readouterr().out
+
+
+# ── item 2: realized digest + doctor re-hash ──────────────────────────
+
+
+def test_tree_digest_is_content_bound(pm_env):
+    """Same content in different creation order digests identically; one
+    changed byte digests differently; a symlink contributes its link
+    TARGET TEXT, not the target's bytes."""
+    import os
+
+    a = pm_env["tmp_path"] / "tree-a"
+    b = pm_env["tmp_path"] / "tree-b"
+    (a / "sub").mkdir(parents=True)
+    (b / "sub").mkdir(parents=True)
+    (a / "sub" / "f.txt").write_text("hello")
+    (b / "sub" / "f.txt").write_text("hello")
+    (a / "top.txt").write_text("t")
+    (b / "top.txt").write_text("t")
+    assert tree_digest(a) == tree_digest(b)
+
+    (b / "top.txt").write_text("u")
+    assert tree_digest(a) != tree_digest(b)
+
+    # Symlink: link text is the data — retargeting changes the digest
+    # even though the pointed-at bytes never change.
+    (a / "sub" / "f.txt").write_text("hello")
+    try:
+        (b / "link").symlink_to("sub/f.txt")
+        d1 = tree_digest(b)
+        (b / "link").unlink()
+        (b / "link").symlink_to("top.txt")
+        assert tree_digest(b) != d1
+    except OSError:
+        pytest.skip("symlinks unavailable on this host")
+
+
+def test_doctor_flags_tampered_entry_bytes(pm_env, capsys):
+    """Post-install tampering: doctor re-hashes the realized tree against
+    the recorded digest and flags it; restoring the bytes clears it."""
+    from pm.cli import cmd_doctor
+    from pm.ensure import ensure
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    assert cmd_doctor(None) == 0
+
+    fact = Facts(paths.facts_path()).get("faketool")
+    binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
+    original = binary.read_bytes()
+    binary.write_bytes(original + b"tampered")
+    assert cmd_doctor(None) == 1
+    assert "realized bytes do not match recorded digest" in capsys.readouterr().out
+
+    binary.write_bytes(original)
+    assert cmd_doctor(None) == 0
+
+
+# ── item 4: adopt() verification gate ─────────────────────────────────
+
+
+def _bundle_payload(env) -> Path:
+    """Build a shipped payload the way cmd_bundle lays it out: a repo
+    snapshot carrying pm/lock.json, and a store whose facts.json holds
+    the installed state. adopt()'s paths point here via repo_root."""
+    from pm.ensure import ensure
+
+    monkeypatch = env["monkeypatch"]
+    tmp_path = env["tmp_path"]
+    shipped_repo = tmp_path / "shipped-repo"
+    (shipped_repo / "pm").mkdir(parents=True)
+    shutil.copy(env["lockfile_path"], shipped_repo / "pm" / "lock.json")
+    monkeypatch.setattr(paths, "repo_root", lambda: shipped_repo)
+    ensure("faketool", base_env={})
+    return shipped_repo
+
+
+def test_adopt_adopts_intact_payload(pm_env):
+    from pm.ensure import adopt
+
+    _bundle_payload(pm_env)
+    marker = paths.runtime_facts_path().parent / ".adopted"
+    assert not marker.is_file()
+    assert adopt() is True
+    assert marker.is_file()
+    # Idempotent: already adopted → False, marker untouched.
+    assert adopt() is False
+
+
+def test_adopt_refuses_on_missing_staged_binary(pm_env):
+    from pm.ensure import adopt
+
+    _bundle_payload(pm_env)
+    fact = Facts(paths.facts_path()).get("faketool")
+    binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
+    binary.unlink()
+
+    marker = paths.runtime_facts_path().parent / ".adopted"
+    assert adopt() is False
+    assert not marker.is_file()
+
+
+def test_adopt_refuses_on_tampered_staged_binary(pm_env):
+    """The adversarial witness: bytes substituted AFTER install fail even
+    though facts + lock still agree — the digest is computed over the
+    actual bytes, not read from the manifest."""
+    from pm.ensure import adopt
+
+    _bundle_payload(pm_env)
+    fact = Facts(paths.facts_path()).get("faketool")
+    binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
+    binary.write_bytes(b"#!substituted")
+
+    marker = paths.runtime_facts_path().parent / ".adopted"
+    assert adopt() is False
+    assert not marker.is_file()
+
+
+def test_adopt_refuses_when_fact_lacks_identity(pm_env):
+    from pm.ensure import adopt
+
+    _bundle_payload(pm_env)
+    facts_path = paths.facts_path()
+    data = json.loads(facts_path.read_text(encoding="utf-8"))
+    for key in ("target", "artifacts", "digest"):
+        data["packages"]["faketool"].pop(key, None)
+    facts_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert adopt() is False
+    assert not (paths.store_root().parent / ".adopted").is_file()
+
+
+# ── item 6: repair logging ────────────────────────────────────────────
+
+
+def test_gc_protects_in_flight_partials(pm_env):
+    """gc sweeps the store root and the partials area, but partials an
+    in-flight download still owns (fresh mtimes) survive; stale partials
+    are swept."""
+    from pm.cli import cmd_gc
+
+    env = pm_env
+    runtime = env["runtime"]
+    runtime.mkdir(parents=True, exist_ok=True)
+    partials = paths.partials_root()
+    partials.mkdir(parents=True, exist_ok=True)
+    fresh = partials / "abc.part"
+    fresh.write_bytes(b"x")
+    stale = partials / "old.part"
+    stale.write_bytes(b"y")
+    import os
+    import time
+
+    old = time.time() - 7 * 3600  # beyond the 6h gc grace window
+    os.utime(stale, (old, old))
+
+    orphan = runtime / "orphan-9.9-nowhere"
+    orphan.mkdir()
+
+    cmd_gc(None)
+    assert fresh.is_file()
+    assert not stale.exists()
+    assert not orphan.exists()
+
+
+def test_repair_log_line_on_reinstall(pm_env, caplog):
+    """Established fact + missing entry + ensure() → one repair log line,
+    and the install completes."""
+    from pm.ensure import ensure, is_installed
+
+    env = pm_env
+    ensure("faketool", base_env={})
+
+    fact = Facts(paths.facts_path()).get("faketool")
+    shutil.rmtree(paths.store_root() / fact["entry"])
+
+    with caplog.at_level(logging.INFO, logger="pm.ensure"):
+        ensure("faketool", base_env={})
+    assert is_installed("faketool")
+    repairs = [r for r in caplog.records if "repair:" in r.getMessage()]
+    assert any(
+        "repair: faketool re-realized" in r.getMessage() for r in repairs
+    )
+
+
+def test_repair_log_line_on_same_version_repin(pm_env, caplog):
+    from pm.ensure import ensure
+
+    env = pm_env
+    ensure("faketool", base_env={})
+    _, digest_b = make_tar(env["docroot"], "faketool-1.0-b.tar.gz", {"bin/faketool": "#!B"})
+    lockfile = Lockfile(env["lockfile_path"])
+    lockfile.set_pin(
+        "faketool", "1.0",
+        {"any": {"url": f"{env['base_url']}/faketool-1.0-b.tar.gz", "sha256": digest_b}},
+    )
+    lockfile.save()
+
+    with caplog.at_level(logging.INFO, logger="pm.ensure"):
+        ensure("faketool", base_env={})
+    repairs = [r.getMessage() for r in caplog.records if "repair:" in r.getMessage()]
+    assert any("1.0" in msg and env["digest"][:12] in msg for msg in repairs)
+
+
+def test_tree_digest_ignores_pycache(pm_env, monkeypatch):
+    """Bytecode caches are runtime state, not package bytes: the staged
+    python entry runs (uv venv/uv sync in a bundle build, first boot of a
+    shipped app) and CPython writes __pycache__/*.pyc into it AFTER the
+    digest was recorded. The digest must stay stable across that, while
+    tampering a REAL file inside a dir that merely sits beside a
+    __pycache__ is still caught. (Live field failure: '✗ python: realized
+    bytes do not match recorded digest' on every bundled-release smoke.)"""
+    tree = pm_env["tmp_path"] / "py-entry"
+    (tree / "Lib").mkdir(parents=True)
+    (tree / "Lib" / "os.py").write_text("print('stdlib')")
+
+    before = tree_digest(tree)
+
+    # The interpreter "ran": pyc caches appeared deep in the tree.
+    cache = tree / "Lib" / "__pycache__"
+    cache.mkdir()
+    (cache / "os.cpython-311.pyc").write_bytes(b"\x00compiled-bytes\x00")
+    nested = tree / "Lib" / "json" / "__pycache__"
+    nested.mkdir(parents=True)
+    (nested / "tool.cpython-311.pyc").write_bytes(b"\x00more\x00")
+
+    assert tree_digest(tree) == before
+
+    # A cache write is not a mask: changing a real .py still trips the digest.
+    (tree / "Lib" / "os.py").write_text("print('tampered')")
+    assert tree_digest(tree) != before
+
+    # Restoring the .py (leaving the caches) restores the digest: caches
+    # contribute nothing in either direction.
+    (tree / "Lib" / "os.py").write_text("print('stdlib')")
+    assert tree_digest(tree) == before

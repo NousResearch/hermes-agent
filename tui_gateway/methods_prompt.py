@@ -176,7 +176,7 @@ def _typed_stop_phrase_response(rid, text):
         # "stop" to the agent — the typed twin of the spoken stop phrase (PR #73106), applied at the ONE
         # server-side choke point every TUI submit passes through. (The desktop's voice conversation is
         # renderer-owned and never flips the backend flag, so it handles its own typed stop client-side.)
-        from tools.voice_mode import is_voice_stop_phrase
+        from tools.voice_mode_transcript import is_voice_stop_phrase
         if not is_voice_stop_phrase(text):
             return None
     except Exception:

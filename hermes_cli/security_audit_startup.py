@@ -44,7 +44,7 @@ def _iter_sshd_config_lines() -> list[str]:
         pass
     for p in paths:
         try:
-            raw_lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            raw_lines = p.read_text(encoding="utf-8-sig", errors="replace").splitlines()
         except Exception:
             continue
         lines.extend(s for s in map(str.strip, raw_lines) if s and not s.startswith("#"))
@@ -74,7 +74,7 @@ def _in_container() -> bool:
     if os.environ.get("HERMES_DESKTOP_CHILD_PID"):
         return False  # desktop child, not a server container
     try:
-        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="replace")
+        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
         return False
     return any(tok in cgroup for tok in ("docker", "containerd", "kubepods", "libpod"))
@@ -89,7 +89,7 @@ def _path_is_mounted(path: Path) -> bool:
     except Exception:
         target = path
     try:
-        mounts = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
+        mounts = Path("/proc/mounts").read_text(encoding="utf-8-sig", errors="replace").splitlines()
     except Exception:
         return True  # can't tell — fail safe (no warning)
     # (mountpoint, fstype) entries at or above target; the longest wins, first one on ties.

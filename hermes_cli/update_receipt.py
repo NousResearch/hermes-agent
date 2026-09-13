@@ -1,17 +1,42 @@
 """Structured update receipts + post-update fleet version verification.
 
-The updater must *prove* its outcome instead of assuming it. Every public entry point is
-exception-swallowing so a failure inside receipts can never break an update.
+Phase 1 of the fleet-update reliability plan (#91277): the updater must
+*prove* its outcome instead of assuming it.
+
+Two additive capabilities, both designed so a failure inside them can never
+break an update (every public entry point is exception-swallowing):
+
+1. **Update receipt** — a machine-readable JSON record of what one
+   ``hermes update`` run discovered, did, skipped (and why), written to
+   ``<HERMES_HOME>/logs/update_receipts/``. Silent-failure classes this
+   makes visible: #88848 (helper died after "success" printed), #74973
+   (restart silently skipped), #85753 (restart phase never ran), #81193
+   (desktop shows failure for a successful update).
+
+2. **Fleet version verification** — after the restart phase, read every
+   profile's ``gateway_state.json``, compare each live gateway's stamped
+   ``code_sha`` (written by ``gateway/status.py`` on every runtime-status
+   write) against the freshly-updated checkout's HEAD, and print a fleet
+   version matrix. Mixed-version fleets (#88654, #69754, #77553, #56717)
+   become a loud, actionable report instead of a latent state.
+
+Deployment-kind awareness (docker/image-managed installs) rides on
+``hermes_cli.version_info.get_code_identity()``: a packaged build reports
+its install-stamp provenance (``source="docker"``/``"nix"``/…) and the
+receipt records that the install is not in-place updatable.
 """
 
 from __future__ import annotations
 
+import contextvars
+import copy
 import json
 import logging
 import os
 import sys
 import time
-from contextlib import suppress
+import uuid
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -21,9 +46,36 @@ logger = logging.getLogger(__name__)
 _RECEIPT_KEEP = 20  # keep the last N receipts per profile home
 COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 
-# ``hermes update`` is a single-threaded CLI command; a module singleton lets the 7k-line updater
-# record steps from any depth without threading a handle through every helper.
-_current: Optional["UpdateReceipt"] = None
+# Receipt state is per-CONTEXT, not a module global: a nested
+# ``hermes update`` receipt (or one in another thread) must never clobber
+# the outer one, and the boundary finalize must see exactly its own
+# process's receipt. Same pattern as pm.receipt's ContextVars — no
+# manager object.
+_current: contextvars.ContextVar[Optional["UpdateReceipt"]] = contextvars.ContextVar(
+    "update_receipt_current", default=None
+)
+
+
+@contextmanager
+def update_receipt_scope():
+    """Keep the command's finalization guard away from an enclosing update."""
+    token = _current.set(None)
+    try:
+        yield
+    finally:
+        _current.reset(token)
+
+
+def current_correlation_id() -> Optional[str]:
+    """The update correlation id in force in this context, or None.
+
+    Derived from the OPEN update receipt itself — one source of truth, no
+    duplicate id variable: a nested update's begin replaces the current
+    receipt (so syncs begun under it capture the nested id), and its
+    finalize RESTORES the outer receipt via the ContextVar token (so the
+    outer id comes back for the rest of the outer update)."""
+    current = _current.get()
+    return current.correlation_id if current is not None else None
 
 
 def _utc_now_iso() -> str:
@@ -33,7 +85,7 @@ def _utc_now_iso() -> str:
 def _code_identity(refresh: bool = False) -> dict[str, Any]:
     """Running-code identity, or ``{}`` when the probe fails."""
     with suppress(Exception):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         return get_code_identity(refresh=refresh) or {}
     return {}
@@ -62,6 +114,10 @@ class UpdateReceipt:
             "pre_update": _code_identity(), "post_update": {},
             "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
         }
+        # The id binds this update to the pm sync receipts begun under it
+        # (pm.receipt captures it via the _correlation ContextVar).
+        self.correlation_id = uuid.uuid4().hex
+        self.data["update_id"] = self.correlation_id
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})
@@ -117,26 +173,48 @@ class UpdateReceipt:
 
 
 def _receipt_dir() -> Path:
-    from hermes_cli.config import get_hermes_home
+    from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "logs" / "update_receipts"
 
 
-def begin_update_receipt() -> None:
-    """Start recording a new update receipt. Never raises."""
-    global _current
+def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | None = None) -> None:
+    """Start recording a new update receipt.
+
+    Nested updates are safe: the previous receipt (if any) is preserved
+    behind the ContextVar token and comes back when this one finalizes —
+    a nested begin/finalize never drops the outer update's receipt or
+    correlation. Never raises."""
     try:
-        _current = UpdateReceipt()
+        receipt = UpdateReceipt()
+        if previous:
+            receipt.data.update(copy.deepcopy(previous))
+        receipt.correlation_id = correlation_id or receipt.correlation_id
+        receipt.data.update(update_id=receipt.correlation_id, outcome="running", finished_at=None)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
-        _current = None
+        return
+    receipt.current_token = _current.set(receipt)
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
-    """Invoke ``method`` on the active receipt; no-op when none, never raises."""
+    """Invoke ``method`` on the active receipt; no-op when none, never raises.
+
+    Copy-on-write, same rule as pm.receipt: a copied context (copy_context,
+    asyncio.to_thread) inherits the SAME receipt object — mutate a clone
+    and re-set it in THIS context only, so a child's records never leak
+    into (or corrupt) the parent's receipt.
+    """
     try:
-        if _current is not None:
-            getattr(_current, method)(*args, **kwargs)
+        import copy
+
+        current = _current.get()
+        if current is None:
+            return
+        clone = copy.copy(current)
+        clone.data = copy.deepcopy(current.data)
+        getattr(clone, method)(*args, **kwargs)
+        _current.set(clone)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not record %s: %s", what, exc)
 
@@ -159,27 +237,73 @@ def record_gateway_restart(**kwargs: Any) -> None:
 def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason: str = "") -> Optional[Path]:
     """Finalize + persist the receipt (``success``/``partial``/``failed``/``refused``); path or None.
 
-    Exactly-once by construction: the module singleton is popped first, so a second call (e.g. the
+    Exactly-once by construction: the context's receipt is popped first, so a second call (e.g. the
     command-boundary safety net after an inner path already finalized) is a no-op returning None.
+    The receipt is popped via its OWN begin token, so a nested update's finalize RESTORES the outer
+    update's open receipt and correlation instead of discarding them.
     """
-    global _current
-    receipt = _current
-    _current = None
-    if receipt is None:
+    current = _current.get()
+    if current is None:
         return None
+    receipt = copy.copy(current)
+    receipt.data = copy.deepcopy(current.data)
+    token = getattr(receipt, "current_token", None)
+    try:
+        if token is not None:
+            _current.reset(token)
+        else:  # pragma: no cover - receipts begun before token binding
+            _current.set(None)
+    except ValueError:
+        # Token from another context (finalize ran in a copied context) —
+        # pop THIS context only, so exactly-once still holds.
+        _current.set(None)
     try:
         receipt.finalize(outcome)
         if stop_reason:
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+        # EMBED the pm sync sections (the settled receipts contract): the
+        # update's rebuild/bisect ran through pm's own sync receipt, which
+        # finalizes before this one. Fold in only the completion filed
+        # under THIS update's correlation id (pm.receipt.last_for_update,
+        # per-context, never latest.json) — a sync from before this update
+        # began, a standalone sync, or one in a concurrent thread cannot
+        # be misattributed, and a nested update's sync cannot displace
+        # this update's own. ONE file still carries the whole story
+        # (desktop reads a single latest.json).
+        try:
+            from pm import receipt as pm_receipt
+
+            sync = pm_receipt.last_for_update(receipt.correlation_id, consume=True)
+            if isinstance(sync, dict):
+                for key in ("venv_rebuild", "plugin_bisect", "feature_list", "steps", "exit_code"):
+                    if sync.get(key) is not None:
+                        receipt.data[f"pm_{key}"] = sync[key]
+                if sync.get("outcome") is not None:
+                    receipt.data["pm_sync_outcome"] = sync.get("outcome")
+                if sync.get("warnings"):
+                    receipt.data["pm_warnings"] = sync["warnings"]
+                if sync.get("refusal") is not None:
+                    receipt.data["pm_refusal"] = sync["refusal"]
+        except Exception as exc:  # pragma: no cover — embedding is additive
+            logger.debug("pm sync-section embed skipped: %s", exc)
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
-        body = json.dumps(receipt.data, indent=2, default=str)
-        path.write_text(body, encoding="utf-8")
-        with suppress(OSError):  # stable pointer for the dashboard/desktop
-            (directory / "latest.json").write_text(body, encoding="utf-8")
+        # Unique name: stamp+pid collides for nested/concurrent receipts in
+        # the same process+second — the correlation id makes the name unique
+        # per update run. Atomic write for BOTH the stamped receipt and the
+        # latest.json pointer (no torn readers).
+        from hermes_cli.runtime_state import _atomic_bytes
+
+        path = directory / (
+            f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_"
+            f"{receipt.correlation_id}.json"
+        )
+        payload = (json.dumps(receipt.data, indent=2, default=str) + "\n").encode("utf-8")
+        _atomic_bytes(path, payload)
+        with suppress(Exception):  # stable pointer for the dashboard/desktop
+            _atomic_bytes(directory / "latest.json", payload)
         _prune_old_receipts(directory)
         return path
     except Exception as exc:  # pragma: no cover - defensive
@@ -196,14 +320,18 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     (preflight convention), else → ``failed``.
 
     No-op when no receipt is open (the inner paths already finalized — exactly-once via the popped
-    singleton) or when recording was never started. See #91283.
+    per-context receipt) or when recording was never started. See #91283.
     """
-    if _current is None:
+    current = _current.get()
+    if current is None:
         return None
     outcome = "success" if exit_code in (0, None) else "refused" if exit_code == 2 else "failed"
     if exit_code is not None:
         with suppress(Exception):
-            _current.data["exit_code"] = int(exit_code)
+            clone = copy.copy(current)
+            clone.data = copy.deepcopy(current.data)
+            clone.data["exit_code"] = int(exit_code)
+            _current.set(clone)
     return finalize_update_receipt(outcome, stop_reason=stop_reason)
 
 
@@ -219,9 +347,10 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
     """Read the most recent update receipt, or None. Never raises."""
     with suppress(Exception):
         path = _receipt_dir() / "latest.json"
-        if path.is_file():
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, dict) else None
+        if not path.is_file():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        return payload if isinstance(payload, dict) else None
     return None
 
 
@@ -253,8 +382,6 @@ def _socket_identity(home: Path) -> Optional[tuple[int, dict]]:
     try:
         # Prefer the gateway-owned control socket (#92091): identity declared by the process itself,
         # including its own supervisor provenance — no argv/PID inference. Scan fallback below.
-        # Prefer the gateway-owned control socket (#92091): a live `identify` answer is authoritative — no
-        # PID-reuse or stale-file heuristics.
         from gateway.control_socket import identify_gateway
 
         identity = identify_gateway(home)

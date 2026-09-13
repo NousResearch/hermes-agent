@@ -73,7 +73,7 @@ def _cgroup_limit_bytes() -> Optional[int]:
     roots = ([f"/sys/fs/cgroup{own}"] if own and own != "/" else []) + ["/sys/fs/cgroup"]
     for candidate in [f"{r}/memory.{f}" for r in roots for f in ("high", "max")] + ["/sys/fs/cgroup/memory/memory.limit_in_bytes"]:
         try:
-            limit = int(Path(candidate).read_text(encoding="utf-8").strip())
+            limit = int(Path(candidate).read_text(encoding="utf-8-sig").strip())
         except (OSError, ValueError):  # unreadable, empty, or "max"
             continue
         if 0 < limit < (1 << 62):

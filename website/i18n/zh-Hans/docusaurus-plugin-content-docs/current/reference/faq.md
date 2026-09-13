@@ -6,6 +6,9 @@ description: "Hermes Agent 常见问题解答及常见问题解决方案"
 
 # 常见问题与故障排查
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 针对最常见问题的快速解答与修复方法。
 
 ---
@@ -52,21 +55,11 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 参见：
 
 - [在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
-- [浏览器自动化](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
+- [浏览器自动化](../user-guide/features/browser.md#wsl2--windows-chrome优先使用-mcp-而非-browser-connect)
 
-### 支持 Android / Termux 吗？
+### 支持 Android 吗？
 
-支持 — Hermes 现已为 Android 手机提供经过测试的 Termux 安装路径。
-
-快速安装：
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
-
-完整的手动步骤、支持的扩展及当前限制，请参阅 [Termux 指南](../getting-started/termux.md)。
-
-重要说明：完整的 `.[all]` 扩展目前在 Android 上不可用，因为 `voice` 扩展依赖 `faster-whisper` → `ctranslate2`，而 `ctranslate2` 未发布 Android wheel 包。请改用经过测试的 `.[termux]` 扩展。
+aarch64 设备可使用预发布的 Termux APT 软件包。请参阅 [Termux 指南](../getting-started/termux.md)了解签名仓库、安装步骤和限制。请使用 `pkg upgrade hermes-agent` 更新，不要使用 `hermes update` 或桌面和服务器的安装脚本。
 
 ### 我的数据会被发送到哪里？
 
@@ -103,7 +96,7 @@ Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启�
 :::
 
 :::tip 本地模型超时问题
-Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 120s 提升至 1800s，禁用停滞流检测）。如果在非常大的上下文下仍然超时，请在 `.env` 中设置 `HERMES_STREAM_READ_TIMEOUT=1800`。详情请参阅[本地 LLM 指南](../guides/local-llm-on-mac.md#timeouts)。
+Hermes 会自动检测本地端点并放宽流式传输超时（读取超时从 120s 提升至 1800s，禁用停滞流检测）。如果在非常大的上下文下仍然超时，请在 `.env` 中设置 `HERMES_STREAM_READ_TIMEOUT=1800`。详情请参阅[本地 LLM 指南](../guides/local-llm-on-mac.md#超时设置)。
 :::
 
 ### 费用是多少？
@@ -163,20 +156,12 @@ ls ~/.local/bin/hermes
 安装程序会将 `~/.local/bin` 添加到您的 PATH。如果您使用非标准 shell 配置，请手动添加 `export PATH="$HOME/.local/bin:$PATH"`。
 :::
 
-#### Python 版本过旧
+#### Python 版本不受支持
 
-**原因：** Hermes 需要 Python 3.11 或更新版本。
-
-**解决方案：**
-```bash
-python3 --version   # 检查当前版本
-
-# 安装更新的 Python
-sudo apt install python3.12   # Ubuntu/Debian
-brew install python@3.12      # macOS
-```
-
-安装程序会自动处理此问题 — 如果在手动安装时看到此错误，请先升级 Python。
+Hermes 要求 Python 3.14（`>=3.14,<3.15`），不是任意更新版本。
+源码安装脚本和软件包会提供相应的运行时。
+手动开发环境请按照 [开发指南](/developer-guide/contributing)准备。
+不要在签名应用或容器内部替换 Python 来修复版本错误。
 
 #### 终端命令提示 `node: command not found`（或 `nvm`、`pyenv`、`asdf` 等）
 
@@ -343,7 +328,7 @@ custom_providers:
         context_length: 32768
 ```
 
-有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md#context-length-detection)。
+有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md#上下文长度检测)。
 
 ---
 
@@ -437,7 +422,7 @@ cat ~/.hermes/logs/gateway.log | tail -50
 **解决方案：**
 ```bash
 # 安装核心消息网关依赖项
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"  # Telegram、Discord、Slack 及共享网关依赖
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"  # Telegram、Discord、Slack 及共享网关依赖
 
 # 检查端口冲突
 lsof -i :8080
@@ -557,7 +542,7 @@ hermes chat --continue
 **解决方案：**
 ```bash
 # 确保 MCP 依赖项已安装（标准安装中已包含）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 # 对于基于 npm 的服务器，确保 Node.js 可用
 node --version
@@ -757,7 +742,9 @@ skills:
    ```bash
    hermes backup
    ```
-   这会将您整个 `~/.hermes/` 目录（配置、API key、记忆、技能、会话和 profiles）打包为 zip 文件，保存到主目录 `~/hermes-backup-<timestamp>.zip`。
+   归档保存到 `~/hermes-backup-<timestamp>.zip`。
+   完整备份涵盖 Hermes 数据根目录中的配置、凭据、记忆、技能、会话和 profiles。
+   它不是应用程序或运行时的完整镜像。
 
 3. 将 zip 文件复制到新机器并导入：
    ```bash
@@ -784,15 +771,30 @@ hermes profile import ./work-backup.tar.gz work
 
 导入的 profile 将包含导出时的所有配置、记忆、会话和技能。如果新机器的设置不同，您可能需要更新路径或重新向提供商进行身份验证。
 
-### `hermes backup` 与 `hermes profile export` 的对比
+### `hermes backup` 与 `hermes profile export` 的对比 {#hermes-backup-vs-hermes-profile-export}
 
 | 功能 | `hermes backup` | `hermes profile export` |
 | :--- | :--- | :--- |
 | **使用场景** | **整机迁移** | **移植/共享特定 profile** |
-| **范围** | 全局（整个 `~/.hermes` 目录） | 局部（单个 profile 目录） |
+| **范围** | Hermes 数据根目录，下列排除项除外 | 单个 profile 目录 |
 | **包含内容** | 所有 profiles、全局配置、API key、会话 | 单个 profile：SOUL.md、记忆、会话、技能 |
 | **凭据** | **包含**（`.env` 和 `auth.json`） | **排除**（为安全共享而剥离） |
 | **格式** | `.zip` | `.tar.gz` |
+
+完整备份不包含以下内容：
+
+- 源代码仓库、依赖环境，以及下载的工具、模型和运行时。
+- 构建缓存、checkpoints、旧备份和快速快照。
+- 浏览器配置目录，包括真实浏览器凭据的副本。
+- 字节码、SQLite 辅助文件，以及 `gateway.pid`、`cron.pid` 和 `.backup.lock`。
+
+`hermes backup --quick` 只保存指定的状态文件，不生成完整归档。
+迁移机器前，它不能替代完整备份。
+
+完整备份会报告复制失败的文件。因此，即使归档已生成，也可能缺少部分数据。
+删除源安装前，请检查跳过文件的报告。
+还原后的软件包声明可让 PM 再次下载依赖项。字节码和 SQLite 辅助文件在本地重新生成。
+上述排除项不会把 `.env` 和 `auth.json` 排除在完整备份之外。
 
 **手动备选方案（rsync）：** 如果您倾向于直接复制文件，请排除代码仓库：
 ```bash

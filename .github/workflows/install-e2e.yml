@@ -51,7 +51,15 @@ on:
         required: false
         type: choice
         default: all
-        options: [all, both, update, installer, windows-desktop, macos-desktop]
+        options: [all, both, update, installer, windows-desktop, macos-desktop, bundled, windows-bundled, macos-bundled]
+      windows-bundle-manifest:
+        description: 'HTTPS manifest pinning signed Windows OLD/NEW msixbundles; NEW must match this ref.'
+        type: string
+        default: ''
+      macos-bundle-manifest:
+        description: 'HTTPS manifest pinning signed macOS OLD/NEW app ZIPs; NEW must match this ref.'
+        type: string
+        default: ''
       tag-count:
         description: 'How many release tags to sample (newest, oldest, and a spread between).'
         required: false
@@ -59,6 +67,51 @@ on:
         default: '3'
       install-ref:
         description: 'Optional exact release tag for a focused reproduction; overrides tag-count.'
+        required: false
+        type: string
+        default: ''
+  workflow_call:
+    # Reusable entry for the stable-release orchestrator. Same input names as
+    # workflow_dispatch; on a release run the caller dispatches on the exact
+    # candidate tag, so github.sha is the candidate commit throughout.
+    #
+    # route: which combinations to run (same choices as dispatch). The
+    # bundled routes require the matching bundle manifests, exactly like a
+    # manual dispatch — a source (non-bundle) release run passes route=all
+    # with empty manifests and gets the source install/update matrix only.
+    inputs:
+      release:
+        description: 'Stable-release candidate run (informational; jobs behave as route=all with empty manifests).'
+        required: false
+        type: boolean
+        default: false
+      route:
+        description: 'Which combinations to run. all = every OS; both/update/installer = the linux legs; windows-desktop = the windows legs; macos-desktop = the macos legs.'
+        required: false
+        type: string
+        default: all
+      windows-bundle-manifest:
+        description: 'HTTPS manifest pinning signed Windows OLD/NEW msixbundles; NEW must match this ref.'
+        required: false
+        type: string
+        default: ''
+      macos-bundle-manifest:
+        description: 'HTTPS manifest pinning signed macOS OLD/NEW app ZIPs; NEW must match this ref.'
+        required: false
+        type: string
+        default: ''
+      tag-count:
+        description: 'How many release tags to sample (newest, oldest, and a spread between).'
+        required: false
+        type: string
+        default: '3'
+      install-ref:
+        description: 'Optional exact release tag for a focused reproduction; overrides tag-count.'
+        required: false
+        type: string
+        default: ''
+      exclude-ref:
+        description: 'Exact release tag to EXCLUDE from the sampled OLD baselines (e.g. the candidate itself — testing an update from it would be a no-change test).'
         required: false
         type: string
         default: ''
@@ -74,9 +127,12 @@ on:
 permissions:
   contents: read
 
+# A workflow_call run (stable release) is never cancelled: its group uses
+# github.run_id so a parent rerun cannot kill this child mid-flight. The
+# scheduled/push runs keep ref-scoped collapse.
 concurrency:
-  group: install-e2e-${{ github.ref }}
-  cancel-in-progress: true
+  group: install-e2e-${{ inputs.release == true && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true }}
 
 jobs:
   # Which released versions do we test updating FROM? Resolved once,
@@ -97,24 +153,36 @@ jobs:
         with:
           filter: blob:none
           fetch-tags: true
-          sparse-checkout: scripts/sandbox/pick-release-tags.sh
+          sparse-checkout: |
+            scripts/sandbox/pick-release-tags.sh
+            scripts/releases/pick_tags.py
           sparse-checkout-cone-mode: false
       - id: pick
         env:
-          # Dispatch inputs never touch shell syntax directly: TAG_COUNT
-          # arrives via the environment and is validated decimal-only (bash
-          # arithmetic reads a leading zero as octal). GitHub's 256-job cap
-          # applies to each per-OS matrix separately; at 10 tags the largest
-          # is windows at 180 (first over the cap at 15 tags = 270).
+          # Inputs never touch shell syntax directly: TAG_COUNT arrives via
+          # the environment and is validated decimal-only (bash arithmetic
+          # reads a leading zero as octal). GitHub's 256-job cap applies to
+          # each per-OS matrix separately; at 10 tags the largest is windows
+          # at 180 (first over the cap at 15 tags = 270).
+          #
+          # EXCLUDE_REF removes one tag from the sampled OLD baselines: on a
+          # stable release the candidate tag itself is the newest release
+          # tag, and sampling it as an OLD version would produce a no-change
+          # update leg — the candidate must never update from itself.
           TAG_COUNT: ${{ inputs.tag-count || 2 }}
           INSTALL_REF: ${{ inputs.install-ref }}
+          EXCLUDE_REF: ${{ inputs.exclude-ref }}
+          RELEASE_MODE: ${{ inputs.release }}
         run: |
           set -euo pipefail
           [[ "$TAG_COUNT" =~ ^(10|[1-9])$ ]] || { echo "tag-count must be 1-10, got: $TAG_COUNT" >&2; exit 1; }
           if [ -n "$INSTALL_REF" ]; then
             [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
+            [ "$INSTALL_REF" != "$EXCLUDE_REF" ] || { echo "Candidate cannot be its own baseline" >&2; exit 1; }
             git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
             tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
+          elif [ "$RELEASE_MODE" = true ]; then
+            tags="$(python3 -m scripts.releases.pick_tags --count "$TAG_COUNT" --exclude-ref "$EXCLUDE_REF")"
           else
             tags="$(scripts/sandbox/pick-release-tags.sh --count "$TAG_COUNT")"
           fi
@@ -161,6 +229,58 @@ jobs:
           node scripts/sandbox/generate-e2e-matrix.mjs \
             --tags '${{ needs.pick-releases.outputs.tags }}' \
             --format markdown >> "$GITHUB_STEP_SUMMARY"
+
+  bundle-inputs:
+    name: Validate pinned bundle transitions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      windows: ${{ steps.inputs.outputs.windows }}
+      macos: ${{ steps.inputs.outputs.macos }}
+      windows-arch: ${{ steps.inputs.outputs.windows-arch }}
+      macos-arch: ${{ steps.inputs.outputs.macos-arch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: inputs
+        env:
+          BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}
+          BUNDLE_MACOS_MANIFEST: ${{ inputs.macos-bundle-manifest }}
+          BUNDLE_ROUTE: ${{ inputs.route }}
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node tests/install/e2e-assets/bundle-plan.mjs
+
+  windows-bundled:
+    name: ${{ matrix.name }}
+    if: inputs.windows-bundle-manifest != '' && contains(fromJSON('["all", "bundled", "windows-bundled"]'), inputs.route)
+    needs: bundle-inputs
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.bundle-inputs.outputs.windows) }}
+    uses: ./.github/workflows/install-e2e-windows-run.yml
+    with:
+      install-method: packaged-app
+      update-method: open-app-update
+      install-ref: ${{ matrix.install_ref }}
+      leg-id: ${{ matrix.leg_id }}
+      bundle-manifest-url: ${{ inputs.windows-bundle-manifest }}
+      bundle-arch: ${{ needs.bundle-inputs.outputs.windows-arch }}
+
+  macos-bundled:
+    name: ${{ matrix.name }}
+    if: inputs.macos-bundle-manifest != '' && contains(fromJSON('["all", "bundled", "macos-bundled"]'), inputs.route)
+    needs: bundle-inputs
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.bundle-inputs.outputs.macos) }}
+    uses: ./.github/workflows/install-e2e-macos-run.yml
+    with:
+      install-method: packaged-app
+      update-method: open-app-update
+      install-ref: ${{ matrix.install_ref }}
+      leg-id: ${{ matrix.leg_id }}
+      bundle-manifest-url: ${{ inputs.macos-bundle-manifest }}
+      bundle-arch: ${{ needs.bundle-inputs.outputs.macos-arch }}
 
   linux:
     name: ${{ matrix.name }}
@@ -238,6 +358,50 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # Strict source-matrix gate (release runs). needs collapses each matrix to
+  # one aggregate, so the three source parents are the required check here.
+  # Every source leg must succeed — a skip is a failure EXCEPT when it is the
+  # native, declared capability skip (a starting tag predating the desktop
+  # app reports tag-has-desktop=false and its GUI leg legitimately cannot
+  # run); those are honest skips, counted and listed. A no-legs-at-all
+  # generation (empty matrix) also fails: a release run must actually test
+  # the source install/update paths.
+  source-gate:
+    name: Source matrix gate
+    if: always() && inputs.release == true
+    needs: [generate-matrix, linux, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate source legs
+        env:
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          MACOS: ${{ needs.macos.result }}
+          LINUX_MATRIX: ${{ needs.generate-matrix.outputs.linux }}
+          WINDOWS_MATRIX: ${{ needs.generate-matrix.outputs.windows }}
+          MACOS_MATRIX: ${{ needs.generate-matrix.outputs.macos }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for os_name in LINUX WINDOWS MACOS; do
+            result="${!os_name}"
+            matrix_var="${os_name}_MATRIX"
+            matrix="${!matrix_var}"
+            legs=$(printf '%s' "$matrix" | jq 'if type == "object" then ([.include // []] | add // []) else . end | length')
+            echo "$os_name: result=$result legs=$legs"
+            if [ "$result" != "success" ] || [ "$legs" -eq 0 ]; then
+              echo "$os_name requires executed source coverage"
+              echo "::error::$os_name source matrix result=$result (legs=$legs)"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::source install/update matrix did not fully succeed; a release cannot proceed on a partial or skipped matrix"
+            exit 1
+          fi
+          echo "Source install/update matrix: all OS aggregates succeeded"
+
   # The outcome, human-readable: the plan chart again, with each cell
   # replaced by how that leg actually concluded. Per-leg conclusions are
   # NOT reachable through `needs` (a matrix job's result collapses to one
@@ -247,7 +411,7 @@ jobs:
   report:
     name: Result chart
     if: always()
-    needs: [leg-player, pick-releases, linux, windows, macos]
+    needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

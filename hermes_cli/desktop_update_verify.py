@@ -93,3 +93,7 @@ def verify_windows_desktop_update(project_root: Path | None = None) -> None:
     _verify_packaged_entry(executable.parent / "resources")
     if _desktop_build_needed(desktop, project_root, source_mode=False):
         raise RuntimeError("The updated Desktop build is stale, unstamped, or incomplete")
+
+
+if __name__ == "__main__":
+    verify_windows_desktop_update()

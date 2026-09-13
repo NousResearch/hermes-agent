@@ -7,13 +7,12 @@ resolving/monkeypatching. Origin helpers are imported lazily per function (no cy
 import logging
 from contextlib import suppress
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
-
-from hermes_cli.update_cmd_common import _best_effort
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -316,56 +315,25 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
-    """Reinstall Python deps (uv preferred, pip fallback) and re-arm active tool deps."""
-    from hermes_cli.update_cmd import (
-        _ensure_uv_for_termux, _ensure_venv_pip, _m, _refuse_update_for_contended_shims, _shim_quarantine_error_type,
-    )
 
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    update_managed_uv()  # keep managed uv current — runs `uv self update` if we already have one
-    uv_bin = ensure_uv()
-    pip_cmd = [_m().sys.executable, "-m", "pip"]
-    if not uv_bin:
-        uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        # Same UV-env isolation as the main update path: a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON
-        # from unrelated software must not steer which interpreter uv resolves here.
-        from hermes_cli.managed_uv import managed_python_env
-        uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
-        if _m()._is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        try:
-            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        except _shim_quarantine_error_type() as _sqe:
-            # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
-            # it — refuse here with the same defer-via-marker contract.
-            # See #87331.
-            _refuse_update_for_contended_shims(_sqe)
-        install_prefix, install_env = [uv_bin, "pip"], uv_env
-    else:
-        # sys.executable -m pip avoids PEP 668 'externally-managed-environment' errors.
-        _ensure_venv_pip(pip_cmd, _m().sys.executable)
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
-        install_prefix, install_env = pip_cmd, None
-    _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
-    # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
-    _m()._refresh_active_memory_provider_dependencies()
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
+                   target_sha: str | None = None, target_repository: str | None = None,
+                   gateway_mode: bool | None = None, pre_update_snapshot_id=None,
+                   pre_update_version=None,
+                   _pre_update_plan=None, _windows_gateway_resume=None) -> bool:
+    """Update via ZIP when Windows git file I/O fails; dependency/build failures propagate.
 
+    A supplied commit keeps the archive on the target selected before Git failed.
+    """
+    from hermes_cli.update_cmd import _m, _read_project_version
+    from hermes_cli.update_cmd_maint import (
+        _prepare_updated_checkout, _sweep_bytecode_after_update)
+    from hermes_cli.update_finish import finish_update
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
-    """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
-    drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
-    from hermes_cli.update_cmd import (
-        _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
-        _print_curator_recent_run_notice, _print_update_summary, _read_project_version, _rebuild_desktop_after_update,
-        _sweep_bytecode_after_update, _update_node_dependencies, _validate_critical_modules_import,
-        _verify_and_restore_state_dbs_post_update,
-    )
-    active_tool_dependencies = _m()._capture_active_tool_dependencies()
-    pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
+    if pre_update_version is None:
+        pre_update_version = _read_project_version()
+    if gateway_mode is None:
+        gateway_mode = bool(getattr(args, "gateway", False))
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -379,56 +347,27 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
+    if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+        raise ValueError("ZIP update requires an exact full commit SHA")
+    ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
+    repository = target_repository or "NousResearch/hermes-agent"
+    if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+            or any(part in (".", "..") for part in repository.split("/"))):
+        raise ValueError("ZIP update requires a GitHub owner/repository")
+    _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
     _sweep_bytecode_after_update(branch)
-    # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
-    # holds a native extension the sync must rewrite.
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra breaks on this machine, keep
-    # base deps and reinstall the remaining extras individually so update does not silently strip working
-    # capabilities. See #86735.
-    _m()._abort_dependency_sync_if_self_locked()
-    print("→ Updating Python dependencies...")
-    _reinstall_python_deps_after_zip(active_tool_dependencies)
-    # Verify the tree imports (catches the parse-OK-but-skewed tree an interrupted copy leaves). Runs
-    # *after* the dep reinstall so a genuinely-new third-party requirement isn't misreported as a partial
-    # copy. No SHA to roll back to — surface a concrete recovery step instead of success over a bricked install.
-    import_ok, failing_module, import_error = _validate_critical_modules_import(_m().PROJECT_ROOT)
-    if not import_ok:
-        print()
-        print("✗ Update left the install in an unimportable state:")
-        print(f"  {failing_module}: {import_error}")
-        print()
-        print("  This usually means the copy was interrupted partway through.")
-        print("  Re-run `hermes update` to complete it.")
-        _m().sys.exit(1)
-    node_failures = _update_node_dependencies()
-    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
-    desktop_build_ok = _rebuild_desktop_after_update(
-        _m().PROJECT_ROOT / "apps" / "desktop", had_desktop_app_before_update=had_desktop_app_before_update,
-    )
-    with suppress(Exception):
-        print("→ Syncing bundled skills...")
-        _print_bundled_skills_sync_report()
-    # Seed the model-catalog disk cache from the fresh checkout (same rationale as _cmd_update_impl). Non-fatal.
-    with _best_effort('Model catalog seed during zip update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
-    # state.db integrity guard: root home AND every sibling profile, each auto-restored from its own snapshot.
-    with _best_effort('Post-update state.db integrity check (zip path) failed: %s'):
-        # See #97994.
-        _verify_and_restore_state_dbs_post_update()
-    update_complete = _print_update_summary(
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok, pre_update_version=pre_update_version,
-    )
-    with _best_effort('Curator first-run notice failed: %s'):
-        _print_curator_first_run_notice()
-    with _best_effort('Curator recent-run notice failed: %s'):
-        _print_curator_recent_run_notice()
-    # Don't stop a working dashboard when the Node refresh failed — see the git-update path for rationale.
-    # See #30271.
-    _finish_dashboard_update_cleanup(node_failures)
-    with _best_effort('Update receipt finalize (zip path) failed: %s'):
-        from hermes_cli.update_receipt import finalize_update_receipt
-        finalize_update_receipt("success" if update_complete and not node_failures else "partial")
-    return update_complete
+    _prepare_updated_checkout(_m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
+    try:
+        finish_update(
+            assume_yes=bool(getattr(args, "yes", False)), gateway_mode=gateway_mode,
+            pre_update_snapshot_id=pre_update_snapshot_id,
+            had_desktop_app_before_update=had_desktop_app_before_update,
+            pre_update_version=pre_update_version,
+            plan=_pre_update_plan, windows_resume=_windows_gateway_resume)
+    except SystemExit as exc:
+        # Shared completion reports an unsafe runtime/incomplete fleet with exit 1.
+        # Keep ZIP's legacy bool contract; swap and preparation failures still raise.
+        if exc.code != 1:
+            raise
+        return False
+    return True

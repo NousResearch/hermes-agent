@@ -505,7 +505,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                 return _run_local_turn(argv, dm_file, env=env)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8") as stream:
+            with open(dm_file, "r", encoding="utf-8-sig") as stream:
                 return subprocess.run(argv, stdin=stream, check=False, env=env).returncode
     finally:
         _unlink_dm_file(dm_file)

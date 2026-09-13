@@ -274,7 +274,7 @@ def update_manifest_statuses(delegation_id: Optional[str],
         return
     with _best_effort("manifest update"):
         mp = _manifest_path(delegation_id)
-        manifest = json.loads(mp.read_text(encoding="utf-8"))
+        manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
         by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
         for task in manifest.get("tasks", []):
             r = by_index.get(task.get("index"))

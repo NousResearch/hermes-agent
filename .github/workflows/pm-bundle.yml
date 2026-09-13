@@ -1,0 +1,148 @@
+name: PM Bundle
+
+# Stages the self-contained agent payload for each (os, arch) target with
+# `hermes pm bundle`: repo snapshot + tool store + facts + a relocatable
+# venv built on the staged python-build-standalone interpreter. Each
+# payload is smoke-tested on its native runner — the staged interpreter
+# boots hermes_cli out of the payload with no network and no PYTHONPATH —
+# as a pre-merge check for the pm tooling itself.
+#
+# Staging is native per target (no cross-target wheel tables anywhere):
+# the runner IS the target. pm's arch guard fails the job if any staged
+# mismatches, before anything ships.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to bundle (default: the triggering commit, github.sha)'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run (ignored by the jobs; uniform callable surface).'
+        required: false
+        type: boolean
+        default: false
+      ref:
+        description: 'Git ref to bundle (default: the triggering commit, github.sha)'
+        required: false
+        type: string
+        default: ''
+  pull_request:
+    paths:
+      - 'pm/**'
+      - 'scripts/bundles/**'
+      - 'scripts/windows-build-deps.ps1'
+      - 'scripts/build/windows-deps.ps1'
+      - 'scripts/build/windows_deps.py'
+      - '.github/actions/setup-windows-build-deps/**'
+      - 'uv.lock'
+      - 'pyproject.toml'
+      - '.github/workflows/pm-bundle.yml'
+
+permissions:
+  contents: read
+
+# A workflow_call run (stable release) is never cancelled: its group uses
+# github.run_id so a parent rerun cannot kill this child mid-flight.
+concurrency:
+  group: pm-bundle-${{ inputs.release == true && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true }}
+
+jobs:
+  bundle:
+    name: bundle ${{ matrix.target.label }}
+    runs-on: ${{ matrix.target.runner }}
+    # Leave time for setup, cache saves and smoke tests around the wheel build.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x64
+            runner: ubuntu-24.04
+          - label: linux-arm64
+            runner: ubuntu-24.04-arm
+          - label: darwin-arm64
+            runner: macos-15
+          - label: darwin-x64
+            runner: macos-15-intel
+          - label: win32-x64
+            runner: windows-2025
+          - label: win32-arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Default to the exact candidate commit (github.sha); inputs.ref
+          # remains an escape hatch for a focused manual reproduction.
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-tags: true
+
+      # The host and payload toolchains use the same PM pins and installer.
+      - uses: ./.github/actions/setup-pm
+        id: pm
+        with:
+          save-python-cache: false
+
+      # One cache for the pm store: keyed on the lockfile, so a pin bump
+      # rotates it. pm verifies every restored entry against the lock
+      # (hash-named fetches, verify() on entries) — the cache is an
+      # optimization, never a proof.
+      - name: Cache pm store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/agent-payload/tools
+          key: pm-store-v2-${{ matrix.target.label }}-${{ hashFiles('pm/lock.json', 'uv.lock') }}
+
+      # win32-arm64 builds cryptography and obstore from sdist.
+      - name: Set up native ARM64 build dependencies
+        if: matrix.target.label == 'win32-arm64'
+        uses: ./.github/actions/setup-windows-build-deps
+
+      - name: Pin CMake < 4 for sdist builds
+        # python-olm (matrix extra) builds libolm from sdist on non-Linux
+        # targets, and its libolm/CMakeLists.txt requires CMake < 3.5
+        # compat (removed in CMake 4, which the darwin + win32 runners
+        # ship). Pin a CMake 3.x first on PATH for those legs so the sdist
+        # build configures. Linux uses the manylinux wheel — no build, no
+        # cmake needed. The pip cmake package ships a binary wheel for
+        # every non-Linux target (macos universal2, win_amd64, win_arm64).
+        if: startsWith(matrix.target.label, 'darwin-') || startsWith(matrix.target.label, 'win32-')
+        shell: bash
+        run: |
+          python -m scripts.ci.python_packages cmake==3.31.6
+
+      - name: Stage the payload
+        shell: bash
+        env:
+          # Windows runners default to cp1252; pm prints UTF-8 (✓/✗).
+          PYTHONUTF8: '1'
+        run: |
+          # Archive what actions/checkout actually checked out. On
+          # pull_request events github.sha names a merge commit that a
+          # force-push invalidates mid-run ("not a tree object").
+          python -m pm.cli bundle \
+            --out build/agent-payload \
+            --ref HEAD
+
+      - name: Save warmed Python dependencies even after a staging failure
+        if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
+        uses: ./.github/actions/save-pm-cache
+        with:
+          python: ${{ steps.pm.outputs.python-path }}
+          path: ${{ steps.pm.outputs.uv-cache-path }}
+          key: ${{ steps.pm.outputs.python-cache-key }}
+
+      # The generated command must survive relocation without checkout env/cwd.
+      - name: Smoke test the relocated payload (network disabled)
+        if: startsWith(matrix.target.label, 'linux-')
+        shell: bash
+        run: sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh build/agent-payload
+
+      - name: Smoke test the relocated payload (native launchers)
+        if: ${{ !startsWith(matrix.target.label, 'linux-') }}
+        shell: bash
+        run: bash scripts/smoke-payload.sh build/agent-payload

@@ -161,7 +161,7 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
         return "no_auth_file"
 
     try:
-        with open(auth_path, "r", encoding="utf-8") as fh:
+        with open(auth_path, "r", encoding="utf-8-sig") as fh:
             store = json.load(fh)
     except (OSError, ValueError):
         # Corrupt/unreadable auth.json: do NOT overwrite blindly. A separate

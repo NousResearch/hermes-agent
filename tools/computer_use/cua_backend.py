@@ -2,7 +2,7 @@
 background loop (``cua_backend_session``); the same tool surface works on all three platforms, and per-host gaps
 (no DISPLAY, missing AT-SPI, TCC) surface via `hermes computer-use doctor` instead of failing silently. Install
 with `hermes computer-use install`. The macOS path uses private SkyLight SPIs that can break on OS updates.
-Siblings: ``cua_backend_driver`` (binary/contract/update), ``cua_backend_capture`` + ``cua_backend_input``
+Siblings: ``cua_backend_driver`` (binary/contract), ``cua_backend_capture`` + ``cua_backend_input``
 (mixins), ``cua_backend_parse``, ``cua_backend_session`` (bridge + session + CLI fallback), ``cua_backend_daemon``
 (private daemon + macOS app identity). Siblings look this module's config/policy helpers up lazily."""
 
@@ -14,16 +14,16 @@ import logging
 import os
 import subprocess
 import sys
-import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
 from tools.computer_use.cua_backend_driver import (
-    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status, cua_driver_update_nudge,
+    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
@@ -51,20 +51,36 @@ def _cua_no_overlay() -> bool:
     Explicit ``True`` / ``False`` overrides auto-detection. See #28152, #47032.
     """
     val = _computer_use_cfg().get("no_overlay")
-    if val is not None or sys.platform != "linux":
-        return bool(val) if val is not None else sys.platform == "darwin"
-    wsl = False
-    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8") as f:
-        wsl = "microsoft" in f.read().lower()
-    return wsl or not os.environ.get("DISPLAY") or (
-        # Linux/X11: the cursor overlay is a fullscreen, always-on-top, all-workspaces X11 window
-        # (save-unders path). An unclean session end (agent interrupted mid-capture, stale target window)
-        # can leave it stuck above every app on every workspace, wedging desktop input until the app
-        # restarts — the same failure class as the HUD window on Mutter/X11 (#83473). There is no
-        # compositor-owned surface to tear down with the client connection, so default the overlay off on
-        # X11 too; set computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the compositor
-        # owns the overlay surface lifecycle there.
-        os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
+    if val is not None:
+        return bool(val)
+    # Auto-detect: macOS overlay can peg a core indefinitely after a
+    # computer_use session (#47032). Prefer off until the driver teardown
+    # is solid; set computer_use.no_overlay: false to keep the cursor.
+    if sys.platform == "darwin":
+        return True
+    if sys.platform != "linux":
+        return False
+    if not os.environ.get("DISPLAY"):
+        return True
+    try:
+        with open("/proc/version", encoding="utf-8-sig") as f:
+            if "microsoft" in f.read().lower():
+                return True
+    except Exception:
+        pass
+    # Linux/X11: the cursor overlay is a fullscreen, always-on-top,
+    # all-workspaces X11 window (save-unders path). An unclean session end
+    # (agent interrupted mid-capture, stale target window) can leave it stuck
+    # above every app on every workspace, wedging desktop input until the app
+    # restarts — the same failure class as the HUD window on Mutter/X11
+    # (#83473). There is no compositor-owned surface to tear down with the
+    # client connection, so default the overlay off on X11 too; set
+    # computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the
+    # compositor owns the overlay surface lifecycle there.
+    if os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return False
+
 
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
@@ -83,8 +99,9 @@ def _manifest_is_mode_independent(path: str) -> bool:
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import yaml
-        with open(path, "r", encoding="utf-8") as handle:
+        import hermes_yaml as yaml
+
+        with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
     except Exception:
         logger.debug("could not read capability manifest %s", path, exc_info=True)
@@ -172,48 +189,6 @@ def _empty_discovery_reason() -> str:
                 "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
     return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
 
-_update_checked = False
-# One auto-repair attempt per process: when the runtime-contract gate fails for something a reinstall fixes
-# (old version, missing manifest verbs) run the standard install path once instead of telling the user to.
-# Guarded so a failing installer can't loop — the second start() goes straight to the error.
-_contract_repair_attempted = False
-
-def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
-    """Try one automatic driver repair; return the post-repair contract (or the original when no repair was
-    attempted / it failed). Never raises. An explicit ``HERMES_CUA_DRIVER_CMD`` override is authoritative even
-    when broken, and a missing binary means installation was never requested."""
-    global _contract_repair_attempted
-    if contract.get("ready") or _contract_repair_attempted or os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() or not contract.get("binary"):
-        return contract
-    _contract_repair_attempted = True
-    logger.info("computer_use: installed cua-driver is not usable (%s); attempting automatic repair",
-                contract.get("reason") or "runtime contract is incomplete")
-    try:
-        from hermes_cli.tools_config import install_cua_driver
-        repaired = install_cua_driver(upgrade=False, show_installer_progress=False)
-    except Exception as exc:
-        logger.warning("computer_use: automatic cua-driver repair failed: %s", exc)
-        return contract
-    with contextlib.suppress(Exception):
-        return cua_driver_runtime_contract_status() if repaired else contract
-    return contract
-
-def _maybe_nudge_update() -> None:
-    """Emit an update nudge at most once per process, off-thread so the (cached, ~20h) GitHub poll never blocks
-    the first computer_use action."""
-    global _update_checked
-    if _update_checked:
-        return
-    _update_checked = True
-
-    def _run() -> None:
-        with contextlib.suppress(Exception):
-            msg = cua_driver_update_nudge()
-            msg and logger.info("computer_use: %s", msg)
-
-    threading.Thread(target=_run, name="cua-driver-update-check", daemon=True).start()
-
-
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
@@ -226,8 +201,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
             # caps what an approval-bypassed run may touch.
             raw = _computer_use_cfg().get("capability_manifest")
+            # Resolve at daemon launch, after start() reconciles the PM pin.
             self._embedded_daemon = _EmbeddedCuaDaemon(
-                resolve_cua_driver_cmd() or "", permission_mode,
+                "", permission_mode,
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
@@ -246,19 +222,31 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
+        # Runtime acquisition is on-demand, never the explicit install command
+        # (which may elevate for host setup and bypass the lazy-install gate).
+        if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+            from pm import ensure
+            ensure("cua-driver")
         contract = cua_driver_runtime_contract_status()
-        if not contract.get("ready"):
-            contract = _maybe_repair_runtime_contract(contract)
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
                                   if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
-        _maybe_nudge_update()
-        # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
-        # raises FeatureUnavailable with the exact `uv pip install` hint.
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.computer_use", prompt=False)
-        importlib.invalidate_caches()  # a just-installed package may not be importable yet
+
+        # The MCP client SDK (`mcp`) is an optional dependency (the
+        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # Lazy-install it on first use — the same pattern every other optional
+        # backend uses — so users never hit an opaque `No module named 'mcp'`
+        # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
+        # (default on); when it's disabled or fails, ensure_import() raises
+        # InstallError explaining why PM could not enable the SDK,
+        # which surfaces via the backend-unavailable path in tool.py.
+        from pm import ensure_import
+        ensure_import("computer-use")
+        # A just-installed package may not be importable until the import
+        # machinery's caches are refreshed within this process.
+        import importlib
+        importlib.invalidate_caches()
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
             if self._embedded_daemon is not None:
                 rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()

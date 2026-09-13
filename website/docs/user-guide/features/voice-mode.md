@@ -40,30 +40,30 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 
 ### Python Packages
 
-```bash
-# CLI voice mode (microphone + audio playback)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
+Use `hermes tools` to configure voice providers. Missing built-in feature
+requirements go through PM, subject to `security.allow_lazy_installs` and the
+target's dependency support. Restart Hermes if the selected dependency
+environment changes.
 
-# Discord + Telegram messaging (includes discord.py[voice] for VC support)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
-
-# Premium TTS (ElevenLabs)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
-
-# Local TTS (NeuTTS, optional)
-python -m pip install -U neutts[all]
-
-# Everything at once
-cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
-```
+A bundled app includes its supported engine dependencies. Docker includes a
+curated subset and disables on-demand installs. Do not use pip to modify a
+signed payload or the system Python. For a manual development environment,
+select the required extras in the
+[development setup](../../developer-guide/contributing.md#development-setup).
 
 | Extra | Packages | Required For |
 |-------|----------|-------------|
-| `voice` | `sounddevice`, `numpy` | CLI voice mode |
+| `voice` | `sounddevice`, `numpy`, and Faster-Whisper where supported | CLI audio and optional local STT |
 | `messaging` | `discord.py[voice]`, `python-telegram-bot`, `aiohttp` | Discord & Telegram bots |
 | `tts-premium` | `elevenlabs` | ElevenLabs TTS provider |
 
-Optional local TTS provider: install `neutts` separately with `python -m pip install -U neutts[all]`. On first use it downloads the model automatically.
+Local Faster-Whisper is excluded on native Windows ARM64 and Intel macOS.
+Use a cloud or command-based STT provider on those targets. `audio-io` contains
+the microphone/playback dependencies without local STT. The `all` extra does
+not mean every voice or wake engine.
+
+NeuTTS is a separate optional runtime and downloads models on first use.
+Do not install its dependencies into a signed app or system Python.
 
 :::info
 `discord.py[voice]` installs **PyNaCl** (for voice encryption) and **opus bindings** automatically. This is required for Discord voice channel support.
@@ -94,7 +94,7 @@ Add to `~/.hermes/.env`:
 
 ```bash
 # Speech-to-Text — local provider needs NO key at all
-# pip install faster-whisper          # Free, runs locally, recommended
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
@@ -374,7 +374,7 @@ The bot auto-loads the codec from:
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=your-user-id
 
-# STT — local provider needs no key (pip install faster-whisper)
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
 # GROQ_API_KEY=your-key            # Alternative: cloud-based, fast, free tier
 
 # TTS — optional. Edge TTS and NeuTTS need no key.
@@ -496,7 +496,7 @@ tts:
 
 ```bash
 # Speech-to-Text providers (local needs no key)
-# pip install faster-whisper        # Free local STT — no API key needed
+# PM prepares local Faster-Whisper on supported targets; no STT API key is needed.
 GROQ_API_KEY=...                    # Groq Whisper (fast, free tier)
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper (paid)
 

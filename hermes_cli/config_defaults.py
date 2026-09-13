@@ -304,15 +304,15 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
-        "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "docker_image": "nikolaik/python-nodejs:python3.14-nodejs22",
         "docker_forward_env": [],
         # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
         # reads host values) — useful under systemd without the user's shell env. Example:
         # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
-        "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
-        "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "singularity_image": "docker://nikolaik/python-nodejs:python3.14-nodejs22",
+        "modal_image": "nikolaik/python-nodejs:python3.14-nodejs22",
+        "daytona_image": "nikolaik/python-nodejs:python3.14-nodejs22",
         "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
@@ -1157,26 +1157,23 @@ DEFAULT_CONFIG = {
         "surface": "auto",  # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "input_device": None,  # PortAudio input device index/name; null = process default
         "capture": "auto",  # auto | local | client (desktop streams mic via wake.feed)
-        # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine"
-        # (premium; needs PORCUPINE_ACCESS_KEY)
-        "provider": "openwakeword",
+        # auto: first platform-supported engine (openwakeword, sherpa, porcupine).
+        # Explicit choices stay pinned. Porcupine needs PORCUPINE_ACCESS_KEY.
+        "provider": "auto",
         # sherpa: this IS the detected phrase; other engines: cosmetic label (detection is keyed by
         # the model/keyword below)
         "phrase": "hey hermes",
         "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
-        # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
-        # triggers, more latency; 1 = single-frame)
+        # openWakeWord/pyopen-wakeword only: consecutive over-threshold frames to fire (higher = fewer
+        # false triggers, more latency; 1 = single-frame)
         "confirmation_frames": 3,
         "start_new_session": True,  # fresh session on wake vs. continue the current one
         # sherpa only: listen for every wake-enabled profile's phrase and route to it
         "profile_routing": True,
         "openwakeword": {
             # "hey_hermes" | built-in openWakeWord name ("hey_jarvis", "alexa", ...) | path to a
-            # custom .onnx/.tflite model
+            # custom .tflite model
             "model": "hey_hermes",
-            # "" (auto: tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite" — onnx scores
-            # near-zero on macOS ARM64 (arms but never fires)
-            "inference_framework": "",
         },
         "sherpa": {
             # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer
@@ -1588,6 +1585,13 @@ DEFAULT_CONFIG = {
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.
         "allow_deprecated_imports": False,
+        # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
+        # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
+        # scan-gated by that same pipeline).
+        "auto_update_check_hours": 24,
+        # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
+        # same security scan / consent pipeline as the manual update command.
+        "auto_apply": False,
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
@@ -1905,6 +1909,7 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
@@ -2387,8 +2392,7 @@ DEFAULT_CONFIG = {
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
-        # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
-        "tag": "b10679",
+        # Engine versions and every dependent library are pinned by pm/lock.json.
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",

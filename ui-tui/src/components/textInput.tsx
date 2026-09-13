@@ -14,7 +14,6 @@ import {
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
-import { isTermuxTuiMode } from '../lib/termux.js'
 
 type InkExt = typeof Ink & {
   colorize: (str: string, color: string | undefined, type: 'foreground' | 'background') => string
@@ -662,21 +661,6 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   const term = (env.TERM ?? '').trim().toLowerCase()
 
   if ((env.TMUX ?? '').trim().length > 0 || term === 'tmux' || term.startsWith('tmux-')) {
-    return false
-  }
-
-  // Termux terminals are especially sensitive to bypass-path cursor drift and
-  // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
-  // off by default in Termux mode; allow explicit opt-in for local debugging.
-  if (isTermuxTuiMode(env)) {
-    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '')
-      .trim()
-      .toLowerCase()
-
-    if (override) {
-      return /^(?:1|true|yes|on)$/i.test(override)
-    }
-
     return false
   }
 

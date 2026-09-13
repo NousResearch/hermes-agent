@@ -2,6 +2,8 @@ interface FirstRunSetupBackend {
   activeRoot?: string
   kind?: string
   platform?: string
+  /** What the local setup card represents: 'none' = installer offer, the rest = use existing. */
+  local?: 'none' | 'installed' | 'bundled'
 }
 
 interface FirstRunSetupGateOptions {
@@ -58,7 +60,11 @@ export function createFirstRunSetupGate({
   }
 
   const shouldGate = (backend?: FirstRunSetupBackend | null) =>
-    Boolean(backend && backend.kind === 'bootstrap-needed' && !localBootstrapConfirmed)
+    Boolean(
+      backend &&
+        backend.kind === 'bootstrap-needed' &&
+        !localBootstrapConfirmed
+    )
 
   const wait = async (backend?: FirstRunSetupBackend | null) => {
     if (!shouldGate(backend)) {

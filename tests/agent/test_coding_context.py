@@ -29,6 +29,11 @@ def _git_init(path):
     (Path(path) / "main.py").write_text("print('hi')\n")
     for args in (
         ["init", "-q", "-b", "main"],
+        # Pin line-ending handling to the repo itself: with a host-global
+        # core.autocrlf=true, a just-committed tree can report "1 modified"
+        # immediately after init (CRLF round-trip), which poisons the
+        # clean-status contract this suite asserts.
+        ["config", "core.autocrlf", "false"],
         ["add", "-A"],
         ["commit", "-q", "-m", "init commit"],
     ):

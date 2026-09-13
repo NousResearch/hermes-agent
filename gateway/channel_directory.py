@@ -46,7 +46,8 @@ def _aliases_path() -> Path:
 
 
 def _read_json(path: Path) -> Any:
-    with open(path, encoding="utf-8") as f:
+    # utf-8-sig: Windows editors may leave a BOM that plain utf-8 json.load rejects (pm-era fix).
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 

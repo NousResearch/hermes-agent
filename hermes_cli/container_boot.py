@@ -211,7 +211,7 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = json.loads(state_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         log.warning("could not read %s; treating as no prior state", state_file)
         return None

@@ -605,7 +605,21 @@ def _seed_codex_grant(root):
     (root / "auth.json").write_text(json.dumps(store))
 
 
-def _shared_profile(fleet, name, *, link):
+def _link_same_file(target, alias):
+    """Make ``alias`` the SAME store as ``target``: a symlink where the host
+    permits one, a hardlink where it does not (Windows without SeCreateSymbolicLink
+    privilege raises WinError 1314). Both flavors are one file — the heal contract
+    (``_is_same_auth_store``) is ``samefile``/resolved-path equality, not the link
+    flavor, so the test exercises the same contract on either host."""
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        os.link(target, alias)
+
+
+def _shared_profile(fleet, name, *, link=_link_same_file):
     """Profile whose auth.json IS the root store (``link`` makes the alias)."""
     pdir = _profile(fleet, name)
     pdir.mkdir(parents=True, exist_ok=True)
@@ -626,12 +640,14 @@ def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
     _seed_codex_grant(root)
     before = (root / "auth.json").read_text()
 
-    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    shared = _shared_profile(fleet, "shared")
     fleet["use"](shared)
 
     assert heal_forked_single_use_oauth_grants("openai-codex") is None
     assert (root / "auth.json").read_text() == before
-    assert (shared / "auth.json").is_symlink()
+    # Same-store contract, flavor-independent: whatever link type the host
+    # gave us, the alias must be the root store itself, not a copy.
+    assert (shared / "auth.json").samefile(root / "auth.json")
     assert consume_oauth_heal_notices() == []
     store = json.loads((root / "auth.json").read_text())
     assert [r["id"] for r in store["credential_pool"]["openai-codex"]] == ["cdx001"]
@@ -669,12 +685,13 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
     kid = _profile(fleet, "kid")
     kid.mkdir(parents=True, exist_ok=True)
     (kid / "auth.json").write_text(json.dumps({"providers": {}, "credential_pool": {}}))
-    (kid / ".anthropic_oauth.json").symlink_to(root / ".anthropic_oauth.json")
+    _link_same_file(root / ".anthropic_oauth.json", kid / ".anthropic_oauth.json")
     before = (root / ".anthropic_oauth.json").read_text()
 
     fleet["use"](kid)
     assert heal_forked_single_use_oauth_grants("anthropic") is None
-    assert (kid / ".anthropic_oauth.json").is_symlink()
+    # Same-store contract, flavor-independent (hardlink on symlink-hostile hosts).
+    assert (kid / ".anthropic_oauth.json").samefile(root / ".anthropic_oauth.json")
     assert (root / ".anthropic_oauth.json").read_text() == before
 
 
@@ -685,7 +702,7 @@ def test_heal_same_store_skip_is_memoized_off_the_hot_path(fleet, monkeypatch):
 
     root = fleet["root"]
     _seed_codex_grant(root)
-    shared = _shared_profile(fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
+    shared = _shared_profile(fleet, "shared")
     fleet["use"](shared)
 
     assert auth_mod.heal_forked_single_use_oauth_grants("openai-codex") is None

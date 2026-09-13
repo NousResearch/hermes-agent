@@ -182,6 +182,7 @@ def _fake_flaps(sock_dir, status_line, capture):
     return sock_path, t
 
 
+@pytest.mark.platforms("linux")
 def test_suspend_self_posts_suspend_for_this_machine(short_sock_dir):
     captured: list[bytes] = []
     sock_path, t = _fake_flaps(short_sock_dir, "200 OK", captured)
@@ -196,6 +197,7 @@ def test_suspend_self_posts_suspend_for_this_machine(short_sock_dir):
     assert "Host: flaps\r\n" in request
 
 
+@pytest.mark.platforms("linux")
 def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     captured: list[bytes] = []
     sock_path, t = _fake_flaps(short_sock_dir, "412 Precondition Failed", captured)
@@ -203,6 +205,7 @@ def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     t.join(timeout=5)
 
 
+@pytest.mark.platforms("linux")
 def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):
     # Fail-awake: a dead/absent flaps socket must never raise out of the watcher.
     assert suspend_self(_FLY_ENV, socket_path=str(tmp_path / "nope.sock")) is False

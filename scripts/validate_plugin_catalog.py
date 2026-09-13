@@ -3,7 +3,7 @@
 
 Validates ``plugin-catalog/*.yaml`` catalog entries and
 ``plugin-catalog/removed.yaml`` against the catalog contract schema, using
-only stdlib + PyYAML so the admission CI (and third-party repos) can run it
+only stdlib + ruamel.yaml so the admission CI (and third-party repos) can run it
 WITHOUT installing hermes-agent.
 
 NOTE: this script intentionally duplicates the schema rules instead of
@@ -31,10 +31,10 @@ import sys
 from pathlib import Path
 
 try:
-    import yaml
+    from ruamel.yaml import YAML, YAMLError
 except ImportError:  # pragma: no cover - dependency guidance only
     print(
-        "ERROR: PyYAML is required (pip install pyyaml)",
+        "ERROR: ruamel.yaml is required (pip install ruamel.yaml==0.18.17)",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -190,11 +190,13 @@ def validate_removed(data: object) -> tuple[list[str], list[str]]:
 def validate_file(path: Path) -> tuple[list[str], list[str]]:
     """Validate one YAML file (dispatching on filename). Returns (errors, warnings)."""
     try:
+        reader = YAML(typ="safe")
+        reader.version = (1, 1)
         with open(path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+            data = reader.load(fh)
     except OSError as exc:
         return [f"cannot read file: {exc}"], []
-    except yaml.YAMLError as exc:
+    except YAMLError as exc:
         return [f"invalid YAML: {exc}"], []
 
     if path.name == "removed.yaml":

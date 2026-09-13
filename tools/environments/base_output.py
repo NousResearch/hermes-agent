@@ -295,7 +295,7 @@ class _ThreadedProcessHandle:
 
         # Pipe for stdout — the drain thread in _wait_for_process reads the read end.
         read_fd, write_fd = os.pipe()
-        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+        self._stdout = os.fdopen(read_fd, "r", encoding="utf-8-sig", errors="replace")
         self._write_fd = write_fd
 
         def _worker():

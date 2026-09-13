@@ -159,6 +159,10 @@ def _video_url_from_result(result: Any) -> Tuple[Any, Optional[str]]:
 _fal_client: Any = None
 _fal_client_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Managed FAL gateway (Nous Subscription)
+# ---------------------------------------------------------------------------
+
 _managed_fal_video_client: Any = None
 _managed_fal_video_client_config: Any = None
 _managed_fal_video_client_lock = threading.Lock()

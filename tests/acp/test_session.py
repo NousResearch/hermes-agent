@@ -164,6 +164,7 @@ class TestSymlinkAliasNormalization:
     ``/private/tmp``) must compare equal, or ACP history filters silently drop
     a workspace's own sessions."""
 
+    @pytest.mark.require_symlinks
     def test_symlink_alias_compares_equal(self, tmp_path):
         real = tmp_path / "real"
         real.mkdir()
@@ -188,8 +189,9 @@ class TestSymlinkAliasNormalization:
         # exactly as the old normpath comparison did.
         assert acp_session._normalize_cwd_for_compare(
             "/nonexistent-hermes-test/x/../y"
-        ) == "/nonexistent-hermes-test/y"
+        ) == acp_session._normalize_cwd_for_compare("/nonexistent-hermes-test/y")
 
+    @pytest.mark.require_symlinks
     def test_list_sessions_matches_symlink_alias_cwd(self, manager, tmp_path):
         real = tmp_path / "proj"
         real.mkdir()

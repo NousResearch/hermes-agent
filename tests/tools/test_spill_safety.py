@@ -43,6 +43,7 @@ def test_private_dir_is_0700_and_tightened(tmp_path):
     assert stat.S_IMODE(os.lstat(d).st_mode) == 0o700
 
 
+@pytest.mark.require_symlinks
 def test_ensure_spill_dir_refuses_symlinked_leaf(tmp_path):
     victim = tmp_path / "victim-dir"
     victim.mkdir()
@@ -52,6 +53,7 @@ def test_ensure_spill_dir_refuses_symlinked_leaf(tmp_path):
         ensure_spill_dir(link)
 
 
+@pytest.mark.require_symlinks
 def test_refuses_planted_symlink(tmp_path):
     """The core attack: symlink at the spill path must fail, not redirect."""
     victim = tmp_path / "victim.txt"
@@ -63,6 +65,7 @@ def test_refuses_planted_symlink(tmp_path):
     assert victim.read_text() == "original"
 
 
+@pytest.mark.require_symlinks
 def test_refuses_dangling_symlink(tmp_path):
     target = tmp_path / "spill.txt"
     target.symlink_to(tmp_path / "does-not-exist.txt")
@@ -71,6 +74,7 @@ def test_refuses_dangling_symlink(tmp_path):
     assert not (tmp_path / "does-not-exist.txt").exists()
 
 
+@pytest.mark.require_symlinks
 def test_overwrite_removes_symlink_not_its_target(tmp_path):
     victim = tmp_path / "victim.txt"
     victim.write_text("original")

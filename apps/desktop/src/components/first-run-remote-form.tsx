@@ -138,7 +138,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
       setOauthConnected(Boolean(result.connected))
 
       if (!result.connected) {
-        setError(copy.signInIncomplete)
+        setError(result.error ? `${copy.signInIncomplete}: ${result.error}` : copy.signInIncomplete)
       }
     } catch (err) {
       setError(errorMessage(err))

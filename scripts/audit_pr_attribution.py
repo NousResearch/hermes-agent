@@ -70,7 +70,7 @@ def is_mapped(email: str) -> bool:
         return True
     release_py = REPO_ROOT / "scripts" / "release.py"
     try:
-        if f'"{email}"' in release_py.read_text(encoding="utf-8", errors="replace"):
+        if f'"{email}"' in release_py.read_text(encoding="utf-8-sig", errors="replace"):
             return True
     except OSError:
         pass

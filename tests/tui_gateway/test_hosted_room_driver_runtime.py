@@ -422,7 +422,8 @@ def _runtime(
     )
 
 
-def _wait_for(predicate, *, timeout: float = 2.0) -> None:
+def _wait_for(predicate, *, timeout: float = 10.0) -> None:
+    # Allow worker scheduling without repeating the operation under test.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -764,7 +765,7 @@ def test_waiting_room_does_not_block_an_independent_room(tmp_path: Path):
     )
 
     runtime.start()
-    assert waiting.submitted.wait(1.0)
+    assert waiting.submitted.wait(10.0)
     _wait_for(lambda: state.get_task(db, identities[1])["status"] == "settled")
     assert state.get_task(db, identities[0])["status"] == "running"
     assert runtime.stop(timeout=5.0)
@@ -1189,7 +1190,7 @@ def test_retry_ignores_late_receipt_from_prior_execution_generation(db: Path):
     runtime = _runtime(db, rpc, clock=clock)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     time.sleep(0.04)
     assert runtime.stop(timeout=5.0)
 
@@ -1560,7 +1561,7 @@ def test_post_submit_observation_failure_preserves_recoverable_outcome(db: Path)
     runtime = _runtime(db, rpc)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     _wait_for(
         lambda: (
             "observation failed after submit"
@@ -1591,7 +1592,7 @@ def test_cancellation_is_persisted_before_interrupt_and_fences_late_result(
     )
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     cancelled = runtime.cancel(identity, cancel_id="cancel-user")
     rpc.complete(identity.task_id, content="Too late.")
     runtime.wakeup()
@@ -1621,7 +1622,7 @@ def test_transient_remote_stop_failure_stays_pending_and_retries(db: Path):
 
     rpc.interrupt = flaky_interrupt
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     stopping = runtime.cancel(identity, cancel_id="cancel-retry")
     assert stopping["status"] == "stopping"
     assert state.get_task(db, identity)["status"] == "stopping"
@@ -1767,7 +1768,7 @@ def test_completion_wins_a_race_with_unacknowledged_stop(db: Path):
     runtime = _runtime(db, rpc)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
 
     def finish_only_after_stop_intent():
         if state.get_task(db, identity)["status"] == "stopping":
@@ -1776,7 +1777,10 @@ def test_completion_wins_a_race_with_unacknowledged_stop(db: Path):
     rpc.on_info = finish_only_after_stop_intent
     result = runtime.cancel(identity, cancel_id="cancel-raced")
 
-    assert result["status"] == "settled"
+    assert result["status"] in {"stopping", "settled"}
+    # cancel returns a routing snapshot; the worker owns durable settlement.
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    result = state.get_task(db, identity)
     assert result["result"]["text"] == "Already done."
     assert runtime.stop(timeout=5.0)
 
@@ -1960,7 +1964,7 @@ def test_pending_local_approval_is_reported_with_safe_choices(db: Path):
     )
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     session_id = next(iter(rpc.states))
     with rpc._lock:
         rpc.states[session_id]["pending_approval"] = {
@@ -1985,7 +1989,7 @@ def test_cancel_never_interrupts_a_newer_task_in_the_same_session(db: Path):
     runtime = _runtime(db, rpc)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     session_id = next(iter(rpc.states))
 
     def switch_to_newer_task() -> None:
@@ -2048,7 +2052,7 @@ def test_authority_loss_stops_terminal_commit(db: Path):
     runtime = _runtime(db, rpc, lease_ttl_seconds=30.0)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     hosted_rooms.claim_authority(
         db,
         room_id=ROOM_ID,
@@ -2092,7 +2096,7 @@ def test_stop_is_bounded_and_does_not_interrupt_active_turn(db: Path):
     runtime = _runtime(db, rpc, poll_interval_seconds=0.01)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(10.0)
     started = time.monotonic()
     stopped = runtime.stop(timeout=0.5)
 

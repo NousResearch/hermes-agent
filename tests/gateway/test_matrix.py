@@ -774,7 +774,7 @@ class TestMatrixModuleImport:
                 "    if k.startswith('mautrix'): del sys.modules[k]\n"
                 "from unittest.mock import patch\n"
                 "from plugins.platforms.matrix.adapter import check_matrix_requirements\n"
-                "with patch('tools.lazy_deps.ensure', side_effect=ImportError('blocked')):\n"
+                "with patch('pm.extras.ensure_import', side_effect=ImportError('blocked')):\n"
                 "    assert not check_matrix_requirements()\n"
                 "print('OK')\n"
             )],
@@ -796,7 +796,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is False
 
     def test_check_requirements_e2ee_optional_no_deps_ok(self, monkeypatch):
@@ -808,8 +808,8 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()), \
-             patch("tools.lazy_deps.ensure_and_bind", return_value=True):
+             patch("pm.extras.missing", return_value=()), \
+             patch("pm.extras.ensure_and_bind", return_value=True):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_false_no_e2ee_deps_ok(self, monkeypatch):
@@ -820,7 +820,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_requirements_encryption_true_with_e2ee_deps(self, monkeypatch):
@@ -831,7 +831,7 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
 
     def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
@@ -894,11 +894,11 @@ class TestMatrixRequirements:
 
         def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
             called["ensure_and_bind"] = True
-            assert feature == "platform.matrix"
+            assert feature == "matrix"
             return True  # Pretend install succeeded.
 
-        with patch("tools.lazy_deps.feature_missing", return_value=("asyncpg==0.31.0",)), \
-             patch("tools.lazy_deps.ensure_and_bind", side_effect=_fake_ensure_and_bind):
+        with patch("pm.extras.missing", return_value=("asyncpg==0.31.0",)), \
+             patch("pm.extras.ensure_and_bind", side_effect=_fake_ensure_and_bind):
             matrix_mod.check_matrix_requirements()
 
         assert called["ensure_and_bind"], (

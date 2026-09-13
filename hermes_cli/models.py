@@ -89,10 +89,11 @@ def _get_json(
         return json.loads(resp.read().decode())
 
 
+
 def _read_json_cache(path: Path, *, errors=Exception) -> Optional[dict]:
     """Load a JSON-object cache file; None when missing, unreadable, or not a dict."""
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except errors:
         return None
@@ -120,29 +121,20 @@ def _merge_unique(primary: list[str], secondary: list[str], key=lambda m: str(m)
 
 
 def _custom_provider_ssl_context(base_url: str):
-    """``ssl.SSLContext`` honoring a custom provider's ``ssl_ca_cert`` / ``ssl_verify`` (mirrors the
-    httpx TLS resolution), or None so the urllib ``/models`` probe keeps the default policy."""
-    if not base_url:
-        return None
-    try:
-        from hermes_cli.config import get_custom_provider_tls_settings
+    """Use the same trust decision for urllib catalogs and HTTPX metadata/chat."""
+    from agent.model_metadata_http import resolve_verify
 
-        tls = get_custom_provider_tls_settings(base_url)
-        if not tls:
-            return None
+    verify = resolve_verify(base_url)
+    if verify is True:
+        return None
+    if verify is False:
         import ssl
 
-        if tls.get("ssl_verify") is False:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            return ctx
-        ca = tls.get("ssl_ca_cert")
-        if isinstance(ca, str) and ca and os.path.isfile(ca):
-            return ssl.create_default_context(cafile=ca)
-    except Exception:
-        return None  # never break discovery on a TLS-config lookup
-    return None
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+    return verify
 
 
 # Process-lifetime picker lists refreshed from the live catalogs (see fetch_*_models).
@@ -1143,7 +1135,7 @@ def _copilot_cli_config_tokens() -> list[str]:
     cli_config = os.path.expanduser("~/.copilot/config.json")
     if not os.path.isfile(cli_config):
         return []
-    with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+    with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
         raw_text = "\n".join(
             line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
     data = json.loads(raw_text) if raw_text.strip() else {}
@@ -2246,7 +2238,7 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
-# Negative cache: monotonic timestamp of the last fully-failed probe, keyed
+# Negative cache: monotonic timestamp of the last timed-out probe, keyed
 # by ``host:port`` so both URL candidates (``/v1`` + root) share one entry.
 # Without this, an unreachable endpoint (TCP blackhole — SYN draws no reply,
 # so every attempt burns its full connect timeout) makes every picker open /
@@ -2326,18 +2318,16 @@ def probe_api_models(
     _ssl_context = _custom_provider_ssl_context(normalized)
     if _ssl_context is not None:
         _open_kwargs["ssl_context"] = _ssl_context
-    reachable = False
+    all_timed_out = True
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         try:
             data = _get_json(url, timeout=timeout, headers=headers, **_open_kwargs)
-        except urllib.error.HTTPError:
-            # The host answered: an auth/404 failure is not unreachability, and a user fixing
-            # their key must not be served a cached "no models" for the next TTL window.
-            reachable = True
-            continue
-        except Exception:
+        except Exception as exc:
+            # TLS, authentication and parsing failures must not hide corrected settings.
+            cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            all_timed_out = all_timed_out and isinstance(cause, TimeoutError)
             continue
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
@@ -2345,7 +2335,7 @@ def probe_api_models(
             [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
-    if _neg_key is not None and not reachable:
+    if _neg_key is not None and all_timed_out:
         _probe_neg_cache[_neg_key] = time.monotonic()
     return _probe_result(
         None, tried[0] if tried else normalized.rstrip("/") + "/models", normalized,

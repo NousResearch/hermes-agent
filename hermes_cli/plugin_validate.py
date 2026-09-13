@@ -432,7 +432,7 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
         )
         return report
 
-    import yaml
+    import hermes_yaml as yaml
 
     try:
         manifest = yaml.safe_load(

@@ -40,17 +40,20 @@ Prebuilt installers are built and distributed via [the Hermes Desktop website.](
 
 ## Updating
 
-The app checks for updates in the background and offers a one-click update when one is ready. You can also update any time from the CLI:
+Update through the owner of the installed artifact: Windows App Installer for
+sideload MSIX, Microsoft Store for Store packages, and `electron-updater` for
+macOS bundles. Source-built apps use the checkout update handoff.
 
-```bash
-hermes update
-```
+`hermes update` updates managed source checkouts; it does not rewrite a bundled
+payload. See [BUILDING.md](BUILDING.md) for package and release contracts.
 
 ---
 
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
+Bundled packages provide Python 3.14 and their supported dependencies.
+Source/bootstrap builds have a separate preparation path. Platform-native
+requirements, including system Git on POSIX, are described in [BUILDING.md](BUILDING.md).
 
 ---
 
@@ -68,7 +71,7 @@ Point the app at a specific source checkout, or sandbox it away from your real c
 
 ```bash
 # throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
-../scripts/dev-sandbox.sh npm run dev
+../../scripts/dev-sandbox.sh npm run dev
 HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
 HERMES_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
@@ -78,19 +81,22 @@ npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 
 ```bash
 npm run dist:mac     # DMG + zip
-npm run dist:win     # NSIS + MSI
+npm run dist:win     # MSIX
 npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+These are ordinary packaging commands, not complete tagged payload builds.
+Use [BUILDING.md](BUILDING.md) for the native bundled builder, Azure/Apple
+signing, R2 artifact publication, and release gates. The current release matrix
+publishes Windows and macOS packages; Linux desktop legs are disabled.
 
 ### How it works
 
-The packaged app ships the Electron shell and a native React chat surface. On
-first launch it can install the Hermes Agent runtime into `HERMES_HOME`
-(`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows), using the same layout as a
-CLI install.
+The bundled app carries the Electron shell, native React chat surface, and
+local agent payload. It runs the payload directly from resources. User data
+lives in `HERMES_HOME` outside the app. Bootstrap builds instead provision a
+source installation; Light is a remote-only variant without a local runtime.
 
 The app has three boundaries:
 
@@ -102,16 +108,13 @@ The app has three boundaries:
   `tui_gateway` JSON-RPC/WebSocket API. The renderer connects through
   [`apps/shared`](../shared/), which is also used by the browser dashboard.
 
-Backend resolution is an ordered ladder:
+A bundled artifact uses its payload. If that payload is unusable, the app
+reports damage rather than installing a second checkout. It does not adopt
+an arbitrary `hermes` command on PATH or a system Python installation.
 
-1. `HERMES_DESKTOP_HERMES_ROOT`
-2. the current source checkout during development
-3. a completed managed install
-4. `HERMES_DESKTOP_HERMES`, or `hermes` on `PATH`
-5. a system Python that can import the Hermes runtime
-6. the first-launch bootstrap installer
-
-Candidates are probed before use; an existing shim or interpreter is not enough.
+Non-bundled builds can use the explicit source-root override, development
+checkout, completed managed install, or `HERMES_DESKTOP_HERMES` deployment
+override before offering bootstrap. Candidates are probed before use.
 A runtime that predates `serve` falls back to headless
 `dashboard --no-open`. This is compatibility for the backend command only and
 does not launch or embed the dashboard UI.

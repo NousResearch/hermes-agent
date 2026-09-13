@@ -275,13 +275,13 @@ class TestInstall:
         staged = _make_staging_dir(profile_env, "legacy_all")
         # Extra top-level payload not covered by DEFAULT_DIST_OWNED
         (staged / "extra.txt").write_text("bonus\n")
-        (staged / "tools").mkdir()
-        (staged / "tools" / "helper.py").write_text("# helper\n")
+        (staged / "assets").mkdir()
+        (staged / "assets" / "helper.py").write_text("# helper\n")
 
         plan = install_distribution(str(staged), name="legacy_all")
         assert (plan.target_dir / "extra.txt").read_text() == "bonus\n", \
             "omitted distribution_owned must keep copying undeclared files"
-        assert (plan.target_dir / "tools" / "helper.py").exists(), \
+        assert (plan.target_dir / "assets" / "helper.py").exists(), \
             "omitted distribution_owned must keep copying undeclared dirs"
 
     def test_install_allowlist_supports_nested_paths(self, profile_env):
@@ -509,20 +509,20 @@ class TestSecurity:
 class TestNestedUserOwnedExcludeNotFiltered:
 
     def test_nested_bin_dir_is_preserved(self, profile_env):
-        """A distribution shipping tools/bin/ must not have tools/bin/ dropped
+        """A distribution shipping assets/bin/ must not have assets/bin/ dropped
         during install even though 'bin' is in USER_OWNED_EXCLUDE."""
         mf = DistributionManifest(
             name="nested_bin",
             version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["tools"],
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["assets"],
         )
         staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "tool.py").write_text("# tool\n")
+        (staged / "assets" / "bin").mkdir(parents=True)
+        (staged / "assets" / "bin" / "tool.py").write_text("# tool\n")
 
         plan = install_distribution(str(staged), name="nested_bin")
-        assert (plan.target_dir / "tools" / "bin").is_dir(), "nested bin/ was dropped"
-        assert (plan.target_dir / "tools" / "bin" / "tool.py").exists()
+        assert (plan.target_dir / "assets" / "bin").is_dir(), "nested bin/ was dropped"
+        assert (plan.target_dir / "assets" / "bin" / "tool.py").exists()
 
     def test_nested_logs_dir_is_preserved(self, profile_env):
         mf = DistributionManifest(
@@ -560,21 +560,21 @@ class TestNestedUserOwnedExcludeNotFiltered:
             "staged logs/ content should not leak into target"
 
     def test_both_nested_and_top_level_coexist(self, profile_env):
-        """Top-level bin/ filtered, but tools/bin/ kept."""
+        """Top-level bin/ filtered, but assets/bin/ kept."""
         mf = DistributionManifest(
             name="coexist",
             version="0.1.0",
-            distribution_owned=list(DEFAULT_DIST_OWNED) + ["tools"],
+            distribution_owned=list(DEFAULT_DIST_OWNED) + ["assets"],
         )
         staged = _make_staging_dir(profile_env, "src", manifest=mf)
         (staged / "bin").mkdir(exist_ok=True)
         (staged / "bin" / "top.sh").write_text("# top\n")
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "helper.py").write_text("# helper\n")
+        (staged / "assets" / "bin").mkdir(parents=True)
+        (staged / "assets" / "bin" / "helper.py").write_text("# helper\n")
 
         plan = install_distribution(str(staged), name="coexist")
         assert not (plan.target_dir / "bin").exists()
-        assert (plan.target_dir / "tools" / "bin" / "helper.py").exists()
+        assert (plan.target_dir / "assets" / "bin" / "helper.py").exists()
 
 
 # ===========================================================================

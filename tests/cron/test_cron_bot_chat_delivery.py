@@ -184,6 +184,277 @@ def test_deliver_timeout_returns_error_string():
     assert "timed out" in err
 
 
+def test_deliver_retries_when_recipient_session_is_busy():
+    """A busy recipient is capacity, not failure: retry rather than drop the finding.
+
+    Bot-chat is excluded from the durable delivery queue, so a refusal that is
+    discarded loses the payload permanently. `SESSION_NOT_OWNED` is the typed
+    "busy, come back later" refusal a live Bot Chat owner raises while its turn
+    runs; treating it as terminal is what silently lost scheduled bot findings.
+    """
+    busy = _completed(
+        returncode=1,
+        stderr=(
+            "hermes-refusal-reason: SESSION_NOT_OWNED\n"
+            "Session 20260101_000000_abcdef already has a live owner (cli, pid 1)."
+        ),
+    )
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return busy if len(attempts) == 1 else _completed()
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 2, "a busy recipient must be retried, not dropped"
+    assert err is None
+
+
+def test_deliver_does_not_retry_a_genuine_failure():
+    """Only capacity refusals retry; a real error must stay terminal and loud."""
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return _completed(returncode=1, stderr="boom")
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 1, "a non-capacity failure must not be retried"
+    assert err is not None and "boom" in err
+
+
+def test_deliver_reports_error_when_recipient_stays_busy():
+    """Exhausted retries must surface the refusal, never report a phantom success."""
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nSession busy.",
+    )
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return busy
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) > 1, "a persistently busy recipient must be retried"
+    assert err is not None
+    assert "SESSION_NOT_OWNED" in err or "busy" in err.lower()
+
+
+def test_payload_mentioning_a_refusal_reason_is_not_retried():
+    """A reason NAME inside ordinary output must not be mistaken for a refusal.
+
+    Substring-matching the child's output would retry any job whose payload or
+    traceback merely mentions SESSION_NOT_OWNED. Only the typed
+    `hermes-refusal-reason:` marker line means the CLI actually refused.
+    """
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return _completed(
+            returncode=1,
+            stderr="ValueError: audit found SESSION_NOT_OWNED in 3 log lines",
+        )
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 1, "output merely naming a reason must not be retried"
+    assert err is not None
+
+
+def test_coordination_unavailable_is_not_retried():
+    """Unprovable ownership is not capacity: retrying it is the fail-open hole."""
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return _completed(
+            returncode=1,
+            stderr="hermes-refusal-reason: SESSION_COORDINATION_UNAVAILABLE\nregistry unreadable",
+        )
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 1, "SESSION_COORDINATION_UNAVAILABLE must never retry"
+    assert err is not None
+
+
+def test_capacity_refusal_is_detected_behind_a_long_preamble():
+    """Classification reads the whole output; only the DISPLAYED error is truncated.
+
+    The refusal marker is printed before the CLI's long explanatory text, so
+    truncating to the last 500 chars before matching loses it and drops the
+    payload — the exact bug this retry exists to prevent.
+    """
+    stderr = (
+        "hermes-refusal-reason: SESSION_NOT_OWNED\n"
+        + "Session already has a live owner. " * 40
+    )
+    assert len(stderr) > 500
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        return busy if len(attempts) == 1 else _completed()
+
+    busy = _completed(returncode=1, stderr=stderr)
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted", lambda *_a, **_k: False):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert len(attempts) == 2, "a refusal marker before 500 chars of text must still retry"
+    assert err is None
+
+
+def test_busy_retries_stop_at_the_wall_clock_budget():
+    """Elapsed wall time must not exceed the budget -- the invariant, not attempt count.
+
+    An earlier version of this test asserted only `attempts < 4`. It passed while
+    the implementation overshot to 1230s against a 900s budget, because each new
+    attempt was still handed a FULL per-attempt timeout regardless of time left.
+    Assert the clock, and assert a later attempt is clamped to what remains, or
+    the budget is advertised without being enforced.
+    """
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nbusy",
+    )
+    timeouts = []
+    clock = {"t": 0.0}
+
+    def fake_run(argv, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        # Every attempt hangs for exactly the timeout it was granted.
+        clock["t"] += kwargs["timeout"]
+        return busy
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "monotonic", lambda: clock["t"]), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted",
+                              lambda d, *_a, **_k: (clock.__setitem__("t", clock["t"] + d), False)[1]):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    budget = sched_delivery._get_bot_chat_busy_budget_seconds()
+    assert clock["t"] <= budget, (
+        f"elapsed {clock['t']}s exceeded the advertised budget {budget}s")
+    assert timeouts[-1] < timeouts[0], (
+        "a later attempt must be clamped to the remaining budget, not given a full timeout")
+    assert err is not None
+    assert "budget" in err.lower()
+
+
+def test_budget_deadline_timeout_reports_budget_not_recipient_hang():
+    """A timeout caused by OUR deadline must not be reported as the recipient hanging."""
+    clock = {"t": 0.0}
+
+    def fake_run(argv, **kwargs):
+        clock["t"] += kwargs["timeout"]
+        raise subprocess.TimeoutExpired(cmd="hermes", timeout=kwargs["timeout"])
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "monotonic", lambda: clock["t"]), \
+            mock.patch.object(sched_delivery, "_get_bot_chat_busy_budget_seconds", lambda: 100.0), \
+            mock.patch.object(sched_delivery, "_get_bot_chat_delivery_timeout", lambda: 600), \
+            mock.patch.object(sched_delivery, "_sleep_unless_interrupted",
+                              lambda d, *_a, **_k: (clock.__setitem__("t", clock["t"] + d), False)[1]):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is not None
+    assert "budget" in err.lower(), "a budget-clamped timeout must be reported as budget exhaustion"
+    assert clock["t"] <= 100.0
+
+
+def test_budget_does_not_interrupt_a_fast_retry_ladder():
+    """The realistic path (refusals return in seconds) must still retry normally."""
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nbusy",
+    )
+    attempts = []
+    clock = {"t": 0.0}
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        clock["t"] += 3.4  # measured live refusal latency
+        return busy if len(attempts) == 1 else _completed()
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+            mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
+            mock.patch.object(sched_delivery.time, "monotonic", lambda: clock["t"]), \
+            mock.patch.object(sched_delivery.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s)):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert len(attempts) == 2
+
+
+def test_retry_wait_abandons_on_gateway_shutdown():
+    """A retry sleep must yield to shutdown, not outlive the cron drain.
+
+    Gateway stop marks in-flight executions interrupted and drains cron for
+    agent.cron_drain_timeout (default 30s). The backoff ladder sleeps up to 210s,
+    so a bare time.sleep is still waiting when the drain gives up and the worker
+    is SIGKILLed -- a wedged job instead of a cleanly interrupted one.
+    """
+    busy = _completed(
+        returncode=1,
+        stderr="hermes-refusal-reason: SESSION_NOT_OWNED\nbusy",
+    )
+    attempts = []
+
+    def fake_run(argv, **kwargs):
+        attempts.append(argv)
+        # Shutdown lands while the first attempt is in flight.
+        sched._interrupted_job_ids.add("j-shutdown")
+        return busy
+
+    try:
+        with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+            err = _deliver_to_bot_chat({"id": "j-shutdown", "name": "n"}, "out", "")
+    finally:
+        sched._interrupted_job_ids.discard("j-shutdown")
+
+    assert len(attempts) == 1, "shutdown must stop the ladder, not run it to exhaustion"
+    assert err is not None
+    assert "shutdown" in err.lower()
+
+
+def test_retry_wait_sleeps_normally_without_shutdown():
+    """The interruptible sleep must still wait when nothing interrupts it."""
+    slept = []
+
+    with mock.patch.object(sched_delivery.time, "sleep", lambda s: slept.append(s)):
+        interrupted = sched_delivery._sleep_unless_interrupted(2.5, "quiet-job")
+
+    assert interrupted is False
+    assert slept, "it must actually sleep when not interrupted"
+    assert max(slept) <= 1.0, "sleep must be sliced so shutdown is noticed promptly"
+
+
 def test_deliver_message_carries_cron_attribution(tmp_path):
     """The injected turn must self-identify as scheduled output, not the user."""
     captured = {}

@@ -140,6 +140,20 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_platform_delivery_ids(self, transport):
+        """Delivery IDs stay in durable history but never cross the provider wire."""
+        msgs = [{
+            "role": "user", "content": "from Telegram",
+            "message_id": "91", "platform_message_id": "telegram:91",
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert result == [{"role": "user", "content": "from Telegram"}]
+        assert msgs[0]["message_id"] == "91"
+        assert msgs[0]["platform_message_id"] == "telegram:91"
+
+
     def test_convert_messages_strips_provider_replay_sidecars(self, transport):
         """Native-provider replay channels must not cross a provider boundary.
 

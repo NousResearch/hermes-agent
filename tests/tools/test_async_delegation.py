@@ -600,6 +600,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
     fake_child._subagent_id = "s1"
+    fake_child.session_id = "child-session-1"
 
     gate = threading.Event()
 
@@ -623,6 +624,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     out = dt.delegate_task(
         goal="the real task", context="ctx",
         background=True, parent_agent=parent,
+        parent_tool_call_id="call-parent-1",
     )
 
     import json
@@ -630,6 +632,12 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert parsed["status"] == "dispatched"
     assert parsed["mode"] == "background"
     assert parsed["delegation_id"].startswith("deleg_")
+    assert parsed["parent_tool_call_id"] == "call-parent-1"
+    assert parsed["children"] == [{
+        "task_index": 0,
+        "subagent_id": "s1",
+        "child_session_id": "child-session-1",
+    }]
     # Non-blocking invariant: delegate_task returned while the child is STILL
     # blocked on the closed gate, so no completion event exists yet.
     assert process_registry.completion_queue.empty()
@@ -643,6 +651,8 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert evt.get("is_batch") is True
     assert len(evt["results"]) == 1
     assert evt["results"][0]["summary"] == "done: the real task"
+    assert evt["parent_tool_call_id"] == "call-parent-1"
+    assert evt["children"] == parsed["children"]
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
@@ -953,7 +963,7 @@ def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypa
 # together, and the units of one call share ONE capacity slot.
 # ---------------------------------------------------------------------------
 
-def _grouped_fanout(monkeypatch, tasks, gates):
+def _grouped_fanout(monkeypatch, tasks, gates, parent_tool_call_id=None):
     """delegate_task(tasks) in the background with gated fake children; returns the parsed handle."""
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
@@ -974,6 +984,7 @@ def _grouped_fanout(monkeypatch, tasks, gates):
         c = MagicMock()
         c._delegate_role = "leaf"
         c._subagent_id = f"s{kw['task_index']}"
+        c.session_id = f"child{kw['task_index']}"
         return c
 
     creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None,
@@ -981,7 +992,9 @@ def _grouped_fanout(monkeypatch, tasks, gates):
     monkeypatch.setattr(dt, "_build_child_agent", build)
     monkeypatch.setattr(dt, "_run_single_child", child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent))
+    return json.loads(dt.delegate_task(
+        tasks=tasks, background=True, parent_agent=parent, parent_tool_call_id=parent_tool_call_id,
+    ))
 
 
 def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch):
@@ -996,7 +1009,13 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
         {"goal": "compare approach B in detail", "group": "cmp"},
         {"goal": "review PR 2 thoroughly and report"},
     ]
-    handle = _grouped_fanout(monkeypatch, tasks, gates)
+    handle = _grouped_fanout(monkeypatch, tasks, gates, parent_tool_call_id="call-grouped")
+    associations = [
+        {"task_index": i, "subagent_id": f"s{i}", "child_session_id": f"child{i}"}
+        for i in range(4)
+    ]
+    assert handle["parent_tool_call_id"] == "call-grouped"
+    assert handle["children"] == associations
     assert handle["status"] == "dispatched"
     by_group = {tuple(u["task_indexes"]): u["group"] for u in handle["units"]}
     assert by_group == {(0,): None, (1, 2): "cmp", (3,): None}
@@ -1004,6 +1023,8 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
     gates[3].set()
     evt = _drain_one()
     assert [r["task_index"] for r in evt["results"]] == [3]  # PR 2 landed while everything else still runs
+    assert evt["parent_tool_call_id"] == "call-grouped"
+    assert evt["children"] == [associations[3]]
     assert "review PR 2" in format_process_notification(evt)
 
     gates[1].set()
@@ -1011,6 +1032,8 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
     gates[2].set()
     evt = _drain_one()
     assert evt["group"] == "cmp" and [r["task_index"] for r in evt["results"]] == [1, 2]
+    assert evt["parent_tool_call_id"] == "call-grouped"
+    assert evt["children"] == associations[1:3]
 
     gates[0].set()
     assert [r["task_index"] for r in _drain_one()["results"]] == [0]

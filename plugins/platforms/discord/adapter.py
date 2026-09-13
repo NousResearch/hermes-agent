@@ -1115,40 +1115,30 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self.name, key, raw,
         )
 
+    def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):
+        """Resolve a liveness knob: usable iff finite, >= 0 and exact for ``cast``; else warn and return 0.
+
+        ``0`` is the documented opt-out and stays silent. Bools, unparsable strings, nan/inf,
+        negatives and (for int knobs) fractional values all disable the probe WITH a warning.
+        """
+        raw = self._config_value(key, default, env_key=env_key)
+        try:
+            value = None if isinstance(raw, bool) else float(raw)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and math.isfinite(value) and value >= 0 and cast(value) == value:
+            return cast(value)
+        if value != 0:
+            self._warn_liveness_config_disabled(key, raw)
+        return cast(0)
+
     def _finite_positive_config_float(
         self, key: str, default: float, *, env_key: Optional[str] = None
     ) -> float:
-        """Resolve a finite positive liveness duration; invalid values disable it (with a warning)."""
-        raw = self._config_value(key, default, env_key=env_key)
-        if isinstance(raw, bool):
-            self._warn_liveness_config_disabled(key, raw)
-            return 0.0
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            self._warn_liveness_config_disabled(key, raw)
-            return 0.0
-        if math.isfinite(value) and value > 0:
-            return value
-        if value != 0:
-            self._warn_liveness_config_disabled(key, raw)
-        return 0.0
+        return self._liveness_knob(key, default, float, env_key=env_key)
 
     def _config_int(self, key: str, default: int, *, env_key: Optional[str] = None) -> int:
-        """Resolve a positive liveness count; invalid values disable it (with a warning)."""
-        raw = self._config_value(key, default, env_key=env_key)
-        if isinstance(raw, bool):
-            self._warn_liveness_config_disabled(key, raw)
-            return 0
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            self._warn_liveness_config_disabled(key, raw)
-            return 0
-        if value < 0:
-            self._warn_liveness_config_disabled(key, raw)
-            return 0
-        return value
+        return self._liveness_knob(key, default, int, env_key=env_key)
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits as a retryable fatal so GatewayRunner

@@ -2598,8 +2598,20 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
 
 
 def _session_pending_kind(sid: str) -> str:
-    return next((str(_pending_prompt_payloads.get(rid, ("input.request", {}))[0]).removesuffix(".request")
-                 for rid, (owner_sid, _ev) in list(_pending.items()) if owner_sid == sid), "")
+    pending = next((str(_pending_prompt_payloads.get(rid, ("input.request", {}))[0]).removesuffix(".request")
+                    for rid, (owner_sid, _ev) in list(_pending.items()) if owner_sid == sid), "")
+    if pending:
+        return pending
+    # Approvals block through tools/approval.py's own queue (_gateway_queues via
+    # _await_gateway_decision), not _block()'s _pending registry — a session waiting on an
+    # approval would otherwise report "working" instead of "waiting", and Desktop's
+    # active_list poll clears the amber "needs input" dot back to blue (#86565).
+    from tools.approval import has_blocking_approval
+
+    session = _sessions.get(sid)
+    if session is not None and has_blocking_approval(_session_lookup_key(session, fallback=sid)):
+        return "approval"
+    return ""
 
 
 def _session_live_status(sid: str, session: dict) -> str:

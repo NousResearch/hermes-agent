@@ -158,10 +158,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    state = _poll_event(entry.event, session_key,
-                        interrupt_log="Approval wait interrupted by user signal — returning deny for session %s")
-    if state == "interrupted":
-        entry.result = "deny"
-        entry.event.set()
-    _drop_entry()
+    try:
+        state = _poll_event(entry.event, session_key,
+                            interrupt_log="Approval wait interrupted by user signal — returning deny for session %s")
+        if state == "interrupted":
+            entry.result = "deny"
+            entry.event.set()
+    finally:
+        # The entry must not outlive the wait: tui_gateway derives the session's live status
+        # and both eviction guards from this queue, so an entry left behind by a poll-loop
+        # exception would report the session "waiting" and shield it from eviction with no
+        # waiter left to answer (#86565).
+        _drop_entry()
     return _finish(payload, state != "timeout", entry.result, entry.reason)

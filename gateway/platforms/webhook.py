@@ -448,7 +448,9 @@ class WebhookAdapter(BasePlatformAdapter):
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
         if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
-            return None, _json_error("Invalid signature", 401)
+            # Same 404 as unknown-route so a bad signature cannot enumerate
+            # configured route names via the status split.
+            return None, _json_error(f"Unknown route: {route_name}", 404)
         return raw_body, None
 
     @staticmethod

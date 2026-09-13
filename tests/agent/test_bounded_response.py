@@ -111,3 +111,28 @@ def test_oversize_body_is_capped(server_base, client):
     assert 0 < len(text) <= 64 * 1024
     # Capping must return promptly, not after draining the whole body.
     assert elapsed < 9.0
+
+
+@pytest.mark.parametrize("path,cap,error", [
+    ("/normal", None, None),
+    ("/normal", 8, "HTTPXResponseBodyTooLarge"),
+    ("/oversize", 64 * 1024, "HTTPXResponseBodyTooLarge"),
+    ("/stall", 64 * 1024, TimeoutError),
+    ("/empty", 64 * 1024, json.JSONDecodeError),
+])
+def test_json_reader_returns_only_complete_bounded_bodies(server_base, client, path, cap, error):
+    from agent import bounded_response
+
+    start = time.monotonic()
+    with client.stream("POST", server_base + path, headers={"Accept-Encoding": "identity"}) as response:
+        if cap is None:
+            cap = int(response.headers["Content-Length"])
+        if error is None:
+            payload = bounded_response.read_streaming_json_response(response, max_bytes=cap, timeout_s=0.5)
+            assert payload["error"]["status"] == "RESOURCE_EXHAUSTED"
+        else:
+            expected_error = getattr(bounded_response, error) if isinstance(error, str) else error
+            with pytest.raises(expected_error):
+                bounded_response.read_streaming_json_response(response, max_bytes=cap, timeout_s=0.5)
+        assert response.is_closed
+    assert time.monotonic() - start < 5.0

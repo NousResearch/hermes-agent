@@ -99,7 +99,7 @@ TIPS = [
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
     "Set display.compact: true to reduce whitespace in output for denser information.",
-    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
+    "Set display.busy_input_mode: interrupt to redirect a busy agent, or steer to inject the message mid-run via /steer; queue is the default.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
     "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
     "Set agent.max_turns: 1000 to let the agent take more tool-calling steps per turn.",

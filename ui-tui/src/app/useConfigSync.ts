@@ -44,13 +44,9 @@ export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<strin
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
-// TUI defaults to `queue` even though the framework default
-// (`hermes_cli/config.py`) is `interrupt`.  Rationale: in a full-screen
-// TUI you're typically authoring the next prompt while the agent is
-// still streaming, and an unintended interrupt loses work.  Set
-// `display.busy_input_mode: interrupt` (or `steer`) explicitly to
-// opt out per-config; CLI / messaging adapters keep their `interrupt`
-// default unchanged.
+// Hermes defaults to `queue`: while the agent is still streaming, an
+// unintended interrupt can lose work. Set `display.busy_input_mode` to
+// `interrupt` or `steer` explicitly to opt out per config.
 const TUI_BUSY_DEFAULT: BusyInputMode = 'queue'
 
 export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {

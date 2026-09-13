@@ -206,10 +206,36 @@ _AUTO_ARCHIVE_CHECK_INTERVAL_S = 300.0
 _last_auto_archive_check: Dict[str, float] = {}
 
 
+def _auto_archive_owned_by_gateway(profile: Optional[str]) -> bool:
+    """True when a live gateway already owns ``profile``'s session store.
+
+    Same stand-down gate the in-process cron scheduler applies (``_check_gateway_running``
+    / ``_served_by_running_multiplexer`` in ``web_server.py``). The gateway runs its own
+    ``maybe_auto_archive`` timer, so nothing is skipped — but opening a *writable*
+    ``SessionDB`` here and closing it tears down the WAL generation the gateway is holding
+    (SQLite checkpoints on close and unlinks ``-wal``/``-shm`` as the apparent last
+    connection), stranding it on deleted inodes behind ``DeletedWalGenerationError``
+    (#109727, #107688, #100896). Fails closed: an unknown answer means don't open.
+    """
+    from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
+
+    if profile:
+        from hermes_cli.web_server_cron import _cron_profile_home
+
+        name, home = _cron_profile_home(profile)
+        return bool(_check_gateway_running(Path(home))
+                    or (name != "default" and _served_by_running_multiplexer(name)))
+
+    from hermes_constants import get_hermes_home
+
+    return bool(_check_gateway_running(get_hermes_home()))
+
+
 def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
     """Config-gated stale-session auto-archive for ``profile``; never raises.
     ``hermes serve`` runs neither CLI nor gateway startup hooks, so this
-    session-list trigger is what makes ``sessions.auto_archive`` work there."""
+    session-list trigger is what makes ``sessions.auto_archive`` work there —
+    but only when no gateway owns the store (see ``_auto_archive_owned_by_gateway``)."""
     try:
         key = profile or ""
         now = time.monotonic()
@@ -221,6 +247,9 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         from hermes_cli.config import load_config as _load_full_config
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_archive", False):
+            return
+        if _auto_archive_owned_by_gateway(profile):
+            _log.debug("auto-archive stood down: gateway owns profile %r", profile or "default")
             return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:

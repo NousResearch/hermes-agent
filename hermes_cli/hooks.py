@@ -32,6 +32,7 @@ def _cmd_list(_args) -> None:
     cfg = load_config()
     specs = shell_hooks.iter_configured_hooks(cfg)
     outbound = outbound_webhooks.iter_configured_targets(cfg)
+    print(f"Shell hook allowlist: {shell_hooks.allowlist_path()}")
 
     if not specs and not outbound:
         print("No shell hooks or outbound webhooks configured in ~/.hermes/config.yaml.")
@@ -253,6 +254,7 @@ def _cmd_doctor(_args) -> None:
     from agent import shell_hooks
 
     specs = shell_hooks.iter_configured_hooks(load_config())
+    print(f"Shell hook allowlist: {shell_hooks.allowlist_path()}")
     if not specs:
         print("No shell hooks configured — nothing to check.")
         return

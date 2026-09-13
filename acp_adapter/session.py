@@ -143,6 +143,10 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    #: MCP servers this session received over ACP (``session/new``/``session/load``).
+    #: ``_make_agent`` only knows the config-declared servers, so any later agent
+    #: rebuild has to re-apply these or the session loses their tools.
+    acp_mcp_server_names: List[str] = field(default_factory=list)
 
 
 class SessionManager:

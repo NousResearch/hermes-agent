@@ -8,6 +8,7 @@ via the automatic late-refresh, cache-safely (pre-first-turn only).
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 import time
@@ -326,3 +327,51 @@ def test_acp_late_refresh_skips_while_turn_running(monkeypatch):
     time.sleep(0.5)
 
     assert not refreshed, "late-refresh rebuilt tools while a turn was running!"
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — a model switch must not drop the session's ACP MCP tools
+# ---------------------------------------------------------------------------
+
+
+def test_acp_mcp_tools_survive_a_model_switch(monkeypatch):
+    """``session/set_model`` rebuilds the agent; the session's ACP MCP tools must come back.
+
+    ``_make_agent`` derives ``enabled_toolsets`` from the *config-declared* MCP servers, so a
+    rebuilt agent has never heard of the servers the client passed over ACP. Without a refresh
+    the tools silently disappear from every later request while the registration log line still
+    reports success — the failure is invisible from the adapter's own logs.
+    """
+
+    def _fake_get_tool_definitions(*, enabled_toolsets, disabled_toolsets=None, quiet_mode=False):
+        return [{"function": {"name": "tool_from_" + str(ts)}} for ts in (enabled_toolsets or [])]
+
+    monkeypatch.setitem(sys.modules, "model_tools", _mod("model_tools", get_tool_definitions=_fake_get_tool_definitions))
+    monkeypatch.setitem(
+        sys.modules, "agent.memory_manager",
+        _mod("agent.memory_manager", inject_memory_provider_tools=lambda _agent: None),
+    )
+    monkeypatch.setitem(
+        sys.modules, "tools.mcp_tool_discovery",
+        _mod("tools.mcp_tool_discovery", register_mcp_servers=lambda _cfg: None),
+    )
+    monkeypatch.setattr("acp_adapter.server._mcp_server_config", lambda _s: {}, raising=False)
+
+    # Every _make_agent call returns a FRESH agent — that is what the real rebuild does.
+    manager = SessionManager(agent_factory=lambda **_k: FakeAgent(), db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+
+    server = SimpleNamespace(name="buzz-message-mcp")
+    asyncio.run(acp_agent._register_session_mcp_servers(state, [server]))
+
+    assert "tool_from_mcp-buzz-message-mcp" in {t["function"]["name"] for t in state.agent.tools}, (
+        "registration did not put the ACP MCP tools on the agent"
+    )
+
+    acp_agent._switch_model(state, "some-other-model")
+
+    names = {t["function"]["name"] for t in (state.agent.tools or [])}
+    assert "tool_from_mcp-buzz-message-mcp" in names, (
+        "the session's ACP MCP tools were lost by the model switch: " + repr(sorted(names))
+    )

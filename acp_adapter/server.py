@@ -341,6 +341,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             session_id=state.session_id, cwd=state.cwd, model=new_model,
             requested_provider=target_provider, **endpoint,
         )
+        # The rebuilt agent only knows the config-declared MCP servers. Without this the
+        # session's ACP-provided tools vanish from every request after the first
+        # ``session/set_model`` — silently, because registration already logged success.
+        self._refresh_agent_tool_surface(state, reason="model switch")
         self.session_manager.save_session(state.session_id)
         return current_provider, target_provider, new_model
 
@@ -418,6 +422,20 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         except Exception:
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return
+        # Remember them on the session: ``_make_agent`` builds ``enabled_toolsets`` from the
+        # *config-declared* servers only, so every later agent rebuild has to re-apply these.
+        state.acp_mcp_server_names = [s.name for s in mcp_servers]
+        self._refresh_agent_tool_surface(state, reason="ACP MCP registration")
+
+    def _refresh_agent_tool_surface(self, state: SessionState, *, reason: str) -> None:
+        """Re-apply this session's ACP MCP toolsets to ``state.agent`` and rebuild its snapshot.
+
+        Called after registration and after any rebuild of ``state.agent``: a fresh agent starts
+        from the config-declared MCP servers, so without this the session's own tools disappear
+        from every subsequent request while the registration log line still says they landed.
+        """
+        if not state.acp_mcp_server_names:
+            return
         try:
             from model_tools import get_tool_definitions
             from agent.memory_manager import inject_memory_provider_tools
@@ -425,7 +443,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=[s.name for s in mcp_servers],
+                mcp_server_names=list(state.acp_mcp_server_names),
             )
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
@@ -436,12 +454,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             if callable(invalidate := getattr(agent, "_invalidate_system_prompt", None)):
                 invalidate()
             logger.info(
-                "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
-                state.session_id, len(agent.tools or []),
+                "Session %s: refreshed tool surface after %s (%d tools)",
+                state.session_id, reason, len(agent.tools or []),
             )
         except Exception:
             logger.warning(
-                "Session %s: failed to refresh tool surface after ACP MCP registration", state.session_id, exc_info=True,
+                "Session %s: failed to refresh tool surface after %s", state.session_id, reason, exc_info=True,
             )
 
     def _schedule_mcp_late_refresh(self, state: SessionState) -> None:

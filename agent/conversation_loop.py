@@ -1211,7 +1211,10 @@ def _apply_context_engine_selection(
     # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
     # buggy engine would otherwise replace the request instead of failing open.
     if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        return selected
+        # Downstream request shaping mutates messages in place. Clone the
+        # engine-owned result so stripping route metadata on this request does
+        # not make a cached/reused selection appear unprovenanced next turn.
+        return [_clone_message_for_send(m) for m in selected]
     logger.warning(
         "Context engine select_context returned an invalid value "
         "(not a non-empty list of dicts); ignoring (session=%s)", session_label,

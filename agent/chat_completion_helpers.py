@@ -37,7 +37,11 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
+from agent.message_sanitization import (
+    _repair_tool_call_arguments,
+    _sanitize_surrogates,
+    strip_non_assistant_reasoning_replay_fields,
+)
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -1549,12 +1553,35 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if preserved:
             msg["reasoning_details"] = preserved
 
+    native_replay_attrs = (
+        "anthropic_content_blocks",
+        "bedrock_content_blocks",
+        "codex_reasoning_items",
+        "codex_message_items",
+    )
+    if (
+        reasoning_text
+        or msg.get("reasoning_content")
+        or msg.get("reasoning_details")
+        or any(getattr(assistant_message, attr, None) for attr in native_replay_attrs)
+    ):
+        # Internal provenance for route-safe historical replay. These keys are
+        # stripped from every provider-facing clone before transport.
+        from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+        msg["_reasoning_route"] = reasoning_route_fingerprint(
+            getattr(agent, "provider", None),
+            getattr(agent, "model", None),
+            getattr(agent, "base_url", None),
+            getattr(agent, "api_mode", None),
+        )
+
     # Provider-native carriers replayed verbatim on later turns:
     # anthropic_content_blocks keeps interleaved thinking + tool_use order
     # (reconstruction reorders signed blocks -> HTTP 400); codex_* items are
     # the encrypted reasoning / exact message items Responses prefix caching
     # needs.
-    for attr in ("anthropic_content_blocks", "bedrock_content_blocks", "codex_reasoning_items", "codex_message_items"):
+    for attr in native_replay_attrs:
         value = getattr(assistant_message, attr, None)
         if value:
             msg[attr] = value
@@ -1888,6 +1915,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
             # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
             agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+            _replay_field = fb.get("reasoning_replay_field")
+            if isinstance(_replay_field, str):
+                _replay_field = _replay_field.strip().lower()
+            agent._reasoning_replay_field = (
+                _replay_field
+                if _replay_field
+                in {"auto", "reasoning", "reasoning_content", "none"}
+                else None
+            )
+            from agent.agent_runtime_helpers import _sync_compressor_reasoning_replay
+            _sync_compressor_reasoning_replay(agent)
             if hasattr(agent, "_transport_cache"):
                 agent._transport_cache.clear()
             agent._fallback_activated = True
@@ -1950,11 +1988,20 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # MoA: agent.model is the virtual preset; use the real aggregator so Gemini keeps thought_signature.
         agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
         sanitize_model = (agg_slot or {}).get("model") or sanitize_model
+    from agent.conversation_loop import _clone_message_for_send
+
     api_messages = []
     for msg in messages:
-        api_msg = msg.copy()
+        # Structural clone: later sanitizers must not write through into
+        # canonical history via nested containers.
+        api_msg = _clone_message_for_send(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
+        # The summary path bypasses normal request assembly; enforce the same
+        # assistant-only replay boundary here.
+        strip_non_assistant_reasoning_replay_fields(api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
+            if key == "reasoning" and agent._reasoning_replay_field_for_api() == "reasoning":
+                continue
             api_msg.pop(key, None)
         # Mirror of the transport's role-qualified strip: ``name`` is
         # schema-foreign on tool results only (strict providers reject with
@@ -1981,7 +2028,14 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     for idx, pfm in enumerate(agent.prefill_messages or ()):
-        api_messages.insert((1 if effective_system else 0) + idx, pfm.copy())
+        # Prefills are inserted after the history loop above, so they
+        # must pass through the same replay/provenance gate explicitly.
+        # Sanitize a structural copy: prefill_messages is reusable
+        # session state, and later tool-call repair mutates nested data.
+        prefill_api = _clone_message_for_send(pfm)
+        agent._copy_reasoning_content_for_api(pfm, prefill_api)
+        strip_non_assistant_reasoning_replay_fields(prefill_api)
+        api_messages.insert((1 if effective_system else 0) + idx, prefill_api)
 
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.
     api_messages = agent._sanitize_api_messages(api_messages)

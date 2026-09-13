@@ -25,17 +25,21 @@ const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'
  * narration the backend routes to the reasoning channel
  * (codex_responses_adapter `_OutputScan._message`); the remaining phases are the reply.
  */
-function codexMessageItemText(message: SessionMessage): string {
-  let items = message.codex_message_items
-
-  // REST carries SQLite JSON text; RPC history carries the decoded list.
-  if (typeof items === 'string') {
-    try {
-      items = JSON.parse(items)
-    } catch {
-      return ''
-    }
+function parseJsonItems(items: unknown): unknown {
+  if (typeof items !== 'string') {
+    return items
   }
+
+  try {
+    return JSON.parse(items)
+  } catch {
+    return undefined
+  }
+}
+
+function codexMessageItemText(message: SessionMessage): string {
+  // REST carries SQLite JSON text; RPC history carries the decoded list.
+  const items = parseJsonItems(message.codex_message_items)
 
   if (!Array.isArray(items)) {
     return ''
@@ -409,6 +413,18 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
+      ...(message.role === 'assistant'
+        ? {
+            reasoning: message.reasoning,
+            reasoning_content: message.reasoning_content,
+            reasoning_details: message.reasoning_details,
+            _reasoning_route: message._reasoning_route,
+            anthropic_content_blocks: parseJsonItems(message.anthropic_content_blocks),
+            bedrock_content_blocks: parseJsonItems(message.bedrock_content_blocks),
+            codex_reasoning_items: parseJsonItems(message.codex_reasoning_items),
+            codex_message_items: parseJsonItems(message.codex_message_items)
+          }
+        : {}),
       ...(message.display_kind === 'async_delegation_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),

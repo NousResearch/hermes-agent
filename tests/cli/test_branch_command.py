@@ -201,6 +201,9 @@ class TestBranchFlushesBeforeEndSession:
 REASONING_DETAILS = [
     {"type": "reasoning.text", "text": "sort in place instead", "format": "unknown"}
 ]
+REASONING_ROUTE = "same-route-provenance"
+ANTHROPIC_CONTENT_BLOCKS = [{"type": "thinking", "signature": "signed"}]
+BEDROCK_CONTENT_BLOCKS = [{"reasoningContent": "signed"}]
 CODEX_REASONING_ITEMS = [
     {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque-blob"}
 ]
@@ -233,7 +236,11 @@ class TestBranchPreservesReasoningFields:
                 "role": "assistant",
                 "content": "def sort_list(lst): return sorted(lst)",
                 "reasoning": "picked sorted()",
+                "reasoning_content": "picked sorted() content carrier",
                 "reasoning_details": REASONING_DETAILS,
+                "_reasoning_route": REASONING_ROUTE,
+                "anthropic_content_blocks": ANTHROPIC_CONTENT_BLOCKS,
+                "bedrock_content_blocks": BEDROCK_CONTENT_BLOCKS,
                 "codex_reasoning_items": CODEX_REASONING_ITEMS,
                 "codex_message_items": CODEX_MESSAGE_ITEMS,
             },
@@ -243,6 +250,10 @@ class TestBranchPreservesReasoningFields:
 
         messages = session_db.get_messages_as_conversation(cli_instance.session_id)
         assistant = next(m for m in messages if m["role"] == "assistant")
+        assert assistant["reasoning_content"] == "picked sorted() content carrier"
         assert assistant["reasoning_details"] == REASONING_DETAILS
+        assert assistant["_reasoning_route"] == REASONING_ROUTE
+        assert assistant["anthropic_content_blocks"] == ANTHROPIC_CONTENT_BLOCKS
+        assert assistant["bedrock_content_blocks"] == BEDROCK_CONTENT_BLOCKS
         assert assistant["codex_reasoning_items"] == CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == CODEX_MESSAGE_ITEMS

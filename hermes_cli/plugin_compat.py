@@ -103,29 +103,114 @@ def _iter_py(root: Path) -> Iterable[Path]:
                 yield Path(dp) / f
 
 
+_IMPORT_ERROR_NAMES = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    """A handler that swallows the failed import. A bare ``raise`` body propagates it, so the plugin
+    still dies on the cutoff and the import is not protected."""
+    if len(handler.body) == 1 and isinstance(handler.body[0], ast.Raise) and handler.body[0].exc is None:
+        return False
+    t = handler.type
+    if t is None:
+        return True
+    names = t.elts if isinstance(t, ast.Tuple) else [t]
+    return any(isinstance(n, ast.Name) and n.id in _IMPORT_ERROR_NAMES for n in names)
+
+
+def _guarded_imports(tree: ast.AST) -> set:
+    """Import nodes that never run against the removed layer, so they are not hits:
+
+    * under ``if TYPE_CHECKING:`` — evaluated by type checkers only;
+    * ``from F import n`` inside a ``try:`` whose handler catches ``ImportError`` — the documented
+      "new path first, fall back to the old one" migration shape. The body is the fallback when the
+      old path is in the handler, and the attempt when the old path is in the body; either way the
+      plugin survives the removal, so neither counts. (The scanner cannot know which branch wins.)
+      Plain ``import F`` is NOT protected by that try: the facade module keeps existing, only the name
+      is gone, so ``F.n`` fails with AttributeError at call time, outside the try.
+    """
+    guarded: set = set()
+
+    def _mark(body, kinds):
+        for n in body:
+            for sub in ast.walk(n):
+                if isinstance(sub, kinds):
+                    guarded.add(sub)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            test = node.test
+            if (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or \
+               (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"):
+                _mark(node.body, (ast.Import, ast.ImportFrom))
+        elif isinstance(node, ast.Try) and any(_catches_import_error(h) for h in node.handlers):
+            _mark(node.body, ast.ImportFrom)
+            for h in node.handlers:
+                if _catches_import_error(h):
+                    _mark(h.body, ast.ImportFrom)
+    return guarded
+
+
+def _module_string(node: ast.AST) -> Optional[str]:
+    """``importlib.import_module("F")`` / ``__import__("F")`` -> ``"F"``."""
+    if not isinstance(node, ast.Call) or not node.args or not isinstance(node.args[0], ast.Constant):
+        return None
+    f = node.func
+    is_import_module = (isinstance(f, ast.Attribute) and f.attr == "import_module") or \
+        (isinstance(f, ast.Name) and f.id in {"import_module", "__import__"})
+    return node.args[0].value if is_import_module and isinstance(node.args[0].value, str) else None
+
+
 def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List[Hit]:
-    """Hits in one file: ``from F import n``, ``import F`` + ``F.n``, ``import F as a`` + ``a.n``,
-    and string targets ``"F.n"`` (``patch``/``import_module``)."""
+    """Hits in one file: ``from F import n``, ``from F import *`` (when F has a manifest name that is
+    then used bare), ``import F`` + ``F.n``, ``import F as a`` + ``a.n``, ``import_module("F").n`` /
+    ``getattr(import_module("F"), "n")`` and string targets ``"F.n"`` (``patch``/``import_module``).
+    Imports under ``if TYPE_CHECKING:`` or in an ``ImportError``-guarded ``try`` are not hits."""
     try:
         tree = ast.parse(src)
     except SyntaxError:
         return []
     hits: List[Hit] = []
+
+    def _hit(fac: Optional[str], name, lineno: int, old: Optional[str] = None) -> None:
+        new = manifest.get(fac or "", {}).get(name) if isinstance(name, str) else None
+        if new:
+            hits.append(Hit(rel, lineno, old or f"{fac}.{name}", new))
+
+    guarded = _guarded_imports(tree)
     aliases: Dict[str, str] = {}                      # local alias -> facade module
+    star_facades: List[str] = []                      # ``from F import *``: bare names may be F's
+    local_names: set = set()                          # names the file binds itself (shadow star imports)
     for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            local_names.add(node.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            local_names.add(node.id)
+        if node in guarded:
+            continue
         if isinstance(node, ast.ImportFrom) and node.module in manifest and node.level == 0:
             for a in node.names:
-                if a.name in manifest[node.module]:
-                    hits.append(Hit(rel, node.lineno, f"{node.module}.{a.name}", manifest[node.module][a.name]))
+                if a.name == "*":
+                    star_facades.append(node.module)
+                else:
+                    _hit(node.module, a.name, node.lineno)
         elif isinstance(node, ast.Import):
             for a in node.names:
-                if a.name in manifest:
-                    aliases[a.asname or a.name] = a.name
+                if a.name in manifest and (a.asname or "." not in a.name):
+                    aliases[a.asname or a.name] = a.name              # dotted ``import a.b`` is resolved by chain
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and (fac := _module_string(node.value)) in manifest:
+            aliases[node.targets[0].id] = fac                           # m = import_module("F")
+
+    def _facade_of(base: ast.AST) -> Optional[str]:
+        if isinstance(base, ast.Name):
+            return aliases.get(base.id)
+        fac = _module_string(base)
+        return fac if fac in manifest else None
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
-            fac = aliases[node.value.id]
-            if node.attr in manifest[fac]:
-                hits.append(Hit(rel, node.lineno, f"{fac}.{node.attr}", manifest[fac][node.attr]))
+        if isinstance(node, ast.Attribute) and (fac := _facade_of(node.value)):
+            _hit(fac, node.attr, node.lineno)                           # F.n / a.n / import_module("F").n
         elif isinstance(node, ast.Attribute):
             # dotted: pkg.sub.name  ->  resolve the full module chain
             parts: List[str] = []
@@ -137,13 +222,17 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
                 parts.append(cur.id)
                 parts.reverse()
                 for i in range(1, len(parts)):
-                    mod, name = ".".join(parts[:i]), parts[i]
-                    if mod in manifest and name in manifest[mod]:
-                        hits.append(Hit(rel, node.lineno, f"{mod}.{name}", manifest[mod][name]))
+                    _hit(".".join(parts[:i]), parts[i], node.lineno)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" \
+                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+            _hit(_facade_of(node.args[0]), node.args[1].value, node.lineno)   # getattr(m, "n")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and "." in node.value:
             mod, _, name = node.value.rpartition(".")
-            if mod in manifest and name in manifest[mod]:
-                hits.append(Hit(rel, node.lineno, node.value, manifest[mod][name]))
+            _hit(mod, name, node.lineno, old=node.value)
+        elif star_facades and isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) \
+                and node.id not in local_names:
+            for fac in star_facades:                                    # from F import *; n
+                _hit(fac, node.id, node.lineno)
     # dedupe (the two walks can see the same Attribute)
     return sorted(set(hits), key=lambda h: (h.file, h.line, h.old))
 

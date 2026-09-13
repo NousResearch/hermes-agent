@@ -518,16 +518,18 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
                     and items[first_cp - 1].get("type") == "compaction"
                 ):
                     first_cp -= 1
-                # Keep only the newest contiguous checkpoint run + all non-compaction items
+                # Keep only the newest contiguous checkpoint run; every stale
+                # checkpoint and all stale reasoning is dropped.
                 kept = [
                     item
                     for idx, item in enumerate(items)
-                    if not (isinstance(item, dict) and item.get("type") == "compaction")
-                    or (first_cp <= idx <= last_cp)
+                    if isinstance(item, dict)
+                    and item.get("type") == "compaction"
+                    and first_cp <= idx <= last_cp
                 ]
             else:
-                # No compaction items — keep all (reasoning, etc.)
-                kept = items
+                # No compaction items — nothing worth retaining; drop it all.
+                kept = []
 
             if len(kept) == len(items):
                 continue  # nothing stale in this sidecar

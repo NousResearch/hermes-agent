@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+import threading
+from typing import Callable, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -32,25 +33,38 @@ _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
 _CLOSE_PROTOCOL = 1003
 _LEASE_REFRESH_S = 0.25
+_active_viewers_lock = threading.Lock()
+_active_viewers: dict[str, tuple[object, Callable[[], None]]] = {}
 
 
-def _should_evict(held: dict, lease, viewer_id: str) -> bool:
-    """A viewer that held control during this connection and lost it to ANOTHER human is kicked so its
-    UI repaints; a plain hand-back to the agent, pure watchers and the new holder stay connected. The
-    hand-back also forgets that this viewer ever held: after it, they are a plain watcher again and a
-    later takeover by someone else must not evict them. ``held`` is the per-connection memory."""
+def _claim_active_viewer(profile_key: str, evict: Callable[[], None]) -> object:
+    """Claim the one stream slot for a profile and evict its stale viewer, if any."""
+    token = object()
+    with _active_viewers_lock:
+        previous = _active_viewers.get(profile_key)
+        _active_viewers[profile_key] = (token, evict)
+    if previous is not None:
+        previous[1]()
+    return token
+
+
+def _release_active_viewer(profile_key: str, token: object) -> None:
+    with _active_viewers_lock:
+        current = _active_viewers.get(profile_key)
+        if current is not None and current[0] is token:
+            _active_viewers.pop(profile_key, None)
+
+
+def _should_evict(lease, viewer_id: str) -> bool:
+    """While a human holds control, only that viewer may observe the framebuffer."""
     from tools.bot_desktop import lease as _lease
-    if lease.holder != _lease.HUMAN:
-        held["ever"] = False
-        return False
-    if lease.viewer_id == viewer_id:
-        held["ever"] = True
-        return False
-    return bool(held["ever"])
+
+    return lease.holder == _lease.HUMAN and lease.viewer_id != viewer_id
 
 
 def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
     from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+
     ticket = ws.query_params.get("display_ticket", "")
     if not ticket:
         return None
@@ -86,6 +100,12 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)
     viewer_id = str(info.get("viewer_id") or info.get("user_id") or "viewer")
+    # A login session can legitimately mint more than one single-use display ticket (reconnects),
+    # so authentication alone cannot make takeover private. Refuse every non-holder here before it
+    # receives an initial framebuffer; the listener/poller below closes connections already open.
+    if _should_evict(_lease.get(profile_key=profile_home), viewer_id):
+        await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
+        return
     if not sock.exists():
         await ws.close(code=_CLOSE_DESKTOP_GONE, reason="Bot Desktop is not running")
         return
@@ -99,11 +119,11 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     await ws.accept()
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
-    held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
+    initially_allowed = _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)
     # Input gate cache: reading lease.json per client message (a stat + read on the event loop for
     # every pointer move) is replaced by a decision refreshed on this process's on_change callback
     # and by a file re-read at most every _LEASE_REFRESH_S, so another process's takeover still lands.
-    allowed = {"input": held["ever"], "at": loop.time()}
+    allowed = {"input": initially_allowed, "at": loop.time()}
 
     def _refresh_allowed(lease=None) -> None:
         if lease is None:
@@ -120,9 +140,20 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
         if key != profile_key:
             return
         loop.call_soon_threadsafe(_refresh_allowed, lease)
-        if _should_evict(held, lease, viewer_id):
+        if _should_evict(lease, viewer_id):
             loop.call_soon_threadsafe(evicted.set)
+
     unsubscribe = _lease.on_change(_on_lease)
+
+    # Close the admission/listener race: takeover may have happened after the first lease read but
+    # before this connection subscribed. This also refreshes the input decision from the same read.
+    current_lease = _lease.get(profile_key=profile_home)
+    _refresh_allowed(current_lease)
+    if _should_evict(current_lease, viewer_id):
+        unsubscribe()
+        writer.close()
+        await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
+        return
 
     rfb_filter = RfbClientFilter(_may_send_input)
 
@@ -157,11 +188,24 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
                 await writer.drain()  # backpressure toward the browser
 
     async def watch_eviction() -> None:
-        await evicted.wait()
+        # on_change is process-local. Polling also catches a takeover written by a separate Hermes
+        # process, which must stop framebuffer delivery—not merely block that viewer's input.
+        while not evicted.is_set():
+            if _should_evict(_lease.get(profile_key=profile_home), viewer_id):
+                evicted.set()
+                break
+            try:
+                await asyncio.wait_for(evicted.wait(), timeout=_LEASE_REFRESH_S)
+            except asyncio.TimeoutError:
+                pass
         await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
 
-    tasks = [asyncio.create_task(rfb_to_ws()), asyncio.create_task(ws_to_rfb()),
-             asyncio.create_task(watch_eviction())]
+    viewer_slot = _claim_active_viewer(profile_key, lambda: loop.call_soon_threadsafe(evicted.set))
+    tasks = [
+        asyncio.create_task(rfb_to_ws()),
+        asyncio.create_task(ws_to_rfb()),
+        asyncio.create_task(watch_eviction()),
+    ]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
@@ -171,6 +215,7 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             if exc and not isinstance(exc, (WebSocketDisconnect, ConnectionError)):
                 _log.debug("display ws ended: %r", exc)
     finally:
+        _release_active_viewer(profile_key, viewer_slot)
         unsubscribe()
         writer.close()
         # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)

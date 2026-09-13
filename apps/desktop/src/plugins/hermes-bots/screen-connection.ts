@@ -55,15 +55,52 @@ export interface DisplayObserveResult extends DisplayStatus {
   path: string
   /** Server-minted per attach: the only id the lease will ever be compared against. */
   viewer_id: string
+  /** Client-only capability that recovers this viewer after a renderer/WebSocket reload. */
+  resume_token: string
 }
 
 /** This window's identity for one attach: the minted id plus its lease-payload hash. */
 export interface ScreenViewer {
   id: string
   hash: string
+  resumeToken: string
 }
 
 const VIEWER_HASH_HEX = 12
+const VIEWER_CAPABILITY_PREFIX = 'hermes.desktop.bot-screen-viewer.v1:'
+
+function viewerCapabilityKey(bot: RosterRow): string {
+  const route = botConnectionRoute(bot)
+  const scope = route ? `${route.connectionId}\u0000${route.profile}` : `local\u0000${bot.name}`
+
+  return `${VIEWER_CAPABILITY_PREFIX}${encodeURIComponent(scope)}`
+}
+
+export function storedScreenViewerCapability(bot: RosterRow): { id: string; resumeToken: string } | null {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(viewerCapabilityKey(bot)) ?? 'null') as unknown
+
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+
+    const { id, resumeToken } = parsed as { id?: unknown; resumeToken?: unknown }
+
+    return typeof id === 'string' && id.length >= 16 && typeof resumeToken === 'string' && resumeToken.length >= 32
+      ? { id, resumeToken }
+      : null
+  } catch {
+    return null
+  }
+}
+
+export function rememberScreenViewerCapability(bot: RosterRow, viewer: Pick<ScreenViewer, 'id' | 'resumeToken'>): void {
+  try {
+    window.localStorage.setItem(viewerCapabilityKey(bot), JSON.stringify(viewer))
+  } catch {
+    // Recovery remains available in this renderer's screen state when storage is unavailable.
+  }
+}
 
 /** `viewer_hash` as the lease broadcasts it: first 12 hex of sha256(viewer_id). */
 export async function viewerHash(viewerId: string): Promise<string> {
@@ -159,9 +196,13 @@ export async function resolveScreenWsUrl(bot: RosterRow, ticket: string): Promis
   // the bridge authenticates on the ticket alone, so the gateway credential is
   // dropped rather than spending a second one-shot ticket.
   const url = new URL(
-    await resolveSiblingWsUrl({ connectionId: route?.connectionId ?? null, profile: route?.profile ?? bot.name }, '/api/display/ws', {
-      stripGatewayCredential: true
-    })
+    await resolveSiblingWsUrl(
+      { connectionId: route?.connectionId ?? null, profile: route?.profile ?? bot.name },
+      '/api/display/ws',
+      {
+        stripGatewayCredential: true
+      }
+    )
   )
 
   url.searchParams.set('display_ticket', ticket)

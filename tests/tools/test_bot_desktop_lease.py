@@ -11,12 +11,12 @@ from tools.bot_desktop import lease
 from tools.bot_desktop.rfb_filter import RfbClientFilter
 
 _HANDSHAKE = b"RFB 003.008\n" + b"\x01" + b"\x00"
-_KEY = b"\x04\x01\x00\x00\x00\x00\x00\x61"          # KeyEvent 'a' down
+_KEY = b"\x04\x01\x00\x00\x00\x00\x00\x61"  # KeyEvent 'a' down
 # QEMU Extended KeyEvent (type 255, sub 0): what noVNC sends once Xvnc advertises the pseudo-encoding.
 _QEMU_KEY = bytes([255, 0, 0, 1]) + (0x65).to_bytes(4, "big") + (0x12).to_bytes(4, "big")
-_POINTER = b"\x05\x01\x00\x10\x00\x10"              # PointerEvent, button 1
-_CUT = b"\x06\x00\x00\x00\x00\x00\x00\x02hi"        # ClientCutText "hi"
-_FBUR = b"\x03\x00" + b"\x00" * 8                   # FramebufferUpdateRequest
+_POINTER = b"\x05\x01\x00\x10\x00\x10"  # PointerEvent, button 1
+_CUT = b"\x06\x00\x00\x00\x00\x00\x00\x02hi"  # ClientCutText "hi"
+_FBUR = b"\x03\x00" + b"\x00" * 8  # FramebufferUpdateRequest
 _SETENC = b"\x02\x00\x00\x02" + b"\x00\x00\x00\x07" + b"\xff\xff\xff\x21"  # SetEncodings x2
 
 
@@ -34,16 +34,17 @@ def test_rfb_filter_forwards_input_only_from_the_lease_holder_across_arbitrary_c
 
     # Agent holds: read-only messages pass, input is dropped, even when split byte by byte.
     stream = _KEY + _FBUR + _POINTER + _SETENC + _CUT + _QEMU_KEY
-    out = b"".join(f.feed(stream[i:i + 1]) for i in range(len(stream)))
+    out = b"".join(f.feed(stream[i : i + 1]) for i in range(len(stream)))
     assert out == _FBUR + _SETENC
 
     lease.acquire("v1")
     assert f.feed(_KEY + _POINTER + _QEMU_KEY) == _KEY + _POINTER + _QEMU_KEY
 
-    lease.acquire("v2")  # last writer wins: v1 is evicted from input on the very next message
-    assert f.feed(_KEY) == b""
-    assert lease.release("v1").holder == lease.HUMAN, "a stale viewer's release must not yank control from v2"
-    assert lease.release("v2").holder == lease.AGENT
+    with pytest.raises(lease.ViewerLeaseHeld):
+        lease.acquire("v2")
+    assert f.feed(_KEY) == _KEY, "a second viewer cannot steal the private holder's input lease"
+    assert lease.release("v2").holder == lease.HUMAN, "a foreign viewer cannot release the holder"
+    assert lease.release("v1").holder == lease.AGENT
 
 
 def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkeypatch):
@@ -75,13 +76,22 @@ def test_lease_authority_is_shared_across_processes(tmp_path):
     import sys
 
     lease.acquire("desktop-viewer")
-    probe = ("import sys; sys.path.insert(0, %r)\n"
-             "from tools.bot_desktop import lease\n"
-             "try:\n    lease.assert_agent_may_act(); print('AGENT')\n"
-             "except lease.HumanHasControl:\n    print('HUMAN')\n"
-             "lease.release('desktop-viewer')\n") % os.getcwd()
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=30,
-                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]})
+    probe = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "from tools.bot_desktop import lease\n"
+        "try:\n    lease.assert_agent_may_act(); print('AGENT')\n"
+        "except lease.HumanHasControl:\n    print('HUMAN')\n"
+        "lease.release('desktop-viewer')\n"
+    ) % os.getcwd()
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]},
+    )
     assert out.stdout.strip() == "HUMAN", out.stderr
     assert lease.get().holder == lease.AGENT, "the other process's release is visible here"
 
@@ -167,14 +177,23 @@ def test_lease_works_without_fcntl(tmp_path):
     import subprocess
     import sys
 
-    probe = ("import sys; sys.modules['fcntl'] = None; sys.path.insert(0, %r)\n"
-             "from tools.bot_desktop import lease\n"
-             "import tools.computer_use.handoff\n"
-             "assert lease.get().holder == lease.AGENT\n"
-             "assert lease.acquire('v1').holder == lease.HUMAN\n"
-             "assert lease.get().holder == lease.HUMAN\n"
-             "assert lease.release('v1').holder == lease.AGENT\n"
-             "print('OK')\n") % os.getcwd()
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=60,
-                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})
+    probe = (
+        "import sys; sys.modules['fcntl'] = None; sys.path.insert(0, %r)\n"
+        "from tools.bot_desktop import lease\n"
+        "import tools.computer_use.handoff\n"
+        "assert lease.get().holder == lease.AGENT\n"
+        "assert lease.acquire('v1').holder == lease.HUMAN\n"
+        "assert lease.get().holder == lease.HUMAN\n"
+        "assert lease.release('v1').holder == lease.AGENT\n"
+        "print('OK')\n"
+    ) % os.getcwd()
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HERMES_HOME": str(tmp_path)},
+    )
     assert out.stdout.strip() == "OK", out.stderr

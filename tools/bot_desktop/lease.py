@@ -28,7 +28,7 @@ from hermes_constants import get_hermes_home, hermes_home_key
 try:
     import fcntl
 except ImportError:  # Windows/macOS without fcntl: computer_use imports this module on every call, and no
-    fcntl = None     # multi-process Bot Desktop exists there, so the cross-process lock degrades to a no-op.
+    fcntl = None  # multi-process Bot Desktop exists there, so the cross-process lock degrades to a no-op.
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,10 @@ class HumanHasControl(RuntimeError):
     """Raised by screen-driving tools while a human holds the lease."""
 
 
+class ViewerLeaseHeld(RuntimeError):
+    """Raised when another authenticated viewer session already holds this profile's screen."""
+
+
 @dataclass
 class Lease:
     holder: str = AGENT
@@ -48,6 +52,7 @@ class Lease:
     since: float = field(default_factory=time.time)
     reason: str = ""
     pending_handoff: Optional[str] = None  # agent's reason for asking, until the human takes over
+    resume_hash: str = ""  # hash of the holder's client-only recovery capability; never broadcast
     epoch: int = 0
 
     def as_dict(self) -> Dict[str, object]:
@@ -130,6 +135,7 @@ def on_change(listener: Callable[[str, Lease], None]) -> Callable[[], None]:
         with _lock:
             if listener in _listeners:
                 _listeners.remove(listener)
+
     return _off
 
 
@@ -142,7 +148,10 @@ def _notify(key: str, lease: Lease) -> None:
 
 
 def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> Lease:
-    key, path = hermes_home_key(profile_key) if profile_key else hermes_home_key(), _path(profile_key)
+    key, path = (
+        hermes_home_key(profile_key) if profile_key else hermes_home_key(),
+        _path(profile_key),
+    )
     with _locked(path):
         lease = _read(path)
         if not mutate(lease):
@@ -155,40 +164,60 @@ def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> 
     return lease
 
 
-def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = "") -> Lease:
-    """Human ``viewer_id`` takes control. Last writer wins: a second viewer evicts the first, and the
-    RFB bridge closes the evicted socket so its UI drops to view-only."""
+def acquire(
+    viewer_id: str,
+    *,
+    profile_key: Optional[str] = None,
+    reason: str = "",
+    resume_hash: str = "",
+) -> Lease:
+    """Let ``viewer_id`` take control unless another authenticated viewer session holds it."""
+
     def _m(lease: Lease) -> bool:
+        if lease.holder == HUMAN and lease.viewer_id != viewer_id:
+            raise ViewerLeaseHeld("another viewer already holds private control")
         # The agent's ask ("please log in to X") stays as the takeover reason: the human needs it
         # on screen WHILE they act, not only before they clicked Take over.
         lease.holder, lease.viewer_id, lease.since = HUMAN, viewer_id, time.time()
         lease.reason = reason or lease.pending_handoff or ""
         lease.pending_handoff = None
+        lease.resume_hash = resume_hash
         return True
+
     return _transition(profile_key, _m)
 
 
 def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = None) -> Lease:
     """Return control to the agent. With ``viewer_id`` only that holder may release (a stale viewer
     closing its window must not yank control from the one who took over after it)."""
+
     def _m(lease: Lease) -> bool:
         if viewer_id is not None and lease.holder == HUMAN and lease.viewer_id != viewer_id:
             # Ignored, not an error: the returned lease still shows the real holder. Logged so a
             # caller that never inspects the return value leaves a trace.
             logger.info("bot-desktop lease: release by %r ignored, another viewer holds", viewer_id)
             return False
-        lease.holder, lease.viewer_id, lease.since, lease.reason = AGENT, None, time.time(), ""
+        lease.holder, lease.viewer_id, lease.since, lease.reason = (
+            AGENT,
+            None,
+            time.time(),
+            "",
+        )
+        lease.resume_hash = ""
         lease.pending_handoff = None  # "hand back" answers an open request even if nobody formally took over
         return True
+
     return _transition(profile_key, _m)
 
 
 def request_handoff(reason: str, *, profile_key: Optional[str] = None) -> Lease:
     """Agent asks a human to take over (login, 2FA, CAPTCHA, payment). Recorded so the UI can show
     why and the bridge can page the user; control itself still flips only on ``acquire``."""
+
     def _m(lease: Lease) -> bool:
         lease.pending_handoff = reason
         return True
+
     return _transition(profile_key, _m)
 
 
@@ -196,12 +225,20 @@ def wait_for_release(*, timeout: float, profile_key: Optional[str] = None) -> bo
     """Block until the agent holds the lease (and no handoff is pending) or ``timeout`` elapses.
     True when control is back with the agent. Polls the file so a release made by another process
     is seen; the local Condition just shortens the wait for same-process transitions."""
-    return _wait_until(lambda lease: lease.holder == AGENT and lease.pending_handoff is None, timeout, profile_key)
+    return _wait_until(
+        lambda lease: lease.holder == AGENT and lease.pending_handoff is None,
+        timeout,
+        profile_key,
+    )
 
 
 def wait_for_takeover_or_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:
     """False when, after ``timeout``, the agent still holds with a handoff pending: nobody answered."""
-    return _wait_until(lambda lease: lease.holder == HUMAN or lease.pending_handoff is None, timeout, profile_key)
+    return _wait_until(
+        lambda lease: lease.holder == HUMAN or lease.pending_handoff is None,
+        timeout,
+        profile_key,
+    )
 
 
 def _wait_until(done: Callable[[Lease], bool], timeout: float, profile_key: Optional[str]) -> bool:
@@ -234,7 +271,8 @@ def assert_agent_may_act(profile_key: Optional[str] = None) -> Lease:
         raise HumanHasControl(
             "A human has taken over this desktop (they may be entering a credential). Screen actions and "
             "captures are refused until they hand control back; call computer_use action='wait_for_human' "
-            "to block until then.")
+            "to block until then."
+        )
     return lease
 
 

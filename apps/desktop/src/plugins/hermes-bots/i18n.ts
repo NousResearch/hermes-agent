@@ -263,8 +263,6 @@ type BotsMessages = {
     reconnect: string
     takeOver: string
     handBack: string
-    handBackForce: string
-    handBackForceHint: string
     openNeedsUpdate: string
     youControl: string
     otherControls: string
@@ -535,8 +533,6 @@ const en: BotsMessages = {
     reconnect: 'Reconnect',
     takeOver: 'Take over',
     handBack: 'Hand back',
-    handBackForce: 'Hand back (force)',
-    handBackForceHint: 'Release a lease held by a viewer that is no longer here, e.g. after a reload.',
     openNeedsUpdate: 'Update Hermes Desktop to open bot screens.',
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
@@ -802,8 +798,6 @@ const ja: BotsMessages = {
     reconnect: '再接続',
     takeOver: '引き継ぐ',
     handBack: '戻す',
-    handBackForce: '強制的に戻す',
-    handBackForceHint: 'もう存在しないビューア（再読み込み後など）が保持しているリースを解放します。',
     openNeedsUpdate: 'ボットの画面を開くには Hermes Desktop を更新してください。',
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
@@ -1064,8 +1058,6 @@ const zh: BotsMessages = {
     reconnect: '重新连接',
     takeOver: '接管',
     handBack: '交还',
-    handBackForce: '强制交还',
-    handBackForceHint: '释放已不在场的查看者（例如重新加载后）持有的控制权。',
     openNeedsUpdate: '更新 Hermes Desktop 以打开机器人屏幕。',
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
@@ -1326,8 +1318,6 @@ const zhHant: BotsMessages = {
     reconnect: '重新連線',
     takeOver: '接手',
     handBack: '交還',
-    handBackForce: '強制交還',
-    handBackForceHint: '釋放已不在場的檢視者（例如重新載入後）持有的控制權。',
     openNeedsUpdate: '更新 Hermes Desktop 以開啟機器人螢幕。',
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',

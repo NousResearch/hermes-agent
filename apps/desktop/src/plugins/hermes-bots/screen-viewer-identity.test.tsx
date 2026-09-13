@@ -35,8 +35,6 @@ vi.mock('./i18n', () => ({
       otherControls: 'Other controls',
       agentControls: 'Bot controls',
       handBack: 'Hand back',
-      handBackForce: 'Hand back (force)',
-      handBackForceHint: 'Force',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
       streamLost: 'Stream lost'
@@ -61,12 +59,13 @@ vi.mock('@novnc/novnc', () => ({
 // eslint-disable-next-line no-restricted-imports
 import { emitGatewayEvent } from '../../contrib/events'
 
-import { displayRequest, viewerHash } from './screen-connection'
+import { displayRequest, rememberScreenViewerCapability, viewerHash } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
 import { $screenState } from './screen-state'
 
 const bot: RosterRow = { name: 'default' }
-const MINTED = 'srv-viewer-0001'
+const MINTED = 'srv-viewer-00001'
+const RESUME_TOKEN = 'resume-token-with-at-least-thirty-two-characters'
 
 const status: DisplayStatus = {
   profile: 'default',
@@ -84,11 +83,14 @@ const status: DisplayStatus = {
 }
 
 beforeEach(() => {
+  window.localStorage.clear()
   $screenState.set({})
   vi.mocked(displayRequest)
     .mockReset()
     .mockImplementation(async (_bot, method) =>
-      method === 'display.observe' ? { ...status, ticket: 'test-ticket', viewer_id: MINTED } : status
+      method === 'display.observe'
+        ? { ...status, ticket: 'test-ticket', viewer_id: MINTED, resume_token: RESUME_TOKEN }
+        : status
     )
   vi.stubGlobal(
     'WebSocket',
@@ -111,7 +113,7 @@ const emitLease = (viewer_hash: string) =>
 
 it('holds control when the lease names the hash of the server-minted viewer id, not when it names another', async () => {
   const view = render(<BotScreenPane bot={bot} />)
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', {}))
   await act(async () => {})
 
   emitLease(await viewerHash('someone-else'))
@@ -125,7 +127,7 @@ it('holds control when the lease names the hash of the server-minted viewer id, 
 
 it('hands back with the minted id, never a client-generated one', async () => {
   const view = render(<BotScreenPane bot={bot} />)
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', {}))
   await act(async () => {})
   emitLease(await viewerHash(MINTED))
 
@@ -136,18 +138,26 @@ it('hands back with the minted id, never a client-generated one', async () => {
   view.unmount()
 })
 
-it('offers a forced hand-back for a human lease this window does not hold, sending {force: true} and no viewer id', async () => {
+it('does not offer takeover or forced release for a lease held by another viewer', async () => {
   const view = render(<BotScreenPane bot={bot} />)
-  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', {}))
   await act(async () => {})
 
-  emitLease(await viewerHash(MINTED))
-  expect(view.queryByText('Hand back (force)')).toBeNull()
-
   emitLease(await viewerHash('viewer-from-before-the-reload'))
-  await act(async () => {
-    view.getByText('Hand back (force)').click()
-  })
-  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
+  expect(view.queryByText('Hand back')).toBeNull()
+  expect(view.queryByText('Take over')).toBeNull()
+  view.unmount()
+})
+
+it('presents the client-only recovery capability after a renderer reload', async () => {
+  rememberScreenViewerCapability(bot, { id: MINTED, resumeToken: RESUME_TOKEN })
+  const view = render(<BotScreenPane bot={bot} />)
+
+  await waitFor(() =>
+    expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe', {
+      viewer_id: MINTED,
+      resume_token: RESUME_TOKEN
+    })
+  )
   view.unmount()
 })

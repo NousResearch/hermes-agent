@@ -56,10 +56,18 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  // Filesystem paths are not URLs. Routing them through `new URL()` lets
+  // WHATWG percent-encode the pathname — and a Windows drive letter like
+  // `D:` even parses as a URL scheme, so the URL branch never throws for
+  // it. Split filesystem paths directly to keep non-ASCII filenames intact.
+  if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('~') || path.startsWith('/')) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
 
-    return url.pathname.split('/').filter(Boolean).pop() || path
+    return decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || path)
   } catch {
     return path.split(/[\\/]/).filter(Boolean).pop() || path
   }

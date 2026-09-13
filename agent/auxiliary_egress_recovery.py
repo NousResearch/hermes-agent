@@ -33,6 +33,7 @@ def local_fallback_steps(route, step_factory):
                     failed_base_url=failed_base_url,
                     main_runtime=route.main_runtime,
                     excluded_identities=visited,
+                    async_mode=route.async_mode,
                 )
             elif source is auxiliary._try_main_fallback_chain:
                 client, model, label = source(
@@ -42,6 +43,7 @@ def local_fallback_steps(route, step_factory):
                     failed_model=failed_model,
                     failed_base_url=failed_base_url,
                     excluded_identities=visited,
+                    async_mode=route.async_mode,
                 )
             else:
                 client, model, label = source(
@@ -51,6 +53,7 @@ def local_fallback_steps(route, step_factory):
                     failed_model=failed_model,
                     failed_base_url=failed_base_url,
                     excluded_identities=visited,
+                    async_mode=route.async_mode,
                 )
             if client is None:
                 break

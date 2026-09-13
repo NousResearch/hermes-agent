@@ -461,6 +461,7 @@ async def test_blocked_remote_async_aux_call_uses_local_fallback_without_retry(
     fallback.chat.completions.create.assert_awaited_once()
     configured.assert_called_once()
     main_fallback.assert_called_once()
+    assert main_fallback.call_args.kwargs["async_mode"] is True
 
 
 def _jwt_with_claims(claims: dict) -> str:
@@ -773,13 +774,26 @@ class TestMoaAggregatorSharedResolution:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
 
-            client, model, label = _try_main_agent_model_fallback("anthropic", task="compression")
+            client, model, label = _try_main_agent_model_fallback(
+                "anthropic",
+                task="compression",
+                main_runtime={
+                    "provider": "moa",
+                    "model": "opus-gpt",
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                },
+            )
 
         assert client is mock_client
         assert model == "anthropic/claude-opus-4.8"
         assert label == "main-agent(openrouter)"
         assert mock_resolve.call_args.kwargs["provider"] == "openrouter"
         assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] is None
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == ""
+        assert mock_resolve.call_args.kwargs["api_mode"] == ""
 
 
 class TestBuildCallKwargsMaxTokens:

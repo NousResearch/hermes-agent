@@ -3,9 +3,11 @@
 `_git_run(network=True)` bounds the wait; a `TimeoutExpired` becomes a failed
 CompletedProcess whose stderr names the stall, so every caller's existing
 fetch-failure path prints one clear line. Local git (network=False) is unbounded.
+The update path's own streaming fetch (`_fetch_with_progress`) carries the same bound.
 """
 
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.update_cmd as update_cmd
@@ -41,3 +43,15 @@ def test_local_git_stays_unbounded_and_check_true_raises(monkeypatch):
             assert exc.returncode == 124
         else:
             raise AssertionError("check=True must raise on a timed-out fetch")
+
+
+def test_streaming_fetch_keeps_the_network_bound(monkeypatch, tmp_path):
+    """Handing the fetch a reader loop must not cost it the bound: a silent stall still ends."""
+    monkeypatch.setattr(update_cmd, "_m", lambda: MagicMock(PROJECT_ROOT=str(tmp_path)))
+    result = update_cmd._fetch_with_progress(
+        [sys.executable, "-c", "import time; time.sleep(30)"], "main", timeout_seconds=0.5)
+
+    assert result.returncode == 124
+    assert "timed out after 0.5s" in result.stderr
+    # Nothing was received, so the cause stays the legacy one — the classifier keeps matching it.
+    assert "no response from the remote" in result.stderr

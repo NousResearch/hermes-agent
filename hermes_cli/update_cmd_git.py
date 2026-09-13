@@ -7,6 +7,7 @@ test patches on ``update_cmd`` stay effective).
 
 import logging
 from contextlib import suppress
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -351,6 +352,73 @@ def _print_fetch_failure(stderr: str) -> None:
     print(_classify_fetch_failure(stderr))
     if stderr:
         print(f"  {stderr.splitlines()[0]}")
+
+
+def _fetch_with_progress(git_cmd: list, branch: str, *, timeout_seconds: float) -> subprocess.CompletedProcess:
+    """``git fetch --progress``, piped through and bounded: a slow transfer shows git's own meter
+    instead of looking like a hang (#80049), a dead stall still ends in a named failure (#93759,
+    #95777), and Ctrl-C reaps the fetch tree plus the partial pack it downloaded (#93732).
+    """
+    import threading
+
+    from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
+    from hermes_cli.gitlock import clear_stale_tmp_packs
+    from hermes_cli.update_cmd import _m, _no_prompt_git_kwargs, _record_update_step
+
+    repo_root = _m().PROJECT_ROOT
+    # Own process group (POSIX): Ctrl-C lands here, where the kill below retires the whole tree,
+    # rather than racing the terminal's signal into git's transport child.
+    spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
+    proc = subprocess.Popen(
+        git_cmd + ["fetch", "--progress", "origin", branch], cwd=repo_root,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_no_prompt_git_kwargs(), **spawn)
+    cmd = list(proc.args)
+    # Watchdog, not a read deadline: the meter keeps the pipe readable on a slow line, and read1()
+    # cannot be bounded portably (select() is socket-only on Windows).
+    timed_out = threading.Event()
+
+    def _on_timeout():
+        timed_out.set()
+        kill_process_tree(proc)
+
+    watchdog = threading.Timer(timeout_seconds, _on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
+    captured: list[bytes] = []
+    try:
+        for chunk in iter(lambda: proc.stdout.read1(8192), b""):
+            captured.append(chunk)
+            with suppress(Exception):  # a broken stdout must not abort an otherwise-fine fetch
+                _m().sys.stdout.write(chunk.decode("utf-8", "replace"))
+                _m().sys.stdout.flush()
+        watchdog.cancel()  # the pipe closed: a timer firing now would misreport a stall
+        returncode = proc.wait()
+        if returncode == 0:
+            timed_out.clear()  # a fetch that finished must never be reported as a stall
+    except KeyboardInterrupt:
+        kill_process_tree(proc)
+        with suppress(Exception):
+            proc.wait(timeout=5)
+        # Global git guard (not a name diff): tmp_pack_* names carry no owner, so diffing
+        # against a pre-spawn snapshot would also delete a CONCURRENT live fetch's pack.
+        swept = clear_stale_tmp_packs(repo_root, min_age_seconds=0)
+        _record_update_step("fetch_interrupted", False, "SIGINT during fetch")
+        print("\n  ✗ Interrupted during the fetch — no code was changed; re-run 'hermes update' to retry.")
+        if swept:
+            print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+        raise
+    except BaseException:
+        kill_process_tree(proc)
+        raise
+    finally:
+        watchdog.cancel()
+        with suppress(Exception):
+            proc.stdout.close()
+    if timed_out.is_set():
+        return subprocess.CompletedProcess(
+            cmd, 124, "", f"git fetch timed out after {timeout_seconds:g}s with no response from the remote")
+    text = b"".join(captured).decode("utf-8", "replace")
+    return subprocess.CompletedProcess(cmd, returncode, text, text)
 
 
 def _probe_fork_bomb(argv: list) -> Optional[bool]:

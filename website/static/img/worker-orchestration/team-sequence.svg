@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 955" role="img" aria-labelledby="title desc">
+<title id="title">A task is finished when its review is accepted.</title><desc id="desc">Planned parent workflow connects Kanban dependencies to retained workers and reviewer messages, then records task acceptance separately.</desc>
+<defs><style>text{font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0} .sub{fill:#94a3b8;font-size:15px}.label{font-size:18px;font-weight:600}</style><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width=".6"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs>
+<rect width="1200" height="955" fill="#0f172a"/><rect width="1200" height="955" fill="url(#grid)"/>
+<text x="40" y="48" font-size="27" font-weight="700">A task is finished when its review is accepted.</text>
+<text x="40" y="78" class="sub" text-anchor="start">PLANNED INTEGRATION • existing worker and Kanban primitives retain their authority</text>
+<path d="M145 175V840" stroke="#334155" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M448 175V840" stroke="#334155" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M751 175V840" stroke="#334155" stroke-width="2" stroke-dasharray="6 5"/>
+<path d="M1054 175V840" stroke="#334155" stroke-width="2" stroke-dasharray="6 5"/>
+<rect x="40" y="110" width="210" height="65" rx="12" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+<text x="145.0" y="140" class="label" text-anchor="middle">Parent</text>
+<rect x="343" y="110" width="210" height="65" rx="12" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+<text x="448.0" y="140" class="label" text-anchor="middle">Kanban</text>
+<rect x="646" y="110" width="210" height="65" rx="12" fill="#0f172a" stroke="#a78bfa" stroke-width="2"/>
+<text x="751.0" y="140" class="label" text-anchor="middle">Worker</text>
+<rect x="949" y="110" width="210" height="65" rx="12" fill="#0f172a" stroke="#fb923c" stroke-width="2"/>
+<text x="1054.0" y="140" class="label" text-anchor="middle">Reviewer</text>
+<path d="M145 220L448 220" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="296.5" y="208" class="sub" text-anchor="middle">1. Create task + review dependency</text>
+<path d="M145 285L751 285" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="448.0" y="273" class="sub" text-anchor="middle">2. Start permitted assignment</text>
+<path d="M145 350L751 350" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="448.0" y="338" class="sub" text-anchor="middle">3. Send guidance while running</text>
+<path d="M751 415L145 415" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<text x="448.0" y="403" class="sub" text-anchor="middle">4. Return result + run receipt</text>
+<path d="M145 480L448 480" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="296.5" y="468" class="sub" text-anchor="middle">5. Submit result for review</text>
+<path d="M448 545L1054 545" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="751.0" y="533" class="sub" text-anchor="middle">6. Review becomes eligible</text>
+<path d="M1054 610L145 610" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<text x="599.5" y="598" class="sub" text-anchor="middle">7. Request correction</text>
+<path d="M145 675L751 675" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="448.0" y="663" class="sub" text-anchor="middle">8. Follow up with retained context</text>
+<path d="M751 740L1054 740" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)" stroke-dasharray="7 5"/>
+<text x="902.5" y="728" class="sub" text-anchor="middle">9. Provide revised result</text>
+<path d="M1054 805L448 805" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+<text x="751.0" y="793" class="sub" text-anchor="middle">10. Record review acceptance</text>
+<rect x="95" y="850" width="1010" height="75" rx="12" fill="#0f172a" stroke="#fb7185" stroke-width="2"/>
+<text x="600.0" y="880" class="label" text-anchor="middle">Restart rule</text>
+<text x="600.0" y="907" class="sub" text-anchor="middle">Restore recorded work; pause for uncertain effects instead of replaying.</text>
+</svg>

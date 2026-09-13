@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" role="img" aria-labelledby="title desc"><title id="title">One worker, several assignments</title><desc id="desc">A worker keeps its identity and conversation. Each assignment has a separate run.</desc>
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs><style>text{font-family:Arial,Helvetica,sans-serif} .title{font-size:28px;font-weight:700;fill:#f8fafc}.label{font-size:19px;font-weight:600;fill:#f8fafc}.body{font-size:16px;fill:#cbd5e1}.note{font-size:14px;fill:#94a3b8}</style>
+<rect width="1100" height="760" fill="#0f172a"/><rect width="1100" height="760" fill="url(#grid)"/>
+<text x="35" y="48" class="title">One worker, several assignments</text>
+<text x="35" y="78" class="body">A worker keeps its identity and conversation. Each assignment has a separate run.</text>
+<rect x="35" y="115" width="490" height="110" rx="12" fill="#0f172a"/><rect x="35" y="115" width="490" height="110" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="53" y="146" class="label">RUN 1: DO THE FIRST TASK</text>
+<text x="53" y="172" class="body">Parent spawns a worker using a profile.</text>
+<text x="53" y="196" class="body">The worker saves conversation checkpoints.</text>
+<rect x="575" y="115" width="490" height="110" rx="12" fill="#0f172a"/><rect x="575" y="115" width="490" height="110" rx="12" fill="#fb923c" fill-opacity="0.09" stroke="#fb923c" stroke-width="1.5"/>
+<text x="593" y="146" class="label">MESSAGE WHILE RUNNING</text>
+<text x="593" y="172" class="body">New guidance waits for a supported boundary.</text>
+<text x="593" y="196" class="body">Accepted does not yet mean consumed.</text>
+<path d="M820 225 L820 270" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M280 225 L280 270" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="270" width="1030" height="110" rx="12" fill="#0f172a"/><rect x="35" y="270" width="1030" height="110" rx="12" fill="#34d399" fill-opacity="0.09" stroke="#34d399" stroke-width="1.5"/>
+<text x="53" y="301" class="label">RUN 2: FOLLOW UP WITH RETAINED CONTEXT</text>
+<text x="53" y="327" class="body">A follow-up queues behind Run 1; two runs never execute concurrently on one worker.</text>
+<text x="53" y="351" class="body">Hermes rechecks current tools, credentials, model route and limits before starting it.</text>
+<path d="M550 380 L550 420" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="420" width="490" height="165" rx="12" fill="#0f172a"/><rect x="35" y="420" width="490" height="165" rx="12" fill="#fbbf24" fill-opacity="0.09" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="53" y="451" class="label">OPTIONAL: A TREE OF WORKERS</text>
+<text x="53" y="477" class="body">An enabled coordinator can spawn children.</text>
+<text x="53" y="501" class="body">They share the assignment’s execution budget.</text>
+<text x="53" y="525" class="body">Depth, time, tool and concurrency limits apply.</text>
+<text x="53" y="549" class="body">Cancellation propagates to owned descendants.</text>
+<rect x="575" y="420" width="490" height="165" rx="12" fill="#0f172a"/><rect x="575" y="420" width="490" height="165" rx="12" fill="#a78bfa" fill-opacity="0.09" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="593" y="451" class="label">PARENT GETS A COMPACT RESULT</text>
+<text x="593" y="477" class="body">Summary • status • usage • receipt reference</text>
+<text x="593" y="501" class="body">Inspect visible conversation only when needed.</text>
+<text x="593" y="525" class="body">Results remain pending until acknowledged.</text>
+<text x="593" y="549" class="body">Sibling messages require explicit policy.</text>
+<text x="35" y="640" class="body">Profile edits do not rewrite an existing worker’s original instructions.</text>
+<text x="35" y="670" class="body">A new root assignment gets a new budget; older descendants keep their earlier budget.</text>
+<text x="35" y="705" class="note">A cancellation request cannot prove an already-started external action stopped.</text>
+</svg>

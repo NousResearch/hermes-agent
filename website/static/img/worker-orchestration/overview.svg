@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 850" role="img" aria-labelledby="title desc"><title id="title">A team you define. A parent that coordinates.</title><desc id="desc">Worker profiles choose the job and route; Hermes enforces the boundaries.</desc>
+<defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#94a3b8"/></marker></defs><style>text{font-family:Arial,Helvetica,sans-serif} .title{font-size:28px;font-weight:700;fill:#f8fafc}.label{font-size:19px;font-weight:600;fill:#f8fafc}.body{font-size:16px;fill:#cbd5e1}.note{font-size:14px;fill:#94a3b8}</style>
+<rect width="1100" height="850" fill="#0f172a"/><rect width="1100" height="850" fill="url(#grid)"/>
+<text x="35" y="48" class="title">A team you define. A parent that coordinates.</text>
+<text x="35" y="78" class="body">Worker profiles choose the job and route; Hermes enforces the boundaries.</text>
+<rect x="35" y="110" width="1030" height="95" rx="12" fill="#0f172a"/><rect x="35" y="110" width="1030" height="95" rx="12" fill="#fbbf24" fill-opacity="0.09" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="53" y="141" class="label">YOU: define the team and its limits</text>
+<text x="53" y="167" class="body">Profiles • enabled providers/models • tools • context • time, depth and concurrency</text>
+<path d="M550 205 L550 245" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="195" y="245" width="710" height="105" rx="12" fill="#0f172a"/><rect x="195" y="245" width="710" height="105" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="213" y="276" class="label">PARENT ORCHESTRATOR</text>
+<text x="213" y="302" class="body">Discover profiles → choose workers → give each a bounded task</text>
+<text x="213" y="326" class="body">Message • wait • follow up • inspect • cancel • reconcile • acknowledge</text>
+<path d="M550 350 L195 405" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M550 350 L550 405" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M550 350 L905 405" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="405" width="320" height="120" rx="12" fill="#0f172a"/><rect x="35" y="405" width="320" height="120" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="53" y="436" class="label">RESEARCHER</text>
+<text x="53" y="462" class="body">Your provider / model A</text>
+<text x="53" y="486" class="body">Supported effort: e.g. medium</text>
+<text x="53" y="510" class="body">Only permitted research tools</text>
+<rect x="390" y="405" width="320" height="120" rx="12" fill="#0f172a"/><rect x="390" y="405" width="320" height="120" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="408" y="436" class="label">CHECKER</text>
+<text x="408" y="462" class="body">Your provider / model B</text>
+<text x="408" y="486" class="body">Supported effort: e.g. high</text>
+<text x="408" y="510" class="body">Only permitted checking tools</text>
+<rect x="745" y="405" width="320" height="120" rx="12" fill="#0f172a"/><rect x="745" y="405" width="320" height="120" rx="12" fill="#22d3ee" fill-opacity="0.09" stroke="#22d3ee" stroke-width="1.5"/>
+<text x="763" y="436" class="label">COORDINATOR (optional)</text>
+<text x="763" y="462" class="body">Your chosen route and effort</text>
+<text x="763" y="486" class="body">May delegate within tree limits</text>
+<text x="763" y="510" class="body">Descendants cannot gain access</text>
+<path d="M195 525 L195 575" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M550 525 L550 575" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M905 525 L905 575" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="575" width="1030" height="95" rx="12" fill="#0f172a"/><rect x="35" y="575" width="1030" height="95" rx="12" fill="#34d399" fill-opacity="0.09" stroke="#34d399" stroke-width="1.5"/>
+<text x="53" y="606" class="label">ONE SHARED WORKER SERVICE</text>
+<text x="53" y="632" class="body">Parent tool + plugin API • ownership checks • ordered follow-ups • shared execution budgets</text>
+<path d="M325 670 L325 710" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M790 670 L790 710" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="710" width="490" height="100" rx="12" fill="#0f172a"/><rect x="35" y="710" width="490" height="100" rx="12" fill="#a78bfa" fill-opacity="0.09" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="53" y="741" class="label">RETAINED STATE</text>
+<text x="53" y="767" class="body">Worker identity, runs, messages, checkpoints</text>
+<rect x="565" y="710" width="500" height="100" rx="12" fill="#0f172a"/><rect x="565" y="710" width="500" height="100" rx="12" fill="#fb923c" fill-opacity="0.09" stroke="#fb923c" stroke-width="1.5"/>
+<text x="583" y="741" class="label">EXECUTION RECEIPTS</text>
+<text x="583" y="767" class="body">Selected route → sent request → reported model</text>
+</svg>

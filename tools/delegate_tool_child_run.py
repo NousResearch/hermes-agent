@@ -511,6 +511,9 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    route_receipt = getattr(child, "_worker_route_receipt", None)
+    if isinstance(route_receipt, dict) and route_receipt.get("requested_profile"):
+        entry["route"] = dict(route_receipt)
     if status == "failed":
         if schema.valid is False and usable_summary:
             # The child DID respond; name the contract violation instead of the generic "no response" error.
@@ -646,6 +649,9 @@ class _ChildRun:
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
+        profile_timeout = getattr(child, "_worker_timeout_seconds", None)
+        if isinstance(profile_timeout, (int, float)) and profile_timeout > 0:
+            child_timeout = min(child_timeout, profile_timeout) if child_timeout else profile_timeout
         executor = DaemonThreadPoolExecutor(
             max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
         )
@@ -656,9 +662,15 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
+                run_kwargs = dict(
+                    user_message=self.goal,
+                    task_id=self.child_task_id,
+                    stream_callback=self.relay_text,
                 )
+                resume_history = getattr(child, "_worker_resume_history", None)
+                if isinstance(resume_history, list):
+                    run_kwargs["conversation_history"] = resume_history
+                return child.run_conversation(**run_kwargs)
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         try:

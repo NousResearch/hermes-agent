@@ -54,7 +54,9 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
-    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
+    executable_names: set, staged_engine_names: set, content_aware: bool,
+    prefix_registered: Optional[set],
+) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
     the added names, or None when nothing was published (unchanged, or a newer snapshot won)."""
@@ -66,16 +68,24 @@ def _publish_tool_snapshot(
             return None  # a newer snapshot already won
         current_defs = _agent_tool_defs(agent)
         current = {_def_name(t) for t in current_defs}
+        current_executable = set(getattr(agent, "_executable_tool_names", current) or ())
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
         # (compaction boundary) also diff serialized bytes.
-        if new_names == current and not (content_aware and _tool_defs_content_changed(agent, new_defs)):
+        if (
+            new_names == current
+            and executable_names == current_executable
+            and not (content_aware and _tool_defs_content_changed(agent, new_defs))
+        ):
             return None
         agent.tools = new_defs
         agent.valid_tool_names = new_names
+        agent._executable_tool_names = executable_names
+        if hasattr(agent, "_worker_effective_tool_names"):
+            agent._worker_effective_tool_names = frozenset(executable_names)
         # Publish context-engine routing names atomically with the snapshot.
         engine_names = getattr(agent, "_context_engine_tool_names", None)
         if isinstance(engine_names, set):
@@ -107,8 +117,29 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
+    raw_defs = list(get_tool_definitions(
+        enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode,
+        skip_tool_search_assembly=True,
+    ) or [])
+    executable_names = {_def_name(t) for t in raw_defs if _def_name(t)}
     new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
     new_names = {_def_name(t) for t in new_defs}
+    worker_ceiling = getattr(agent, "_worker_effective_tool_names", None)
+    if isinstance(worker_ceiling, (set, frozenset, list, tuple)):
+        executable_names.intersection_update(worker_ceiling)
+        # Bridge schemas are presentation capabilities, not executable catalog
+        # identities. Preserve them whenever at least one deferred executable is
+        # still authorized, exactly as initial tool assembly does.
+        presentation_names = set(executable_names)
+        try:
+            from tools.tool_search import BRIDGE_TOOL_NAMES, is_deferrable_tool_name, load_config_readonly
+            deferred = load_config_readonly().effective_defer_tools
+            if any(is_deferrable_tool_name(name, deferred) for name in executable_names):
+                presentation_names.update(BRIDGE_TOOL_NAMES)
+        except Exception:  # noqa: BLE001
+            pass
+        new_defs = [item for item in new_defs if _def_name(item) in presentation_names]
+        new_names.intersection_update(presentation_names)
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
@@ -122,7 +153,8 @@ def refresh_agent_mcp_tools(
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        executable_names=executable_names, staged_engine_names=staged_engine_names,
+        content_aware=content_aware, prefix_registered=prefix_registered)
     if added is None:
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order

@@ -33,7 +33,10 @@ vi.mock('@/hermes', () => ({
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
-  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
+  profileScopeKey: (scope?: null | string | { connectionId?: string | null; profile?: string | null }) =>
+    scope && typeof scope === 'object'
+      ? `${scope.connectionId ?? ''}\u0000${scope.profile ?? ''}`
+      : (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -44,9 +47,9 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
-  startManualLocalEndpoint: () => startManualLocalEndpoint(),
-  startManualOnboarding: () => startManualOnboarding(),
-  startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
+  startManualLocalEndpoint: (...args: unknown[]) => startManualLocalEndpoint(...args),
+  startManualOnboarding: (...args: unknown[]) => startManualOnboarding(...args),
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -86,7 +89,7 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings(scopeProfile?: string) {
+async function renderModelSettings(scopeProfile?: string | { connectionId: string; profile: string }) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
@@ -157,7 +160,7 @@ describe('ModelSettings', () => {
 
       fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-      expect(startManualLocalEndpoint).toHaveBeenCalledOnce()
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, undefined)
       expect(startManualOnboarding).not.toHaveBeenCalled()
       expect(startManualProviderOAuth).not.toHaveBeenCalled()
     }
@@ -171,7 +174,7 @@ describe('ModelSettings', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up provider' }))
 
-    expect(startManualOnboarding).toHaveBeenCalledOnce()
+    expect(startManualOnboarding).toHaveBeenCalledWith(undefined, undefined)
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualProviderOAuth).not.toHaveBeenCalled()
   })
@@ -194,9 +197,24 @@ describe('ModelSettings', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic')
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', undefined)
     expect(startManualLocalEndpoint).not.toHaveBeenCalled()
     expect(startManualOnboarding).not.toHaveBeenCalled()
+  })
+
+  it('hands provider setup the frozen gateway/profile owner', async () => {
+    const scope = { connectionId: 'remote-a', profile: 'research' }
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'anthropic', model: '' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        { name: 'Anthropic', slug: 'anthropic', models: [], authenticated: false, auth_type: 'oauth' }
+      ]
+    })
+
+    await renderModelSettings(scope)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Anthropic' }))
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('anthropic', scope)
   })
 
   it('replaces the selected provider and model when the active profile changes', async () => {

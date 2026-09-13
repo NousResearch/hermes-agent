@@ -57,11 +57,14 @@ def _claim(conn, tid, *, heartbeats=0, notes=False):
 def _reap_clean_exit(conn, tid, fake_pid):
     """Record ``rc=0`` for the task's dead worker and run one reaper pass.
 
-    Resolves ``hermes_cli.kanban_db`` fresh and uses that single module object
-    for the exit registry, the liveness patch AND the reaper: recording the exit
-    into one module object while reaping through another (stale) one makes
-    ``_classify_worker_exit`` return ``unknown``, silently turning a clean exit
-    into a plain crash.
+    Returns ``(crashed_ids, parked_ids)``. Resolves both modules fresh and reads
+    the park side channel off the SAME dispatch function object it called: a
+    full-suite run can reload the module, and comparing against a module-level
+    import would read ``_last_unreported_parked`` off a stale function object and
+    report "nothing parked" even though the park happened. The same reasoning
+    applies to the exit registry / liveness patch below (recording the exit into
+    one module object while reaping through another makes ``_classify_worker_exit``
+    return ``unknown``, silently turning a clean exit into a plain crash).
     """
     import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_dispatch as _kbd
@@ -71,9 +74,10 @@ def _reap_clean_exit(conn, tid, fake_pid):
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda p: False
     try:
-        return _kbd.detect_crashed_workers(conn)
+        crashed = _kbd.detect_crashed_workers(conn)
     finally:
         _kb._pid_alive = original_alive
+    return crashed, list(getattr(_kbd.detect_crashed_workers, "_last_unreported_parked", []))
 
 
 def _events(conn, tid, kind):
@@ -103,7 +107,7 @@ def test_clean_exit_with_checkpoint_parks_card_instead_of_re_running(kanban_home
                  "(base development)" % run_id,
         )
 
-        crashed = _reap_clean_exit(conn, tid, 991100)
+        crashed, parked = _reap_clean_exit(conn, tid, 991100)
 
         task = kb.get_task(conn, tid)
         # (1) visible anomaly, never done, never re-run from scratch
@@ -111,7 +115,7 @@ def test_clean_exit_with_checkpoint_parks_card_instead_of_re_running(kanban_home
         assert task.status != "done"
         assert task.block_kind == "transient"
         assert tid not in crashed, "a parked unreported exit is not a crash"
-        assert getattr(kbd.detect_crashed_workers, "_last_unreported_parked", []) == [tid]
+        assert parked == [tid]
 
         # (2) the run is ``unreported`` — not a plain crash, not completed
         run = _latest_run(conn, tid)

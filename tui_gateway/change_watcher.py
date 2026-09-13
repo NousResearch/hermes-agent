@@ -115,18 +115,70 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-def _sessions_sig():
-    """Newest mtime across state.db + WAL: the one thing messaging-gateway turns and cron runs
-    all move. Served sibling profile homes are probed too, else a routed Bot Chat never refreshes.
+# Last successful SQL fingerprint per profile home. A locked/busy probe must
+# reuse this instead of falling back to mtime — sql↔mtime flip-flops look like
+# a session change and re-storm Desktop.
+_sessions_sql_cache: dict[str, tuple] = {}
 
-    signal. Messaging-gateway turns and cron runs are written by OTHER processes that never touch this
-    gateway's transports; the shared SQLite file is the one thing they all move (#58671). A backend serving
-    several profiles owns one store per profile, so every served sibling home is
+
+def _sessions_store_sig(root: Path):
+    """Session-table fingerprint for one profile home.
+
+    ``state.db`` mtime is the wrong signal: gateway heartbeats, FTS, leases,
+    and ``last_activity_at`` heartbeats rewrite the same file without a
+    conversation actually appearing/disappearing. Desktop then rebuilds the
+    open chat (including the composer) on each ``sessions.changed`` tick.
+    Ignore activity timestamps; only count/title/pin/archive/message-count
+    and start/end bounds. Fake/non-sqlite files (tests) return None so the
+    caller can fall back to mtime.
     """
-    return _newest_mtime_ns(
-        root / name
-        for root in (_watcher_home(), *_served_profile_homes)
-        for name in ("state.db", "state.db-wal"))
+    db = root / "state.db"
+    if not db.is_file():
+        return None
+    key = str(root)
+    try:
+        # Import here: bind_module rebinds this function onto server.py globals,
+        # which do not include change_watcher's module imports.
+        import sqlite3 as _sqlite3
+        con = _sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2)
+        try:
+            con.execute("PRAGMA query_only=ON")
+            row = con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(message_count), 0), "
+                "MAX(started_at), MAX(ended_at), "
+                "COALESCE(SUM(LENGTH(COALESCE(title, ''))), 0), "
+                "COALESCE(SUM(pinned), 0), COALESCE(SUM(archived), 0), "
+                "COALESCE(SUM(hidden), 0) FROM sessions"
+            ).fetchone()
+        finally:
+            con.close()
+    except Exception:
+        return _sessions_sql_cache.get(key)
+    if row is None:
+        return _sessions_sql_cache.get(key)
+    sig = tuple(row)
+    _sessions_sql_cache[key] = sig
+    return sig
+
+
+def _sessions_sig():
+    """Per-home session fingerprint. Served sibling profile homes are probed too,
+    else a routed Bot Chat never refreshes (#99333).
+
+    Messaging-gateway turns and cron runs are written by OTHER processes that never
+    touch this gateway's transports; the shared SQLite file is the one thing they
+    all move (#58671). A backend serving several profiles owns one store per
+    profile. Heartbeats in the same file must not count as a session change.
+    """
+    parts = []
+    for root in (_watcher_home(), *_served_profile_homes):
+        sql_sig = _sessions_store_sig(root)
+        if sql_sig is not None:
+            parts.append((str(root), "sql", sql_sig))
+        else:
+            parts.append((str(root), "mtime", _newest_mtime_ns(
+                root / name for name in ("state.db", "state.db-wal"))))
+    return tuple(parts)
 
 
 def _pairing_sig():

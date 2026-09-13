@@ -8,11 +8,32 @@ and the pet signature only moves for a *renderable* pet.
 """
 
 import os
+import sqlite3
 import time
 
 import pytest
 
 from tui_gateway import server
+
+
+def _write_sessions_db(path, rows):
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS sessions ("
+            "id TEXT PRIMARY KEY, last_activity_at REAL, started_at REAL, ended_at REAL, "
+            "message_count INTEGER, title TEXT, pinned INTEGER DEFAULT 0, "
+            "archived INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0)"
+        )
+        con.execute("DELETE FROM sessions")
+        con.executemany(
+            "INSERT INTO sessions(id, last_activity_at, started_at, ended_at, "
+            "message_count, title, pinned, archived, hidden) VALUES (?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 @pytest.fixture()
@@ -26,6 +47,7 @@ def watcher_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_change_checked_at", {})
     monkeypatch.setattr(server, "_change_broadcast_at", {})
     monkeypatch.setattr(server, "_bot_relay_outbox_seen", 0)
+    monkeypatch.setattr(server, "_sessions_sql_cache", {}, raising=False)
 
     events = []
     monkeypatch.setattr(
@@ -62,6 +84,62 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     server._broadcast_watched_changes(now=10.0)
 
     assert ("sessions.changed", {}) in events
+
+
+def test_activity_heartbeat_does_not_broadcast_sessions_changed(watcher_home):
+    """CLI/agent heartbeats rewrite last_activity_at in the same state.db.
+    That must not look like a new/changed conversation — Desktop remounts the
+    open composer on each sessions.changed tick."""
+    home, events = watcher_home
+    db = home / "state.db"
+    _write_sessions_db(
+        db,
+        [("s1", 1.0, 1.0, None, 11, "hello", 0, 0, 0)],
+    )
+    server._broadcast_watched_changes(now=0.0)
+
+    _write_sessions_db(
+        db,
+        [("s1", 99.0, 1.0, None, 11, "hello", 0, 0, 0)],
+    )
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) not in events
+
+
+def test_message_count_change_broadcasts_sessions_changed(watcher_home):
+    home, events = watcher_home
+    db = home / "state.db"
+    _write_sessions_db(
+        db,
+        [("s1", 1.0, 1.0, None, 11, "hello", 0, 0, 0)],
+    )
+    server._broadcast_watched_changes(now=0.0)
+
+    _write_sessions_db(
+        db,
+        [("s1", 1.0, 1.0, None, 12, "hello", 0, 0, 0)],
+    )
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) in events
+
+
+def test_sql_probe_stays_on_cache_when_db_is_busy(watcher_home):
+    """A locked/non-sqlite moment after a successful SQL probe must not flip
+    to mtime — that flip-flop storms sessions.changed every 2s."""
+    home, events = watcher_home
+    db = home / "state.db"
+    _write_sessions_db(
+        db,
+        [("s1", 1.0, 1.0, None, 1, "hello", 0, 0, 0)],
+    )
+    server._broadcast_watched_changes(now=0.0)
+
+    db.write_text("not-sqlite")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) not in events
 
 
 def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, monkeypatch):

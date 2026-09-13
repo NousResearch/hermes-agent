@@ -175,6 +175,15 @@ def _accepts_thinking_disable(model: str) -> bool:
     400 on it and keep the omit behavior. Legacy manual-thinking models are opt-in via
     budget_tokens, so omission is already off. Scoped to Claude: Kimi's documented disable is
     omission, and sending it a new parameter on the strength of Claude's contract is a guess."""
+    if _model_matches(model, ("qwen3.8",)):
+        # LOCAL-PROVEN: the Qwen3.8 family behind Anthropic-compatible endpoints
+        # (DashScope token-plan and mirrors) accepts an explicit
+        # ``thinking: {"type": "disabled"}`` cleanly — probed against both
+        # qwen3.8-flash and qwen3.8-max; tool_use is unaffected. Without the
+        # parameter these models think server-side by default, so a caller that
+        # asks for no reasoning silently pays full thinking-token cost (the
+        # request shape offers no cheaper off-switch). Verified on v0.21.2.
+        return True
     return (
         _is_claude_model(model)
         and _supports_adaptive_thinking(model)

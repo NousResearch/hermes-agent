@@ -75,7 +75,7 @@ function installBridge() {
 }
 
 function resetStore() {
-  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
 }
 
 // Zero the bridge refcount so a leaked subscription can't bleed between tests.
@@ -268,7 +268,7 @@ describe('find-in-page store', () => {
     plantSurface()
     openFindBar()
 
-    expect($findInPage.get()).toEqual({ active: true, query: '', matchOrdinal: 0, matchCount: 0 })
+    expect($findInPage.get()).toEqual({ active: true, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
   })
 
   it('closing clears state and tears down the scoped highlights', () => {
@@ -299,6 +299,44 @@ describe('find-in-page store', () => {
     // No thrown exception, no doubled DOM churn — the early return in
     // closeFindBar short-circuits when the bar is already inactive.
     expect($findInPage.get().active).toBe(false)
+  })
+
+  it('calling openFindBar while already active bumps focusRequest', () => {
+    plantSurface()
+    openFindBar()
+    expect($findInPage.get().focusRequest).toBe(0)
+
+    openFindBar()
+    expect($findInPage.get().focusRequest).toBe(1)
+    expect($findInPage.get().active).toBe(true)
+
+    openFindBar()
+    expect($findInPage.get().focusRequest).toBe(2)
+  })
+
+  it('re-focus preserves the existing query', () => {
+    const surface = plantSurface()
+    surface.textContent = 'needle haystack'
+    openFindBar()
+    setFindQuery('needle')
+    expect($findInPage.get().query).toBe('needle')
+
+    // Simulate clicking away and pressing ⌘F again.
+    openFindBar()
+    expect($findInPage.get().query).toBe('needle')
+    expect($findInPage.get().focusRequest).toBe(1)
+  })
+
+  it('close then reopen resets focusRequest to 0', () => {
+    plantSurface()
+    openFindBar()
+    openFindBar()
+    expect($findInPage.get().focusRequest).toBe(1)
+
+    closeFindBar()
+    openFindBar()
+    expect($findInPage.get().focusRequest).toBe(0)
+    expect($findInPage.get().active).toBe(true)
   })
 
   it('a fresh query wraps matches and counts them', () => {
@@ -646,7 +684,7 @@ describe('FindBar', () => {
 
     // Counter appears once a query + results exist.
     expect(screen.queryByText('3/12')).toBeNull()
-    actStore(() => $findInPage.set({ active: true, query: 'two', matchOrdinal: 1, matchCount: 1 }))
+    actStore(() => $findInPage.set({ active: true, query: 'two', matchOrdinal: 1, matchCount: 1, focusRequest: 0 }))
     await waitFor(() => expect(screen.getByText('1/1')).toBeTruthy())
   })
 
@@ -658,6 +696,28 @@ describe('FindBar', () => {
     const input = await screen.findByRole('searchbox', { name: /find in page/i })
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
     await waitFor(() => expect(document.activeElement).toBe(input))
+  })
+
+  it('selects existing text on re-focus (⌘F while bar is already open)', async () => {
+    const surface = plantSurface()
+    surface.textContent = 'needle haystack'
+    openFindBar()
+    renderFindBar()
+
+    const input = await screen.findByRole('searchbox', { name: /find in page/i }) as HTMLInputElement
+    await waitFor(() => expect(document.activeElement).toBe(input))
+
+    // Type a query so there's text to select.
+    fireEvent.change(input, { target: { value: 'needle' } })
+    // Click away — simulate losing focus.
+    input.blur()
+    expect(document.activeElement).not.toBe(input)
+
+    // Press ⌘F again — should re-focus and select all text.
+    openFindBar()
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe('needle'.length)
   })
 
   it('debounces typing into a single scoped find', async () => {
@@ -749,8 +809,7 @@ describe('FindBar', () => {
   it('Enter dispatches next and Shift+Enter dispatches previous', () => {
     const surface = plantSurface()
     surface.textContent = 'needle needle needle'
-    $findInPage.set({ active: true, query: 'needle', matchOrdinal: 1, matchCount: 3 })
-    // Manually replay the open+query path so the marks exist for stepping.
+    // Open the bar fresh so the scope is captured against the planted surface.
     openFindBar()
     setFindQuery('needle')
 
@@ -903,7 +962,7 @@ describe('FindBar', () => {
     // Bar gone, state reset, and the highlights stripped — stale marks
     // must not survive a session switch.
     await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
-    expect($findInPage.get()).toEqual({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+    expect($findInPage.get()).toEqual({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
     expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
   })
 

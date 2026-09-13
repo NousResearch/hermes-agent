@@ -113,7 +113,7 @@ afterEach(() => {
     visible: true
   })
   $pendingConnectionId.set(null)
-  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
   isAuxiliaryWindow.mockReturnValue(false)
   isPeerInstanceWindow.mockReturnValue(false)
 })
@@ -310,7 +310,7 @@ describe('ConnectionSwitcher', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     expect(globalThis.document.activeElement).toBe(result)
 
-    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0 })
+    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
     result.focus()
     fireEvent.keyDown(result, { key: 'f', metaKey: true })
     expect(globalThis.document.activeElement).toBe(search)

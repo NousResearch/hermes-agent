@@ -828,6 +828,11 @@ class GatewayAdapterLifecycleMixin:
         are refused here — the only point seeing every profile's credentials together."""
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         if not self._multiplex_on():
+            # gateway_state.json outlives its writer. A standalone process must invalidate the
+            # previous multiplexer's served set or profile lifecycle commands keep exiting 78.
+            with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
+                from gateway.status import write_runtime_status
+                write_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name

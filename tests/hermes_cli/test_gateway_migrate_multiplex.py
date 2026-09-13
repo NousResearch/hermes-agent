@@ -8,12 +8,14 @@ fingerprint and port-binding predicates, so the tests assert verdict → effect,
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import hermes_constants
 from hermes_cli import gateway_migrate as gm
@@ -52,11 +54,15 @@ def fleet(tmp_path, monkeypatch):
         elif verb == "install":
             state.services[name] = (kind, system)
         elif verb in ("start", "restart") and name == "default":
-            # What the real multiplexer does at startup: record the served set in the default home.
+            # Startup always replaces the prior process's served set, including standalone mode.
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
             (root / "gateway_state.json").write_text(json.dumps({
                 "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
-                "served_profiles": ["default", "coder", "ops"],
+                "served_profiles": (
+                    ["default", "coder", "ops"]
+                    if (yaml.safe_load((root / "config.yaml").read_text()) or {}).get("gateway", {}).get("multiplex_profiles")
+                    else []
+                ),
             }))
 
     monkeypatch.setattr(gm, "_installed_service", lambda home: state.services.get(_name(home)))
@@ -94,7 +100,27 @@ def test_dry_run_and_blocked_preflight_change_nothing(fleet, capsys):
     assert "nothing will be changed" in capsys.readouterr().out
 
 
-def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
+def test_standalone_dry_run_previews_manifest_without_changes(fleet, capsys):
+    manifest = {
+        "version": 1,
+        "flag_was": False,
+        "default": {"profile": "default", "home": str(fleet.root), "service": None},
+        "secondaries": [{
+            "profile": "coder", "home": str(fleet.root / "profiles/coder"),
+            "pid": 4101, "service": {"kind": "systemd", "system": False},
+        }],
+    }
+    gm._write_manifest(fleet.root, manifest)
+    before = (fleet.root / gm.MANIFEST_NAME).read_bytes()
+
+    gm.cmd_migrate(SimpleNamespace(standalone=True, dry_run=True))
+
+    assert "Rollback plan (dry run" in capsys.readouterr().out
+    assert (fleet.root / gm.MANIFEST_NAME).read_bytes() == before
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
+
+
+def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys, monkeypatch):
     plan = gm.build_migration_plan()
     assert gm.apply_migration(plan, served_wait=5.0) is True
     manifest = json.loads((fleet.root / gm.MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -111,11 +137,27 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert again.already_multiplexed and gm.apply_migration(again) is True
 
     fleet.ops.clear()
+
+    def _graceful_restart(home):
+        # The managed gateway accepts its own deferred restart only after every secondary is restored.
+        assert [op for op in fleet.ops if op[0] != "default"] == [
+            ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
+        fleet.ops.append(("default", "restart-request"))
+        return {"pausing": True}
+
+    monkeypatch.setattr("gateway.control_socket.pause_gateway_for_update", _graceful_restart)
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False
     assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
+    assert fleet.ops[-1] == ("default", "restart-request")
+
+    from gateway.run_adapters import GatewayAdapterLifecycleMixin
+    standalone = object.__new__(GatewayAdapterLifecycleMixin)
+    standalone._multiplex_on = lambda: False
+    asyncio.run(standalone._start_secondary_profile_adapters())
+    assert json.loads((fleet.root / "gateway_state.json").read_text())["served_profiles"] == []
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
 
 

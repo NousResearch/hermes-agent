@@ -451,6 +451,32 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     return lines
 
 
+def format_rollback_plan(default_home: Path) -> list[str]:
+    """Describe the recorded standalone rollback without changing persistent state."""
+    path = _manifest_path(default_home)
+    manifest = _read_manifest(default_home)
+    lines = [
+        "Rollback plan (dry run — nothing changed)",
+        f"  default home: {default_home}",
+        "",
+    ]
+    if manifest is None:
+        return [*lines, f"  ✗ No migration manifest at {path}; nothing to roll back."]
+    lines.append("  Steps:")
+    for rec in manifest.get("secondaries", []):
+        service = rec.get("service") or {}
+        if service:
+            lines.append(f"  - {rec['profile']}: reinstall and start its {service['kind']} service")
+        elif rec.get("pid"):
+            lines.append(f"  - {rec['profile']}: start its standalone gateway (detached)")
+    lines.extend([
+        "  - default: restore gateway.multiplex_profiles",
+        "  - default: restart the gateway after secondary services are restored",
+        f"  - remove {path} after every step succeeds",
+    ])
+    return lines
+
+
 def format_update_warning(plan: MigrationPlan) -> list[str]:
     return [
         "⚠ Your profiles each run their own gateway. A single multiplexed gateway is the recommended",
@@ -516,6 +542,16 @@ def _restart_default(plan_default: ProfileGateway, target: Optional[tuple[str, b
     return f"{verb} the default gateway (detached; no service manager was in use)"
 
 
+def _restart_default_after_rollback(default_gw: ProfileGateway, default_home: Path) -> str:
+    """Restart last, asking a managed live gateway to drain itself so it cannot kill this CLI."""
+    if default_gw.service is not None and default_gw.pid is not None:
+        from gateway.control_socket import pause_gateway_for_update
+        response = pause_gateway_for_update(default_home)
+        if response and (response.get("pausing") or response.get("already_stopping")):
+            return "requested a graceful default gateway restart via its control socket"
+    return _restart_default(default_gw, None, default_home)
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
     """Stop/uninstall every secondary gateway, flip the flag, bring up the multiplexer, verify.
     Returns True when the multiplexer verifiably serves every profile."""
@@ -577,8 +613,6 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         "default", default_home, pid=_live_gateway_pid(default_home),
         service=(default_service["kind"], bool(default_service.get("system"))) if default_service else _installed_service(default_home),
     )
-    if default_gw.has_gateway:
-        print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
     ok = True
     for rec in manifest.get("secondaries", []):
         home = Path(rec["home"])
@@ -599,6 +633,12 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         except Exception as exc:
             ok = False
             print(f"  ✗ {name}: {exc}")
+    if ok and default_gw.has_gateway:
+        try:
+            print(f"  ✓ {_restart_default_after_rollback(default_gw, default_home)}")
+        except Exception as exc:
+            ok = False
+            print(f"  ✗ default: {exc}")
     if ok:
         _manifest_path(default_home).unlink(missing_ok=True)
         print("✓ Rolled back to per-profile gateways.")
@@ -623,6 +663,9 @@ def _host_supports_migration() -> Optional[str]:
 def cmd_migrate(args) -> None:
     """``hermes gateway migrate [--multiplex|--standalone] [--dry-run] [--yes]``."""
     if getattr(args, "standalone", False):
+        if getattr(args, "dry_run", False):
+            _print(format_rollback_plan(_default_home()))
+            return
         sys.exit(0 if rollback_migration() else 1)
     reason = _host_supports_migration()
     if reason:

@@ -23,6 +23,13 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent
 
 
+def _set_test_home(monkeypatch, home):
+    """Set the home variables used by native POSIX and Windows path lookup."""
+    monkeypatch.setenv("HOME", str(home))
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
     import gateway.platforms.base as base
@@ -560,7 +567,7 @@ class TestMediaDeliveryPathValidation:
         ssh_dir.mkdir(parents=True)
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -623,7 +630,7 @@ class TestMediaDeliveryDefaultMode:
         (hermes_dir / "mcp-tokens").mkdir(parents=True)
         secret = hermes_dir / rel
         secret.write_text('{"access_token": "live-bearer-abc123"}')
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_HOME",
             hermes_dir,
@@ -650,7 +657,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_dir.mkdir(parents=True)
         token = hermes_dir / "google_token.json"
         token.write_text('{"access_token": "***", "refresh_token": "***"}')
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
@@ -672,7 +679,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_dir.mkdir(parents=True)
         artifact = hermes_dir / "adhoc_report.pdf"
         artifact.write_bytes(b"%PDF-1.4")  # fresh mtime
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
@@ -767,7 +774,7 @@ class TestMediaDeliveryDefaultMode:
         workdir.mkdir(parents=True)
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -802,7 +809,7 @@ class TestMediaDeliveryDefaultMode:
         # $HOME is NOT the denied prefix (mirrors HOME=/opt/data/home).
         fake_home = tmp_path / "opt" / "data" / "home"
         fake_home.mkdir(parents=True)
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(denied_root),),
@@ -832,7 +839,7 @@ class TestMediaDeliveryDefaultMode:
         workdir.mkdir()
         link = workdir / "innocent.pdf"
         link.symlink_to(key)
-        monkeypatch.setenv("HOME", str(fake_home))
+        _set_test_home(monkeypatch, fake_home)
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(fake_home),),
@@ -844,16 +851,20 @@ class TestMediaDeliveryDefaultMode:
 class TestDockerContainerMediaPathTranslation:
     """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
 
-    def test_configured_workspace_mount_translates(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("forward_slash_host", [False, True])
+    def test_configured_workspace_mount_translates(
+        self, tmp_path, monkeypatch, forward_slash_host
+    ):
         import json
 
         host_ws = tmp_path / "host-ws"
         host_ws.mkdir()
         media = host_ws / "shot.png"
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        host_spec = host_ws.as_posix() if forward_slash_host else str(host_ws)
         monkeypatch.setenv(
             "TERMINAL_DOCKER_VOLUMES",
-            json.dumps([f"{host_ws}:/workspace"]),
+            json.dumps([f"{host_spec}:/workspace"]),
         )
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
 
@@ -953,11 +964,22 @@ class TestDockerContainerMediaPathTranslation:
             "/root/.hermes/cache/images/generated.png"
         ) == str(media.resolve())
 
-    def test_container_credential_path_never_translates_through_home(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "container_path",
+        [
+            "/root/.hermes/auth.json",
+            "/root/x/../.hermes/auth.json",
+        ],
+    )
+    @pytest.mark.parametrize("strict_mode", [False, True])
+    def test_container_credential_path_never_translates_through_home(
+        self, tmp_path, monkeypatch, container_path, strict_mode
+    ):
         """/root/.hermes/* outside a cache mount (the sandbox's credential
         surface: .env, auth.json) must NOT resolve through the persistent
-        home mount — those host-side copies sit outside the credential
-        denylist prefixes and would otherwise deliver."""
+        home mount — including lexical dot-segment spellings. Those host-side
+        copies sit outside the credential denylist prefixes and would
+        otherwise deliver, even under strict-mode recency fallback."""
         sandbox = tmp_path / "sandboxes"
         home = sandbox / "docker" / "default" / "home"
         secret = home / ".hermes"
@@ -970,10 +992,13 @@ class TestDockerContainerMediaPathTranslation:
         monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
         monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
         monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        if strict_mode:
+            monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+            monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        else:
+            monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
 
-        assert BasePlatformAdapter.validate_media_delivery_path(
-            "/root/.hermes/auth.json"
-        ) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(container_path) is None
 
 
 # ---------------------------------------------------------------------------

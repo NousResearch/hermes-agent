@@ -738,6 +738,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
 
     durable[name] = {
       log: room.log,
+      reviewReceipts: room.reviewReceipts || [],
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
       stranded: room.stranded || {},
@@ -1332,6 +1333,7 @@ export function updateGroupChat(
 
       durable[name] = {
         log: room.log,
+        reviewReceipts: room.reviewReceipts || [],
         watermarks: room.watermarks,
         sessions: room.sessions || {},
         sessionOwners: room.sessionOwners || {},

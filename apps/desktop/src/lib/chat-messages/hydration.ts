@@ -5,6 +5,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
 import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
+import { reviewSummaryMessage } from './review-summary'
 import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
@@ -266,6 +267,27 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (message.display_kind === 'review_summary') {
+      flushPendingTools(index)
+      activeAssistantIndex = null
+
+      const receipt = reviewSummaryMessage(
+        {
+          ...parseDisplayMetadata(message.display_metadata),
+          text: message.content ?? message.text,
+          timestamp: message.timestamp,
+          row_id: message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+        },
+        Date.now() / 1000
+      )
+
+      if (receipt && !result.some(row => row.id === receipt.id)) {
+        result.push(receipt)
+      }
+
+      return
+    }
+
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 

@@ -779,7 +779,7 @@ export type GatewayEvent =
     }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload: { question?: string; task_id: string; text: string }; session_id?: string; type: 'btw.complete' }
-  | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
+  | { payload?: { text?: string; review_id?: string; timestamp?: number }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.thinking' }

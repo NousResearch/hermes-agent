@@ -93,6 +93,8 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
+import { watchGroupReviewReceipts } from './group-review-receipts'
+import { GroupReviewRow } from './group-review-row'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
@@ -465,6 +467,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     running: false
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- owns external gateway subscriptions/route leases while this room is visible
+  useEffect(() => (visible ? watchGroupReviewReceipts(group, members) : undefined), [group, members, visible])
+
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
@@ -555,7 +560,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         block: 'end'
       })
     }
-  }, [room.log.length, room.running])
+  }, [room.log.length, room.reviewReceipts?.length, room.running])
 
   // Retained-pane reopen (#89835 follow-up): a hot-mounted room pane stays
   // mounted while another workspace tab is active, so returning to it never
@@ -1044,7 +1049,16 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const threadEnds = new Map<string, number>()
   room.log.forEach((entry, index) => threadEnds.set(groupThreadOf(entry), index))
   const logChildren: ReactNode[] = []
+  const receipts = [...(room.reviewReceipts || [])].sort((a, b) => a.at - b.at)
+  let receiptIndex = 0
+  const appendReceiptsBefore = (at: number) => {
+    while (receiptIndex < receipts.length && receipts[receiptIndex].at <= at) {
+      const receipt = receipts[receiptIndex++]
+      logChildren.push(<GroupReviewRow key={`review:${receipt.id}`} receipt={receipt} />)
+    }
+  }
   room.log.forEach((entry, index) => {
+    appendReceiptsBefore(entry.at)
     logChildren.push(renderEntry(entry, index))
     const id = groupThreadOf(entry)
 
@@ -1100,6 +1114,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       )
     )
   })
+
+  appendReceiptsBefore(Infinity)
 
   return (
     <div

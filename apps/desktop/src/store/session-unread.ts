@@ -161,10 +161,16 @@ const profileKeyForRow = (row: SessionInfo): string => normalizeProfileKey(row.p
  *  profile's backend is its own namespace, so two profiles can hold the same
  *  id; a tie breaks toward the live gateway, since both opening a session and
  *  running one swap the gateway onto that session's profile. */
-function resolveLoadedRow(storedSessionId: string): SessionInfo | undefined {
+function resolveLoadedRow(storedSessionId: string, profileHint?: null | string): SessionInfo | undefined {
   const matches = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).filter(row =>
     sessionMatchesStoredId(row, storedSessionId)
   )
+
+  // An explicit owner is stronger than an unrelated loaded row with the same
+  // id. In particular, a hidden B session must not adopt A's visible row.
+  if (profileHint?.trim()) {
+    return matches.find(row => profileKeyForRow(row) === normalizeProfileKey(profileHint))
+  }
 
   if (matches.length < 2) {
     return matches[0]
@@ -214,11 +220,16 @@ function setMarkerBucket(profile: string, ids: readonly string[]): void {
 export function markSessionUnreadFinished(storedSessionId: string, profileHint?: null | string): void {
   const current = $unreadFinishedSessionIds.get()
 
-  if (!current.includes(storedSessionId)) {
+  // The transient id list cannot represent same-id cross-profile sessions.
+  // Explicit foreign owners use the scoped durable marker below instead.
+  if (
+    (!profileHint || normalizeProfileKey(profileHint) === normalizeProfileKey($activeGatewayProfile.get())) &&
+    !current.includes(storedSessionId)
+  ) {
     $unreadFinishedSessionIds.set([...current, storedSessionId])
   }
 
-  const row = resolveLoadedRow(storedSessionId)
+  const row = resolveLoadedRow(storedSessionId, profileHint)
   const profile = row ? profileKeyForRow(row) : unlistedProfile(profileHint)
   const durableId = row ? sessionPinId(row) : storedSessionId
   const bucket = $unreadFinishedMarkers.get()[profile] ?? []

@@ -1,4 +1,5 @@
 import { chatMessageText } from './parts'
+import { preserveNewerReviewSummaries } from './review-summary'
 import type { ChatMessage, ChatMessagePart } from './types'
 
 const validTimelineBoundary = (value: unknown): value is number =>
@@ -120,8 +121,13 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
 
 export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
-  currentMessages: ChatMessage[]
+  currentMessages: ChatMessage[],
+  reviewSnapshot?: ChatMessage[]
 ): ChatMessage[] {
+  if (reviewSnapshot) {
+    nextMessages = preserveNewerReviewSummaries(nextMessages, currentMessages, reviewSnapshot)
+  }
+
   nextMessages = reconcileLocalAssistantTimeline(nextMessages, currentMessages)
   const localById = new Map(currentMessages.map(message => [message.id, message]))
 

@@ -12,12 +12,13 @@ fork. Idle truth is the supervisor's /slots held for a settle window.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,12 @@ class _PendingReview:
     session_key: str
     kwargs: Dict[str, Any]
     enqueued_at: float
+    context: contextvars.Context = field(default_factory=contextvars.copy_context)
+
+    def __post_init__(self) -> None:
+        from agent.review_summary import REVIEW_SOURCE_SESSION_ID
+        if not self.context.get(REVIEW_SOURCE_SESSION_ID):
+            self.context.run(REVIEW_SOURCE_SESSION_ID.set, getattr(self.agent, "session_id", None))
 
 
 class ReviewIdleQueue:
@@ -149,7 +156,7 @@ class ReviewIdleQueue:
             try:
                 item = self._pop_dispatchable()
                 if item is not None:
-                    if not self._still_enabled(item):
+                    if not item.context.run(self._still_enabled, item):
                         logger.info(
                             "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
                             item.session_key[-12:])
@@ -157,7 +164,7 @@ class ReviewIdleQueue:
                     logger.info(
                         "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
                         item.session_key[-12:], self._now() - item.enqueued_at, self.pending_count())
-                    item.agent._spawn_background_review_now(**item.kwargs)
+                    item.context.run(item.agent._spawn_background_review_now, **item.kwargs)
             except Exception:  # noqa: BLE001 — dispatcher must survive anything
                 logger.warning("Deferred review dispatch failed", exc_info=True)
             if item is None:

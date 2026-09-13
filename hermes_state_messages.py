@@ -606,7 +606,7 @@ class SessionMessagesMixin:
                 bound = watermark is not None
                 rewind_ids = [int(row["id"]) for row in conn.execute(
                     f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
-                    "ORDER BY id DESC LIMIT ?",
+                    "AND COALESCE(display_kind, '') != 'review_summary' ORDER BY id DESC LIMIT ?",
                     (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
             rewind_ids += tail_ids
             if rewind_ids:
@@ -818,6 +818,25 @@ class SessionMessagesMixin:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
+    def get_review_summaries(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Recent display-only review receipts across compression, never sibling forks.
+
+        Filter before LIMIT so a long tool transcript cannot crowd out the receipts.
+        Compaction-archived receipts remain visible; explicit rewind rows do not.
+        """
+        ids = self.get_compression_lineage(session_id) or [session_id]
+        limit = min(50, max(0, int(limit)))
+        rows = []
+        for start in range(0, len(ids), 900):
+            chunk = ids[start:start + 900]
+            rows.extend(self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(chunk)}) "
+                "AND display_kind = 'review_summary' AND (active = 1 OR compacted = 1) "
+                "ORDER BY id DESC LIMIT ?", [*chunk, limit]))
+        rows.sort(key=lambda row: row["id"], reverse=True)
+        return [self._row_to_message_dict(row, warn_context="get_review_summaries", summary_flag=True)
+                for row in reversed(rows[:limit])]
+
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
         ids = [s for s in session_ids if s]
@@ -913,7 +932,7 @@ class SessionMessagesMixin:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
-            include_summary_markers=repair_alternation)
+            include_summary_markers=repair_alternation, include_display_events=include_compacted)
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> Tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation
@@ -939,7 +958,8 @@ class SessionMessagesMixin:
 
     def _rows_to_conversation(self, rows, *, session_id: str, include_ancestors: bool, repair_alternation: bool,
                               include_row_ids: bool = False,
-                              include_summary_markers: bool = False) -> List[Dict[str, Any]]:
+                              include_summary_markers: bool = False,
+                              include_display_events: bool = False) -> List[Dict[str, Any]]:
         """Decode fetched rows (ordered by id, pre-filtered) into OpenAI format, stable key order. Every dict is
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
         transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
@@ -948,6 +968,9 @@ class SessionMessagesMixin:
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         for row in rows:
+            # Receipts describe completed writes; they are not instructions or model turns.
+            if row["display_kind"] == "review_summary" and not include_display_events:
+                continue
             content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
@@ -1020,7 +1043,7 @@ class SessionMessagesMixin:
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(
             self._dedupe_display_generations(rows), session_id=session_id,
-            include_ancestors=True, repair_alternation=False, include_row_ids=True)
+            include_ancestors=True, repair_alternation=False, include_row_ids=True, include_display_events=True)
         return model_history, display_history
 
     def _resume_lineage_ids(self, session_id: str) -> List[str]:
@@ -1074,7 +1097,7 @@ class SessionMessagesMixin:
         if not ancestor_ids:
             return []
         lineage = self._rows_to_conversation(
-            rows, session_id=session_id, include_ancestors=True, repair_alternation=False, include_row_ids=True)
+            rows, session_id=session_id, include_ancestors=True, repair_alternation=False, include_row_ids=True, include_display_events=True)
         return [{k: v for k, v in message.items() if k != "_row_id"}
             for message in lineage if message.get("_row_id") in ancestor_ids]
 

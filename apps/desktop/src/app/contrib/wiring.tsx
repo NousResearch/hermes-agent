@@ -444,6 +444,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
+          const messagesBeforeRead = sessionStateByRuntimeIdRef.current.get(runtimeSessionId)?.messages ?? []
           const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
           const messages = toChatMessages(latest.messages)
           updateSessionState(
@@ -454,7 +455,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               // onto any backfilled older pages instead of dropping them.
               messages: preserveLocalAssistantErrors(
                 graftRefreshedTailOntoBackfill(messages, state.messages),
-                state.messages
+                state.messages,
+                messagesBeforeRead
               )
             }),
             storedSessionId

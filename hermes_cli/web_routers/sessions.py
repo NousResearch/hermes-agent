@@ -489,6 +489,18 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
     return _with_db(profile, _detail, read_only=True)
 
 
+@manage_router.get("/api/sessions/{session_id}/review-summaries")
+async def get_session_review_summaries(session_id: str, profile: Optional[str] = None):
+    """Display-only receipts. Read the owning profile without creating/resuming an agent."""
+    def _read(db):
+        sid = _resolve_session_id(db, session_id)
+        if not sid or not db.get_session(sid):
+            raise HTTPException(status_code=404, detail=_NOT_FOUND)
+        sid = db.resolve_resume_session_id(sid)
+        return {"session_id": sid, "messages": db.get_review_summaries(sid)}
+    return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
+
+
 @manage_router.get("/api/sessions/{session_id}/latest-descendant")
 async def get_session_latest_descendant(session_id: str, profile: Optional[str] = None):
     latest, path = await asyncio.to_thread(

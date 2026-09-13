@@ -73,6 +73,8 @@ def _optional_lock(agent: Any, attr: str) -> Iterator[None]:
 def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
     run = _BackgroundReviewRun()
+    from agent.review_summary import REVIEW_SOURCE_SESSION_ID
+    run.source_session_id = REVIEW_SOURCE_SESSION_ID.get() or getattr(agent, "session_id", None)
     try:
         lock = getattr(agent, "_background_review_lock", None)
         if lock is None:
@@ -1077,12 +1079,11 @@ def _run_review_fork(
     st.review_agent = None
 
 
-def _publish_review_summary(agent: Any, actions: List[str]) -> None:
-    summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
-    if agent.background_review_callback:
-        with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+def _publish_review_summary(
+    agent: Any, actions: List[str], *, source_session_id: Optional[str] = None,
+) -> None:
+    from agent.review_summary import publish_review_summary
+    publish_review_summary(agent, actions, source_session_id=source_session_id)
 
 
 def _run_review_in_thread(
@@ -1097,6 +1098,8 @@ def _run_review_in_thread(
 
     See #84423.
     """
+    # Completion can overlap a new live turn: never attribute the receipt to its session.
+    source_session_id = getattr(review_run, "source_session_id", None) or getattr(agent, "session_id", None)
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
@@ -1150,7 +1153,7 @@ def _run_review_in_thread(
             actions = []
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
-            _publish_review_summary(agent, actions)
+            _publish_review_summary(agent, actions, source_session_id=source_session_id)
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:

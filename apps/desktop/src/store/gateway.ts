@@ -10,6 +10,7 @@ import { atom } from 'nanostores'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { notifyParkedBackendScope } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
@@ -698,6 +699,25 @@ function rearmSecondary(entry: Secondary): void {
   entry.stalledDials = 0
 }
 
+/**
+ * Re-arm a parked scope and redial it — the recovery affordance behind the
+ * terminated-scope notice (notifyParkedBackendScope). A fresh stall budget is
+ * granted so the retry gets its own bounded attempts; if it re-parks the notice
+ * returns with a fresh affordance, never an unbounded automatic loop. A no-op
+ * once the entry has been disposed/evicted, where the next genuine demand dials
+ * a new one anyway.
+ */
+function retryParkedSecondary(entry: Secondary): void {
+  if (g.secondaries.get(entry.scope) !== entry) {
+    return
+  }
+
+  rearmSecondary(entry)
+  clearTimer(entry)
+  entry.reconnectAttempt = 0
+  void reconnectSecondary(entry)
+}
+
 function scheduleReconnect(entry: Secondary): void {
   if (entry.reconnecting || entry.reconnectTimer !== null || !entry.wantOpen) {
     return
@@ -755,6 +775,20 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
         )
         entry.wantOpen = false
         entry.stalledDials = 0
+
+        // A foreground surface (mounted tile / primary thread) is the one
+        // consumer that cannot redial on its own: it issued its resume once and
+        // has no further demand to make, so a silent park leaves it loading
+        // forever. Surface the terminal, retryable state instead. Background
+        // and relay scopes self-heal on their next routed request, so they keep
+        // the silent bounded park (#103375).
+        if (foregroundPinned(entry)) {
+          notifyParkedBackendScope({
+            scope: entry.scope,
+            error,
+            retry: () => retryParkedSecondary(entry)
+          })
+        }
       }
     }
     // Still wantOpen → fall through to the backoff below.

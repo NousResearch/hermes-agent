@@ -216,6 +216,34 @@ export function notifyError(error: unknown, fallback: string): string {
   })
 }
 
+/**
+ * A secondary scope parked after exhausting its stalled-dial budget while a
+ * foreground surface (a mounted tile or the primary thread) still pins it.
+ *
+ * Parking is deliberate — it stops the queue/timeout treadmill (#103375) — but
+ * a parked scope a live surface owns would otherwise leave that surface in
+ * perpetual loading with no terminal affordance (#93892's parking variant).
+ * Surface the same recoverable, retryable error the session surfaces use,
+ * keyed by scope so repeat parks don't stack; `retry` re-arms the scope with a
+ * fresh budget and redials it. Background scopes (no pin) park silently: an
+ * unbounded automatic retry is exactly what parking exists to prevent.
+ */
+export function notifyParkedBackendScope(input: { scope: string; error: unknown; retry: () => void }): string {
+  const slotTimeout = isLocalBackendSlotWaitTimeout(input.error)
+  const readable = readableError(input.error, translateNow('desktop.resumeStrandedBody'))
+
+  return notify({
+    id: `backend-parked:${input.scope}`,
+    kind: 'error',
+    title: translateNow('desktop.resumeStrandedTitle'),
+    message: slotTimeout
+      ? translateNow('desktop.poolSlotTimeoutBody')
+      : translateNow('desktop.resumeStrandedBody'),
+    detail: readable.detail ?? readable.message,
+    action: { label: translateNow('desktop.resumeRetry'), onClick: input.retry }
+  })
+}
+
 export function dismissNotification(id: string) {
   window.clearTimeout(timers.get(id))
   timers.delete(id)

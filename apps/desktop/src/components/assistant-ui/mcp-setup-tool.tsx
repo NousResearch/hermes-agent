@@ -9,24 +9,20 @@ import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { ConnectorCard, type ConnectorCardCopy, ConnectorSummary } from '@/components/ui/connector-card'
-import {
-  addMcpServer,
-  getActionStatus,
-  getMcpCatalog,
-  installMcpCatalogEntry,
-  type McpCatalogEntry,
-  removeMcpServer,
-  setMcpServerEnabled
-} from '@/hermes'
+import { getActionStatus, getMcpCatalog, installMcpCatalogEntry, type McpCatalogEntry, setMcpServerEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
-import { directoryEntry } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { connectorText, mcpTargets } from '@/lib/connector-tools'
+import {
+  type ConnectionTargetOutcome,
+  respondToConnectionRequest,
+  sessionConnectionRequest
+} from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
-import { clearMcpSetupRequest, type McpSetupOutcome, sessionMcpSetupRequest } from '@/store/mcp-setup'
 import { notifyError } from '@/store/notifications'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
@@ -47,26 +43,42 @@ const CATALOG_INSTALL_POLL_MS = 1500
 // has already been sent, so the catch path must swallow this, not report it.
 const CANCELLED = Symbol('mcp-setup-cancelled')
 
+/** First MCP target of a `manage_connections` call; the card renders one server. */
 function readSetupArgs(args: unknown): SetupArgs {
   const row = parseMaybeObject(args)
-  const rawAction = typeof row.action === 'string' ? row.action : 'install'
+  const [target] = mcpTargets('manage_connections', row)
 
   return {
-    action: rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install',
+    action: target?.action ?? 'install',
     reason: typeof row.reason === 'string' ? row.reason : '',
-    server: typeof row.server === 'string' ? row.server : ''
+    server: target?.name ?? ''
   }
 }
 
-/** The tool's settled JSON — the card's outcome plus the tool-only
- *  `unanswered` status (timeout, no user action). */
-type SettledResult = Omit<Partial<McpSetupOutcome>, 'status'> & {
-  status?: McpSetupOutcome['status'] | 'unanswered'
-  note?: string
+/** The card's view of the settled operation: the first target's frozen state. */
+interface SettledResult {
+  status?: 'connected' | 'not_connected' | 'skipped' | 'unavailable'
+  detail?: string
+  server?: string
+  tools?: string[]
 }
 
 function readSetupResult(result: unknown): SettledResult {
-  return parseMaybeObject(result) as SettledResult
+  const row = parseMaybeObject(result)
+  const [target] = Array.isArray(row.targets) ? row.targets.map(parseMaybeObject) : []
+
+  if (!target) {
+    return {}
+  }
+
+  const STATES: readonly NonNullable<SettledResult['status']>[] = ['connected', 'not_connected', 'skipped', 'unavailable']
+
+  return {
+    detail: connectorText(target.detail),
+    server: connectorText(target.name),
+    status: STATES.find(state => state === target.state),
+    tools: Array.isArray(target.tools) ? target.tools.map(connectorText).filter((t): t is string => t !== undefined) : undefined
+  }
 }
 
 const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
@@ -127,24 +139,27 @@ function McpSetupSettled({ args, result }: ToolCallMessagePartProps) {
   const fromResult = useMemo(() => readSetupResult(result), [result])
 
   const server = fromResult.server || fromArgs.server
-  const status = fromResult.status ?? 'error'
+  const status = fromResult.status ?? 'not_connected'
   const displayName = prettyName(server)
 
-  const line =
-    status === 'installed'
-      ? copy.installed(displayName)
-      : status === 'enabled'
-        ? copy.enabled(displayName)
-        : status === 'authorized'
-          ? copy.authorized(displayName)
-          : status === 'declined'
-            ? copy.declined
-            : status === 'unanswered'
-              ? copy.unanswered
-              : copy.failed(displayName)
+  const connectedLine =
+    fromArgs.action === 'enable'
+      ? copy.enabled(displayName)
+      : fromArgs.action === 'authorize'
+        ? copy.authorized(displayName)
+        : copy.installed(displayName)
 
-  const ok = status === 'installed' || status === 'enabled' || status === 'authorized'
-  const neutral = status === 'declined' || status === 'unanswered'
+  const line =
+    status === 'connected'
+      ? connectedLine
+      : status === 'skipped'
+        ? copy.declined
+        : status === 'not_connected' && fromResult.detail === 'deadline'
+          ? copy.unanswered
+          : copy.failed(displayName)
+
+  const ok = status === 'connected'
+  const neutral = status === 'skipped' || (status === 'not_connected' && fromResult.detail === 'deadline')
   const toolCount = Array.isArray(fromResult.tools) ? fromResult.tools.length : 0
 
   // Settled is scaffolding, the same line a spent connector offer collapses
@@ -170,13 +185,14 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's request (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
-  const $request = useMemo(() => sessionMcpSetupRequest(sessionId), [sessionId])
+  const $request = useMemo(() => sessionConnectionRequest(sessionId), [sessionId])
   const request = useStore($request)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readSetupArgs(args), [args])
 
-  const server = fromArgs.server || request?.server || ''
-  const action: SetupAction = fromArgs.action ?? request?.action ?? 'install'
+  const [requestTarget] = request?.targets ?? []
+  const server = fromArgs.server || requestTarget?.name || ''
+  const action: SetupAction = fromArgs.action ?? requestTarget?.action ?? 'install'
   const reason = fromArgs.reason || request?.reason || ''
 
   const [working, setWorking] = useState(false)
@@ -188,16 +204,12 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   // CANCELLED sentinel; the declined respond has already been sent by then.
   const cancelRef = useRef(false)
 
-  // Race: tool.start fires a tick before mcp.setup.request — hold the buttons
-  // until the gateway request is wired (same spinner rule as clarify).
+  // tool.start fires a tick before connection.request; hold the buttons until wired (clarify's rule).
   const ready = Boolean(request?.requestId)
 
   const respond = useCallback(
-    async (outcome: McpSetupOutcome) => {
-      // Another path (cancel racing completion) may have already resolved this
-      // request; the store is the single source of truth, so bail if this
-      // session's entry is gone — same guard as the approval bar.
-      if (!request || sessionMcpSetupRequest(request.sessionId).get()?.requestId !== request.requestId) {
+    async (outcome: ConnectionTargetOutcome) => {
+      if (!request) {
         return
       }
 
@@ -207,38 +219,21 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
-      // Clear first: the answer is decided, and an in-flight RPC must not
-      // leave a live card that can be answered a second time.
-      clearMcpSetupRequest(request.requestId, request.sessionId)
+      const success = outcome.status === 'installed' || outcome.status === 'enabled' || outcome.status === 'authorized'
 
-      // A successful outcome changed mcp_servers — reload the live session
-      // BEFORE unblocking the tool, or the agent resumes being told the
-      // server is ready while its tool snapshot still lacks it (the same
-      // write-through mcp-tab's silentReload does; consent was the card
-      // click, so no confirm prompt). Reload failure isn't outcome failure:
-      // the config landed, tools arrive next session — report it and move on.
-      if (outcome.status === 'installed' || outcome.status === 'enabled' || outcome.status === 'authorized') {
-        try {
-          await gateway.request('reload.mcp', { confirm: true, session_id: request.sessionId ?? undefined })
-        } catch (error) {
-          notifyError(error, copy.reloadFailed)
-        }
-
-        // The just-set-up server must stop being suggested immediately.
+      if (success) {
+        // No reload.mcp: the new server's tools arrive through the between-turns refresh.
         invalidateMcpSuggestionIndex()
       }
 
       try {
-        await gateway.request<{ status?: string }>('mcp.setup.respond', {
-          request_id: request.requestId,
-          result: JSON.stringify(outcome)
-        })
-        // tool.complete lands next → McpSetupSettled.
+        // One target, so the operation settles with this answer; tool.complete lands next.
+        await respondToConnectionRequest(request, { settled_by: 'all_resolved', targets: [outcome] })
       } catch (error) {
         notifyError(error, copy.sendFailed)
       }
     },
-    [copy.gatewayDisconnected, copy.reloadFailed, copy.sendFailed, gateway, request]
+    [copy.gatewayDisconnected, copy.sendFailed, gateway, request]
   )
 
   const decline = useCallback(() => {
@@ -246,7 +241,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
     // and let the abandoned work notice via cancelRef at its next poll.
     cancelRef.current = true
     triggerHaptic('cancel')
-    void respond({ server, status: 'declined' })
+    void respond({ name: server, status: 'declined' })
   }, [respond, server])
 
   const approve = useCallback(async () => {
@@ -268,7 +263,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       if (action === 'enable') {
         await setMcpServerEnabled(server, true)
         triggerHaptic('submit')
-        await respond({ server, status: 'enabled' })
+        await respond({ name: server, status: 'enabled' })
 
         return
       }
@@ -281,16 +276,13 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         })
 
         triggerHaptic('submit')
-        await respond({ server, status: 'authorized', tools: (flow.tools ?? []).map(tool => tool.name) })
+        await respond({ name: server, status: 'authorized', tools: (flow.tools ?? []).map(tool => tool.name) })
 
         return
       }
 
-      // Install: prefer the reviewed catalog entry when one exists; otherwise
-      // fall back to the desktop suggestion directory (official URL-only
-      // remotes), written through the same validated POST the dashboard's add
-      // form uses. Required catalog credentials get an inline prompt first
-      // (never pre-filled, never echoed back).
+      // Install: the reviewed catalog is the only source. Required credentials get an
+      // inline prompt first (never pre-filled, never echoed back).
       let resolved = entry
 
       if (resolved === undefined) {
@@ -300,38 +292,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       }
 
       if (!resolved) {
-        const known = directoryEntry(server)
-
-        if (!known) {
-          await respond({ detail: copy.notInCatalog(server), server, status: 'error' })
-
-          return
-        }
-
-        // URL-only remote: add to config, then run the OAuth/probe flow so
-        // "Install" lands the user on a working server, not a 401. If the
-        // flow dies after the config write (cancel, closed OAuth tab), roll
-        // the write back — decline means "no server", not an unauthorized
-        // entry squatting in mcp_servers (authoritative-write rule).
-        await addMcpServer({ name: known.name, url: known.url }, oauthScope)
-
-        let flow
-
-        try {
-          flow = await completeMcpDesktopOAuth({
-            serverName: known.name,
-            profile: oauthScope,
-            cancelled: () => cancelRef.current
-          })
-        } catch (error) {
-          await removeMcpServer(known.name, oauthScope).catch(() => {
-            // Rollback is best-effort; the primary error/cancel wins.
-          })
-          throw error
-        }
-
-        triggerHaptic('submit')
-        await respond({ server, status: 'installed', tools: (flow.tools ?? []).map(tool => tool.name) })
+        await respond({ detail: copy.notInCatalog(server), name: server, status: 'error' })
 
         return
       }
@@ -366,7 +327,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       }
 
       triggerHaptic('submit')
-      await respond({ server, status: 'installed' })
+      await respond({ name: server, status: 'installed' })
     } catch (error) {
       // User cancel: the declined respond is already on the wire — the
       // abandoned flow just stops, nothing to report.
@@ -377,7 +338,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
       notifyError(error, copy.failed(server))
       await respond({
         detail: error instanceof Error ? error.message : String(error),
-        server,
+        name: server,
         status: 'error'
       })
     } finally {
@@ -388,11 +349,8 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
   const displayName = prettyName(server)
   const card = cardCopy(copy, action)
 
-  // What connecting actually means — the endpoint that will be contacted.
-  // Catalog entries carry their transport URL in the API response; the
-  // static directory remains a fallback rung for older backends.
-  const known = directoryEntry(server)
-  const sourceLine = action === 'install' ? (entry?.url ?? known?.url ?? copy.catalogSource) : null
+  // The endpoint that will be contacted, from the catalog entry.
+  const sourceLine = action === 'install' ? (entry?.url ?? copy.catalogSource) : null
 
   // ⌘/Ctrl+Enter → approve, Esc → decline/cancel. Same accelerators, same
   // guard shape as the approval bar (tool/approval.tsx). Unlike approve, Esc

@@ -67,7 +67,10 @@ def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import set_hermes_home_override
 
-    profile_dir = get_profile_dir(profile)
+    try:
+        profile_dir = get_profile_dir(profile)
+    except ValueError:
+        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
     if not profile_dir or not profile_dir.is_dir():
         return None, err_fn(rid, 4064, f"profile '{profile}' not found")
     return set_hermes_home_override(str(profile_dir)), None

@@ -463,7 +463,9 @@ def _canonical_profile_request(name: str) -> str:
     """
     if name.casefold() in {".hermes", "hermes"}:
         from hermes_cli import profiles as profiles_mod
-        if not Path(profiles_mod.get_profile_dir(name)).is_dir():
+        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
+        # reserved name, but a pre-reserved-list install may still carry that dir.
+        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
             return "default"
     return name
 
@@ -486,8 +488,11 @@ def _profile_home(profile: str | None) -> Path | None:
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
     from hermes_cli import profiles as profiles_mod
-    home = Path(profiles_mod.get_profile_dir(name))
-    if not home.is_dir():
+    try:
+        home = Path(profiles_mod.get_profile_dir(name))
+    except ValueError:
+        home = None
+    if home is None or not home.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)

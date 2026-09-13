@@ -234,15 +234,25 @@ def get_profile_dir(name: str) -> Path:
     canon = normalize_profile_name(name)
     if canon == "default":
         return _get_default_hermes_home()
+    # The name becomes a path component under profiles/; refuse anything that
+    # is not a valid profile id so every caller (WS params, /p/<profile>/
+    # prefixes, tool args) fails closed instead of escaping the root. The
+    # regex only, not _RESERVED_NAMES: a pre-reserved-list dir like
+    # profiles/hermes may still exist and must keep resolving.
+    if not _PROFILE_ID_RE.match(canon):
+        raise ValueError(f"Invalid profile name {canon!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
     return _get_profiles_root() / canon
 
 
 def profile_exists(name: str) -> bool:
     """Check whether a live (non-tombstoned) profile directory exists."""
-    canon = normalize_profile_name(name)
+    try:
+        canon = normalize_profile_name(name)
+        profile_dir = get_profile_dir(canon)
+    except ValueError:
+        return False
     if canon == "default":
         return True
-    profile_dir = get_profile_dir(canon)
     return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
 
 

@@ -586,19 +586,25 @@ def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
     allow_session: bool = True, smart_denied: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
+    from agent.i18n import t
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
-    heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
-               else "⚠️ **Dangerous command requires approval:**")
+    heading = t("gateway.exec_approval.heading_smart_deny" if smart_denied
+               else "gateway.exec_approval.heading_dangerous")
 
-    choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
+    choices = [t("gateway.exec_approval.choice_once", prefix=command_prefix)]
     if not smart_denied and allow_session:
-        choices.append(f"`{command_prefix}approve session` to approve this pattern for the session")
+        choices.append(t("gateway.exec_approval.choice_session", prefix=command_prefix))
         if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to approve permanently")
-    choices.append(f"`{command_prefix}deny` to cancel")
+            choices.append(t("gateway.exec_approval.choice_always", prefix=command_prefix))
+    choices.append(t("gateway.exec_approval.choice_deny", prefix=command_prefix))
+    if len(choices) > 1:
+        body = (t("gateway.exec_approval.choice_joiner").join(choices[:-1])
+                + t("gateway.exec_approval.choice_last_joiner") + choices[-1])
+    else:
+        body = choices[-1]
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
-        + ", ".join(choices[:-1]) + f", or {choices[-1]}.")
+        f"{heading}\n```\n{cmd_preview}\n```\n"
+        f"{t('gateway.exec_approval.reason_label')}{description}\n\n" + body)
 
 # Ordered: auth beats policy beats rate-limit beats connection; first match wins.
 _PROVIDER_ERROR_REPLIES = (
@@ -2980,10 +2986,12 @@ def _shorten_command_for_display(command: str, limit: int = 80) -> str:
 def _format_concise_process_notification(
     session_id: str, command: str, exit_code, output: str, duration_seconds=None) -> str:
     """One-line completion message for ``concise`` display mode; failure appends a short output tail."""
+    from agent.i18n import t
     ok = exit_code in {0, None}
-    icon = "✅" if ok else "❌"
-    verb = "finished" if ok else f"failed (exit {exit_code})"
-    parts = [f"{icon} Background task {verb}"]
+    if ok:
+        parts = [t("gateway.process.concise_finished")]
+    else:
+        parts = [t("gateway.process.concise_failed", code=exit_code)]
     short_cmd = _shorten_command_for_display(command)
     if short_cmd:
         parts.append(f"— `{short_cmd}`")

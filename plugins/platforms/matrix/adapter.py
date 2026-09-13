@@ -1599,7 +1599,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    @property
+    def _EA_HEADER(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.header_md")
+
     _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(

@@ -3790,10 +3790,19 @@ class TelegramAdapter(BasePlatformAdapter):
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
     # Template attrs for the shared _format_exec_approval core (HTML mode).
-    _EA_HEADER = "⚠️ <b>Command Approval Required</b>\n\n"
+    @property
+    def _EA_HEADER(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.header_html")
+
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
-    _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.smart_deny_line_html")
+
     _EA_CMD_BUDGET = 3800
 
     def _ea_escape(self, text: str) -> str:

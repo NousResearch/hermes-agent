@@ -258,6 +258,7 @@ gateway:
   restart:
     in_progress:           "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
+    restarted:             "♻ ゲートウェイの再起動が完了しました。セッションは継続しています。"
 
   resume:
     db_unavailable:        "セッションデータベースは利用できません。"
@@ -388,6 +389,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     hermes_cmd_not_found:    "✗ `hermes` コマンドが見つかりません。Hermes は実行中ですが、更新コマンドは PATH 上にも現在の Python インタープリタ経由でも実行可能ファイルを見つけられませんでした。ターミナルで `hermes update` を手動で実行してみてください。"
     start_failed:            "✗ 更新の開始に失敗しました: {error}"
     starting:                "☤ Hermes の更新を開始しています… 進捗をここにストリーミングします。"
+    finished:                "✅ Hermes の更新が完了しました。"
+    failed_exit:             "❌ Hermes の更新に失敗しました (終了コード {code})。"
+    timed_out:               "❌ Hermes の更新がタイムアウトしました (30 分)。"
+    finished_with_output:    "✅ Hermes の更新が完了しました。"
+    failed_with_output:      "❌ Hermes の更新に失敗しました。"
+    finished_no_output:      "✅ Hermes の更新が正常に完了しました。"
+    failed_no_output:        "❌ Hermes の更新に失敗しました。ゲートウェイのログを確認するか、ターミナルで `hermes update` を手動実行してください。"
+    prompt_heading:          "☤ **更新に入力が必要です:**"
+    prompt_default_hint:     " (デフォルト: {default})"
+    prompt_reply:            "`{prefix}approve` (はい) または `{prefix}deny` (いいえ) と返信するか、回答を直接入力してください。"
 
   usage:
     rate_limits:              "⏱️ **レート制限:** {state}"
@@ -454,6 +465,56 @@ Future messages in this room will use that transcript until `/reset` or another 
   yolo:
     disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"
     enabled:                    "⚡ このセッションの YOLO モードは **ON** — すべてのコマンドが自動承認されます。注意して使用してください。"
+
+  exec_approval:
+    # 実行承認プロンプト: テキストフォールバック (gateway/run.py) と共有コア
+    # (gateway/platforms/base.py)。アダプタのヘッダはプラットフォームの
+    # マークアップを保つため plain/HTML/Markdown でキーを分けています。
+    # ボタンラベルとリアクション凡例は当面英語のままです。
+    header_plain:        "⚠️ コマンドの承認が必要です\n\n"
+    header_html:         "⚠️ <b>コマンドの承認が必要です</b>\n\n"
+    header_md:           "⚠️ **危険なコマンドの承認が必要です**\n"
+    heading_dangerous:   "⚠️ **危険なコマンドの承認が必要です:**"
+    heading_smart_deny:  "⚠️ **Smart DENY — この1件の操作のみ所有者が上書き:**"
+    reason_label:        "理由: "
+    reason_label_md:     "**理由:** "
+    smart_deny_line:     "\n\nSmart DENY: この1件の操作のみ所有者による上書きが適用されます。"
+    smart_deny_line_html: "\n\n<b>Smart DENY:</b> この1件の操作のみ所有者による上書きが適用されます。"
+    smart_deny_line_md:  "\n\n**Smart DENY:** この1件の操作のみ所有者による上書きが適用されます。"
+    choice_once:         "`{prefix}approve` と返信でこの1件の操作を実行"
+    choice_session:      "`{prefix}approve session` でこのパターンをセッション中許可"
+    choice_always:       "`{prefix}approve always` で永続的に許可"
+    choice_deny:         "`{prefix}deny` でキャンセル。"
+    choice_joiner:       "、"
+    choice_last_joiner:  "、または"
+
+  delivery:
+    # 受信済みと重複する可能性がある再配信の接頭辞。
+    recovered_restart:   "♻️ 復旧した返信 — 配信中にゲートウェイが再起動したため、重複している可能性があります:\n\n"
+    recovered_reconnect:  "♻️ 復旧した返信 — 元の配信失敗後にメッセージ基盤が再接続したため、重複している可能性があります:\n\n"
+    flood_rate_limit:    "♻️ 復旧した返信 — 元の送信がメッセージ基盤のレート制限に拒否されたため、一部は既に届いている可能性があります:\n\n"
+
+  process:
+    # バックグラウンドプロセス監視の通知 (gateway/run_notifications.py)。
+    finished_other:      "[バックグラウンドプロセス {id} は終了コード {code} で終了しました~ 最終出力は次の通りです:\n{output}]"
+    still_running:       "[バックグラウンドプロセス {id} はまだ実行中です~ 新しい出力:\n{output}]"
+    concise_finished:    "✅ バックグラウンドタスクが完了しました"
+    concise_failed:      "❌ バックグラウンドタスクが失敗しました (終了 {code})"
+
+  busy:
+    # ターンを開始できない場合のビジー応答。
+    another_turn:        "⏳ このセッションでは別のターンがまだ実行中です。記録を保護するため、このメッセージは処理されませんでした。実行中のターンが終わるのを待ってから再送してください。"
+    drain_queued:        "⏳ ゲートウェイは{action}中のため、復帰後の次のターン用にキューに入れました。"
+    drain_reject:        "⏳ ゲートウェイは{action}中のため、今は別のターンを受け付けていません。"
+
+  lease:
+    # セッションターンのリース待ちの結果 (agent/turn_facade_lease.py)。
+    interrupted:         "このセッションで別の Hermes プロセスを待つのを止めました。メッセージは処理されませんでした。"
+    timeout:             "⏳ 別の Hermes プロセスがこのセッションを長時間占有しています。メッセージは処理されませんでした - 他のプロセスが終わるのを待ってから再送してください。"
+
+  review:
+    # バックグラウンド自己改善レビューの要約ラベル。
+    summary:             "💾 自己改善レビュー: {summary}"
 
   shared:
     session_db_unavailable:      "セッションデータベースが利用できません。"

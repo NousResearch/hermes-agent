@@ -258,6 +258,7 @@ gateway:
   restart:
     in_progress:           "⏳ El reinicio del gateway ya está en curso..."
     restarting:            "♻ Reiniciando el gateway. Si no recibes notificación en 60 segundos, reinicia desde la consola con `hermes gateway restart`."
+    restarted:             "♻ Gateway restarted successfully. Your session continues."
 
   resume:
     db_unavailable:        "Base de datos de sesiones no disponible."
@@ -385,6 +386,16 @@ gateway:
     hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
     start_failed:            "✗ No se pudo iniciar la actualización: {error}"
     starting:                "☤ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
+    finished:                "✅ Hermes update finished."
+    failed_exit:             "❌ Hermes update failed (exit code {code})."
+    timed_out:               "❌ Hermes update timed out after 30 minutes."
+    finished_with_output:    "✅ Hermes update finished."
+    failed_with_output:      "❌ Hermes update failed."
+    finished_no_output:      "✅ Hermes update finished successfully."
+    failed_no_output:        "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+    prompt_heading:          "☤ **Update needs your input:**"
+    prompt_default_hint:     " (default: {default})"
+    prompt_reply:            "Reply `{prefix}approve` (yes) or `{prefix}deny` (no), or type your answer directly."
 
   usage:
     rate_limits:              "⏱️ **Límites de tasa:** {state}"
@@ -451,6 +462,56 @@ gateway:
   yolo:
     disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."
     enabled:                    "⚡ Modo YOLO **ACTIVADO** en esta sesión — todos los comandos se aprueban automáticamente. Úsalo con precaución."
+
+  exec_approval:
+    # Exec-approval prompts: the text fallback (gateway/run.py) and the shared
+    # core (gateway/platforms/base.py). Adapter headers keep platform markup,
+    # so plain/HTML/Markdown variants are separate keys. Button labels and
+    # reaction legends stay in English for now (follow-up).
+    header_plain:        "⚠️ Command Approval Required\n\n"
+    header_html:         "⚠️ <b>Command Approval Required</b>\n\n"
+    header_md:           "⚠️ **Dangerous command requires approval**\n"
+    heading_dangerous:   "⚠️ **Dangerous command requires approval:**"
+    heading_smart_deny:  "⚠️ **Smart DENY — owner override for one operation:**"
+    reason_label:        "Reason: "
+    reason_label_md:     "**Reason:** "
+    smart_deny_line:     "\n\nSmart DENY: owner override applies to this one operation only."
+    smart_deny_line_html: "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+    smart_deny_line_md:  "\n\n**Smart DENY:** owner override applies to this one operation only."
+    choice_once:         "Reply `{prefix}approve` to execute this one operation"
+    choice_session:      "`{prefix}approve session` to approve this pattern for the session"
+    choice_always:       "`{prefix}approve always` to approve permanently"
+    choice_deny:         "`{prefix}deny` to cancel."
+    choice_joiner:       ", "
+    choice_last_joiner:  ", or "
+
+  delivery:
+    # Redelivery markers for messages that may duplicate an already-received one.
+    recovered_restart:   "♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n"
+    recovered_reconnect:  "♻️ Recovered reply — the messaging platform reconnected after the original delivery failed, so this may be a duplicate:\n\n"
+    flood_rate_limit:    "♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of it may already have arrived above:\n\n"
+
+  process:
+    # Background-process watcher notifications (gateway/run_notifications.py).
+    finished_other:      "[Background process {id} finished with exit code {code}~ Here's the final output:\n{output}]"
+    still_running:       "[Background process {id} is still running~ New output:\n{output}]"
+    concise_finished:    "✅ Background task finished"
+    concise_failed:      "❌ Background task failed (exit {code})"
+
+  busy:
+    # Busy-path replies when a turn cannot start right now.
+    another_turn:        "⏳ Another turn is still running on this session. To protect the transcript, this message was not processed. Wait for the active turn to finish, then resend it."
+    drain_queued:        "⏳ Gateway {action} — queued for the next turn after it comes back."
+    drain_reject:        "⏳ Gateway is {action} and is not accepting another turn right now."
+
+  lease:
+    # Session turn-lease wait outcomes (agent/turn_facade_lease.py).
+    interrupted:         "Stopped waiting for another Hermes process on this session. Your message was not processed."
+    timeout:             "⏳ Another Hermes process kept this session busy too long. Your message was not processed - wait for the other process to finish, then send it again."
+
+  review:
+    # Background self-improvement review summary label.
+    summary:             "💾 Self-improvement review: {summary}"
 
   shared:
     session_db_unavailable:      "Base de datos de sesiones no disponible."

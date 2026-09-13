@@ -632,13 +632,14 @@ class GatewayInboundMixin:
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
         if self._draining:
+            from agent.i18n import t
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
                 self._queue_or_replace_pending_event(_quick_key, event)
             return (
-                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                t("gateway.busy.drain_queued", action=self._status_action_gerund())
                 if queue_during_drain
-                else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                else t("gateway.busy.drain_reject", action=self._status_action_gerund())
             )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -1273,11 +1274,8 @@ class GatewayInboundMixin:
                     "the user must resend",
                     _quick_key, exc.session_id,
                 )
-                return (
-                    "⏳ Another turn is still running on this session. To "
-                    "protect the transcript, this message was not processed. "
-                    "Wait for the active turn to finish, then resend it."
-                )
+                from agent.i18n import t
+                return t("gateway.busy.another_turn")
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,

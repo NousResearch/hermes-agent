@@ -178,7 +178,9 @@ _DISCORD_IMAGE_MAX_REDIRECTS = 10
 # Upgrade-bridge fallback: recognizes status bumps from gateway versions pre-dating
 # metadata["non_conversational"]. New emitters must set the metadata flag, not add regexes.
 _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
-    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    # Self-improvement review label is localized (gateway.review.summary);
+    # match every catalog language variant, not just English.
+    re.compile(r"^\s*💾\s*(?:Self-improvement review|自己改善レビュー):\s+\S[\s\S]*$", re.IGNORECASE),
     # Shorter legacy form still used by background-review test doubles.
     re.compile(
         r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",

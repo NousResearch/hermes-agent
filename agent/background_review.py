@@ -1078,11 +1078,12 @@ def _run_review_fork(
 
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
+    from agent.i18n import t
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
+    agent._safe_print(f"  {t('gateway.review.summary', summary=summary)}")
     if agent.background_review_callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            agent.background_review_callback(t("gateway.review.summary", summary=summary))
 
 
 def _run_review_in_thread(

@@ -23,6 +23,27 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+def _bind_child_session_key(child_task_id: str) -> "contextvars.Token[str]":
+    """Bind the approval-context session key to *child_task_id* for the duration of a delegated
+    child's own execution scope.
+
+    ``terminal_tool()``'s per-command cwd resolution (``_resolve_command_cwd()``) and its
+    post-command write-back (``finalize_foreground_result()``) both key off
+    ``get_current_session_key()`` — an approval-context contextvar (tools/approval_context.py) —
+    not ``task_id``. A delegated child's worker thread inherits whatever session key the PARENT's
+    context had via ``contextvars.copy_context()`` unless something rebinds it here, so without
+    this call the child's FIRST real terminal call (and every session-key-keyed cwd write after
+    it) operates on the parent's session, not the child's own worktree seeded by
+    ``seed_workspace()``. Mirrors the same bind/reset pairing every other per-turn identity bind in
+    the codebase already uses (e.g. ``hermes_cli/cli_chat_turn_mixin.py``'s
+    ``set_current_session_key`` / ``reset_current_session_key`` around ``run_conversation``).
+    Caller must ``reset_current_session_key(token)`` in a ``finally`` so the parent's key is never
+    left clobbered.
+    """
+    from tools.approval_context import set_current_session_key
+    return set_current_session_key(child_task_id)
+
+
 def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default
@@ -406,6 +427,12 @@ def _validate_child_output_schema(
 
     # Exactly one retry turn, carrying the validation errors verbatim (no
     # schema re-paste — the child already holds the contract in its context).
+    # Same session-key bind as the child's initial worker-thread run: this retry runs on the
+    # CALLER's thread (after await_child()'s own bind/reset already unwound), so without
+    # re-binding here the retry's terminal calls would silently resolve cwd against whatever
+    # session key the caller's thread now holds instead of the child's own worktree.
+    from tools.approval_context import reset_current_session_key
+    _retry_session_token = _bind_child_session_key(child_task_id)
     _retry_result = None
     try:
         _retry_result = child.run_conversation(
@@ -413,6 +440,8 @@ def _validate_child_output_schema(
         )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
+    finally:
+        reset_current_session_key(_retry_session_token)
     if isinstance(_retry_result, dict):
         _retry_text = _retry_result.get("final_response") or ""
         if _retry_text.strip():
@@ -655,10 +684,22 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
+            from tools.approval_context import reset_current_session_key
+            # Bind the approval-session key to the CHILD's own task id before its first tool
+            # call: this worker thread inherited the PARENT's context via copy_context() at
+            # submit time, so without this bind terminal_tool()'s session-key-keyed cwd
+            # read/write path (_resolve_command_cwd / finalize_foreground_result) would silently
+            # operate on the parent's session instead of the worktree seeded by seed_workspace().
+            # Reset in `finally` — a mutation inside this scope must never leak back to the
+            # parent's own context.
+            session_key_token = _bind_child_session_key(self.child_task_id)
+            try:
+                with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                    return child.run_conversation(
+                        user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    )
+            finally:
+                reset_current_session_key(session_key_token)
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         try:

@@ -37,6 +37,11 @@ _MAX_ROWS = 500
 # Visible prefixes for redeliveries that might duplicate an already-received message (crash mid-send /
 # post-rejection retry) — honest at-least-once. Runtime recovery uses a distinct marker: no restart
 # occurred, but a network rejection's acknowledgement can still have been lost independently.
+#
+# The constants below are the ENGLISH canonical values: rows claimed before this change (and the
+# ``row.get("marker", RECOVERED_MARKER)`` default path) may carry them in ``state.db``, so they
+# must stay byte-stable. New compositions go through the localized accessors underneath, which
+# resolve ``display.language`` at send time.
 RECOVERED_MARKER = "♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n"
 RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconnected after the original "
                       "delivery failed, so this may be a duplicate:\n\n")
@@ -47,6 +52,24 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
 # of the markers above tells the truth here (no restart, no reconnect): the rate limit gets its own.
 FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
                 "it may already have arrived above:\n\n")
+
+
+def recovered_marker() -> str:
+    """Localized restart-recovery marker for NEW compositions (constants stay English for DB compat)."""
+    from agent.i18n import t
+    return t("gateway.delivery.recovered_restart")
+
+
+def reconnected_marker() -> str:
+    """Localized reconnect-replay marker for NEW compositions (constants stay English for DB compat)."""
+    from agent.i18n import t
+    return t("gateway.delivery.recovered_reconnect")
+
+
+def flood_marker() -> str:
+    """Localized rate-limit marker for NEW compositions (constants stay English for DB compat)."""
+    from agent.i18n import t
+    return t("gateway.delivery.flood_rate_limit")
 
 # Runtime replay is fail-closed: only errors whose send contract proves they are transient reconnect
 # failures. Permanent rejects (blocked bot, bad auth, missing chat) must not be retried on reconnect.
@@ -317,7 +340,7 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
     ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
     restart marker default. ``last_error`` is the row's pre-claim error, carried so a runtime claim that is
     released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
-    marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
+    marker = flood_marker() if flood else (reconnected_marker() if runtime else None)
     return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,

@@ -407,9 +407,9 @@ class GatewayBusySessionMixin:
             return
         if self._queue_during_drain_enabled(effective_mode):
             self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+            message = t("gateway.busy.drain_queued", action=self._status_action_gerund())
         else:
-            message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+            message = t("gateway.busy.drain_reject", action=self._status_action_gerund())
         await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.

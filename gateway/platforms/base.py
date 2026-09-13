@@ -2489,11 +2489,26 @@ class BasePlatformAdapter(ABC):
             coro.close()
 
     # ── ``_format_exec_approval`` templates; adapters override to keep historical wording.
-    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
+    # Prose resolves through the i18n catalog (``display.language``); markup
+    # variants live in separate keys (gateway.exec_approval.header_plain/html/md).
+    @property
+    def _EA_HEADER(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.header_plain")
+
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = "Reason: "
-    _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
+
+    @property
+    def _EA_REASON_LABEL(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.reason_label")
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.smart_deny_line")
+
     _EA_CMD_BUDGET: int = 3000
 
     @staticmethod

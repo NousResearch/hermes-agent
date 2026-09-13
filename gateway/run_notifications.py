@@ -526,11 +526,12 @@ class GatewayNotificationsMixin:
                 )
                 sent_buttons = True
         if not sent_buttons:
-            default_hint = f" (default: {default})" if default else ""
+            from agent.i18n import t
+            default_hint = t("gateway.update.prompt_default_hint", default=default) if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
             await target.send(
-                f"☤ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
-                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
+                f"{t('gateway.update.prompt_heading')}\n\n{prompt_text}{default_hint}\n\n"
+                f"{t('gateway.update.prompt_reply', prefix=_p)}"
             )
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
         self._session_state(target.session_key).persistent.update_prompt_pending = True
@@ -581,10 +582,11 @@ class GatewayNotificationsMixin:
                 _read_new_output()
                 await _flush_buffer()
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
+                    from agent.i18n import t
                     exit_code = self._update_exit_code(paths)
                     await target.send(
-                        "✅ Hermes update finished." if exit_code == 0
-                        else "❌ Hermes update failed (exit code {}).".format(exit_code)
+                        t("gateway.update.finished") if exit_code == 0
+                        else t("gateway.update.failed_exit", code=exit_code)
                     )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 self._clear_update_markers(paths, session_key)
@@ -611,7 +613,8 @@ class GatewayNotificationsMixin:
             paths.exit_code.write_text("124", encoding="utf-8")
             await _flush_buffer()
             with suppress(Exception):
-                await target.send("❌ Hermes update timed out after 30 minutes.")
+                from agent.i18n import t
+                await target.send(t("gateway.update.timed_out"))
             self._clear_update_markers(paths, session_key)
 
     async def _send_update_notification(self) -> bool:
@@ -663,12 +666,14 @@ class GatewayNotificationsMixin:
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
-                    status = "✅ Hermes update finished." if exit_code == 0 else "❌ Hermes update failed."
+                    from agent.i18n import t
+                    status = (t("gateway.update.finished_with_output") if exit_code == 0
+                              else t("gateway.update.failed_with_output"))
                     msg = f"{status}\n\n```\n{output}\n```"
                 else:
                     msg = (
-                        "✅ Hermes update finished successfully." if exit_code == 0 else
-                        "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                        t("gateway.update.finished_no_output") if exit_code == 0 else
+                        t("gateway.update.failed_no_output")
                     )
                 await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
                 logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
@@ -684,6 +689,7 @@ class GatewayNotificationsMixin:
         """Notify the chat that initiated /restart that the gateway is back."""
         from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
+        from agent.i18n import t
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
@@ -715,7 +721,7 @@ class GatewayNotificationsMixin:
                     if data.get(field):
                         metadata[field] = str(data[field])
             result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
+                platform, str(chat_id), t("gateway.restart.restarted"),
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
@@ -1704,11 +1710,12 @@ class GatewayNotificationsMixin:
 
     def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
         from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
+        from agent.i18n import t
         new_output = self._redacted_output_tail(session, 1000)
         if notify_mode != "concise":
-            return (
-                f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                f"Here's the final output:\n{new_output}]"
+            return t(
+                "gateway.process.finished_other",
+                id=session_id, code=session.exit_code, output=new_output,
             )
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
@@ -1783,8 +1790,9 @@ class GatewayNotificationsMixin:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers
                 # only care about completion).
                 new_output = self._redacted_output_tail(session, 500)
+                from agent.i18n import t
                 await self._send_watcher_message(
                     platform_name, chat_id, thread_id,
-                    f"[Background process {session_id} is still running~ New output:\n{new_output}]", watcher,
+                    t("gateway.process.still_running", id=session_id, output=new_output), watcher,
                 )
         logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)

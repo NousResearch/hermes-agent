@@ -1642,8 +1642,17 @@ class FeishuAdapter(BasePlatformAdapter):
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
-    _EA_REASON_LABEL = "**Reason:** "
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+
+    @property
+    def _EA_REASON_LABEL(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.reason_label_md")
+
+    @property
+    def _EA_SMART_DENY_LINE(self) -> str:
+        from agent.i18n import t
+        return t("gateway.exec_approval.smart_deny_line_md")
+
     _EA_CMD_BUDGET = 3000
 
     async def send_exec_approval(

@@ -303,14 +303,12 @@ def admit_durable_turn_lease(
 
 
 def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> Dict[str, Any]:
+    from agent.i18n import t
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):
         logger.info("session turn lease wait aborted by interrupt: %s", session_id)
         result = {
-            "final_response": (
-                "Stopped waiting for another Hermes process on this session. "
-                "Your message was not processed."
-            ),
+            "final_response": t("gateway.lease.interrupted"),
             **base,
             "interrupted": True,
         }
@@ -325,10 +323,7 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
             agent._interrupt_message = None
         return result
     # Fail closed like gateway TurnLeaseTimeoutError: surface a resend notice, not a bare TimeoutError.
-    timeout_msg = (
-        "⏳ Another Hermes process kept this session busy too long. Your message was not "
-        "processed - wait for the other process to finish, then send it again."
-    )
+    timeout_msg = t("gateway.lease.timeout")
     logger.error("session turn lease wait timed out for %s", session_id)
     try:
         agent._emit_warning(timeout_msg)

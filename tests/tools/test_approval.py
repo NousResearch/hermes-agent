@@ -1,5 +1,6 @@
 """Tests for the dangerous command approval module."""
 
+import json
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ import pytest
 import tools.approval as approval_module
 from tools import approval_context
 from tools import approval_smart
+from tools import terminal_tool as terminal_module
 from hermes_constants import get_hermes_home
 from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
 from tools.approval_context import _get_approval_mode
@@ -368,6 +370,171 @@ class TestHermesConfigWriteProtection:
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
+
+
+class TestHermesHomeHardline:
+    def test_destructive_operations_on_managed_state_are_blocked(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        commands = (
+            f"mv {home} /tmp/lost",
+            f"rm {home / 'state.db'}",
+            "> $HERMES_HOME/state.db",
+            "truncate -s0 ${HERMES_HOME}/state.db",
+            "shred -u ~/.hermes/state.db",
+            "unlink $HOME/.hermes/state.db",
+            "tee $HERMES_HOME/state.db </dev/null",
+            "cp /dev/null $HERMES_HOME/state.db",
+            "cp /tmp/replacement $HERMES_HOME/state.db",
+            "install -m 600 /tmp/replacement $HERMES_HOME/state.db",
+            "mv /tmp/replacement $HERMES_HOME/state.db",
+            "mv -t /tmp /tmp/safe $HERMES_HOME/state.db",
+            "cp /dev/null -t $HERMES_HOME",
+            "sqlite3 $HERMES_HOME/state.db 'delete from messages where 1=1'",
+            "sqlite3 -cmd 'DELETE FROM messages' $HERMES_HOME/state.db",
+            "sqlite3 -cmd 'UPDATE messages SET content = 0' $HERMES_HOME/state.db",
+            "sqlite3 $HERMES_HOME/state.db '.restore /tmp/replacement.db'",
+            "sqlite3 $HERMES_HOME/state.db < /tmp/mutate.sql",
+            "cat /tmp/mutate.sql | sqlite3 $HERMES_HOME/state.db",
+            "sqlite3 -init /tmp/mutate.sql $HERMES_HOME/state.db",
+            "sqlite3 -vfs unix-dotfile $HERMES_HOME/state.db",
+            "rm -rf ${HERMES_HOME:?}/state.db",
+            "rm ${HERMES_HOME%/}/state.db",
+            "rm.exe $HERMES_HOME/state.db",
+            "busybox rm $HERMES_HOME/state.db",
+            "xargs rm $HERMES_HOME/state.db",
+            "find $HERMES_HOME -exec rm {} \\;",
+            "find $HERMES_HOME -delete",
+            "dd if=/dev/zero of=$HERMES_HOME/state.db",
+            "rsync /tmp/replacement $HERMES_HOME/state.db",
+            "rsync --remove-source-files $HERMES_HOME/ /tmp/backup/",
+            "sed -i s/x/y/ $HERMES_HOME/state.db",
+            "perl -pi -e s/x/y/ $HERMES_HOME/state.db",
+            "tar --remove-files -cf /tmp/backup.tar $HERMES_HOME/state.db",
+            "cmd.exe /c del $HERMES_HOME/state.db",
+            "powershell Remove-Item $HERMES_HOME/state.db",
+            'cmd.exe /c del "%HERMES_HOME%\\state.db"',
+            "powershell -Command 'Remove-Item $env:HERMES_HOME/state.db'",
+            'rm -rf "$HERMES_HOME"*',
+            "rm -rf ~/.hermes*",
+            'printf x >&"$HERMES_HOME/state.db"',
+            'printf x 3<>"$HERMES_HOME/state.db" >&3',
+            "cp -at$HERMES_HOME /tmp/replacement",
+            "mv -vt$HERMES_HOME /tmp/replacement",
+            "install -Dt$HERMES_HOME /tmp/replacement",
+        )
+        for command in commands:
+            blocked, description = detect_hardline_command(command)
+            assert blocked is True, command
+            assert "Hermes data directory" in description
+
+        result = approval_module.check_all_command_guards("rm $HERMES_HOME/state.db", "local")
+        assert result["approved"] is False
+        assert "BLOCKED" in result["message"]
+
+    def test_reads_backups_unrelated_paths_and_quoted_prose_stay_safe(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for command in (
+            f"cat {home / 'state.db'}",
+            f"cp {home / 'state.db'} /tmp/state.db.backup",
+            "rm /tmp/state.db",
+            "truncate -s0 /tmp/state.db",
+            'git commit -m "do not rm $HERMES_HOME/state.db"',
+            "sqlite3 $HERMES_HOME/state.db 'select count(*) from messages'",
+            "sqlite3 $HERMES_HOME/state.db \"select 'a;b'\"",
+            "sqlite3 $HERMES_HOME/state.db '/* read */ select 1; -- more\nselect 2'",
+            "sqlite3 $HERMES_HOME/state.db 'with row as (select 1) select * from row'",
+            "sqlite3 $HERMES_HOME/state.db 'pragma table_info(messages)'",
+            "sqlite3 -cmd '.mode json' $HERMES_HOME/state.db 'select 1'",
+            "busybox cp $HERMES_HOME/state.db /tmp/backup",
+            "find $HERMES_HOME -exec cp {} /tmp/backup \\;",
+            "busybox sqlite3 $HERMES_HOME/state.db 'select 1'",
+            "sqlite3 $HERMES_HOME/state.db '.backup /tmp/state.db.bak'",
+            f"cd {tmp_path.as_posix()} && rm scratch.txt",
+            f"cd {tmp_path.as_posix()} && : > scratch.txt",
+            "rm ../scratch.txt",
+            f"cp -t {tmp_path} ./a $HERMES_HOME/SOUL.md",
+            f"cp --target-directory={tmp_path} $HERMES_HOME/SOUL.md ./a",
+            f"install -t {tmp_path} ./a $HERMES_HOME/SOUL.md",
+            "printf hello | xargs echo rm",
+            f"printf ./a | xargs cp -t {tmp_path}",
+        ):
+            assert detect_hardline_command(command, cwd=str(home)) == (False, None), command
+
+        # Heredoc bodies may feed an executable consumer, so the security floor
+        # deliberately does not exempt command-looking lines based on the producer.
+        piped = "cat <<'EOF' | sh\nrm $HERMES_HOME/state.db\nEOF"
+        assert detect_hardline_command(piped)[0] is True
+
+    def test_full_guard_floor_survives_yolo_and_force(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+        command = "rm $HERMES_HOME/state.db"
+
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+        result = approval_module.check_all_command_guards(command, "local")
+        assert result["approved"] is False
+        assert result["hardline"] is True
+
+        replay = json.loads(terminal_module.terminal_tool(command=command, force=True))
+        assert replay["status"] == "blocked"
+        assert replay["exit_code"] == -1
+
+    def test_relative_targets_are_blocked_inside_managed_cwd(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert detect_hardline_command("cd $HERMES_HOME && rm state.db")[0] is True
+        assert detect_hardline_command("truncate -s0 state.db", cwd=str(home))[0] is True
+        assert detect_hardline_command("cd $HERMES_HOME && : > state.db")[0] is True
+        assert detect_hardline_command("find . -delete", cwd=str(home))[0] is True
+        assert detect_hardline_command("cmd.exe /c del state.db", cwd=str(home))[0] is True
+        assert detect_hardline_command("powershell Remove-Item state.db", cwd=str(home))[0] is True
+        assert detect_hardline_command(
+            "target=$HERMES_HOME/state.db; rm \"$target\"", cwd=str(tmp_path),
+        )[0] is True
+        assert detect_hardline_command("printf 'state.db\\n' | xargs rm", cwd=str(home))[0] is True
+        assert detect_hardline_command(
+            "find $HERMES_HOME -exec echo {} \\; -exec rm {} \\;",
+        )[0] is True
+        assert detect_hardline_command("rm ../state.db", cwd=str(home / "sub"))[0] is True
+        assert detect_hardline_command("cd /missing || rm state.db", cwd=str(home))[0] is True
+
+        linked_home = tmp_path / "linked-profile"
+        linked_home.symlink_to(home, target_is_directory=True)
+        assert detect_hardline_command("rm state.db", cwd=str(linked_home))[0] is True
+
+    def test_terminal_replay_uses_the_executed_session_cwd(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        workspace = tmp_path / "workspace"
+        home.mkdir()
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(terminal_module, "_task_env_overrides", {})
+        monkeypatch.setattr(terminal_module, "_session_cwd", {})
+        monkeypatch.setattr(terminal_module, "_active_environments", {})
+        shell_home = (
+            f"/{home.drive[0].lower()}{home.as_posix()[2:]}"
+            if home.drive else home.as_posix()
+        )
+
+        for mode, force in (("ordinary", False), ("yolo", False), ("force", True)):
+            task_id = f"managed-cwd-{mode}"
+            target = home / f"{mode}.db"
+            target.write_text("keep", encoding="utf-8")
+            terminal_module.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+            cd_result = json.loads(terminal_module.terminal_tool(
+                command=f'cd "{shell_home}" && pwd', task_id=task_id,
+            ))
+            assert cd_result["exit_code"] == 0
+            assert os.path.samefile(terminal_module.get_session_cwd(task_id), home)
+            monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", mode == "yolo")
+
+            result = json.loads(terminal_module.terminal_tool(
+                command=f'rm "{target.name}"', task_id=task_id, force=force,
+            ))
+
+            assert result.get("status") == "blocked", result
+            assert target.read_text(encoding="utf-8") == "keep"
 
 
 class TestFindExecFullPathRm:

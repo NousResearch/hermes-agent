@@ -165,11 +165,15 @@ def _capture_run_kwargs(timeout: int) -> dict:
 
 
 def _captured_exec(rid, cmd, timeout: int, *, on_result, timeout_err: tuple, fail_code: int,
-                   shell: bool = False, env: "dict | None" = None) -> dict:
+                   shell: bool = False, env: "dict | None" = None,
+                   cwd: "str | None" = None) -> dict:
     """Run ``cmd`` captured (see ``_capture_run_kwargs``) and hand the CompletedProcess to
     ``on_result``; TimeoutExpired → ``timeout_err`` (code, message), other errors → ``fail_code``."""
     try:
-        return on_result(subprocess.run(cmd, cwd=os.getcwd(), shell=shell, env=env, **_capture_run_kwargs(timeout)))
+        return on_result(subprocess.run(
+            cmd, cwd=cwd or os.getcwd(), shell=shell, env=env,
+            **_capture_run_kwargs(timeout),
+        ))
     except subprocess.TimeoutExpired:
         return _err(rid, *timeout_err)
     except Exception as e:
@@ -1424,9 +1428,10 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    command_cwd = os.getcwd()
     try:
         approval = _tools_mod("tools.approval_detection")
-        is_hardline, hardline_desc = approval.detect_hardline_command(cmd)
+        is_hardline, hardline_desc = approval.detect_hardline_command(cmd, cwd=command_cwd)
         if is_hardline:
             return _err(rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.")
         is_dangerous, _, desc = approval.detect_dangerous_command(cmd)
@@ -1436,6 +1441,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     return _captured_exec(
         rid, cmd, 30, shell=True, fail_code=5003, timeout_err=(5002, "command timed out (30s)"),
+        cwd=command_cwd,
         on_result=lambda r: _ok(rid, {"stdout": r.stdout[-4000:], "stderr": r.stderr[-2000:], "code": r.returncode}))
 
 

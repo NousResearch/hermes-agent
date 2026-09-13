@@ -915,12 +915,12 @@ def _user_deny_block(command: str) -> dict | None:
     return _user_deny_block_result(deny_pattern)
 
 
-def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
+def _floor_block(command: str, *, sudo_guard: bool = False, cwd: str | None = None) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
     password-piping to ``sudo -S`` with no SUDO_PASSWORD configured (full guard
     only), and the user's own approvals.deny rules ("never, even under yolo")."""
-    is_hardline, hardline_desc = detect_hardline_command(command)
+    is_hardline, hardline_desc = detect_hardline_command(command, cwd=cwd)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
@@ -1024,7 +1024,8 @@ def _tirith_scan(command: str) -> dict:
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             cwd: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision. Tirith and
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
@@ -1032,7 +1033,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
-    blocked = _floor_block(command, sudo_guard=True)
+    blocked = _floor_block(command, sudo_guard=True, cwd=cwd)
     if blocked is not None:
         return blocked
 
@@ -1083,6 +1084,15 @@ def check_all_command_guards(command: str, env_type: str,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
         permanent_capable=any(not is_t for _, _, is_t in warnings),
     )
+
+
+def check_unconditional_command_floors(command: str, env_type: str,
+                                       has_host_access: bool = False,
+                                       cwd: str | None = None) -> dict:
+    """Run only command guards that explicit approval must never bypass."""
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
+        return _user_deny_block(command) or _approved()
+    return _floor_block(command, sudo_guard=True, cwd=cwd) or _approved()
 
 
 _EXECUTE_CODE_DESCRIPTION = (

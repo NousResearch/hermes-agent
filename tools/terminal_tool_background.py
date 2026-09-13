@@ -128,7 +128,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
-    session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    session_key: str, cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
     pty_disabled_reason: Optional[str],
 ) -> str:
@@ -138,16 +138,11 @@ def spawn_background_process(
     exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
     """
     from tools.process_registry import process_registry
-    from tools.terminal_tool import (
-        _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
-    )
+    from tools.terminal_tool import _redact_terminal_error_text, _resolve_notification_flag_conflict
 
-    effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
-    )
     try:
         proc_session = _spawn(
-            process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
+            process_registry, env=env, env_type=env_type, command=command, cwd=cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty,
         )

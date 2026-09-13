@@ -171,7 +171,7 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
+def detect_hardline_command(command: str, cwd: str | None = None) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
@@ -180,6 +180,8 @@ def detect_hardline_command(command: str) -> tuple:
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
+        if _detect_hermes_home_destruction(command_variant, cwd=cwd):
+            return (True, _HERMES_HOME_DESTRUCTION_DESCRIPTION)
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
@@ -448,6 +450,18 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    command = re.sub(
+        r"(?:%HERMES_HOME%|\$env:HERMES_HOME|\$\{env:HERMES_HOME\})[/\\]",
+        "$HERMES_HOME/", command, flags=re.IGNORECASE,
+    )
+    command = re.sub(
+        r"(?:%HERMES_HOME%|\$env:HERMES_HOME|\$\{env:HERMES_HOME\})(?=$|[\s'\"])",
+        "$HERMES_HOME", command, flags=re.IGNORECASE,
+    )
+    command = re.sub(
+        r"(?:%HOME%|\$env:HOME|\$\{env:HOME\})[/\\]\.hermes",
+        "$HOME/.hermes", command, flags=re.IGNORECASE,
+    )
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
     command = re.sub(r"''|\"\"", '', command)
@@ -457,31 +471,37 @@ def _normalize_command_for_detection(command: str) -> str:
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a path token.
-_PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
+_PATH_TOKEN_STOP = r"""\s'"`;|&<>()*?\[\]"""
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
 @functools.lru_cache(maxsize=64)
-def _home_prefix_fold_regex(path: str):
+def _home_prefix_fold_regex(path: str, include_bare: bool = False):
     """Compile a regex matching *path* as an absolute directory prefix.
     Components match with either separator so native Windows, forward-slash, and mixed forms all
-    fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
+    fold; the caller normalizes the tail's backslashes to ``/``. Callers may opt into folding the
+    bare path as well. Returns ``None`` for an unset/degenerate path (fewer than two components:
+    ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
     if len(components) < 2:
         return None
     # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    prefix = r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    if include_bare:
+        return re.compile(prefix + rf"(?:{_PATH_TAIL})?(?=[{_PATH_TOKEN_STOP}]|$)", flags)
+    return re.compile(prefix + _PATH_TAIL, flags)
 
 
-def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
+def _fold_home_prefixes(command: str, paths, replacement: str, *, include_bare: bool = False) -> str:
     """Fold each resolved home prefix in *command* to *replacement* (no trailing separator; the tail
     supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it."""
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
-        pattern = _home_prefix_fold_regex(path)
+        pattern = _home_prefix_fold_regex(path, include_bare)
         if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)
+            command = pattern.sub(
+                lambda m: replacement + (m.group("tail") or "").replace("\\", "/"), command
+            )
     return command
 
 
@@ -505,7 +525,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         paths = [str(home), str(home.resolve(strict=False))]
     except Exception:
         return command
-    return _fold_home_prefixes(command, paths, "~/.hermes")
+    return _fold_home_prefixes(command, paths, "~/.hermes", include_bare=True)
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
@@ -1193,6 +1213,510 @@ def _shell_command_segment(command: str, start: int) -> str:
             end = i
             break
     return command[start:end].strip()
+
+
+_HERMES_HOME_DESTRUCTION_DESCRIPTION = "destructive operation on Hermes data directory"
+_HERMES_HOME_ROOTS = ("~/.hermes", "$hermes_home", "${hermes_home}", "$home/.hermes", "${home}/.hermes")
+_HERMES_DESTRUCTIVE_NAMES = frozenset({
+    "rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "dd", "install",
+    "perl", "rsync", "ruby", "sed", "sqlite3", "tar",
+})
+_HERMES_OPTIONS_WITH_ARG = {
+    "mv": {"-S", "--suffix", "-t", "--target-directory"},
+    "cp": {"-S", "--suffix", "-t", "--target-directory"},
+    "install": {
+        "-g", "--group", "-m", "--mode", "-o", "--owner", "-S", "--suffix",
+        "--strip-program", "-t", "--target-directory",
+    },
+    "truncate": {"-o", "--io-blocks", "-r", "--reference", "-s", "--size"},
+    "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
+    "sqlite3": {
+        "-cmd", "-init", "-lookaside", "-maxsize", "-mmap", "-newline",
+        "-nullvalue", "-pagecache", "-separator", "-vfs",
+    },
+}
+def _is_hermes_managed_path(word: str) -> bool:
+    path = word.lower().replace("\\", "/").rstrip("/")
+    path = path.replace("%hermes_home%", "$hermes_home")
+    path = path.replace("$env:hermes_home", "$hermes_home")
+    path = path.replace("${env:hermes_home}", "$hermes_home")
+    path = path.replace("%home%/.hermes", "$home/.hermes")
+    path = path.replace("$env:home/.hermes", "$home/.hermes")
+    path = path.replace("${env:home}/.hermes", "$home/.hermes")
+    if path.startswith("${hermes_home"):
+        close = path.find("}")
+        if close != -1 and (close == len(path) - 1 or path[close + 1] == "/"):
+            return True  # Ambiguous parameter operators fail closed at a managed-path operand.
+    if path.startswith("${home"):
+        close = path.find("}")
+        if close != -1 and path[close + 1:].startswith("/.hermes"):
+            return True
+    return any(
+        path == root or (path.startswith(root) and path[len(root):len(root) + 1] in {"/", "*", "?", "["})
+        for root in _HERMES_HOME_ROOTS
+    )
+
+
+_SHELL_ASSIGNMENT_RE = re.compile(
+    r"(?:^|[;&|\n])\s*([A-Za-z_][A-Za-z0-9_]*)="
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s;&|]+))(?=\s*(?:[;&|\n]|$))"
+)
+
+
+def _assignments_before(command: str, start: int) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for match in _SHELL_ASSIGNMENT_RE.finditer(command[:start]):
+        assignments[match.group(1)] = next(
+            value for value in match.groups()[1:] if value is not None
+        )
+    return assignments
+
+
+def _expand_shell_assignments(word: str, assignments: dict[str, str] | None) -> str:
+    if not assignments:
+        return word
+    expanded = word
+    for _ in range(8):
+        updated = re.sub(
+            r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
+            lambda match: assignments.get(match.group(1) or match.group(2), match.group(0)),
+            expanded,
+        )
+        if updated == expanded:
+            break
+        expanded = updated
+    return expanded
+
+
+def _resolved_hermes_operand(
+    word: str, cwd: str | None, assignments: dict[str, str] | None = None,
+) -> str | None:
+    """Resolve a shell path spelling enough to compare it with HERMES_HOME."""
+    if not word:
+        return None
+    try:
+        from hermes_constants import get_hermes_home
+        home = os.path.abspath(str(get_hermes_home().expanduser()))
+    except Exception:
+        return None
+    path = _expand_shell_assignments(word, assignments).replace("\\", "/")
+    lowered = path.lower()
+    for root in _HERMES_HOME_ROOTS:
+        if lowered == root or lowered.startswith(root + "/"):
+            return os.path.normpath(home + path[len(root):].replace("/", os.sep))
+    if (len(path) > 1 and path[1] == ":") or path.startswith("/"):
+        return os.path.normpath(os.path.abspath(path))
+    if path.startswith("~"):
+        return os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    if cwd:
+        return os.path.normpath(os.path.abspath(os.path.join(cwd, path)))
+    return None
+
+
+def _resolved_path_is_managed(path: str | None) -> bool:
+    if not path:
+        return False
+    try:
+        from hermes_constants import get_hermes_home
+        home = os.path.normcase(os.path.realpath(os.path.abspath(str(get_hermes_home().expanduser()))))
+        candidate = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        return os.path.commonpath((home, candidate)) == home
+    except (OSError, ValueError):
+        return False
+
+
+def _operand_is_managed(
+    word: str, cwd_candidates: set[str | None], assignments: dict[str, str] | None = None,
+) -> bool:
+    expanded = _expand_shell_assignments(word, assignments)
+    if _is_hermes_managed_path(expanded):
+        return True
+    return any(
+        _resolved_path_is_managed(_resolved_hermes_operand(expanded, candidate))
+        for candidate in cwd_candidates
+    )
+
+
+def _connector_after(command: str, command_start: int, limit: int) -> str:
+    for kind, index, _, quote in _scan_shell(command, command_start, subst="uq"):
+        if index >= limit:
+            break
+        if kind != "char" or quote is not None:
+            continue
+        if command.startswith(("&&", "||"), index):
+            return command[index:index + 2]
+        if command[index] in ";\n|":
+            return command[index]
+    return ""
+
+
+def _cwd_candidates_before(command: str, start: int, cwd: str | None) -> set[str | None]:
+    """Track cwd possibilities through preceding shell `cd` commands."""
+    candidates: set[str | None] = {
+        os.path.normpath(os.path.abspath(os.path.expanduser(cwd))) if cwd else None
+    }
+    spans = list(_iter_shell_command_word_spans(command[:start]))
+    target_command_start = start
+    prior_spans = spans
+    if spans and not _connector_after(command, spans[-1][0], start):
+        target_command_start = spans[-1][0]
+        prior_spans = spans[:-1]
+    for index, (command_start, _, word) in enumerate(prior_spans):
+        if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "cd":
+            continue
+        try:
+            argv = shlex.split(_shell_command_segment(command, command_start), posix=True)
+        except ValueError:
+            continue
+        if len(argv) < 2 or argv[1] == "-":
+            continue
+        assignments = _assignments_before(command, command_start)
+        resolved = {
+            _resolved_hermes_operand(argv[1], candidate, assignments)
+            for candidate in candidates
+        }
+        connector = _connector_after(command, command_start, start)
+        next_start = spans[index + 1][0] if index + 1 < len(spans) else target_command_start
+        immediate = next_start == target_command_start
+        if connector == "&&" and immediate:
+            candidates = resolved
+        elif connector == "||" and immediate:
+            pass
+        elif connector == "|":
+            pass  # A pipeline component's cwd does not change its parent shell.
+        else:
+            candidates |= resolved
+    return candidates
+
+
+def _command_operands(argv: list[str], command_name: str) -> tuple[list[str], dict[str, list[str]]]:
+    """Return positional operands and values owned by relevant command options."""
+    operands, option_values, pending_option, options = [], {}, None, True
+    with_arg = _HERMES_OPTIONS_WITH_ARG.get(command_name, set())
+    for arg in argv[1:]:
+        if pending_option:
+            option_values.setdefault(pending_option, []).append(arg)
+            pending_option = None
+        elif options and arg == "--":
+            options = False
+        elif options and arg.startswith("-") and arg != "-":
+            option, separator, value = arg.partition("=")
+            if option.startswith("--") and option not in with_arg:
+                matches = [candidate for candidate in with_arg if candidate.startswith(option)]
+                option = matches[0] if len(matches) == 1 else option
+            if option in with_arg:
+                if separator:
+                    option_values.setdefault(option, []).append(value)
+                else:
+                    pending_option = option
+            elif not arg.startswith("--"):
+                for index, letter in enumerate(arg[1:], start=1):
+                    short_option = "-" + letter
+                    if short_option not in with_arg:
+                        continue
+                    attached = arg[index + 1:]
+                    if attached:
+                        option_values.setdefault(short_option, []).append(attached)
+                    else:
+                        pending_option = short_option
+                    break
+        else:
+            operands.append(arg)
+    return operands, option_values
+
+
+def _has_hermes_redirect(command: str, cwd: str | None = None) -> bool:
+    """Detect an output redirection whose shell target is inside HERMES_HOME."""
+    for kind, index, _, quote in _scan_shell(command, subst="uq"):
+        if kind != "char" or quote is not None or command[index] != ">":
+            continue
+        if index and command[index - 1] == ">":
+            continue
+        target_start = index + 1
+        descriptor_form = target_start < len(command) and command[target_start] == "&"
+        if descriptor_form:
+            target_start += 1
+        while target_start < len(command) and command[target_start] in ">| \t":
+            target_start += 1
+        _, _, target = _read_shell_word(command, target_start)
+        target = _deobfuscate_shell_word_for_detection(target)
+        if descriptor_form and (target == "-" or target.isdigit()):
+            continue
+        if _operand_is_managed(
+            target, _cwd_candidates_before(command, index, cwd),
+            _assignments_before(command, index),
+        ):
+            return True
+    return False
+
+
+def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> bool:
+    """Hard-block destructive verbs only when they target Hermes-managed state."""
+    if _has_hermes_redirect(command, cwd=cwd):
+        return True
+    for word_start, _, word in _iter_shell_command_word_spans(command):
+        name = _hermes_destructive_executable_name(word)
+        segment = _shell_command_segment(command, word_start)
+        cwd_candidates = _cwd_candidates_before(command, word_start, cwd)
+        if name in _HERMES_COMMAND_DISPATCHERS and _dispatcher_targets_hermes(
+            segment, cwd_candidates=cwd_candidates,
+        ):
+            return True
+        if name not in _HERMES_DESTRUCTIVE_NAMES:
+            continue
+        try:
+            argv = shlex.split(segment, posix=True)
+        except ValueError:
+            continue
+        operands, option_values = _command_operands(argv, name)
+        assignments = _assignments_before(command, word_start)
+        is_managed = lambda arg: _operand_is_managed(arg, cwd_candidates, assignments)
+        if name in {"rm", "truncate", "shred", "unlink", "tee"}:
+            if any(is_managed(arg) for arg in operands):
+                return True
+        elif name == "mv":
+            targets = option_values.get("-t", []) + option_values.get("--target-directory", [])
+            sources = operands if targets or len(operands) == 1 else operands[:-1]
+            positional_targets = [] if targets or len(operands) < 2 else operands[-1:]
+            if (any(is_managed(arg) for arg in sources)
+                    or any(is_managed(arg) for arg in targets)
+                    or any(is_managed(arg) for arg in positional_targets)):
+                return True
+        elif name in {"cp", "install"}:
+            targets = option_values.get("-t", []) + option_values.get("--target-directory", [])
+            positional_targets = [] if targets or len(operands) < 2 else operands[-1:]
+            if (any(is_managed(arg) for arg in targets)
+                    or any(is_managed(arg) for arg in positional_targets)):
+                return True
+        elif name == "rsync" and len(operands) >= 2 and is_managed(operands[-1]):
+            return True
+        elif name == "rsync" and "--remove-source-files" in argv:
+            if any(is_managed(arg) for arg in operands[:-1]):
+                return True
+        elif name in {"sed", "perl", "ruby"}:
+            in_place = any(
+                arg == "--in-place" or (arg.startswith("-") and not arg.startswith("--") and "i" in arg[1:])
+                for arg in argv[1:]
+            )
+            if in_place and any(is_managed(arg) for arg in operands):
+                return True
+        elif name == "tar" and "--remove-files" in argv:
+            if any(is_managed(arg) for arg in operands):
+                return True
+        elif name == "dd":
+            for operand in operands:
+                key, separator, value = operand.partition("=")
+                if separator and key.lower() == "of" and is_managed(value):
+                    return True
+        elif name == "sqlite3" and any(is_managed(arg) for arg in operands):
+            database_index = next(index for index, arg in enumerate(operands) if is_managed(arg))
+            sql = operands[database_index + 1:] + option_values.get("-cmd", [])
+            if (option_values.get("-init")
+                    or not sql
+                    or not all(_sqlite_payload_is_read_only(payload) for payload in sql)):
+                return True
+    return False
+
+
+def _hermes_destructive_executable_name(word: str) -> str:
+    name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+_HERMES_COMMAND_DISPATCHERS = frozenset({"busybox", "cmd", "find", "powershell", "pwsh", "xargs"})
+
+
+def _dispatcher_targets_hermes(
+    segment: str, *, cwd_candidates: set[str | None] | None = None,
+) -> bool:
+    """Detect managed paths passed to destructive applets/dispatcher payloads."""
+    try:
+        argv = shlex.split(segment, posix=True)
+    except ValueError:
+        return False
+    if not argv or _hermes_destructive_executable_name(argv[0]) not in _HERMES_COMMAND_DISPATCHERS:
+        return False
+    dispatcher = _hermes_destructive_executable_name(argv[0])
+    cwd_candidates = cwd_candidates or {None}
+    if dispatcher == "busybox" and len(argv) > 1:
+        return any(
+            _detect_hermes_home_destruction(
+                " ".join(shlex.quote(arg) for arg in argv[1:]), cwd=candidate,
+            )
+            for candidate in cwd_candidates
+        )
+    if dispatcher == "xargs":
+        payload = _xargs_payload(argv)
+        if not payload:
+            return False
+        if any(
+            _detect_hermes_home_destruction(
+                " ".join(shlex.quote(arg) for arg in payload), cwd=candidate,
+            )
+            for candidate in cwd_candidates
+        ):
+            return True
+        return _xargs_has_unresolved_destructive_input(payload)
+    if dispatcher == "find":
+        expression_start = next(
+            (index for index, arg in enumerate(argv[1:], start=1) if arg.startswith("-")),
+            len(argv),
+        )
+        roots_managed = any(_operand_is_managed(arg, cwd_candidates) for arg in argv[1:expression_start])
+        if roots_managed and "-delete" in argv:
+            return True
+        for index, arg in enumerate(argv):
+            if arg not in {"-exec", "-execdir"}:
+                continue
+            end = next(
+                (payload_index for payload_index in range(index + 1, len(argv))
+                 if argv[payload_index] in {";", "+"}),
+                len(argv),
+            )
+            payload = [
+                "$HERMES_HOME" if roots_managed and word == "{}" else word
+                for word in argv[index + 1:end]
+            ]
+            if any(
+                _detect_hermes_home_destruction(
+                    " ".join(shlex.quote(word) for word in payload), cwd=candidate,
+                )
+                for candidate in cwd_candidates
+            ):
+                return True
+        return False
+    destructive_names = (
+        {"del", "erase", "rd", "rmdir"}
+        if dispatcher == "cmd" else
+        {"del", "erase", "rd", "ri", "rm", "remove-item"}
+    )
+    payload_words = [word for arg in argv[1:] for word in re.split(r"\s+", arg) if word]
+    for index, word in enumerate(payload_words):
+        if word.strip("'\";,(){}").lower() not in destructive_names:
+            continue
+        targets = (
+            target.strip("'\";,(){}") for target in payload_words[index + 1:]
+            if target and not target.startswith("-")
+        )
+        if any(_operand_is_managed(target, cwd_candidates) for target in targets):
+            return True
+    return False
+
+
+_XARGS_OPTIONS_WITH_ARG = frozenset({
+    "-a", "--arg-file", "-d", "--delimiter", "-E", "--eof", "-I", "--replace",
+    "-L", "--max-lines", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars",
+    "--process-slot-var",
+})
+
+
+def _xargs_payload(argv: list[str]) -> list[str]:
+    """Return xargs' fixed command and arguments, excluding xargs options."""
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            index += 1
+            break
+        if not arg.startswith("-") or arg == "-":
+            break
+        option = arg.partition("=")[0]
+        if option in _XARGS_OPTIONS_WITH_ARG and "=" not in arg:
+            index += 2
+        else:
+            index += 1
+    return argv[index:]
+
+
+def _xargs_has_unresolved_destructive_input(payload: list[str]) -> bool:
+    """Fail closed when xargs supplies unknown operands to a mutating command."""
+    if not payload:
+        return False
+    if _hermes_destructive_executable_name(payload[0]) == "busybox":
+        payload = payload[1:]
+        if not payload:
+            return False
+    name = _hermes_destructive_executable_name(payload[0])
+    if name not in _HERMES_DESTRUCTIVE_NAMES:
+        return False
+    if name in {"cp", "install"}:
+        _, option_values = _command_operands(payload, name)
+        return not (
+            option_values.get("-t") or option_values.get("--target-directory")
+        )
+    return True
+
+
+_SQLITE_READ_ONLY_PREFIXES = frozenset({"select", "explain", "values"})
+_SQLITE_READ_ONLY_DOT_COMMANDS = (
+    ".backup", ".databases", ".dump", ".headers", ".indexes", ".mode", ".nullvalue",
+    ".schema", ".separator", ".show", ".tables", ".width",
+)
+_SQLITE_READ_ONLY_PRAGMAS = frozenset({
+    "compile_options", "database_list", "foreign_key_list", "index_info",
+    "index_list", "integrity_check", "quick_check", "table_info", "table_list",
+})
+
+
+def _sqlite_payload_is_read_only(payload: str) -> bool:
+    """Accept only SQLite payloads whose statements are structurally read-only."""
+    statements, current = [], []
+    quote, line_comment, block_comment, index = None, False, False, 0
+    while index < len(payload):
+        char = payload[index]
+        following = payload[index + 1] if index + 1 < len(payload) else ""
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+                current.append(" ")
+        elif block_comment:
+            if char == "*" and following == "/":
+                block_comment = False
+                index += 1
+        elif quote:
+            current.append(char)
+            if char == quote:
+                if following == quote:
+                    current.append(following)
+                    index += 1
+                else:
+                    quote = None
+        elif char in "'\"":
+            quote = char
+            current.append(char)
+        elif char == "-" and following == "-":
+            line_comment = True
+            index += 1
+        elif char == "/" and following == "*":
+            block_comment = True
+            index += 1
+        elif char == ";":
+            if "".join(current).strip():
+                statements.append("".join(current).strip().lower())
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    if "".join(current).strip():
+        statements.append("".join(current).strip().lower())
+    if quote or block_comment:
+        return False
+    def read_only(statement: str) -> bool:
+        match = re.match(r"([a-z]+|\.[a-z]+)\b", statement)
+        if match is None:
+            return False
+        keyword = match.group(1)
+        if keyword in _SQLITE_READ_ONLY_PREFIXES or keyword in _SQLITE_READ_ONLY_DOT_COMMANDS:
+            return True
+        if keyword == "pragma":
+            pragma = re.match(r"pragma\s+(?:[a-z_]+\.)?([a-z_]+)\b", statement)
+            return pragma is not None and pragma.group(1) in _SQLITE_READ_ONLY_PRAGMAS
+        if keyword == "with":
+            return (re.search(r"\bselect\b", statement) is not None
+                    and re.search(r"\b(?:delete|insert|replace|update)\b", statement) is None)
+        return False
+
+    return bool(statements) and all(read_only(statement) for statement in statements)
 
 
 def _split_env_string(payload: str) -> list[str] | None:

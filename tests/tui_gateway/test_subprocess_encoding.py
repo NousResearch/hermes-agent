@@ -95,11 +95,12 @@ def test_shell_exec_uses_utf8_replace():
     handler = server._methods["shell.exec"]
     with patch("subprocess.run", return_value=_make_completed_process()) as mock_run:
         # A harmless, non-dangerous command that passes the approval gate.
-        with patch("tools.approval_detection.detect_hardline_command", return_value=(False, "")), \
+        with patch("tools.approval_detection.detect_hardline_command", return_value=(False, "")) as hardline, \
              patch("tools.approval_detection.detect_dangerous_command", return_value=(False, None, "")):
             resp = handler(1, {"command": "echo hello"})
         assert mock_run.called, "subprocess.run was not invoked"
         kwargs = mock_run.call_args[1]
+        assert hardline.call_args.kwargs["cwd"] == kwargs["cwd"]
         assert kwargs.get("encoding") == "utf-8", (
             f"shell.exec subprocess.run must set encoding='utf-8' (got {kwargs.get('encoding')!r})"
         )

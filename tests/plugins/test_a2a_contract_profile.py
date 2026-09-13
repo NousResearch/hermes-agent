@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent import secret_scope
 from gateway.config import PlatformConfig
+from plugins.platforms.a2a import adapter as a2a_adapter
 from plugins.platforms.a2a import contract, protocol, tools
 from plugins.platforms.a2a.adapter import A2AAdapter
 
@@ -425,7 +427,7 @@ def test_routed_research_returns_working_before_profile_forward(monkeypatch):
     agent = adapter._agents["research"]
     forwarded = []
     background = []
-    adapter._forward_to_profile = lambda *_args: forwarded.append(True) or ("report", protocol.STATE_COMPLETED)  # type: ignore[method-assign]
+    adapter._forward_to_profile = lambda *_args, **_kwargs: forwarded.append(True) or ("report", protocol.STATE_COMPLETED)  # type: ignore[method-assign]
     monkeypatch.setattr("plugins.platforms.a2a.adapter._daemon_thread", lambda target, _name: background.append(target))
     invocation = {
         "skill": "research.deep",
@@ -449,6 +451,46 @@ def test_routed_research_returns_working_before_profile_forward(monkeypatch):
     assert completed["state"] == protocol.STATE_COMPLETED
     correlation = completed["result_data"]["correlation"]
     assert correlation == {"task_id": task["id"], "context_id": "ctx-routed-research"}
+
+
+def test_routed_research_uses_requested_duration_for_profile_process(monkeypatch):
+    adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+        "agents": {"research": {"profile": "research", "tenant": "research"}}
+    }))
+    adapter._web_search_is_available = lambda _agent=None: True  # type: ignore[method-assign]
+    agent = adapter._agents["research"]
+    background = []
+    subprocess_timeouts = []
+    monkeypatch.setattr(a2a_adapter, "_daemon_thread", lambda target, _name: background.append(target))
+    monkeypatch.setattr(a2a_adapter, "_state_db", lambda *_args, **_kwargs: None)
+
+    def fake_run(*_args, **kwargs):
+        subprocess_timeouts.append(kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="report", stderr="")
+
+    monkeypatch.setattr(a2a_adapter.subprocess, "run", fake_run)
+    invocation = {
+        "skill": "research.deep",
+        "input": {
+            "question": "What changed?",
+            "idempotency_key": "routed-research-timeout",
+            "max_duration_seconds": 1800,
+        },
+    }
+
+    task, pending = adapter._prepare_task(
+        {"tenant": "research", "message": protocol.structured_message(
+            protocol.ROLE_USER, invocation, context_id="ctx-routed-research-timeout"
+        )},
+        "yeoman",
+        agent=agent,
+    )
+    assert pending is None
+    assert task["status"]["state"] == protocol.STATE_WORKING
+
+    background[0]()
+
+    assert subprocess_timeouts == [1800]
 
 
 def test_inbound_search_uses_structured_skill_prompt_and_result_artifact(monkeypatch):

@@ -700,11 +700,17 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _background_forward_profile(self, pending: dict, agent: dict, framed_text: str) -> None:
         reply, state = self._forward_to_profile(
-            agent, pending["peer"], pending["context_id"], framed_text
+            agent,
+            pending["peer"],
+            pending["context_id"],
+            framed_text,
+            timeout=int(pending["invocation"]["input"].get("max_duration_seconds", 86400)),
         )
         self._finalize_task(pending, state, reply)
 
-    def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
+    def _forward_to_profile(
+        self, agent: dict, peer: str, context_id: str, framed_text: str, timeout: Optional[int] = None
+    ) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
         ``source=a2a`` session and titles it deterministically; later turns ``--resume`` that id."""
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
@@ -712,7 +718,7 @@ class A2AAdapter(BasePlatformAdapter):
         safe_ctx = _safe_context_slug(context_id)
         session_title = f"a2a-{slug}-{safe_ctx}"
         key = (profile or "default", slug, safe_ctx)
-        timeout = int(agent.get("timeout") or _reply_timeout())
+        timeout = int(timeout if timeout is not None else agent.get("timeout") or _reply_timeout())
         with self._forward_lock(key):
             session_id = self._profile_sessions.get(key) or _state_db(
                 profile, "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",

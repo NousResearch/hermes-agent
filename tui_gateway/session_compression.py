@@ -64,6 +64,9 @@ _COMPRESSION_INT_KEYS = (
     ("proactive_prune_tokens", 0, 0),
     ("proactive_prune_min_result_chars", 8000, 0),
     ("proactive_prune_min_reclaim_tokens", 4096, 0),
+    ("tool_arg_head_chars", 1000, 0),
+    ("tool_arg_tail_chars", 1000, 0),
+    ("tool_arg_truncate_threshold", 4000, 0),
     ("protect_last_n", 20, 0),
     ("min_tail_user_messages", 1, 1),
 )

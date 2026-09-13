@@ -1068,16 +1068,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._max_latency_seconds = self._finite_positive_config_float(
             "websocket_max_latency_seconds", 30.0,
         )
-        # Dispatch-side dimension (#109521): ready/open/ACK/latency prove the transport, not
-        # that events are still being DISPATCHED. Last raw gateway frame (any frame —
-        # heartbeats, ACKs, presence — so a legitimately quiet server is not "dead") gives
-        # the probe an event-age bound; a socket that stays ESTAB and keeps ACKing while
-        # zero frames arrive is the connected-but-deaf fingerprint the old probe read healthy.
-        self._event_max_silence_seconds = self._finite_positive_config_float(
-            "websocket_event_max_silence_seconds", 300.0,
-        )
-        # perf_counter clock (same as _read_websocket_health's ack math); 0 = never saw a frame.
-        self._last_gateway_frame_at: float = 0.0
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
@@ -1113,16 +1103,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return default if value is None or value == "" else value
 
     def _warn_liveness_config_disabled(self, key: str, raw: Any) -> None:
-        """One-shot warning when a liveness knob resolves to a disabling value (#109521).
+        """Warn when a liveness knob value is unusable (#109521).
 
         Unparsable config (`"15s"`, `nan`, `true`) silently mapped to 0 and turned the whole
         watchdog off with no log line — indistinguishable from "the watchdog missed it".
-        Loud beats silent: the operator's mitigation (cron-restart on no-`[Discord]`-lines)
-        exists only because nothing in-process ever told them the probe was off.
+        An explicit ``0`` is an intentional opt-out and stays silent.
         """
         logger.warning(
             "[%s] Discord liveness knob %s=%r is not a usable positive number; "
-            "the websocket liveness probe may be disabled by this value",
+            "the websocket liveness probe is disabled by this value",
             self.name, key, raw,
         )
 
@@ -1131,6 +1120,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> float:
         """Resolve a finite positive liveness duration; invalid values disable it (with a warning)."""
         raw = self._config_value(key, default, env_key=env_key)
+        if isinstance(raw, bool):
+            self._warn_liveness_config_disabled(key, raw)
+            return 0.0
         try:
             value = float(raw)
         except (TypeError, ValueError):
@@ -1138,7 +1130,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return 0.0
         if math.isfinite(value) and value > 0:
             return value
-        self._warn_liveness_config_disabled(key, raw)
+        if value != 0:
+            self._warn_liveness_config_disabled(key, raw)
         return 0.0
 
     def _config_int(self, key: str, default: int, *, env_key: Optional[str] = None) -> int:
@@ -1148,10 +1141,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._warn_liveness_config_disabled(key, raw)
             return 0
         try:
-            return int(raw)
+            value = int(raw)
         except (TypeError, ValueError):
             self._warn_liveness_config_disabled(key, raw)
             return 0
+        if value < 0:
+            self._warn_liveness_config_disabled(key, raw)
+            return 0
+        return value
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits as a retryable fatal so GatewayRunner
@@ -1258,9 +1255,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
-                # Fresh connection => no silence history: reset the dispatch-side stamp so a
-                # reconnect never inherits the pre-restart silence (#109521).
-                adapter_self._last_gateway_frame_at = time.perf_counter()
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
@@ -1268,17 +1262,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
-
-            @self._client.event
-            async def on_socket_raw_receive(msg: str):
-                """Stamp every inbound gateway frame for the liveness probe's event-age check.
-
-                Fires for ALL frames — heartbeats, ACKs, presence — not just messages, so a
-                legitimately quiet server is not "dead", but a socket that stays ESTAB while
-                zero frames arrive (connected-but-deaf, #109521 incident 2) becomes visible.
-                Intentionally bare: parsing happens in discord.py; this hook only clocks.
-                """
-                adapter_self._last_gateway_frame_at = time.perf_counter()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1635,7 +1618,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             or self._liveness_failure_threshold <= 0
             or self._heartbeat_ack_max_age_seconds <= 0
             or self._max_latency_seconds <= 0
-            or self._event_max_silence_seconds <= 0
         ):
             return
         if self._liveness_task and not self._liveness_task.done():
@@ -1675,15 +1657,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False, "latency_non_finite"
         if latency > self._max_latency_seconds:
             return False, "latency_exceeded"
-        # Dispatch-side dimension (#109521): every check above inspects the transport, and a
-        # socket that is ESTAB and still ACKing can deliver ZERO events for hours while
-        # reading healthy. The last raw gateway frame (any frame, including heartbeats) is
-        # the one signal that events are actually arriving. Never-seen-frame counts as
-        # silent — on_ready fires long before any gap could be legitimate.
-        if self._event_max_silence_seconds > 0:
-            frame_age = time.perf_counter() - self._last_gateway_frame_at
-            if self._last_gateway_frame_at <= 0 or frame_age > self._event_max_silence_seconds:
-                return False, "event_silence"
         return True, "healthy"
 
     async def _liveness_loop(self) -> None:
@@ -6978,7 +6951,6 @@ _YAML_WEBSOCKET_LIVENESS_KEYS = (
     ("websocket_liveness_failure_threshold", "liveness_failure_threshold", "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"),
     ("websocket_heartbeat_ack_max_age_seconds", None, None),
     ("websocket_max_latency_seconds", None, None),
-    ("websocket_event_max_silence_seconds", None, None),
 )
 
 

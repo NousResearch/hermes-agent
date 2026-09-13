@@ -95,7 +95,6 @@ def _make_adapter(
     threshold=1,
     max_ack_age=1.0,
     max_latency=1.0,
-    max_silence=300.0,
 ) -> DiscordAdapter:
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
@@ -106,7 +105,6 @@ def _make_adapter(
             extra={
                 "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
                 "websocket_max_latency_seconds": max_latency,
-                "websocket_event_max_silence_seconds": max_silence,
             },
         )
     )
@@ -124,7 +122,8 @@ class _BrokenWebSocket:
         ("websocket_liveness_interval_seconds", "_liveness_interval_seconds", "nan"),
         ("websocket_heartbeat_ack_max_age_seconds", "_heartbeat_ack_max_age_seconds", "inf"),
         ("websocket_max_latency_seconds", "_max_latency_seconds", "-inf"),
-        ("websocket_event_max_silence_seconds", "_event_max_silence_seconds", "15s"),
+        ("websocket_max_latency_seconds", "_max_latency_seconds", True),
+        ("websocket_max_latency_seconds", "_max_latency_seconds", "15s"),
     ],
 )
 def test_nonfinite_liveness_config_disables_that_probe_dimension(monkeypatch, key, attribute, raw):
@@ -135,8 +134,8 @@ def test_nonfinite_liveness_config_disables_that_probe_dimension(monkeypatch, ke
     assert getattr(adapter, attribute) == 0.0
 
 
-def test_unparsable_liveness_config_warns_instead_of_disabling_silently(monkeypatch, caplog):
-    """A knob value that can't parse must not disable the probe without a trace (#109521).
+def test_unusable_liveness_config_warns_instead_of_disabling_silently(caplog):
+    """A knob value that can't be used must not disable the probe without a trace (#109521).
 
     Pre-fix, ``websocket_liveness_interval_seconds: 15s`` mapped to 0.0 with no log line —
     the watchdog was off and the only visible symptom was hours of Discord silence.
@@ -146,13 +145,38 @@ def test_unparsable_liveness_config_warns_instead_of_disabling_silently(monkeypa
             PlatformConfig(
                 enabled=True,
                 token="test-token",
-                extra={"websocket_liveness_interval_seconds": "15s"},
+                extra={
+                    "websocket_liveness_interval_seconds": "15s",
+                    "websocket_max_latency_seconds": True,
+                    "websocket_liveness_failure_threshold": -1,
+                },
             )
         )
 
     assert adapter._liveness_interval_seconds == 0.0
-    assert "websocket_liveness_interval_seconds" in caplog.text
-    assert "15s" in caplog.text
+    assert adapter._max_latency_seconds == 0.0
+    assert adapter._liveness_failure_threshold == 0
+    warned = [r.getMessage() for r in caplog.records if "liveness knob" in r.getMessage()]
+    assert len(warned) == 3
+    assert any("websocket_liveness_interval_seconds='15s'" in w for w in warned)
+    assert any("websocket_max_latency_seconds=True" in w for w in warned)
+    assert any("websocket_liveness_failure_threshold=-1" in w for w in warned)
+
+
+def test_explicit_zero_liveness_knob_disables_without_warning(caplog):
+    """``0`` is the documented opt-out, not a config error: no warning."""
+    with caplog.at_level("WARNING", logger="plugins.platforms.discord.adapter"):
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={"websocket_liveness_interval_seconds": 0, "websocket_liveness_failure_threshold": 0},
+            )
+        )
+
+    assert adapter._liveness_interval_seconds == 0.0
+    assert adapter._liveness_failure_threshold == 0
+    assert not [r for r in caplog.records if "liveness knob" in r.getMessage()]
 
 
 def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
@@ -168,7 +192,6 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
     assert adapter._liveness_failure_threshold == 2
     assert adapter._heartbeat_ack_max_age_seconds == 60.0
     assert adapter._max_latency_seconds == 30.0
-    assert adapter._event_max_silence_seconds == 300.0
 
 
 def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
@@ -323,170 +346,3 @@ async def test_disconnect_cancels_liveness_task(monkeypatch):
     await adapter.disconnect()
     assert task.done()
     assert adapter._liveness_task is None
-
-
-class _DeafHealthBot(_LiveBot):
-    """Incident-2 fingerprint from #109521: ESTAB socket, keep-alive ACKs, zero frames."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.raw_receive_events = []
-
-    async def deliver_raw_frame(self, payload: str = "{}"):
-        """Feed a raw gateway frame through the adapter's registered hook."""
-        await self._events["on_socket_raw_receive"](payload)
-
-
-def _connect_deaf_bot(adapter, monkeypatch, bot_box):
-    def factory(**kwargs):
-        bot = _DeafHealthBot(
-            intents=kwargs["intents"],
-            allowed_mentions=kwargs.get("allowed_mentions"),
-        )
-        bot.fetch_user = AsyncMock()
-        bot_box.append(bot)
-        return bot
-
-    return _connect(adapter, monkeypatch, factory)
-
-
-@pytest.mark.asyncio
-async def test_connected_but_deaf_socket_is_unhealthy(monkeypatch):
-    """#109521 incident 2: a socket that stays open, ready, low-latency, and ACKing —
-    but through which no gateway frame has arrived since before the silence bound —
-    must read unhealthy, not healthy."""
-    adapter = _make_adapter(
-        monkeypatch, interval=60, threshold=1, max_ack_age=60.0, max_latency=30.0,
-        max_silence=10.0,
-    )
-    box = []
-    await _connect_deaf_bot(adapter, monkeypatch, box)
-    bot = box[0]
-
-    _set_websocket_health(bot, ready=True, socket_open=True, latency=0.05, ack_age=0.0)
-    # on_ready reset the stamp at connect; age it past the bound so the adapter is
-    # "connected, all transport dimensions green, and silent" — incident 2's fingerprint.
-    adapter._last_gateway_frame_at = time.perf_counter() - 60.0
-
-    healthy, reason = adapter._read_websocket_health(bot)
-    assert healthy is False
-    assert reason == "event_silence"
-
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_recent_raw_frame_keeps_deaf_fingerprint_socket_healthy(monkeypatch):
-    """Any raw gateway frame (heartbeat, ACK — not just messages) refreshes the dispatch
-    clock: a legitimately quiet server must not be flagged by the event-age bound."""
-    adapter = _make_adapter(
-        monkeypatch, interval=60, threshold=1, max_ack_age=60.0, max_latency=30.0,
-    )
-    box = []
-    await _connect_deaf_bot(adapter, monkeypatch, box)
-    bot = box[0]
-
-    _set_websocket_health(bot, ready=True, socket_open=True, latency=0.05, ack_age=0.0)
-    # on_ready resets the stamp (fresh connection); a non-message frame then advances it.
-    assert adapter._last_gateway_frame_at > 0
-    await bot.deliver_raw_frame('{"t":null,"op":11}')
-    frame_at = adapter._last_gateway_frame_at
-    assert frame_at > 0
-
-    healthy, reason = adapter._read_websocket_health(bot)
-    assert (healthy, reason) == (True, "healthy")
-
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_stale_frame_over_silence_bound_reads_unhealthy(monkeypatch):
-    """A frame that arrived, then a silence longer than the bound, while transport
-    dimensions still look healthy — the exact connected-but-deaf progression."""
-    adapter = _make_adapter(
-        monkeypatch, interval=60, threshold=1, max_ack_age=60.0, max_latency=30.0,
-        max_silence=10.0,
-    )
-    box = []
-    await _connect_deaf_bot(adapter, monkeypatch, box)
-    bot = box[0]
-
-    _set_websocket_health(bot, ready=True, socket_open=True, latency=0.05, ack_age=0.0)
-    await bot.deliver_raw_frame('{"t":null,"op":11}')
-    # Simulate the silence: age the last frame past every bound, keeping the transport green.
-    adapter._last_gateway_frame_at = time.perf_counter() - 60.0
-
-    healthy, reason = adapter._read_websocket_health(bot)
-    assert (healthy, reason) == (False, "event_silence")
-
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_event_silence_drives_liveness_loop_to_retryable_fatal(monkeypatch, caplog):
-    """End to end: a persistent deaf socket trips the probe's failure threshold and
-    surfaces as the retryable fatal the reconnect watcher already handles."""
-    import logging
-
-    caplog.at_level(logging.WARNING, logger="plugins.platforms.discord.adapter")
-    adapter = _make_adapter(
-        monkeypatch, interval=0.01, threshold=2, max_ack_age=60.0, max_latency=30.0,
-        max_silence=5.0,
-    )
-    handler = AsyncMock()
-    adapter.set_fatal_error_handler(handler)
-    box = []
-    await _connect_deaf_bot(adapter, monkeypatch, box)
-    bot = box[0]
-
-    # Transport dimensions stay green the whole time; frames never arrive.
-    _set_websocket_health(bot, ready=True, socket_open=True, latency=0.05, ack_age=0.0)
-    adapter._last_gateway_frame_at = time.perf_counter() - 60.0
-
-    await _wait_until(
-        lambda: adapter.fatal_error_code == "discord_websocket_health_stale",
-        "deaf socket never tripped the liveness probe",
-    )
-    assert "event_silence" in caplog.text
-    # The runner-facing handler fires from the notification task (post-close); give it a beat.
-    await _wait_until(
-        lambda: handler.await_count >= 1,
-        "fatal notification never reached the runner handler",
-    )
-
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_silence_knob_zero_disables_event_dimension_only(monkeypatch):
-    """Setting ``websocket_event_max_silence_seconds: 0`` must opt out of the dispatch
-    check alone; the transport dimensions (ack age, latency) still work."""
-    adapter = DiscordAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="test-token",
-            extra={
-                "websocket_event_max_silence_seconds": 0,
-                "websocket_heartbeat_ack_max_age_seconds": 60.0,
-                "websocket_max_latency_seconds": 30.0,
-            },
-        )
-    )
-    assert adapter._event_max_silence_seconds == 0.0
-
-    box = []
-    await _connect_deaf_bot(adapter, monkeypatch, box)
-    bot = box[0]
-    # Never delivered a frame and the stamp is at its connect-time value.
-    adapter._last_gateway_frame_at = 0.0
-
-    _set_websocket_health(bot, ready=True, socket_open=True, latency=0.05, ack_age=0.0)
-    healthy, reason = adapter._read_websocket_health(bot)
-    assert (healthy, reason) == (True, "healthy")
-
-    # While the transport dimensions still catch their own failure shape:
-    _set_websocket_health(bot, ready=True, socket_open=True, latency=0.05, ack_age=999.0)
-    healthy, reason = adapter._read_websocket_health(bot)
-    assert (healthy, reason) == (False, "ack_stale")
-
-    await adapter.disconnect()

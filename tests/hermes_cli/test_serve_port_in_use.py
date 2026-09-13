@@ -11,6 +11,9 @@ Contract under test:
 * conflict → single stdout sentinel ``BACKEND_PORT_IN_USE port=<port>`` +
   a human hint line + exit code 75 (EX_TEMPFAIL, the repo's existing
   transient-condition convention) — and NO ``HERMES_BACKEND_READY``.
+* that conflict sentinel must land on **stdout specifically**, not merely
+  "somewhere in the merged output" — see
+  ``test_conflict_sentinel_is_on_stdout_not_stderr``.
 * free explicit port → boots and announces ``HERMES_BACKEND_READY`` exactly
   as before (contract untouched).
 * ``--port 0`` (ephemeral) → probe skipped, boots, announces the
@@ -242,3 +245,42 @@ def test_ready_sentinel_arrives_on_stdout_not_stderr(tmp_path):
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def test_conflict_sentinel_is_on_stdout_not_stderr(tmp_path):
+    """The conflict sentinel must reach STDOUT, the pipe consumers watch.
+
+    Regression guard for the sibling half of the #96282 class of bug. Importing
+    ``tui_gateway.server`` (done in ``start_server`` for the flush-on-SIGTERM
+    handlers) rebinds ``sys.stdout`` to stderr, so a plain ``print()`` of a
+    machine sentinel silently changes channel. The READY sentinel was fixed in
+    f2dd32d3e and the conflict sentinel in 42e1aa39f — but that second fix
+    shipped with no test, and every other case here spawns with
+    ``stderr=subprocess.STDOUT``, which merges the streams and passes whether
+    the sentinel goes to fd 1 or fd 2.
+
+    Verified to have teeth: reverting ``_report_port_in_use`` to a bare
+    ``print()`` leaves the rest of this module green and fails only this test.
+    """
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    port = holder.getsockname()[1]
+    try:
+        # stderr discarded, NOT merged: an assertion on this stdout text is
+        # then a real statement about which fd the sentinel was written to.
+        proc = _spawn_serve(port, tmp_path, merge_stderr=False)
+        try:
+            out, _ = proc.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            pytest.fail("serve did not exit on a port conflict")
+    finally:
+        holder.close()
+
+    assert proc.returncode == 75, f"exit={proc.returncode}\nstdout:\n{out}"
+    assert f"BACKEND_PORT_IN_USE port={port}" in out, (
+        "conflict sentinel missing from STDOUT — a stdout-parsing consumer "
+        f"(desktop spawn, scripts) would see no reason for the exit.\n"
+        f"stdout was:\n{out}"
+    )

@@ -420,6 +420,18 @@ def delegate_task(
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
+    parent_enabled_toolsets = getattr(parent_agent, "enabled_toolsets", None)
+    if parent_enabled_toolsets is not None:
+        import model_tools
+
+        parent_tools = model_tools._select_tool_names(
+            parent_enabled_toolsets,
+            getattr(parent_agent, "disabled_toolsets", None),
+            quiet_mode=True,
+        )
+        if "delegate_task" not in parent_tools:
+            return tool_error("delegate_task is not available in the parent agent's resolved toolset.")
+
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
         return _handle_control_action(normalized_action, subagent_id, message, parent_agent)

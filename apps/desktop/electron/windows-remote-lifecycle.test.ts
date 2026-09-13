@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 import { test } from 'vitest'
 
@@ -65,6 +69,18 @@ function sshWith(exec) {
   return { exec }
 }
 
+type SshExecOptions = { stdinData?: string | Buffer }
+
+function scriptFromInvocation(command: string, options: SshExecOptions = {}) {
+  const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
+
+  if (encoded) {
+    return Buffer.from(encoded, 'base64').toString('utf16le')
+  }
+
+  return Buffer.from(String(options.stdinData || '').trim(), 'base64').toString('utf16le')
+}
+
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
   assert.equal(Buffer.from(encodedPowerShell("'ok'"), 'base64').toString('utf16le'), "'ok'")
   assert.equal(psLiteral("a'b"), "'a''b'")
@@ -75,8 +91,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []
 
-    const ssh = sshWith(async command => {
-      const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    const ssh = sshWith(async (command, options) => {
+      const script = scriptFromInvocation(command, options)
       scripts.push(script)
 
       if (script.includes('Get-Command hermes.exe')) {
@@ -119,8 +135,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 
-  const ssh = sshWith(async command => {
-    script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (command, options) => {
+    script = scriptFromInvocation(command, options)
 
     return 'CLEAR'
   })
@@ -137,8 +153,8 @@ test('Windows relaunch gate uses strict install-wide marker parsing and fail-clo
 test('Windows probe validates Hermes and Python topology before selection', async () => {
   let script = ''
   await probeWindowsRemote(
-    sshWith(async command => {
-      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    sshWith(async (command, options) => {
+      script = scriptFromInvocation(command, options)
 
       return JSON.stringify({
         os: 'Windows',
@@ -170,6 +186,106 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   assert.ok(pythonCheck < output)
 })
 
+test('Windows platform probe streams long PowerShell scripts over stdin', async () => {
+  let command = ''
+  let stdinData = ''
+
+  const result = await probeWindowsRemote({
+    async exec(nextCommand: string, options: SshExecOptions = {}) {
+      command = nextCommand
+      stdinData = String(options.stdinData || '')
+
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\\\h',
+        hermesPath: 'C:\\\\h\\\\hermes.exe',
+        python: 'C:\\\\h\\\\python.exe'
+      })
+    }
+  })
+
+  assert.equal(result.os, 'Windows')
+  assert.match(command, /-Command \[ScriptBlock\]::Create/)
+  assert.doesNotMatch(command, /-EncodedCommand/)
+  assert.ok(command.length < 1024)
+  assert.match(stdinData, /^[A-Za-z0-9+/=\r\n]+$/)
+  const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
+  assert.match(decodedScript, /Assert-NoReparse/)
+})
+
+test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin payload', async () => {
+  let stdinData = ''
+
+  await probeWindowsRemote(
+    {
+      async exec(_command: string, options: SshExecOptions = {}) {
+        stdinData = String(options.stdinData || '')
+
+        return JSON.stringify({
+          os: 'Windows',
+          arch: 'AMD64',
+          hermesHome: 'C:\\\\h',
+          hermesPath: 'C:\\\\h\\\\hermes.exe',
+          python: 'C:\\\\h\\\\python.exe'
+        })
+      }
+    },
+    'C:\\Users\\한글\\hermes.exe'
+  )
+
+  const decodedScript = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
+  assert.ok(decodedScript.includes('C:\\Users\\한글\\hermes.exe'))
+})
+
+function runLocalWindowsCommand(command, stdinData) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('cmd.exe', ['/d', '/s', '/c', command], { windowsHide: true })
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+
+    child.stdout.on('data', chunk => stdout.push(chunk))
+    child.stderr.on('data', chunk => stderr.push(chunk))
+    child.once('error', reject)
+    child.once('close', code => {
+      const out = Buffer.concat(stdout).toString('utf8')
+
+      if (code === 0) {
+        resolve(out)
+
+        return
+      }
+
+      reject(new Error(Buffer.concat(stderr).toString('utf8') || `command exited with ${code}`))
+    })
+
+    child.stdin.end(stdinData || '')
+  })
+}
+
+test.skipIf(process.platform !== 'win32')('Windows platform probe executes in real PowerShell', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-'))
+  const hermesPath = path.join(tempDir, 'hermes.exe')
+
+  try {
+    fs.writeFileSync(hermesPath, '')
+    fs.writeFileSync(path.join(tempDir, 'python.exe'), '')
+
+    const result = await probeWindowsRemote(
+      {
+        exec: (command: string, options: SshExecOptions = {}) => runLocalWindowsCommand(command, options.stdinData)
+      },
+      hermesPath
+    )
+
+    assert.equal(result.os, 'Windows')
+    assert.equal(result.hermesPath, hermesPath)
+    assert.equal(result.python, path.join(tempDir, 'python.exe'))
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })
   const calls: string[] = []
@@ -193,7 +309,7 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /EncodedCommand/)
+  assert.match(calls[1], /-Command \[ScriptBlock\]::Create/)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {

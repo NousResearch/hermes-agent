@@ -74,6 +74,10 @@ load, other operating systems or the complete acceptance matrix below.
    That fix stays in place.
 2. [JsonRpcGatewayClient](../../apps/shared/src/json-rpc-gateway.ts) owns pending
    calls, heartbeat state, event watermarks and the backend replay epoch.
+   Its `PendingCall` entries hold only Promise resolvers and a timer.
+   `request()` deletes them on timeout, abort or send failure, and
+   `rejectAllPending()` rejects and deletes them on transport loss. This map
+   cannot classify operation outcomes for a replacement renderer.
    `fetchReplay()` returns without a request when a fresh instance has no
    watermarks. A reconnect of the same instance and creation of a replacement
    client therefore have different continuity inputs.
@@ -97,6 +101,21 @@ load, other operating systems or the complete acceptance matrix below.
    transports, cancels orphan reaping on reattachment, and preserves explicit
    interrupt semantics. Retaining a socket affects when that policy observes
    client absence. Recovery ownership must account for this effect explicitly.
+6. The current `hermes:connection:active-route` handler in
+   [Electron main](../../apps/desktop/electron/main.ts) records routes by
+   `event.sender.id` and removes ownership on WebContents destruction.
+   [Renderer lifecycle handling](../../apps/desktop/electron/window-renderer-lifecycle.ts)
+   schedules bounded reloads but does not maintain a document authorization
+   generation. Neither supplies the privileged IPC document contract proposed
+   below. The existing `will-navigate` guard permits a development URL prefix
+   or packaged `file:` URLs; that navigation policy is not sufficient IPC trust.
+
+The boot hook, shared client, route identity, gateway store and backend session
+contracts above were checked again on 13 September 2026 at
+`main@1fec70ea48e90567284f7f811e2ca709c86a4a52`; those sources are unchanged
+from the recorded source baseline. This was a source review. The native
+rehearsal remains historical evidence from its stated baseline, and the new
+acceptance cases below still require implementation and execution.
 
 Open [103683](https://github.com/NousResearch/hermes-agent/pull/103683), by
 laserguidedcake, was inspected at
@@ -126,9 +145,10 @@ with the actual TLS stack rather than inferring WebSocket trust from HTTP.
    support from 103683 or an equivalent supported bridge; retaining recovery
    metadata does not change Chromium WebSocket trust.
 2. **Own the client and recovery in an asynchronous main service.** This keeps
-   one retry policy, pending request ledger and replay cursor set per window
-   route across renderer replacement. It adds typed IPC for attachment and
-   updates, and requires bounded serialization and memory use in main.
+   one retry policy and replay cursor set per window route across renderer
+   replacement. It also requires a separate bounded operation ledger in main;
+   retaining the client's pending map alone is insufficient. Typed IPC for
+   attachment and updates adds serialization and memory costs in main.
 3. **Own them in a supervised utility process.** This also isolates transport
    processing from the main event loop. It adds another process lifecycle and
    recovery boundary. A utility process crash still needs an explicit degraded
@@ -164,18 +184,48 @@ The window can retain several profile routes just as background gateways do
 today. Foreground changes select which state is displayed; they cannot retarget
 an established resource or cancel another profile's episode.
 
-Main issues an attachment handle bound to the calling WebContents, authorized
-window, exact route and a monotonically increasing attachment generation.
-After renderer loss, main authorizes the replacement for that same window and
-revokes the prior handle before attaching it. A renderer cannot select a window
-by supplying its numeric ID. Reloading within one WebContents still increments
-the attachment generation. A newly created window cannot claim another closed
-window's episode.
+The proposed privileged IPC must authorize the current trusted document on
+every attachment, RPC, cancellation, acknowledgement and snapshot request.
+Main resolves the window from `event.sender`; a supplied window ID grants no
+authority. `event.senderFrame` must exist, equal that WebContents' current
+`mainFrame`, and belong to the document generation main authorized for this
+window. Subframes, detached frames and a valid handle presented by another
+window are rejected before route lookup or retained data access.
+
+Document trust compares `senderFrame.url` with the actual entry point main
+loaded. In a packaged build, validate the canonical app entry file URL and its
+allowed path, not merely the `file:` scheme or its opaque origin. In development,
+require the exact configured development origin and allowed app entry path;
+string prefix matching is
+insufficient. Route fragments may change within that document. A remote gateway
+URL, preview page, OAuth document or `data:` repair page never becomes a trusted
+renderer origin for this recovery service.
+These are requirements for the new service, not claims that the current IPC
+handlers already enforce document trust.
+
+Main owns a document generation as well as an attachment generation. At the
+start of navigation that replaces the main document, and on
+`render-process-gone`, it revokes the old document and its handles before any
+replacement can attach. A same document route change does not revoke them.
+Authorization resumes only after the expected app document has committed and
+passed the frame and URL checks. Repeat those checks and generation fencing
+after asynchronous work before dispatching an RPC or publishing its result.
+Revocation blocks stale IPC and deliveries; it does not cancel backend effects
+already sent. Those operations remain in the ledger for authorized recovery.
+
+Main issues each attachment handle for that authorized window instance,
+WebContents, document generation, exact route and monotonically increasing
+attachment generation. Reloading within one WebContents replaces the document
+and attachment generations. A secondary window may attach only to its own
+authorized episodes; it cannot claim the primary window's handle or results.
+Closing a window retires its ownership, so a recreated window cannot inherit
+its episodes even if a numeric ID or route is reused.
 
 The versioned attachment response carries the exact route, episode identity,
-attachment generation, recovery state and a snapshot revision. Updates and RPC
-results carry the same coordinates. Register the update channel before
-returning the snapshot; queue updates until the view acknowledges that revision.
+document and attachment generations, recovery state and a snapshot revision.
+Updates and RPC results carry the same coordinates. Register the update channel
+before returning the snapshot; queue updates until the view acknowledges that
+revision.
 Older revisions and revoked handles cannot publish. A late attach, dial or
 snapshot result after route removal settles as stale and releases its resources.
 Incompatible protocol versions return an explicit unsupported result and use
@@ -186,19 +236,60 @@ the existing boot path, without claiming established recovery continuity.
 Readiness consists of four independent facts:
 
 1. **Descriptor resolved:** main has a valid route and current transport inputs.
-2. **Transport connected:** the WebSocket handshake completed and the expected
-   gateway protocol is usable. A listening TCP forward or a cached ready
-   descriptor does not prove this fact.
+2. **Gateway reachable:** the WebSocket handshake completed and the expected
+   gateway protocol responded on that socket attempt. Track these as separate
+   stages below. A listening TCP forward or cached descriptor proves neither.
 3. **Session attached:** the backend acknowledged the exact owned session and
    its current runtime binding.
 4. **View hydrated:** the current attachment reconciled its transcript, running
    state and pending input with a valid snapshot and subsequent updates.
 
-An episode becomes established after the initial transport and gateway boot
-RPC work succeed, at the semantic boundary currently setting `bootCompleted`.
-Establishment must not require a session to exist: an empty but usable workspace
-is valid. Session and view readiness remain separately observable. A replacement
-renderer can display cached content as stale before it is hydrated.
+Main would own the following establishment state machine. These are proposed
+service states; the current client resolves `connect()` on WebSocket open and
+does not implement this handshake.
+
+| State | Required transition evidence |
+| :--- | :--- |
+| `unestablished` | Main admits the exact route and creates its first boot budget. Descriptor resolution alone leaves it here. |
+| `transport-open` | The current socket attempt completes its WebSocket handshake under the current registration generation. |
+| `gateway-ready` | That attempt delivers a valid `gateway.ready` event, or a correlated response to the existing bounded `ping` probe. Preserve the current liveness compatibility rule that a JSON RPC method not found response proves a responsive older gateway. Transport open alone is insufficient. |
+| `established` | Main accepts the authorized renderer's boot completion acknowledgement for this episode and the current readiness receipt. |
+
+The renderer sends that acknowledgement at the successful completion boundary
+currently calling `completeDesktopBoot()` and setting `bootCompleted` in
+`useGatewayBoot`. For initial `boot()`, this means profile adoption has settled,
+then the workspace seed, required config refresh and session list refresh have
+settled, followed by the cancellation check. Preserve the existing fallbacks:
+profile adoption can use its fallback, workspace seeding is best effort, and a
+failed session list fetch leaves a usable empty sidebar. In `softSwitch()`,
+preserve its own `ownsSwitch()` checks and best effort config and session refresh
+semantics. Do not turn those tolerated failures into boot failures or require
+a stored session. HMR adoption can reuse an established receipt only when main
+already owns that episode; its local boolean cannot establish a new one.
+
+Main issues the readiness receipt after `gateway-ready`, bound to the episode,
+exact route, socket attempt, document generation and attachment generation.
+It accepts the renderer acknowledgement only while all remain current and the
+socket is still ready. This transition commits the establishment latch in main;
+the renderer receives confirmation before treating establishment as retained.
+An acknowledgement lost after that commit is reconciled by reading the same
+episode. A missing, stale or duplicate acknowledgement cannot create a new
+episode or reset its budget. These completion acknowledgements are distinct
+from acknowledgements of hydration revisions.
+
+Before that commit, losing transport readiness returns to `unestablished` with
+the same budget; replacement during `transport-open` or `gateway-ready` inherits
+all consumed attempts and remaining deadlines. A replacement must perform its
+own boot completion work and acknowledge a receipt for its new document.
+After the commit, establishment remains latched through transient transport
+loss while live transport, session and view readiness may become unavailable.
+
+A replacement renderer has no previous heap transcript. It may display stale
+content only if a separately trusted persistent cache is available and validated
+for the exact route, profile and stored session. This RFC introduces no such
+cache. Without one, the replacement shows loading or stale status without a
+transcript until authoritative hydration; retained replay watermarks do not
+reconstruct missing content.
 
 First boot retains the existing bounded budget and actionable failure state.
 Replacing a renderer during first boot preserves the remaining budget instead
@@ -232,8 +323,10 @@ Proposed starting limits for maintainer review are 60 seconds of renderer
 absence per episode, 512 queued events and 4 MiB of serialized retained data per
 episode, and 64 MiB of retained data across at most 64 service episodes. Allow
 at most 128 outstanding requests per episode and 1024 across the service. The
-byte limits include queued updates, hydration staging and retained request
-results; a single retained frame cannot exceed the episode byte limit. These
+byte limits include queued updates, hydration staging, operation ledger metadata
+and retained request results; a single retained frame cannot exceed the episode
+byte limit. Every ledger entry, including terminal and uncertain entries, counts
+toward the same 128 per episode and 1024 service request entry limits. These
 are proposed limits, not current Desktop behavior. Refuse additional admissions
 with an explicit capacity result instead of evicting a live consumer. Use the
 existing request deadlines and avoid an unbounded queue hidden inside IPC.
@@ -282,11 +375,47 @@ session sequence. Background recovery never steals the foreground selection.
 
 ## Requests whose outcome is uncertain
 
-The service owns request correlation while an attachment exists and during its
-bounded replacement grace. A replacement view can learn that a request was
-never sent, is pending, completed, failed, or has an unknown outcome. Every entry
-includes its exact route and existing resource or operation identity. JSON RPC
-request IDs correlate replies; they do not prove backend idempotency.
+The service would own a bounded operation ledger separate from
+`JsonRpcGatewayClient.pending`. Allocate its entry before handing any request
+to the client, recording an operation ID, method and safety class, exact route
+and episode, originating document and attachment generations, existing resource
+identities, deadline, attempted send state, RPC correlation ID and any terminal
+result. Classify methods explicitly as reads or mutations; an unclassified method
+is a mutation. JSON RPC IDs correlate replies and never prove idempotency.
+
+The implementation needs a narrow request lifecycle seam in the existing client
+to record a send attempt before invoking the physical transport, distinguish a
+proven failure before send, and observe responses and local settlement. A
+rejected Promise or absence from `pending` is insufficient evidence. Ledger
+updates run independently of renderer listeners and survive client timeout,
+abort and `rejectAllPending()` cleanup within the episode's retention limits.
+Keep correlation metadata in that ledger after pending entry deletion so a
+late result can be reconciled without sending the request again.
+
+| Outcome | Evidence retained by main |
+| :--- | :--- |
+| Never sent | Admission or dispatch ended before any transport send attempt, with positive evidence that no request crossed that boundary. |
+| Pending | A send was attempted and its response deadline has not settled. Transport acceptance does not prove backend execution. |
+| Completed | A correlated backend success response or authoritative operation reconciliation establishes the result. RPC completion is distinct from completion of any background work it started. |
+| Failed | A correlated backend error establishes the reported failure. Any retry still follows that method's existing contract, not a generic transport policy. |
+| Outcome uncertain | Sending may have occurred but no authoritative result is available after timeout, transport loss, local cancellation or an ambiguous send error. A sent mutation never becomes an ordinary retryable failure. |
+
+A replacement attaches with its new authorized handle and may query operations from
+earlier attachments of the same authorized window episode and exact route.
+The originating generations remain audit metadata, not an equality requirement
+against the replacement caller. All returned snapshots and results are fenced
+to the current document and attachment; another window or route cannot obtain
+them. Reattachment and repeated lookup never dispatch the operation again.
+
+Pending entries retain their original deadlines. Terminal or uncertain entries
+remain until the authorized current view acknowledges their outcome, or the
+episode is retired by grace expiry, disconnect, route retirement or quit.
+Capacity exhaustion rejects new admissions before send rather than silently
+evicting unacknowledged entries. An acknowledged or retired entry may be released;
+a later lookup returns `outcome unavailable`, never `never sent` or retryable.
+Retention expiry, missing entries and main process restart provide no evidence
+that a mutation did not execute. This ledger is bounded main memory, not a
+durable transaction log.
 
 If a prompt was accepted and its reply was lost, reconcile the owned stored
 session, current runtime, history and live operation state. Do not resubmit
@@ -296,16 +425,18 @@ where the specific operation already supports them. A visible user message in
 history alone does not prove that the requested work completed.
 
 Where existing identities cannot establish the outcome, retain an explicit
-unknown result and give the user a way to inspect the session and decide the
-next action. Do not introduce generic automatic retries for mutations.
+uncertain result and give the user a way to inspect the session and decide the
+next action. Recovery never automatically resubmits a mutation, including one
+with an existing idempotency key.
 Cancellation always settles local bookkeeping; it implies backend cancellation
 only when the existing operation supports and acknowledges it.
 
 ## Implementation and acceptance evidence
 
-Keep implementation in topical modules. Main composes the service, preload
-exposes scoped operations, the existing client supplies RPC and replay, and
-the boot hook becomes a lifecycle consumer. Extract the relevant current policy
+Keep implementation in topical modules. Main composes the service and owns its
+operation ledger, preload exposes scoped operations, the existing client supplies
+RPC and replay through the required lifecycle seam, and the boot hook becomes
+a consumer that acknowledges boot completion. Extract the relevant current policy
 before adding behavior to the large hook or main facade. Coordinate any bridge
 adaptation with 103683 and preserve its contributor provenance.
 
@@ -336,7 +467,11 @@ attempt counts, route and generation, and gateway side effects.
    Restore the same gateway and credentials. Both recover without another user
    retry; neither starts a new first boot episode. Separately prove that a
    route which never established still exhausts its bounded boot budget and
-   repeated renderer replacement does not replenish that budget.
+   repeated renderer replacement does not replenish that budget. Replace the
+   document after WebSocket open, after gateway readiness, during config refresh
+   and just before main receives the completion acknowledgement. Assert that
+   only a current acknowledgement establishes the episode, including a reply
+   lost after main commits it. Exercise each boot path's tolerated fetch errors.
 2. Replace the renderer after observing sequence 41. Emit events before, during
    and after snapshot loading. Verify the final transcript and current running,
    approval and clarify state against the backend, without duplicate deltas.
@@ -348,7 +483,11 @@ attempt counts, route and generation, and gateway side effects.
    and close one window while the other streams. Verify it cannot send through,
    cancel or hydrate from the other's attachment. Also use two registrations
    with the same URL and different header or credential envelopes. Only the
-   exact authorized route may receive each request.
+   exact authorized route may receive each request. Reject IPC from subframes,
+   stale documents during navigation, untrusted packaged or development URLs,
+   a secondary window holding the primary's handle, and a closed and recreated
+   window. Use the real `senderFrame` boundary and assert no RPC dispatch or
+   retained data disclosure on rejection.
 4. Edit or remove a route during dial and during snapshot loading. Allow the
    obsolete work to finish late. Verify no activation or publication occurs,
    pending work settles once, listeners are released and a replacement route
@@ -356,7 +495,11 @@ attempt counts, route and generation, and gateway side effects.
 5. Accept a prompt on the backend, drop its response and replace the renderer.
    Count backend submissions and resulting side effects. There is one
    submission, and reattachment reports the existing operation or an explicit
-   unknown outcome. Repeat for approval responses and explicit Stop.
+   uncertain outcome. Repeat for approval responses and explicit Stop, including
+   transport close, timeout, abort and an ambiguous send error. Verify the
+   authorized replacement can query the old attachment's operation without
+   reissuing it, while another route or window cannot. Exhaust ledger capacity
+   and expire retention; neither event may make a sent mutation retryable.
 6. Keep a local TCP forward listening while its gateway is unavailable. Verify
    descriptor resolution does not publish transport or session readiness.
    Recovery succeeds only after the actual WebSocket and RPC path works.

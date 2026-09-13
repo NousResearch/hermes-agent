@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes, cache_image_from_bytes,
 )
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
@@ -492,11 +493,8 @@ class EmailAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling and disconnect."""
         self._running = False
-        if self._poll_task:
-            self._poll_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poll_task
-            self._poll_task = None
+        await cancel_task(self._poll_task)
+        self._poll_task = None
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:

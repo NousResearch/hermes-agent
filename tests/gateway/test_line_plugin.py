@@ -45,7 +45,6 @@ check_requirements = _line.check_requirements
 validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
-_MessageDeduplicator = _line._MessageDeduplicator
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +111,7 @@ class TestAllowlist:
 class TestDedup:
 
     def test_first_event_not_duplicate(self):
-        d = _MessageDeduplicator()
+        d = _line.MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
         assert not d.is_duplicate("evt1")
 
 

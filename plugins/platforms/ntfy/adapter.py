@@ -28,6 +28,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms.helpers import MessageDeduplicator
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._token: str = _setting(extra, "token", "NTFY_TOKEN")
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
-        self._seen_messages: Dict[str, float] = {}  # msg_id -> timestamp (dedup)
+        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -234,7 +235,7 @@ class NtfyAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
-        self._seen_messages.clear()
+        self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
 
     # -- Inbound message processing -----------------------------------------
@@ -242,7 +243,7 @@ class NtfyAdapter(BasePlatformAdapter):
     async def _on_message(self, event: Dict[str, Any]) -> None:
         """Process an incoming ntfy message event."""
         msg_id = event.get("id") or uuid.uuid4().hex
-        if self._is_duplicate(msg_id):
+        if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
         if _ECHO_TAG in (event.get("tags") or []):
@@ -267,17 +268,6 @@ class NtfyAdapter(BasePlatformAdapter):
             raw_message=event, timestamp=timestamp)
         logger.debug("[%s] Message on topic %s: %s", self.name, topic, text[:80])
         await self.handle_message(message_event)
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        """True if this message ID was already seen within the dedup window."""
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
-        return False
 
     # -- Outbound messaging -------------------------------------------------
 

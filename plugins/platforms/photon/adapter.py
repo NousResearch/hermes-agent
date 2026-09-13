@@ -41,6 +41,7 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, s
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
 from utils import atomic_json_write
 
 from .auth import load_project_credentials
@@ -438,24 +439,6 @@ def _guess_mime(path: str) -> Optional[str]:
     return mimetypes.guess_type(path)[0] or None
 
 
-def _bounded_put(store: Dict[str, Any], key: str, value: Any, max_size: int) -> None:
-    """Insert with insertion-order refresh and a HARD size bound (evict oldest)."""
-    if key in store:
-        del store[key]
-    store[key] = value
-    if len(store) > max_size:
-        for old in list(store.keys())[: len(store) - max_size]:
-            del store[old]
-
-
-async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-    """Cancel *task* and wait for it, unless it is the current task."""
-    if task is None:
-        return
-    task.cancel()
-    if task is not asyncio.current_task():
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
 
 
 # -- Adapter -------------------------------------------------------------------
@@ -506,7 +489,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_health_interval = 15.0
         self._probe_failures = 0
         self._last_upstream_activity = 0.0  # monotonic; watchdog skips probe if traffic proved liveness
-        self._seen_messages: Dict[str, float] = {}  # at-least-once stream dedup
+        self._dedup = MessageDeduplicator(max_size=_DEDUP_MAX_SIZE, ttl_seconds=_DEDUP_WINDOW_SECONDS)  # at-least-once stream
         self._sent_message_ids: Dict[str, float] = {}  # only reactions targeting OUR sends are routed
         self._last_inbound_by_chat: Dict[str, str] = {}  # default target for the react action
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
@@ -596,9 +579,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._inbound_running = False
         await self._stop_watchdog()  # first, so it can't respawn while we tear the sidecar down
         task, self._sidecar_health_task = self._sidecar_health_task, None
-        await _cancel_task(task)
+        await cancel_task(task)
         task, self._inbound_task = self._inbound_task, None
-        await _cancel_task(task)
+        await cancel_task(task)
         for _, fffc_task in list(self._pending_fffc.values()):
             if fffc_task and not fffc_task.done():
                 fffc_task.cancel()
@@ -698,20 +681,12 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.debug("[photon] skipping non-JSON inbound line")
             return
         msg_id = event.get("messageId")
-        if msg_id and self._is_duplicate(msg_id):
+        if msg_id and self._dedup.is_duplicate(msg_id):
             return
         try:
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        now = time.time()
-        t = self._seen_messages.get(msg_id)
-        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
-            return True
-        _bounded_put(self._seen_messages, msg_id, now, _DEDUP_MAX_SIZE)
-        return False
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)
@@ -1115,7 +1090,7 @@ class PhotonAdapter(BasePlatformAdapter):
     async def _stop_watchdog(self) -> None:
         self._watchdog_running = False
         task, self._watchdog_task = self._watchdog_task, None
-        await _cancel_task(task)
+        await cancel_task(task)
 
     # -- Outbound ------------------------------------------------------------------
 
@@ -1202,7 +1177,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def _record_sent_message(self, message_id: Optional[str]) -> None:
         if message_id:
-            _bounded_put(self._sent_message_ids, message_id, time.time(), self._SENT_IDS_MAX)
+            bounded_put(self._sent_message_ids, message_id, time.time(), self._SENT_IDS_MAX)
 
     # A DM space is addressable as the chat GUID (`any;-;+1555...`) inbound events carry, or
     # the bare E.164 phone home-channel config uses; the sidecar's resolveSpace treats them
@@ -1215,7 +1190,7 @@ class PhotonAdapter(BasePlatformAdapter):
         return match.group(1) if match else chat_id
 
     def _put_by_chat(self, store: Dict[str, Any], chat_id: str, value: Any) -> None:
-        _bounded_put(store, self._normalize_chat_key(chat_id), value, self._LAST_INBOUND_CHATS_MAX)
+        bounded_put(store, self._normalize_chat_key(chat_id), value, self._LAST_INBOUND_CHATS_MAX)
 
     def _record_last_inbound(self, chat_id: Optional[str], message_id: Optional[str]) -> None:
         if chat_id and message_id:

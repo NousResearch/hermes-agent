@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - dependency gate
 CRYPTO_AVAILABLE = Cipher is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
@@ -797,10 +797,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 task.cancel()
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._poll_task
+        await cancel_task(self._poll_task)
         self._poll_task = None
         for attr in ("_poll_session", "_send_session"):
             session = getattr(self, attr)

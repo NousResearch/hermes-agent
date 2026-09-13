@@ -49,7 +49,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
@@ -137,13 +137,6 @@ def _cancel_all(tasks: Dict[str, asyncio.Task]) -> None:
         if not task.done():
             task.cancel()
     tasks.clear()
-
-
-async def _cancel_task(task: asyncio.Task) -> None:
-    """Cancel *task* and wait for it to unwind (swallowing the CancelledError)."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
 
 
 class MarkdownProcessor:
@@ -1869,7 +1862,7 @@ class ConnectionManager:
         for attr, _coro_name, _tag in self._LOOPS:
             task = getattr(self, attr)
             if task:
-                await _cancel_task(task)
+                await cancel_task(task)
                 setattr(self, attr, None)
         disc_exc = RuntimeError("YuanbaoAdapter disconnected")
         for fut in self._pending_acks.values():
@@ -2336,7 +2329,7 @@ class HeartbeatManager:
         """Stop the RUNNING sender and optionally send FINISH."""
         task = self._reply_heartbeat_tasks.pop(chat_id, None)
         if task and not task.done():
-            await _cancel_task(task)
+            await cancel_task(task)
         if send_finish:
             await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
 

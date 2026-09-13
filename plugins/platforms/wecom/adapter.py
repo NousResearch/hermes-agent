@@ -27,7 +27,7 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -96,18 +96,6 @@ def _dict_or_empty(container: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 def _content_of(container: Dict[str, Any], key: str) -> str:
     return str(_dict_or_empty(container, key).get("content") or "").strip()
-
-
-def _bounded_put(store: Dict[str, str], key: str, value: str) -> bool:
-    """Insert into an insertion-ordered dict bounded at DEDUP_MAX_SIZE; False if key/value empty."""
-    key = str(key or "").strip()
-    value = str(value or "").strip()
-    if not key or not value:
-        return False
-    store[key] = value
-    while len(store) > DEDUP_MAX_SIZE:
-        store.pop(next(iter(store)))
-    return True
 
 
 class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
@@ -439,7 +427,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             # INFO: a msgid redelivered after a processing exception is dropped for the TTL.
             logger.info("[%s] Duplicate message %s ignored (dedup drop) req_id=%s sender=%r chattype=%r", self.name, msg_id, req_id, sender.get("userid") if sender else None, body.get("chattype"))
             return
-        _bounded_put(self._reply_req_ids, msg_id, req_id)
+        if req_id:
+            bounded_put(self._reply_req_ids, msg_id, req_id, DEDUP_MAX_SIZE)
         chat_id = str(body.get("chatid") or sender_id).strip()
         logger.info("[%s] Inbound callback: chattype=%r chatid=%r sender=%r msgtype=%r has_chatid=%s", self.name, body.get("chattype"), body.get("chatid"), sender_id, body.get("msgtype"), bool(body.get("chatid")))
         if not chat_id:
@@ -554,8 +543,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
         """Cache the chat's latest inbound req_id; a fresh one also resurrects its stream channel."""
-        if _bounded_put(self._last_chat_req_ids, chat_id, req_id):
-            self._stream_expired_chats.discard(str(chat_id).strip())
+        chat_id, req_id = str(chat_id or "").strip(), str(req_id or "").strip()
+        if chat_id and req_id:
+            bounded_put(self._last_chat_req_ids, chat_id, req_id, DEDUP_MAX_SIZE)
+            self._stream_expired_chats.discard(chat_id)
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()

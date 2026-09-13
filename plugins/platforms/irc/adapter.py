@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -198,10 +199,7 @@ class IRCAdapter(BasePlatformAdapter):
             with contextlib.suppress(Exception):
                 self._writer.close()
                 await self._writer.wait_closed()
-        if self._recv_task and not self._recv_task.done():
-            self._recv_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._recv_task
+        await cancel_task(self._recv_task)
         self._reader = None
         self._writer = None
         self._registered = False

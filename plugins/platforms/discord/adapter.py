@@ -260,6 +260,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
 )
+from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
@@ -343,10 +344,7 @@ async def _wait_for_ready_or_bot_exit(
                 raise RuntimeError("Discord bot task exited before ready")
         await ready_task
     finally:
-        if not ready_task.done():
-            ready_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await ready_task
+        await cancel_task(ready_task)
 
 
 def _needs_server_members_intent(

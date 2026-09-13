@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, profile_scoped as _profile_scoped_config_load, send_error
@@ -251,10 +252,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
-        if self._ws_task and not self._ws_task.done():
-            self._ws_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._ws_task
+        await cancel_task(self._ws_task)
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
         if self._ws:

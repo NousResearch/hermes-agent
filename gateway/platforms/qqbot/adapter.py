@@ -44,6 +44,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
@@ -162,7 +163,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
-        self._seen_messages: Dict[str, float] = {}
+        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
@@ -227,20 +228,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._running = False
         self._mark_disconnected()
-        self._listen_task = await self._cancel_task(self._listen_task)
-        self._heartbeat_task = await self._cancel_task(self._heartbeat_task)
+        await cancel_task(self._listen_task)
+        await cancel_task(self._heartbeat_task)
+        self._listen_task = self._heartbeat_task = None
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
-
-    @staticmethod
-    async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-        """Cancel and await *task* (if any); always returns None for reassignment."""
-        if task:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        return None
 
     async def _close_ws(self) -> None:
         """Close the WebSocket + its aiohttp session (keeps _http_client alive)."""
@@ -585,7 +578,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._is_duplicate(msg_id):
+        if not msg_id or self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
@@ -1669,16 +1662,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             with contextlib.suppress(ValueError, TypeError):
                 return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
         return datetime.now(tz=timezone.utc)
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {k: ts for k, ts in self._seen_messages.items() if ts > cutoff}
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
-        return False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

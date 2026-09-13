@@ -288,6 +288,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+from gateway.platforms.helpers import cancel_task
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -657,10 +658,8 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _redispatch_held_inbound(self, prior: Optional[asyncio.Task] = None) -> None:
         """Drain the hold queue after reconnect or a connected-path hold; ``prior`` (previous
         redispatch task) is cancelled+awaited here so ``_mark_connected`` stays synchronous."""
-        if prior is not None and prior is not asyncio.current_task() and not prior.done():
-            prior.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await prior
+        if prior is not asyncio.current_task():  # a self-redispatch must not cancel itself
+            await cancel_task(prior)
         held = getattr(self, "_held_inbound_events", None)
         if self._is_permanent_fatal():
             if held:

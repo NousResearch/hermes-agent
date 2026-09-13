@@ -40,6 +40,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
@@ -203,7 +204,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # message_id to attach to, and the base send_typing contract has none.
         self._last_inbound_wamid_by_chat: "OrderedDict[str, str]" = OrderedDict()
         # Interactive-button state: short id (in the button payload) → session_key for
-        # the gateway resolver. Popped on tap; FIFO-capped via _bounded_put so ignored
+        # the gateway resolver. Popped on tap; FIFO-capped via bounded_put so ignored
         # prompts don't accumulate (an evicted tap degrades to text fallback).
         self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
         self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
@@ -223,13 +224,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _auth_headers(self, *, json_body: bool = True) -> Dict[str, str]:
         headers = {"Authorization": f"Bearer {self._access_token}"}
         return {**headers, "Content-Type": "application/json"} if json_body else headers
-
-    @staticmethod
-    def _bounded_put(cache: "OrderedDict[str, Any]", key: str, value: Any, cap: int = INTERACTIVE_STATE_CACHE_SIZE) -> None:
-        """Insert into a FIFO-capped OrderedDict, evicting oldest entries."""
-        cache[key] = value
-        while len(cache) > cap:
-            cache.popitem(last=False)
 
     def _effective_reply_prefix(self) -> str:
         """Cloud API has no self-chat concept (a Baileys-only setting) — no default prefix."""
@@ -416,7 +410,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
         )
         if result.success:
-            self._bounded_put(state, state_id, session_key)
+            bounded_put(state, state_id, session_key, INTERACTIVE_STATE_CACHE_SIZE)
         return result
 
     @staticmethod
@@ -737,7 +731,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._duplicate_count += 1
             return False
         if wamid:  # can't dedup without an id — let it through
-            self._bounded_put(self._seen_wamids, wamid, True, cap=WAMID_DEDUP_CACHE_SIZE)
+            bounded_put(self._seen_wamids, wamid, True, WAMID_DEDUP_CACHE_SIZE)
         return True
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
@@ -992,7 +986,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         wamid = str(raw_message.get("id") or "") or None
         if wamid and chat_id:
             # Done AFTER gating so filtered messages don't leak typing/read receipts.
-            self._bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid)
+            bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid, INTERACTIVE_STATE_CACHE_SIZE)
             if body:
                 rich_sent_store.record(chat_id, wamid, body)
             if msg_type_str in _INBOUND_MEDIA_KINDS and media_urls:

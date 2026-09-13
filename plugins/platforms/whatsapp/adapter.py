@@ -176,6 +176,7 @@ from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
 
@@ -538,10 +539,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
         _unlink_quietly(self._session_path / "bridge.pid")
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._poll_task
+        await cancel_task(self._poll_task)
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
         self._poll_task = self._http_session = self._bridge_process = None

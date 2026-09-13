@@ -41,6 +41,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -188,25 +189,6 @@ class RequestCache:
 
     def mark_delivered(self, request_id: str) -> None:
         self._transition(request_id, {State.READY, State.ERROR}, State.DELIVERED)
-
-
-class _MessageDeduplicator:
-    """Bounded LRU of LINE webhook event IDs to ignore at-least-once retries."""
-
-    def __init__(self, max_size: int = 1000) -> None:
-        self._seen: Dict[str, float] = {}
-        self._max = max_size
-
-    def is_duplicate(self, event_id: str) -> bool:
-        if not event_id:
-            return False
-        if event_id in self._seen:
-            return True
-        if len(self._seen) >= self._max:  # drop the oldest 10% so we don't trim every insert
-            cutoff = sorted(self._seen.values())[len(self._seen) // 10 or 1]
-            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
-        self._seen[event_id] = time.time()
-        return False
 
 
 # LINE source type → (id key, normalized chat_type)
@@ -423,7 +405,8 @@ class LineAdapter(BasePlatformAdapter):
         self._app = self._runner = self._site = None  # aiohttp web.Application / AppRunner / TCPSite
         self._reply_tokens: Dict[str, Tuple[str, float]] = {}  # chat_id → (token, expiry)
         self._cache = RequestCache()
-        self._dedup = _MessageDeduplicator()
+        # LINE redelivers webhooks for up to a day on non-2xx; no TTL, just a size bound.
+        self._dedup = MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
         self._bot_user_id: Optional[str] = None
         self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
         self._media_temp_paths: Set[str] = set()
@@ -728,10 +711,7 @@ class LineAdapter(BasePlatformAdapter):
         try:
             await super()._keep_typing(chat_id, *args, **kwargs)
         finally:
-            if not post_task.done():
-                post_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await post_task
+            await cancel_task(post_task)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""

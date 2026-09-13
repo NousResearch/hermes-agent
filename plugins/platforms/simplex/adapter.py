@@ -27,6 +27,7 @@ from urllib.parse import unquote
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
@@ -82,13 +83,6 @@ def _send_cmd(chat_id: str, items: list) -> str:
     syntax is a display-name lookup that silently drops unresolved names; json.dumps escapes text."""
     target = f"#{chat_id[6:]}" if chat_id.startswith("group:") else f"@{chat_id}"
     return f"/_send {target} json {json.dumps(items)}"
-
-
-async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-    if task:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
 
 class SimplexAdapter(BasePlatformAdapter):
@@ -155,8 +149,8 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
-        await _cancel_task(self._ws_task)
-        await _cancel_task(self._health_task)
+        await cancel_task(self._ws_task)
+        await cancel_task(self._health_task)
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()

@@ -37,6 +37,11 @@ from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
+from agent.state_answer_shadow_runtime import (
+    finish_runtime_shadow,
+    settle_runtime_shadow,
+    start_runtime_shadow,
+)
 from agent.turn_iteration_prep import (
     announce_api_call,
     apply_retry_restarts,
@@ -1476,6 +1481,9 @@ def run_conversation(
             should_review_memory=s._should_review_memory,
         )
 
+    # Explicitly injected Runtime Shadow only. The provider currently reports
+    # input_unavailable because authoritative state/evidence SSOT is not wired.
+    _shadow_event_id = start_runtime_shadow(agent)
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
@@ -1483,7 +1491,7 @@ def run_conversation(
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":
-            return _pg.result
+            return settle_runtime_shadow(agent, _shadow_event_id, _pg.result)
         if _pg.action == "break":
             break
         if _pg.action == "continue":
@@ -1496,7 +1504,7 @@ def run_conversation(
 
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
-            return early_result
+            return settle_runtime_shadow(agent, _shadow_event_id, early_result)
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":
@@ -1507,14 +1515,14 @@ def run_conversation(
         try:
             _ri = _run_phase(normalize_model_response, agent, s)
             if _ri.action == "return":
-                return _ri.result
+                return settle_runtime_shadow(agent, _shadow_event_id, _ri.result)
             if _ri.action == "continue":
                 continue
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )
             if _v.action == "return":
-                return _v.result
+                return settle_runtime_shadow(agent, _shadow_event_id, _v.result)
             if _v.action == "break":
                 break
             if _v.action == "continue":
@@ -1528,6 +1536,7 @@ def run_conversation(
         name: getattr(s, name)
         for name in inspect.signature(finalize_turn).parameters if name != "agent"
     })
+    finish_runtime_shadow(agent, _shadow_event_id, result)
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).

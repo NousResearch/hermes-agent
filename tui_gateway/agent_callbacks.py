@@ -168,7 +168,9 @@ def _wire_callbacks(sid: str):
         from hermes_cli.config import save_env_value_secure
         return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
 
-    set_sudo_password_callback(lambda: _ask("sudo", sid, {}, timeout=120))
+    set_sudo_password_callback(
+        lambda command=None: _ask("sudo", sid, {"command": command or ""}, timeout=120)
+    )
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the

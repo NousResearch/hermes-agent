@@ -51,10 +51,10 @@ from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
     _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
-    _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
+    _read_sqlite_application_id,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
-    RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
+    RetiredGenerationCaptureError, capture_retired_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
 from hermes_state_wal import (
@@ -77,6 +77,11 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
     psutil = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def refuse_deleted_wal_generation(db_path) -> None:
+    """Compatibility facade for the holder-owned deleted-WAL guard."""
+    return _state_holders.refuse_deleted_wal_generation(db_path)
 
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 
@@ -691,7 +696,7 @@ class SessionDB(
     def _connect_and_init(self) -> None:
         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
         # a replacement WAL while a live writer still holds a deleted sidecar inode.
-        refuse_deleted_wal_generation(self.db_path)
+        _state_holders.refuse_deleted_wal_generation(self.db_path)
         # Create/tighten the main database before sqlite3.connect() so a
         # permissive process umask can never expose a fresh profile store.
         _secure_state_db_files(self.db_path, create_main=True)
@@ -1061,7 +1066,7 @@ class SessionDB(
     def _record_db_file_identity(self) -> None:
         """Snapshot inode plus the on-disk generation header when present."""
         self._db_file_identity = _stat_db_file_identity(self.db_path)
-        self._db_sidecar_identity = _stat_sqlite_sidecar_identity(self.db_path)
+        self._db_sidecar_identity = _state_holders.sqlite_sidecar_identity(self.db_path)
         disk_id = _read_sqlite_application_id(self.db_path)
         if disk_id:
             self._db_file_application_id = disk_id

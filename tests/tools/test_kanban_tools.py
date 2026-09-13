@@ -56,6 +56,12 @@ def worker_env(monkeypatch, tmp_path):
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
+    # kanban_create validates assignees against the installed profile registry;
+    # these names are the worker targets used by the handler tests below.
+    profiles_root = home / "profiles"
+    for profile in ("peer", "qa"):
+        (profiles_root / profile).mkdir(parents=True)
+
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
@@ -1024,6 +1030,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     # home to avoid mkdir() colliding with the worker's directory.
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
+    (home / "profiles" / "peer").mkdir(parents=True)
     (home / "config.yaml").write_text(
         "kanban:\n  auto_subscribe_on_create: false\n"
     )

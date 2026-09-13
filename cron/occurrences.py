@@ -65,7 +65,8 @@ def unclaimed_pending_slot(job, now):
     process is honoured while that owner may still be alive within the fire-claim lease — a
     second live gateway on the same store is mid-dispatch, not dead."""
     from cron.jobs import (
-        FIRE_CLAIM_TTL_SECONDS, _claim_is_live, _job_running_in_this_process, _machine_id,
+        FIRE_CLAIM_TTL_SECONDS, _claim_is_live, _fire_claim_owner_is_dead,
+        _job_running_in_this_process, _machine_id,
     )
 
     pending = job.get("pending_slot")
@@ -80,6 +81,10 @@ def unclaimed_pending_slot(job, now):
         return None
     if _job_running_in_this_process(str(job.get("id", ""))):
         return None
-    if pending.get("by") != _machine_id() and _claim_is_live(pending, now, FIRE_CLAIM_TTL_SECONDS):
+    if (
+        pending.get("by") != _machine_id()
+        and _claim_is_live(pending, now, FIRE_CLAIM_TTL_SECONDS)
+        and not _fire_claim_owner_is_dead(pending)
+    ):
         return None
     return slot

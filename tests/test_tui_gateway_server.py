@@ -4783,7 +4783,7 @@ def test_prompt_submit_admission_is_serialized_per_session(monkeypatch):
     monkeypatch.setattr(server, "_persist_session_row_for_submit", lambda *args: None)
     monkeypatch.setattr(
         server, "_handle_busy_submit",
-        lambda rid, sid, current, text, transport, *, queued: busy.append(current["session_key"])
+        lambda rid, sid, current, text, transport, *, queued, **kwargs: busy.append(current["session_key"])
         or {"error": {"code": 4099, "message": "busy"}},
     )
 

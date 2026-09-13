@@ -330,6 +330,12 @@ def _persist_branch_seed(session: dict) -> None:
                 chunk_rows=500)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
+            from hermes_state_errors import is_disk_full_error
+            if not is_disk_full_error(exc):
+                # Do not leave an empty or partial row that would prevent the
+                # first real submit from retrying the complete seed.
+                with contextlib.suppress(Exception):
+                    db.delete_session(key)
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 

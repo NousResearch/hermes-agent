@@ -571,9 +571,8 @@ class GatewayConfig:
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
     # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
-    # session keys, per-profile adapters/credentials). Allowlist None = serve all; [] = default only.
+    # session keys, per-profile adapters/credentials).
     multiplex_profiles: bool = False
-    multiplex_profile_allowlist: Optional[List[str]] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -602,14 +601,13 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
+        "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
     )
 
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(self.multiplex_profile_allowlist)
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -745,7 +743,6 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=pick("multiplex_profile_allowlist"),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
@@ -802,6 +799,21 @@ def load_gateway_config() -> GatewayConfig:
             "Check %s for syntax errors. Error: %s",
             _home / "config.yaml", e,
         )
+
+    # Keep the optional Slack plugin's legacy environment bridge available even
+    # when its dependency (and therefore its hook) is not installed. This is
+    # configuration compatibility, not a platform enablement decision.
+    slack_cfg = None
+    if isinstance(gw_data, dict):
+        slack_cfg = ((gw_data.get("platforms") or {}).get("slack") or {}).get("extra")
+    if not isinstance(slack_cfg, dict):
+        with contextlib.suppress(Exception):
+            raw_yaml = config_loader.read_yaml_layers(_home)
+            slack_cfg = raw_yaml.get("slack") if isinstance(raw_yaml, dict) else None
+    if isinstance(slack_cfg, dict) and "ignored_channels" in slack_cfg and not os.environ.get("SLACK_IGNORED_CHANNELS"):
+        ignored = slack_cfg.get("ignored_channels")
+        if isinstance(ignored, (list, tuple, set)):
+            os.environ["SLACK_IGNORED_CHANNELS"] = ",".join(str(item).strip() for item in ignored if str(item).strip())
 
     config = GatewayConfig.from_dict(gw_data)
     _apply_env_overrides(config)

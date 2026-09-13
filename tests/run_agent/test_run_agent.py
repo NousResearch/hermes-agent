@@ -3231,6 +3231,9 @@ class TestHandleMaxIterations:
         agent._base_url_hostname = "chatgpt.com"
         agent.model = "gpt-5.5"
         agent._cached_system_prompt = "You are helpful."
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
         leaked_controls = {"tools", "tool_choice", "parallel_tool_calls"}
         # Precondition against the real transport: the main-loop request carries all three.
         assert leaked_controls <= agent._build_api_kwargs([{"role": "user", "content": "do stuff"}]).keys()

@@ -1260,6 +1260,30 @@ def _reasoning_config_for_wire(agent):
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
+    if isinstance(cfg, dict) and (
+        cfg.get("enabled") is False or cfg.get("effort") == "none"
+    ):
+        # Apply the catalog's mandatory-thinking contract before the route has
+        # had a chance to reject a disable. Keep this cache-only: the request
+        # builder must never block on a capability fetch.
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        if provider in {"nous", "nous-portal", "nousresearch", "openrouter"}:
+            try:
+                from hermes_cli.models_reasoning_caps import (
+                    nous_model_reasoning_capabilities,
+                    openrouter_model_reasoning_capabilities,
+                )
+
+                caps_fn = (
+                    openrouter_model_reasoning_capabilities
+                    if provider == "openrouter"
+                    else nous_model_reasoning_capabilities
+                )
+                caps = caps_fn(agent.model, allow_fetch=False)
+                if caps and caps.get("mandatory"):
+                    return None
+            except Exception:
+                pass
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has
         # been sending — the user's own config — so the retry lands on the
@@ -2145,8 +2169,24 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
     lm_reasoning_effort = agent._resolve_lmstudio_summary_reasoning_effort() if is_lmstudio else None
 
     extra_body = {}
-    if not is_lmstudio and agent._supports_reasoning_extra_body():
-        extra_body["reasoning"] = agent.reasoning_config if agent.reasoning_config is not None else {"enabled": True, "effort": "medium"}
+    provider_profile = None
+    with contextlib.suppress(Exception):
+        from providers import get_provider_profile
+        provider_profile = get_provider_profile(agent.provider)
+    wire_reasoning_config = _reasoning_config_for_wire(agent)
+    profile_owns_reasoning = bool(
+        provider_profile
+        and provider_profile.owns_reasoning_policy(
+            supports_reasoning=agent._supports_reasoning_extra_body(),
+        )
+    )
+    if (
+        not is_lmstudio
+        and not profile_owns_reasoning
+        and agent._supports_reasoning_extra_body()
+        and wire_reasoning_config is not None
+    ):
+        extra_body["reasoning"] = wire_reasoning_config
     if "nousresearch" in agent._base_url_lower:
         from agent.portal_tags import nous_portal_tags
         extra_body["tags"] = nous_portal_tags()
@@ -2163,12 +2203,22 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
     provider_preferences = _provider_preferences_for_agent(agent)
     profile_extra_body = {}
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        provider_profile = get_provider_profile(agent.provider)
         if provider_profile is not None:
+            profile_reasoning_config = wire_reasoning_config
+            if profile_reasoning_config is None:
+                profile_reasoning_config = agent.reasoning_config
             profile_extra_body = provider_profile.build_extra_body(
                 session_id=getattr(agent, "session_id", None), provider_preferences=provider_preferences or None,
                 model=agent.model, base_url=agent.base_url, reasoning_config=agent.reasoning_config)
+            profile_extra_kwargs = provider_profile.build_api_kwargs_extras(
+                reasoning_config=profile_reasoning_config,
+                supports_reasoning=agent._supports_reasoning_extra_body(),
+                model=agent.model, base_url=agent.base_url,
+                session_id=getattr(agent, "session_id", None),
+            )
+            if profile_extra_kwargs:
+                profile_extra_body = {**profile_extra_body, **(profile_extra_kwargs[0] or {})}
+                summary_kwargs.update(profile_extra_kwargs[1] or {})
     if profile_extra_body:
         extra_body.update(profile_extra_body)
 
@@ -2254,6 +2304,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         agent._safe_print(warning)
 
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
+    previous_api_request_id = getattr(agent, "_current_api_request_id", "")
+    # The iteration-limit path bypasses the normal turn-loop stamp, but its
+    # summary is still a physical provider request guarded by the egress policy.
+    agent._current_api_request_id = summary_api_request_id
     summary_call_outcome = "failed"
 
     # Shared constant so compaction recognizers can identify this runtime nudge by its stable
@@ -2286,6 +2340,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
+        agent._current_api_request_id = previous_api_request_id
 
     return final_response
 

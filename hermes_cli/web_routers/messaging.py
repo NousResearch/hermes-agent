@@ -789,10 +789,17 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
         with _profile_scope(profile) as scoped_dir:
+            # ``_profile_scope`` intentionally returns ``None`` when a named profile is
+            # the dashboard process's own home.  The liveness readers still need the
+            # explicit target path for a named query, so retain it separately.
+            target_home = scoped_dir
+            if profile and profile.strip().lower() != "current":
+                from hermes_cli.profiles import get_profile_dir
+                target_home = get_profile_dir(profile.strip())
             return {
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
-                "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                "platforms": _platform_payloads(target_home, _messaging_platform_catalog()),
             }
 
     return await asyncio.to_thread(_run)

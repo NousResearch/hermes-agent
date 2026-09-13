@@ -180,6 +180,7 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+_UNSET_WORKSPACE_KIND = object()
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -1323,7 +1324,7 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
-    workspace_kind: str = "scratch", workspace_path: Optional[str] = None,
+    workspace_kind: Optional[str] | object = _UNSET_WORKSPACE_KIND, workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
@@ -1353,7 +1354,9 @@ def create_task(
 
     # JSON-RPC/CLI callers may pass an explicit null for an omitted optional
     # field. Keep the public default invariant at the DB boundary.
-    workspace_kind = workspace_kind or "scratch"
+    workspace_kind_was_omitted = workspace_kind is _UNSET_WORKSPACE_KIND or not workspace_kind
+    if workspace_kind_was_omitted:
+        workspace_kind = "scratch"
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
@@ -1382,9 +1385,10 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
 
-    # A project-scoped board anchors every new task to its project's repo
-    # (deterministic worktree + branch) without each surface repeating it.
-    if project_id is None:
+    # A project-scoped board anchors new tasks to its project's repo unless the caller
+    # explicitly selected scratch. Scratch tasks must not inherit a source-tree project
+    # merely because they were created on a project-scoped board.
+    if project_id is None and workspace_kind_was_omitted:
         try:
             project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
         except Exception:

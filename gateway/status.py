@@ -1526,6 +1526,8 @@ def get_running_pid(
 ) -> Optional[int]:
     """PID of a running gateway (lock + PID file verified against the live process), or None."""
     resolved_pid_path = pid_path or _get_pid_path()
+    if expected_home is None and pid_path is not None:
+        expected_home = resolved_pid_path.parent
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
         records = (

@@ -466,7 +466,15 @@ def _relay(config: GatewayConfig) -> None:
     relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip() if existing_relay else ""
     relay_url_val = relay_url_env or relay_url_yaml
     if relay_url_val:
-        _enable_from_env(config, Platform.RELAY).extra["relay_url"] = relay_url_val.rstrip("/")
+        relay_config = _enable_from_env(config, Platform.RELAY)
+        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+
+        # An explicit YAML disable vetoes the deployment URL.  In that case the
+        # connector is not the owner of ingress, so it must not suppress native
+        # adapters either; direct delivery remains available exactly as before
+        # the connector stamp was added.
+        if not relay_config.enabled:
+            return
 
     if not relay_url_env or is_truthy_value(getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS")):
         return

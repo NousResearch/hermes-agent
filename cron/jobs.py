@@ -34,7 +34,7 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace, atomic_write_text
+from utils import atomic_replace, atomic_write_text, is_truthy_value
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
@@ -2126,6 +2126,31 @@ def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     return claimed_at is not None and 0 <= (now - claimed_at).total_seconds() < ttl_seconds
 
 
+def _fire_claim_owner_is_dead(claim: Any) -> bool:
+    """Return true only for a same-host claim whose recorded PID is gone."""
+    if not isinstance(claim, dict):
+        return False
+    owner = str(claim.get("by") or "")
+    host, separator, rest = owner.partition(":")
+    if not separator or not rest:
+        return False
+    import socket
+    if host != socket.gethostname():
+        return False
+    pid_text = rest.split(":", 1)[0]
+    if not pid_text.isdigit() or int(pid_text) <= 0:
+        return False
+    try:
+        os.kill(int(pid_text), 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    except OSError:
+        return False
+    return False
+
+
 _REARM_RECURRING_ERROR = (
     "Cannot re-arm recurring jobs: re-arm is one-shot-only; use plain resume or cron run."
 )
@@ -2309,6 +2334,9 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"
+        if job.pop("_model_unreachable", False):
+            from cron.unreachable_retry import plan_retry
+            plan_retry(job)
     elif kind in {"cron", "interval"}:
         # Recurring: transient failure (e.g. croniter missing) — disabling it would turn a missing
         # dep into "job completed" and silently drop the schedule.
@@ -2333,6 +2361,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    model_unreachable: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2352,7 +2381,13 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        if model_unreachable and not success:
+            job["_model_unreachable"] = True
+        elif not model_unreachable:
+            from cron.unreachable_retry import clear_state
+            clear_state(job)
         _advance_after_run(job, now)
+        job.pop("_model_unreachable", None)
         save_jobs(jobs)
         return True
 
@@ -2550,6 +2585,8 @@ def advance_next_runs(job_ids) -> int:
                 continue
             new_next = compute_next_run(job["schedule"], now)
             if new_next and new_next != job.get("next_run_at"):
+                from cron.occurrences import pending_slot_stamp
+                job["pending_slot"] = pending_slot_stamp(job["next_run_at"], _hermes_now())
                 job["next_run_at"] = new_next
                 advanced += 1
         if advanced:
@@ -2600,7 +2637,8 @@ def claim_job_for_fire(
         if not force and not is_job_runnable(job):
             return False
         now = _hermes_now()
-        if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
+        if (_claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds)
+                and not _fire_claim_owner_is_dead(job.get("fire_claim"))):
             return False  # someone holds a fresh claim
         from cron.occurrences import completed_occurrence, scheduled_instant
 
@@ -2618,6 +2656,7 @@ def claim_job_for_fire(
             return False
         if force:
             _activate_job_record(job)
+        job.pop("pending_slot", None)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
@@ -2637,7 +2676,9 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    # Heartbeats refresh the claim already held by this execution. They must not
+    # take the per-job fire fence while the scheduler thread is still inside it.
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by
@@ -2659,6 +2700,11 @@ def _cron_config_number(key: str, default: Any, cast: Callable[[Any], Any]) -> A
 def _completed_oneshot_retention_days() -> float:
     """``cron.completed_retention_days``; non-positive disables the sweep (records kept forever)."""
     return _cron_config_number("completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS, float)
+
+
+def _catch_up_missed() -> bool:
+    """Whether overdue recurring jobs should be dispatched after fast-forwarding."""
+    return bool(_cron_config_number("catch_up_missed", True, lambda value: is_truthy_value(value, default=True)))
 
 
 def _sweep_completed_oneshots(
@@ -2923,7 +2969,7 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     return False
 
 
-def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
+def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     """Recurring job past its grace window: skip the accumulated misses, fire once now.
 
     The fast-forward is persisted immediately — NOT redundant with advance_next_run/mark_job_run:
@@ -2932,16 +2978,17 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> None:
     calls advance_next_run. mark_job_run re-anchors on completion, so the value is provisional.
     """
     if (d.scan.now - d.next_run_dt).total_seconds() <= grace:
-        return
+        return False
     new_next = d.recompute_next()
     if not new_next:
-        return
+        return False
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
     d.scan.persist(d.job["id"], next_run_at=new_next)
     record_catch_up_occurrence()
+    return True
 
 
 def _retire_expired_oneshot(d: _DueJob) -> bool:
@@ -3047,7 +3094,10 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         return False
     grace = _compute_grace_seconds(d.schedule)
     if not manual_run and recurring:
-        _fast_forward_missed_recurring(d, grace)
+        was_missed = (now - d.next_run_dt).total_seconds() > grace
+        fast_forwarded = _fast_forward_missed_recurring(d, grace)
+        if was_missed and not _catch_up_missed() and fast_forwarded:
+            return False
     if kind == "once":
         if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
             return False
@@ -3100,6 +3150,13 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 continue
             if not job.get("enabled", True):
                 continue
+            from cron.occurrences import unclaimed_pending_slot
+            if pending := unclaimed_pending_slot(job, scan.now):
+                # The prior tick advanced the schedule but died before the
+                # fire claim. Restore that exact occurrence for one dispatch;
+                # claim_job_for_fire clears the durable marker once owned.
+                job["next_run_at"] = pending
+                scan.persist(job["id"], next_run_at=pending)
             if _has_pause_marker(job):
                 _self_disable_half_paused(job, scan)
                 continue

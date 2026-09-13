@@ -54,6 +54,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # clone would resurrect the SOURCE profile's state) and can balloon the copy by tens of GB.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
+    "cron",
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -798,6 +799,9 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    # Keep the profile layout bootstrapped while leaving scheduled work bound to the source
+    # profile.  The ignore callback excludes the root cron directory and all of its contents.
+    (profile_dir / "cron").mkdir(parents=True, exist_ok=True)
     env_path = profile_dir / ".env"
     if env_path.is_symlink():
         # copytree(..., symlinks=True) preserves a managed source link. Materialize the clone before
@@ -1238,6 +1242,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _released = _MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
+    with contextlib.suppress(Exception):
+        from hermes_state_registry import close_all_under
+        close_all_under(profile_dir)
 
     # 3. Remove wrapper script
     if has_wrapper and remove_wrapper_script(canon):

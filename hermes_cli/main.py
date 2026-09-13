@@ -361,8 +361,10 @@ from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.vault import build_vault_parser
+from hermes_cli.subcommands.federation import build_federation_parser
 from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
+from hermes_cli.federation import cmd_federation
 from hermes_cli.subcommands.worktree import build_worktree_parser
 from hermes_cli.subcommands.browser import build_browser_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
@@ -3256,6 +3258,12 @@ def _build_cli_parser():
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
     build_security_parser(subparsers, cmd_security=cmd_security)
+    build_federation_parser(subparsers, cmd_federation=cmd_federation)
+    from hermes_cli import secure_worker_cli
+    secure_worker_parser = subparsers.add_parser(
+        "secure-worker", help="Audit and run fail-closed remote workers"
+    )
+    secure_worker_cli.register_cli(secure_worker_parser)
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
     build_debug_parser(subparsers, cmd_debug=cmd_debug)

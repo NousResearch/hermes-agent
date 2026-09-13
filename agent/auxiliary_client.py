@@ -3010,7 +3010,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider", "session_id", "cache_scope")
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -7345,13 +7345,14 @@ def call_llm(
             _aux_thread_local_hook(_aux_provider_response, functools.partial(
                 _stamp_latency_once, latency_info, "time_to_first_progress_ms", request_started_at)),
         ):
-            response = _call_llm_impl(
-                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-                main_runtime=main_runtime, messages=messages, temperature=temperature,
-                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-                reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
-                stream=stream, stream_options=stream_options, route_info=route_info,
-            )
+            with scoped_runtime_main(main_runtime):
+                response = _call_llm_impl(
+                    task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                    main_runtime=main_runtime, messages=messages, temperature=temperature,
+                    max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                    reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
+                    stream=stream, stream_options=stream_options, route_info=route_info,
+                )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
             semaphore = None
@@ -7627,12 +7628,13 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
-            task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-            main_runtime=main_runtime, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-            reasoning_config=reasoning_config, route_info=route_info,
-        )
+        with scoped_runtime_main(main_runtime):
+            return await _async_call_llm_impl(
+                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                main_runtime=main_runtime, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                reasoning_config=reasoning_config, route_info=route_info,
+            )
     finally:
         if semaphore is not None:
             semaphore.release()

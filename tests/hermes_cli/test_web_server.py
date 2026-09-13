@@ -776,10 +776,12 @@ class TestWebServerEndpoints:
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
+            seen.setdefault("pid_paths", []).append(pid_path)
             return None
 
         def _runtime(path=None):
             seen["status_path"] = path
+            seen.setdefault("status_paths", []).append(path)
             return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
@@ -795,8 +797,8 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/messaging/platforms?profile=worker")
 
         assert resp.status_code == 200
-        assert seen["pid_path"] == worker_home / "gateway.pid"
-        assert seen["status_path"] == worker_home / "gateway_state.json"
+        assert worker_home / "gateway.pid" in seen["pid_paths"]
+        assert worker_home / "gateway_state.json" in seen["status_paths"]
         assert seen["expected_home"] == worker_home
 
 

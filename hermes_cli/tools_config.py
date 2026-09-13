@@ -577,7 +577,11 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     else:
         enabled_toolsets = _composite_toolsets(toolset_names, platform, explicitly_configured)
 
-    _recover_platform_native_toolsets(enabled_toolsets, platform, skip=configurable_keys | plugin_ts_keys | platform_default_keys)
+    # A saved platform list is an explicit allowlist. Native recovery belongs only
+    # to implicit composite resolution; otherwise [] or [file] gains capabilities
+    # the user did not select.
+    if not explicitly_configured:
+        _recover_platform_native_toolsets(enabled_toolsets, platform, skip=configurable_keys | plugin_ts_keys | platform_default_keys)
     if plugin_ts_keys:
         enabled_toolsets |= _enabled_plugin_toolsets(config, platform, toolset_names, plugin_ts_keys)
 

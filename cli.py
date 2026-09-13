@@ -2858,6 +2858,15 @@ class HermesCLI(CLIConversationWorktreeMixin, CLIProcessNotificationsMixin, CLIA
             # holds the GIL — that repeat was the post-banner freeze before the first prompt.
             from hermes_state_registry import acquire
             self._session_db = acquire()
+        except TypeError:
+            # Keep embedders that replace SessionDB with the historical
+            # zero-argument constructor compatible with the registry migration.
+            try:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception as e:
+                self._session_db_unavailable = True
+                logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.

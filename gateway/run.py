@@ -959,6 +959,14 @@ def _warm_turn_machinery_sync() -> int:
 
     tool_defs = model_tools.get_tool_definitions(quiet_mode=True)
     try:
+        from hermes_cli.config import load_config
+        from tools.env_probe import get_environment_probe_line
+        cfg = load_config()
+        if cfg_get(cfg, "agent", "environment_probe", default=True):
+            get_environment_probe_line()
+    except Exception:
+        logger.debug("environment probe warm-up failed (non-fatal)", exc_info=True)
+    try:
         from agent.prompt_builder import build_context_files_prompt
 
         build_context_files_prompt()
@@ -1617,8 +1625,17 @@ def _current_max_iterations() -> int:
     """Return the per-turn iteration budget after runtime env refresh; ``resolve_turn_limit`` maps
     ``agent.max_turns: none``/``unlimited`` (bridged as a string) to the unlimited sentinel, not an
     ``int()`` crash."""
-    _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    override = get_hermes_home_override()
+    if override is not None:
+        try:
+            cfg = _load_bridge_config(Path(override) / "config.yaml")
+            agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+            if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
+                return _resolve_turn_limit(agent_cfg["max_turns"])
+        except Exception:
+            pass
+    _reload_runtime_env_preserving_config_authority()
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
@@ -1643,11 +1660,7 @@ class HygieneTurnHoldExceeded(Exception):
 def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Return the authoritative profile set for one multiplex gateway config."""
     from hermes_cli.profiles import profiles_to_serve
-    kwargs = {"multiplex": True}
-    allowlist = getattr(config, "multiplex_profile_allowlist", None)
-    if allowlist is not None:
-        kwargs["profile_allowlist"] = allowlist
-    return list(profiles_to_serve(**kwargs))
+    return list(profiles_to_serve(multiplex=True))
 
 
 def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:

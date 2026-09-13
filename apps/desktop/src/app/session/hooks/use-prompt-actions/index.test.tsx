@@ -1918,6 +1918,9 @@ describe('usePromptActions desktop slash pickers', () => {
     )
 
     const result = handle!.submitText('/handoff telegram')
+    // Let the async slash handler reach its first gateway request before advancing
+    // the polling timers; otherwise fake timers can run ahead of the first delay.
+    await vi.advanceTimersByTimeAsync(0)
     await vi.advanceTimersByTimeAsync(61_000)
     await result
 

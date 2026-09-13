@@ -495,10 +495,18 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
-    # 38 → 39: strip the retired `bfl` toolset wherever a backfill/picker save wrote it, so stale
-    # config can't resurrect an unknown toolset.
+    # 38 → 39: move the conversation-worktree policy to its canonical top-level
+    # owner, and strip the retired `bfl` toolset wherever a backfill/picker save
+    # wrote it, so stale config can't resurrect an unknown toolset.
     config = read_raw_config()
     changed = False
+    desktop = config.get("desktop")
+    if isinstance(desktop, dict) and "conversation_worktree" in desktop:
+        if "conversation_worktree" not in config:
+            config["conversation_worktree"] = desktop["conversation_worktree"]
+        del desktop["conversation_worktree"]
+        config["desktop"] = desktop
+        changed = True
     for section in ("platform_toolsets", "known_builtin_toolsets"):
         mapping = config.get(section)
         if not isinstance(mapping, dict):

@@ -332,7 +332,7 @@ class TestGitHubCommentDelivery:
                 "--body", "LGTM! The code looks great.",
             ],
             timeout=30,
-            env=None,
+            environ=None,
         )
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).

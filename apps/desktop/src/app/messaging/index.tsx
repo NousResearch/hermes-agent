@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -19,17 +20,18 @@ import {
   type MessagingPlatformInfo,
   type PairingUser,
   revokePairing,
+  type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
-import { runGatewayRestart } from '@/store/system-actions'
+import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -41,6 +43,7 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { PlatformAvatar } from './platform-icon'
+import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -131,9 +134,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
   // the active profile; the API helpers treat null as "target primary").
   const scopeProfile = useStore($settingsRequestProfile)
-  // Both save/toggle toasts offer the same one-click restart.
-  const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  // A saved credential/toggle only takes effect on the next gateway start, so a
+  // vanishing toast is not enough: the page keeps a banner up until a restart
+  // actually happens. Cleared on a completed restart.
+  const [restartNeeded, setRestartNeeded] = useState(false)
+  const gatewayRestarting = useStore($gatewayRestarting)
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
     approved: [],
@@ -148,6 +154,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
+
+  const restartGatewayNow = useCallback(async () => {
+    const ok = await runGatewayRestart()
+
+    if (ok) {
+      setRestartNeeded(false)
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+    }
+  }, [])
 
   const refreshPlatforms = useCallback(
     async (silent = false) => {
@@ -172,16 +187,25 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   )
 
   // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
-  // banner; re-read status once the adapter had a moment to connect. Anything else keeps the restart
-  // action on the success toast.
+  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
   const settleAfterUpdate = useCallback(
     (hotServed: boolean | undefined) => {
       if (hotServed) {
         window.setTimeout(() => void refreshPlatforms(true), 4000)
+
+        return
       }
+
+      setRestartNeeded(true)
     },
     [refreshPlatforms]
   )
+
+  // Latest-callback ref: deferred post-restart refreshes must use the current
+  // profile scope after a profile switch.
+  const refreshPlatformsRef = useRef(refreshPlatforms)
+
+  refreshPlatformsRef.current = refreshPlatforms
 
   // Pairing has its own signal. platforms.changed tracks connect/disconnect
   // health via gateway_state.json, which a new pairing request never moves —
@@ -326,8 +350,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: result.hot_served ? m.appliedLive : m.restartToApply,
-        action: result.hot_served ? undefined : restartGatewayAction
+        message: result.hot_served ? m.appliedLive : m.restartToApply
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))
@@ -353,8 +376,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: result.hot_served ? m.connectingLive : m.restartToReconnect,
-        action: result.hot_served ? undefined : restartGatewayAction
+        message: result.hot_served ? m.connectingLive : m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))
@@ -382,6 +404,39 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       notifyError(err, m.failedClear(key))
     } finally {
       setSaving(null)
+    }
+  }
+
+  // QR onboarding writes the token + allowlist and asks the backend to restart
+  // the gateway. restart_started only means the child spawned; watch its exit
+  // so a failed restart lands in the banner instead of a silent "stopped".
+  async function handleTelegramApplied(result: TelegramOnboardingApplyResponse) {
+    await refreshPlatforms(true)
+
+    if (result.restart_started) {
+      notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
+      setRestartNeeded(false)
+      const ok = await watchGatewayRestartOutcome()
+
+      if (!ok) {
+        setRestartNeeded(true)
+        notifyError(new Error(m.restartFailedManual), m.restartFailedManual)
+      }
+
+      void refreshPlatforms(true)
+
+      return
+    }
+
+    if (result.needs_restart) {
+      // Older backends may not spawn the restart themselves: use the app's
+      // normal restart action, same as the manual credential path.
+      await restartGatewayNow()
+
+      if (result.restart_error) {
+        notifyError(new Error(result.restart_error), m.telegramQr.savedRestartFailed(`: ${result.restart_error}`))
+        setRestartNeeded(true)
+      }
     }
   }
 
@@ -482,6 +537,23 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
+                {restartNeeded && (
+                  <Alert variant="warning">
+                    <AlertTriangle />
+                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{m.restartNeeded}</span>
+                      <Button
+                        disabled={gatewayRestarting}
+                        onClick={() => void restartGatewayNow()}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
+                        {gatewayRestarting ? m.restarting : m.restartNow}
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
                 {selected && (
                   <PlatformDetail
                     approved={approvedByPlatform[selected.id] ?? []}
@@ -499,9 +571,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       }))
                     }
                     onRevoke={setPendingRevoke}
+                    onTelegramApplied={result => void handleTelegramApplied(result)}
                     pending={pendingByPlatform[selected.id] ?? []}
                     platform={selected}
                     saving={saving}
+                    scopeProfile={scopeProfile}
                   />
                 )}
               </DetailColumn>
@@ -579,9 +653,11 @@ function PlatformDetail({
   onClear,
   onEdit,
   onRevoke,
+  onTelegramApplied,
   pending,
   platform,
-  saving
+  saving,
+  scopeProfile
 }: {
   approved: PairingUser[]
   approving: null | string
@@ -590,9 +666,11 @@ function PlatformDetail({
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   onRevoke: (user: PairingUser) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
+  scopeProfile: string | undefined
 }) {
   const { t } = useI18n()
   const m = t.messaging
@@ -613,7 +691,9 @@ function PlatformDetail({
             <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
-            {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
+            {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
+              <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
+            )}
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {platform.description}
@@ -680,6 +760,15 @@ function PlatformDetail({
                 title={pairingLabel(user)}
               />
             ))}
+          </div>
+        </section>
+      )}
+
+      {platform.id === 'telegram' && (
+        <section>
+          <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
+          <div className="mt-3">
+            <TelegramQrSetup onApplied={onTelegramApplied} platform={platform} scopeProfile={scopeProfile} />
           </div>
         </section>
       )}

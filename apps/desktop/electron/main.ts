@@ -31,7 +31,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
+import { destroyKeepaliveAgents, downloadAgentFor, httpStatusError, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
@@ -11540,9 +11540,10 @@ async function ensureRegistryBackend(
   connectionId,
   profile,
   managedUpdateCorrelation = '',
-  opts: { spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}
 ) {
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
+  const passive = Boolean(opts.passive)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const source = registry.connections.find(c => c.id === id)
@@ -11650,7 +11651,7 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { spawnPriority })
+      return ensureBackend(profile, { passive, spawnPriority })
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)

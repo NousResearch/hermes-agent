@@ -1041,6 +1041,15 @@ def _handle_request_review(args: dict, **kw) -> str:
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
+    if reviewer:
+        from hermes_cli.profiles import list_profile_names, normalize_profile_name, profile_exists
+
+        reviewer = normalize_profile_name(reviewer)
+        _check(
+            profile_exists(reviewer),
+            f"reviewer {reviewer!r} is not installed; available profiles: "
+            f"{', '.join(name for name in list_profile_names() if name != reviewer) or 'none'}",
+        )
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         ok, fail_reason = kb.request_review(
@@ -1224,7 +1233,13 @@ def _handle_create(args: dict, **kw) -> str:
     if workspace_kind == "scratch":
         workspace_path = None
     # See #67567.
-    project_id = args.get("project") or args.get("project_id")
+    project_arg_present = "project" in args or "project_id" in args
+    project_id = args.get("project") if "project" in args else args.get("project_id")
+    if not project_arg_present and workspace_kind == "scratch":
+        # An explicit scratch request must suppress the board's implicit
+        # project inheritance; an omitted workspace kind remains eligible for
+        # the board project at the DB boundary.
+        project_id = ""
     project_source_task_id = None
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
@@ -1249,7 +1264,7 @@ def _handle_create(args: dict, **kw) -> str:
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
             priority=_opt_int(args.get("priority"), 0),
-            workspace_kind=str(workspace_kind if workspace_kind is not None else "scratch"),
+            workspace_kind=workspace_kind,
             workspace_path=workspace_path, project_id=project_id,
             project_source_task_id=project_source_task_id, triage=triage,
             creator_task_id=self_tid,
@@ -1260,7 +1275,8 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
+            created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id,
+            board=args.get("board"))
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
 

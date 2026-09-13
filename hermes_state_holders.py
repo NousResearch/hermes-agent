@@ -33,6 +33,35 @@ _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
 )
 
 
+def deleted_sqlite_sidecar_holders(db_path: Path, *, include_self: bool = True):
+    """Return processes holding an orphaned SQLite WAL/SHM generation."""
+    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+
+    holders = iter_deleted_sqlite_sidecar_holders(db_path)
+    if include_self:
+        return holders
+    own_pid = os.getpid()
+    return [holder for holder in holders if holder[0] != own_pid]
+
+
+def sqlite_sidecar_identity(db_path: Path):
+    """Return the current WAL/SHM inode snapshot for *db_path*."""
+    from hermes_state_dbfile import _stat_sqlite_sidecar_identity
+
+    return _stat_sqlite_sidecar_identity(db_path)
+
+
+def refuse_deleted_wal_generation(db_path: Path) -> None:
+    """Fail closed before opening SQLite when an orphaned sidecar is held."""
+    if not deleted_sqlite_sidecar_holders(db_path, include_self=True):
+        return
+    from hermes_state import DeletedWalGenerationError
+    from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+
+    logger.error(_DELETED_WAL_GENERATION_MSG)
+    raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+
+
 def _read_proc_argv(pid: int) -> Optional[List[str]]:
     """Read /proc/<pid>/cmdline without losing argv boundaries."""
     try:

@@ -3171,6 +3171,8 @@ def systemd_install(
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
             _ensure_system_service_linger(configured_user)
+        elif not system:
+            _ensure_linger_enabled()
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3937,7 +3939,8 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
         )
     _deadline = time.monotonic() + _reload_budget
-    if not _retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline):
+    registered = _retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline)
+    if not registered:
         _append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
             f"retrying for {int(_reload_budget)}s (in-process fallback path)"
@@ -3946,6 +3949,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             "launchd reload of %s failed — service not registered after %ds of retries; see %s",
             target, int(_reload_budget), _launchd_reload_log_path(),
         )
+        return False
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -3956,8 +3960,14 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+            if refresh_launchd_plist_if_needed():
+                print("✓ Service definition updated")
+            else:
+                from hermes_constants import display_hermes_home as _dhh
+                print(
+                    "⚠ Service definition was written, but launchd could not be reloaded; "
+                    f"see {_dhh()}/logs/launchd-reload.log"
+                )
             return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")

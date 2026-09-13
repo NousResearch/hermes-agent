@@ -421,6 +421,7 @@ class TestGetProcessStartTime:
     so the guard isn't a Linux-only no-op.
     """
 
+    @pytest.mark.live_system_guard_bypass
     def test_live_process_is_stable_int(self):
         import subprocess
         import time

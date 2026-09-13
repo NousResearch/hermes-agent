@@ -36,6 +36,15 @@ DEFAULT_CONFIG = {
     "runtime": {"nofile_soft_limit": 4096},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # Permission profile for agent-initiated mutations, read by hermes_cli.authority:
+    #   "production" (default) — the safety floors described in SOUL.md; sensitive/config writes
+    #     need explicit per-turn authorization.
+    #   "principal" — lifts the per-file edit/install rules on the operator's own machine, with an
+    #     audit entry per allowed action. The keys that DEFINE this grant (authority_profile,
+    #     approvals) are never agent-writable under either profile.
+    # Registered here so the key is a known top-level config option (schema + `hermes config`),
+    # not a name the module invents on read.
+    "authority_profile": "production",
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the
     # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.
     # 0/null disables.

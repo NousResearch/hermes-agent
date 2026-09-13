@@ -919,25 +919,23 @@ def _attested_pid_exited_cleanly(pid: int) -> bool:
     return isinstance(data, dict) and data.get("phase") == "exited" and data.get("pid") == pid
 
 
-def attested_gateway_died(current_pids: list[int] | None = None) -> bool:
+def _attested_dead(attested: list[int], current_pids: list[int]) -> bool:
+    """The liveness rule shared by the consuming and read-only probes: attested PIDs are dead when
+    no gateway runs now and the lifecycle ledger shows no clean exit for any of them."""
+    return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+
+
+def attested_gateway_died(current_pids: list[int]) -> bool:
     """True when the start attestation vouches for gateway PID(s) that are gone without a clean exit.
 
     Read-only twin of :func:`check_start_attestation` for callers that must not consume the
     one-shot marker — ``hermes update`` consults it to decide whether a Desktop-owned install
-    still owes a gateway cold-start (#109538). ``False`` for anything undecidable (no marker, a
-    gateway running now, a clean ledger exit, or discovery failure): "unknown" must never read
+    still owes a gateway cold-start (#109538). Callers pass the liveness they already established
+    (``[]`` after their own discovery came back empty) so the process table is not scanned twice.
+    ``False`` for anything undecidable (no marker, a clean ledger exit): "unknown" must never read
     as "dead"."""
     attested = _attested_pids_from(_read_start_attestation())
-    if not attested:
-        return False
-    if current_pids is None:
-        try:
-            from hermes_cli.gateway import find_gateway_pids
-
-            current_pids = list(find_gateway_pids())
-        except Exception:
-            return False
-    return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+    return bool(attested) and _attested_dead(attested, current_pids)
 
 
 def check_start_attestation(current_pids: list[int] | None = None) -> str | None:
@@ -960,7 +958,7 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
             return None
 
     _clear_start_attestation()
-    if current_pids or any(_attested_pid_exited_cleanly(pid) for pid in attested):
+    if not _attested_dead(attested, current_pids):
         return None
     return _format_attestation_warning(attested, data)
 

@@ -101,7 +101,7 @@ def test_pause_skips_cold_start_plan_when_desktop_owns_lifecycle(monkeypatch):
         hermes_gateway, "find_windows_gateway_services", lambda **_k: []
     )
     monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
-    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda: False)
+    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda **_k: False)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
 
@@ -135,7 +135,7 @@ def test_cold_start_aborts_when_desktop_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
-    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda: False)
+    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda **_k: False)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(
@@ -186,4 +186,4 @@ def test_attested_dead_gateway_survives_desktop_ownership_and_marker_is_consumed
     assert spawned == [1]
     assert "Gateway started via cold-start after update (PID: 4242)" in capsys.readouterr().out
     assert not marker.exists()  # consumed by the spawn
-    assert gateway_windows.attested_gateway_died() is False
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is False

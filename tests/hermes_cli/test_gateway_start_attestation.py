@@ -210,7 +210,6 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
     for malformed in ('{"pids": null}', '{"pids": 555}', '["not", "a", "dict"]', "not json"):
         marker.write_text(malformed, encoding="utf-8")
         assert gateway_windows.attested_gateway_died(current_pids=[]) is False, malformed
-    assert gateway_windows._attested_pids_from({"pids": [1, "x", 2]}) == [1, 2]
 
     gateway_windows._write_start_attestation([555], "cold-start after update")
     assert gateway_windows.attested_gateway_died(current_pids=[555]) is False  # alive

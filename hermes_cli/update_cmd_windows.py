@@ -758,7 +758,7 @@ def _windows_cold_start_plan() -> dict | None:
         if not gateway_windows.is_installed():
             return None
         with _best_effort('Could not check Desktop gateway-lifecycle ownership before update: %s'):
-            if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died():
+            if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died(current_pids=[]):
                 logger.debug("Skipping Windows gateway cold-start plan: Desktop owns gateway lifecycle")
                 return None
         return {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": [], "cold_start_if_installed": True}
@@ -942,7 +942,7 @@ def _cold_start_windows_gateway_after_update() -> bool:
         if list(find_gateway_pids(all_profiles=True)):
             return True
     with _abort_on_error("Could not re-check Desktop gateway-lifecycle ownership before cold-start"):
-        if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died():
+        if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died(current_pids=[]):
             logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
             return True
     with _abort_on_error("Could not cold-start Windows gateway after update"):

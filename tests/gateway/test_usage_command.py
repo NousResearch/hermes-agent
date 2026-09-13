@@ -200,6 +200,71 @@ class TestUsageAccountSection:
         account_call = next(c for c in calls if c["args"] == ("nvidia",))
         assert account_call["kwargs"]["base_url"] == "https://integrate.api.nvidia.com/v1/"
 
+    @pytest.mark.asyncio
+    async def test_usage_command_uses_gateway_runtime_base_url_when_agent_omits_it(self, monkeypatch):
+        """A live agent can expose a provider but no base_url; the account fetch
+        must still recover the base_url from the persisted live-routing snapshot
+        (model_config.gateway_runtime). Regresses the guard that previously only
+        consulted persisted data when the provider itself was missing (#75535)."""
+        import json
+
+        # Resident agent: provider set, base_url None (the mock's default).
+        agent = _make_mock_agent(provider="custom:freellmapi", base_url=None)
+        runner = _make_runner(SK, agent=agent)
+        runner._session_db = AsyncSessionDB(MagicMock())
+        # No billing metadata has landed yet; the only record of the live route's
+        # base_url is the gateway_runtime snapshot persisted on every switch.
+        runner._session_db._db.get_session.return_value = {
+            "billing_provider": "",
+            "billing_base_url": "",
+            "model_config": json.dumps(
+                {
+                    "gateway_runtime": {
+                        "provider": "custom:freellmapi",
+                        "base_url": "https://freellmapi.example/v1",
+                        "fallback_active": True,
+                    }
+                }
+            ),
+        }
+        runner._session_db._db.get_dominant_session_model_route.return_value = {}
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-1"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "earlier"},
+        ]
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: [
+                "📈 **Account limits**",
+                "Provider: custom:freellmapi",
+            ],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        event = MagicMock()
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
+            result = await runner._handle_usage_command(event)
+
+        account_call = next(c for c in calls if c["args"] == ("custom:freellmapi",))
+        assert account_call["kwargs"]["base_url"] == "https://freellmapi.example/v1"
+        assert "📈 **Account limits**" in result
+
 
 class TestUsageReset:
     """`/usage reset [--force]` — banked Codex reset redemption via the gateway."""

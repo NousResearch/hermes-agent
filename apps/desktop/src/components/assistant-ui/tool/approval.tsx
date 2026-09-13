@@ -16,7 +16,7 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AlertCircle, ChevronDown, Loader2 } from '@/lib/icons'
+import { AlertCircle, ChevronDown } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -204,12 +204,13 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
           <Button
             className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
             disabled={busy}
+            loading={submitting === 'once'}
             onClick={() => void respond('once')}
             size="xs"
             variant="ghost"
           >
-            {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
-            {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+            {copy.run}
+            <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>
           </Button>
           {hasMoreOptions && <span aria-hidden className="w-px self-stretch bg-primary/20" />}
           {hasMoreOptions && (
@@ -252,12 +253,13 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         <Button
           className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
           disabled={busy}
+          loading={submitting === 'deny'}
           onClick={() => void respond('deny')}
           size="xs"
           variant="ghost"
         >
-          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
-          {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
+          {copy.reject}
+          <span className="text-[0.625rem] opacity-55">Esc</span>
         </Button>
 
         {hasCommand && (

@@ -20,6 +20,7 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN } from './control-classes'
 import type { ChatBarState, VoiceStatus } from './types'
+import { VoiceEngineRows } from './voice-engine-rows'
 
 export interface VoiceMenuProps {
   autoSpeak: boolean
@@ -112,6 +113,8 @@ export function VoiceMenu({
           <AudioLines className={iconSize.sm} />
           {c.startVoice}
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <VoiceEngineRows disabled={disabled} />
         <DropdownMenuSeparator />
         {/* Checkbox items, because all three are toggles the user is reading
             the CURRENT state of — the reason they were pressed-state buttons

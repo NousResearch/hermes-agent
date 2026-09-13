@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _sanitize_replayed_fn_name,
     _format_responses_error,
@@ -18,6 +19,61 @@ _HARMONY_SOURCE_SNIPPET = (
     "Need to generate one image according to the description."
     "<|end|><|start|>assistant<|channel|>final<|message|>"
 )
+
+
+def test_chat_content_drops_images_from_assistant_role():
+    content = [
+        {"type": "text", "text": "generated image"},
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/p.png"}},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+
+    assert _chat_content_to_responses_parts(content, role="assistant") == [
+        {"type": "output_text", "text": "generated image"},
+        {"type": "output_text", "text": "[Assistant image omitted during replay]"},
+        {"type": "output_text", "text": "[Assistant image omitted during replay]"},
+    ]
+
+
+def test_chat_content_keeps_images_on_user_role():
+    content = [{
+        "type": "image_url",
+        "image_url": {"url": "https://example.invalid/p.png", "detail": "high"},
+    }]
+
+    assert _chat_content_to_responses_parts(content, role="user") == [{
+        "type": "input_image",
+        "image_url": "https://example.invalid/p.png",
+        "detail": "high",
+    }]
+
+
+@pytest.mark.parametrize("part_type", ["video_url", "video", "input_video"])
+def test_chat_content_rejects_video_instead_of_sending_text_only(part_type):
+    content = [
+        {"type": part_type, part_type: {"url": "data:video/mp4;base64,AAAA"}},
+        {"type": "text", "text": "Describe the video"},
+    ]
+    with pytest.raises(ValueError, match=f"does not support {part_type} input"):
+        _chat_messages_to_responses_input([{"role": "user", "content": content}])
+
+
+def test_preflight_rewrites_raw_assistant_images_to_text_markers():
+    raw = [{
+        "role": "assistant",
+        "content": [{
+            "type": "input_image",
+            "image_url": "https://example.invalid/p.png",
+        }],
+    }]
+
+    assert _preflight_codex_input_items(raw) == [{
+        "role": "assistant",
+        "content": [{
+            "type": "output_text",
+            "text": "[Assistant image omitted during replay]",
+        }],
+    }]
 
 
 def _harmony_token(name: str) -> str:

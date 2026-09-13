@@ -168,5 +168,18 @@ class TestCustomOllamaParity:
             tools=None,
             provider_profile=get_provider_profile("custom"),
             reasoning_config={"enabled": False, "effort": "none"},
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_think_omitted_for_mistral_custom(self, transport):
+        kw = transport.build_kwargs(
+            model="mistral-small-latest",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("custom"),
+            reasoning_config={"enabled": False, "effort": "none"},
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert kw.get("extra_body", {}).get("think") is None
+        assert kw.get("reasoning_effort") == "none"

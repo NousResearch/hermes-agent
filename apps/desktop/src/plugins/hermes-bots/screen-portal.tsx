@@ -12,7 +12,7 @@
 import { Codicon, host, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
 import type { ProfileGroupRoute } from '@hermes/plugin-sdk'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
@@ -168,18 +168,24 @@ export function ScreenPortal({ bot, meta, compact = false }: { bot: RosterRow; m
  *  roster filter still gets its portal (the portal only needs a routable row). */
 export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }) {
   const roster = useValue($lastRoster)
+  const { connectionId, profile } = route
 
-  const bot =
-    roster.find(row => {
-      const resolved = resolveBotConnectionRoute(row)
+  // Stable row identity: the portal's effects key on `bot`, so a synthesized row
+  // rebuilt every render would re-subscribe the lease listener on every sidebar paint.
+  const bot = useMemo(
+    () =>
+      roster.find(row => {
+        const resolved = resolveBotConnectionRoute(row)
 
-      return resolved.route
-        ? resolved.route.profile === route.profile && resolved.route.connectionId === (route.connectionId ?? 'local')
-        : row.name === route.profile && route.connectionId === null
-    }) ??
-    (route.connectionId
-      ? ({ name: route.profile, sourceScoped: true, connectionId: route.connectionId, connectionKind: route.connectionId === 'local' ? 'local' : 'remote' } as RosterRow)
-      : ({ name: route.profile } as RosterRow))
+        return resolved.route
+          ? resolved.route.profile === profile && resolved.route.connectionId === (connectionId ?? 'local')
+          : row.name === profile && connectionId === null
+      }) ??
+      (connectionId
+        ? ({ name: profile, sourceScoped: true, connectionId, connectionKind: connectionId === 'local' ? 'local' : 'remote' } as RosterRow)
+        : ({ name: profile } as RosterRow)),
+    [connectionId, profile, roster]
+  )
 
   return <ScreenPortal bot={bot} compact />
 }

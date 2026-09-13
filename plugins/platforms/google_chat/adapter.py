@@ -24,7 +24,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
 
@@ -378,12 +380,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: Dict[str, str] = {}
-        try:
-            from hermes_constants import get_hermes_home as _get_hermes_home
-            _hermes_home = _get_hermes_home()
-        except (ModuleNotFoundError, ImportError):
-            _hermes_home = _Path.home() / ".hermes"
-        self._thread_count_store = _ThreadCountStore(_hermes_home / "google_chat_thread_counts.json")
+        from hermes_constants import get_hermes_home as _get_hermes_home
+        self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
         # concurrent _keep_typing calls wait instead of duplicating cards.
         self._typing_card_inflight: Dict[str, asyncio.Event] = {}
@@ -1536,30 +1534,27 @@ def _is_connected(config: PlatformConfig) -> bool:
     return bool(getattr(config, "enabled", False)) and _validate_config(config)
 
 
-_ENV_SEED_KEYS = (
-    ("http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE"),
-    ("http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL"),
-    ("max_messages", "GOOGLE_CHAT_MAX_MESSAGES"), ("max_bytes", "GOOGLE_CHAT_MAX_BYTES"),
-    ("bootstrap_spaces", "GOOGLE_CHAT_BOOTSTRAP_SPACES"), ("debug_raw", "GOOGLE_CHAT_DEBUG_RAW"),
+_ENV_SEED_KEYS = (  # (env var, extra key, conv) for seed_extra_from_env
+    ("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", "http_events_audience", None),
+    ("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL", "http_events_service_account_email", None),
+    ("GOOGLE_CHAT_MAX_MESSAGES", "max_messages", None), ("GOOGLE_CHAT_MAX_BYTES", "max_bytes", None),
+    ("GOOGLE_CHAT_BOOTSTRAP_SPACES", "bootstrap_spaces", None), ("GOOGLE_CHAT_DEBUG_RAW", "debug_raw", None),
 )
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """Seed ``PlatformConfig.extra`` from env during ``_apply_env_overrides`` (before the
-    adapter exists, so ``gateway status`` reflects env-only config). None when the minimum
-    inbound settings are absent; ``home_channel`` becomes a ``HomeChannel`` in the core hook."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before the adapter exists
+    (so ``gateway status`` reflects env-only config); ``None`` when the minimum inbound settings are absent."""
     if not _env_inbound_configured():
         return None
     project, subscription, http_events_url = _env_inbound_settings()
-    values = [("project_id", project), ("subscription_name", subscription), ("http_events_url", http_events_url)]
-    values += [(extra_name, _get_scoped_secret(env)) for extra_name, env in _ENV_SEED_KEYS]
-    values.append(("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
-                   or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")))
-    seed: Dict[str, Any] = {extra_name: value for extra_name, value in values if value}
-    home = _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home")}
+    values = [("project_id", project), ("subscription_name", subscription), ("http_events_url", http_events_url),
+              ("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+               or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS"))]
+    seed = {extra_name: value for extra_name, value in values if value}
+    seed.update(_seed_extra_from_env(_ENV_SEED_KEYS, home_env="GOOGLE_CHAT_HOME_CHANNEL"))
     return seed
+
 
 
 _SETUP_WALKTHROUGH = """Google Chat needs a GCP project, a Pub/Sub topic + subscription,
@@ -1583,11 +1578,9 @@ def interactive_setup() -> None:
     """``hermes setup`` wizard: print GCP instructions, prompt for env vars, persist to ``~/.hermes/.env``."""
     from hermes_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
     from hermes_cli.config import get_env_value, save_env_value
-    existing_sub = get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME")
-    if existing_sub:
-        print_info(f"Google Chat: already configured (subscription: {existing_sub})")
-        if not prompt_yes_no("Reconfigure Google Chat?", False):
-            return
+    from hermes_cli.setup_platforms import declines_reconfigure
+    if declines_reconfigure("Google Chat", "Reconfigure Google Chat?", "GOOGLE_CHAT_SUBSCRIPTION_NAME"):
+        return
     for line in _SETUP_WALKTHROUGH.splitlines():
         print_info(line)
     for question, env_name, required_label, password in (
@@ -1641,7 +1634,7 @@ _STANDALONE_SA_ERRORS = {
 
 
 def _standalone_error(detail: str) -> Dict[str, Any]:
-    return {"error": f"Google Chat standalone send: {detail}"}
+    return send_error(f"Google Chat standalone send: {detail}")
 
 
 async def _standalone_send(
@@ -1701,7 +1694,7 @@ async def _standalone_send(
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
         logger.debug("Google Chat standalone send raised", exc_info=True)
-        return {"error": f"Google Chat standalone send failed: {e}"}
+        return send_error(f"Google Chat standalone send failed: {e}")
 
 
 def register(ctx) -> None:

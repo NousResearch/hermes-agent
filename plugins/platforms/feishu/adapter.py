@@ -83,7 +83,7 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
@@ -92,7 +92,10 @@ from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
+    get_scoped_secret as _get_scoped_secret, send_error
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1268,11 +1271,10 @@ class FeishuAdapter(BasePlatformAdapter):
         def _secret(name: str, default: str = "") -> str:
             return _get_scoped_secret(name, default).strip()
 
-        def _extra_or_secret(key: str, env: str) -> str:
-            return str(extra.get(key) or _get_scoped_secret(env, "")).strip()
+        def _extra_or_secret(key: str, env: str, default: str = "") -> str:
+            return str(_shared_extra_or_secret(extra, key, env, default)).strip()
 
-        def _extra_or_env(key: str, env: str, default: str) -> str:
-            return str(extra.get(key) or _get_scoped_secret(env, default)).strip()
+        _extra_or_env = _extra_or_secret
 
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1646,35 +1648,24 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
+    _EA_ACTION_LABELS = {"once": "✅ Allow Once", "session": "✅ Session", "always": "✅ Always", "deny": "❌ Deny"}
+    _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
         route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-
         try:
             approval_id = next(self._approval_counter)
-
-            def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
-                return _card_button(label, btn_type, {"hermes_action": action_name, "approval_id": approval_id})
-
-            actions = [_btn("✅ Allow Once", "approve_once", "primary")]
-            if not smart_denied and allow_session:
-                actions.append(_btn("✅ Session", "approve_session"))
-                if allow_permanent:
-                    actions.append(_btn("✅ Always", "approve_always"))
-            actions.append(_btn("❌ Deny", "deny", "danger"))
-            card = _card(
-                "⚠️ Command Approval Required", "orange",
-                self._format_exec_approval(command, description, smart_denied), actions=actions,
-            )
+            actions = [
+                _card_button(label, style or "default",
+                             {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
+                for label, choice, style in prompt.actions]
+            card = _card("⚠️ Command Approval Required", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
-                chat_id, card, metadata, "send_exec_approval failed",
-                state_map=self._approval_state, state_id=approval_id, session_key=session_key,
+                prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
+                state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -2866,21 +2857,11 @@ class FeishuAdapter(BasePlatformAdapter):
             prior_task.cancel()
         task_map[key] = asyncio.create_task(flush_fn(key))
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Flush after the quiet period; wait longer when the last chunk sits near Feishu's ~4096-char split."""
-        pending = self._pending_text_batches.get(key)
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-        near_split = last_len >= self._SPLIT_THRESHOLD  # a continuation chunk is almost certain
-        delay = self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds
-        await self._delayed_flush(self._pending_text_batch_tasks, key, delay, self._flush_text_batch_now)
-
-    async def _flush_text_batch_now(self, key: str) -> None:
-        """Dispatch the current text batch immediately."""
-        event = self._pending_text_batches.pop(key, None)
+    def _pop_text_batch(self, key: str) -> Optional[MessageEvent]:
         self._pending_text_batch_counts.pop(key, None)
-        if not event:
-            return
-        logger.info("[Feishu] Flushing text batch %s (%d chars)", key, len(event.text or ""))
+        return self._pending_text_batches.pop(key, None)
+
+    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
         await self._handle_message_with_guards(event)
 
     # --- Message content extraction and resource download ---
@@ -4146,7 +4127,7 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
-        return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
+        return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
     try:
         adapter = FeishuAdapter(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
@@ -4155,10 +4136,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         if message.strip():
             last_result = await adapter.send(chat_id, message, metadata=metadata)
             if not last_result.success:
-                return {"error": f"Feishu send failed: {last_result.error}"}
+                return send_error(f"Feishu send failed: {last_result.error}")
         for media_path, _is_voice in media_files or []:
             if not os.path.exists(media_path):
-                return {"error": f"Media file not found: {media_path}"}
+                return send_error(f"Media file not found: {media_path}")
             ext = os.path.splitext(media_path)[1].lower()
             if ext in _MIGRATION_IMAGE_EXTS:
                 sender = adapter.send_image_file
@@ -4170,27 +4151,24 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 sender = adapter.send_document
             last_result = await sender(chat_id, media_path, metadata=metadata)
             if not last_result.success:
-                return {"error": f"Feishu media send failed: {last_result.error}"}
+                return send_error(f"Feishu media send failed: {last_result.error}")
         if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+            return send_error("No deliverable text or media remained after processing MEDIA tags")
         return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
-        return {"error": f"Feishu send failed: {e}"}
+        return send_error(f"Feishu send failed: {e}")
 
 
 def interactive_setup() -> None:
     """Interactive setup for Feishu / Lark — scan-to-create or manual creds (CLI helpers lazy-imported)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Feishu / Lark")
-    existing_app_id = get_env_value("FEISHU_APP_ID")
-    existing_secret = get_env_value("FEISHU_APP_SECRET")
-    if existing_app_id and existing_secret:
-        print_success("Feishu / Lark is already configured.")
-        if not prompt_yes_no("Reconfigure Feishu / Lark?", False):
-            return
+    if declines_reconfigure("Feishu / Lark", "Reconfigure Feishu / Lark?", "FEISHU_APP_ID"):
+        return
 
     method_idx = prompt_choice(
         "How would you like to set up Feishu / Lark?",
@@ -4301,17 +4279,11 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and seed
-    ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value.
+    """``apply_yaml_config_fn`` (#24849): bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and
+    seed ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value."""
+    seeded = _apply_yaml_bridge(feishu_cfg, (("allow_bots", "FEISHU_ALLOW_BOTS", "lower"),))
+    return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy feishu_cfg block from
-    gateway/config.py::load_gateway_config() (allow_bots). Env vars take precedence over YAML.
-    """
-    if "allow_bots" not in feishu_cfg:
-        return None
-    _set_env = _yaml_env_setter()
-    _set_env("FEISHU_ALLOW_BOTS", str(feishu_cfg["allow_bots"]).lower())
-    return {"allow_bots": str(feishu_cfg["allow_bots"]).lower()}
 
 
 def _is_connected(config) -> bool:
@@ -4320,15 +4292,11 @@ def _is_connected(config) -> bool:
     return bool(extra.get("app_id"))
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs FeishuAdapter from a PlatformConfig."""
-    return FeishuAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="feishu", label="Feishu / Lark", adapter_factory=_build_adapter,
+        name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],

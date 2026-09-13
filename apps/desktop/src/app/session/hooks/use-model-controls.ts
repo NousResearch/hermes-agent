@@ -1,3 +1,4 @@
+import type { ModelOptionsResponse } from '@hermes/shared'
 import { type QueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
@@ -21,7 +22,6 @@ import {
   setCurrentProvider
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string

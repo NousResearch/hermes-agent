@@ -638,7 +638,7 @@ def fetch_ai_gateway_models(
     from hermes_constants import AI_GATEWAY_BASE_URL
 
     fallback = list(VERCEL_AI_GATEWAY_MODELS)
-    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, urllib.request.urlopen)
+    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
     if live is None:
         return list(_ai_gateway_catalog_cache or fallback)
     _, live_by_id = live
@@ -1236,7 +1236,37 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return get_codex_model_ids(access_token=access_token)
 
 
+_COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
+_COPILOT_ACP_SESSION_FAIL_TTL = 30.0  # failed probes re-probe quickly so a fresh CLI login is picked up
+_copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None  # (at, ttl, models)
+
+
+def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
+    """Enabled models from a signed-in ``copilot --acp`` session, memoized for a few minutes —
+    successes AND failures. Model-switch validation (``models_validate._static_catalog``) reads
+    this uncached on every ``/model`` switch, and each miss is a CLI spawn + handshake (up to the
+    probe timeout), so without the memo every switch paid a subprocess. A failed probe is
+    memoized much more briefly so a user who signs in to the CLI right after a miss is picked up
+    on the next switch (or immediately via ``/model --refresh``, which clears this memo)."""
+    global _copilot_acp_session_memo
+    now = time.monotonic()
+    memo = _copilot_acp_session_memo
+    if not force_refresh and memo is not None and now - memo[0] < memo[1]:
+        return memo[2]
+    from providers import get_provider_profile
+
+    try:
+        live = get_provider_profile("copilot-acp").fetch_models() or None
+    except Exception:
+        logger.debug("copilot-acp session model discovery failed", exc_info=True)
+        live = None
+    _copilot_acp_session_memo = (now, _COPILOT_ACP_SESSION_MEMO_TTL if live else _COPILOT_ACP_SESSION_FAIL_TTL, live)
+    return live
+
+
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
+        return live
     try:
         live = _fetch_github_models(_resolve_copilot_catalog_api_key())
         if live:
@@ -1712,6 +1742,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
+        # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is
+        # what ``--refresh`` runs): don't let the 5-min session memo (or its failure memo) serve
+        # a stale signed-out probe past an explicit refresh.
+        global _copilot_acp_session_memo
+        _copilot_acp_session_memo = None
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
@@ -2601,7 +2636,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _HERMES_USER_AGENT}
     try:
         url = base_url.rstrip("/") + "/models"
-        data = _get_json(url, timeout=timeout, headers=headers, opener=urllib.request.urlopen)
+        data = _get_json(url, timeout=timeout, headers=headers)
         return [
             m["id"] for m in data.get("data", [])
             if m.get("id") and m.get("type") == "language" and "tool-use" in (m.get("tags") or [])]

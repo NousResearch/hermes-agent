@@ -224,7 +224,20 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             elif not src_err:  # only a cleanly-validated move updates the overlay
                 pending_content[op.new_path] = src_content if src_content is not None else ""
                 _remove(op.file_path)
-        # ADD: write_file creates parent directories; no pre-check needed.
+        elif op.operation == OperationType.ADD:
+            # An Add must create a NEW file. If the target already exists, write_file
+            # would clobber it with only the patch's '+' lines and report success,
+            # silently destroying the original contents (models frequently confuse Add
+            # with Update). Reject it here so the two-phase contract holds, mirroring
+            # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
+            # same path in this patch stays legal, and the added content enters the
+            # overlay so later hunks against it validate.
+            if not _read(op.file_path)[1]:
+                errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
+            else:
+                removed_paths.discard(op.file_path)
+                pending_content[op.file_path] = '\n'.join(
+                    line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+')
     if not errors and real_change_count == 0:
         errors.append("Patch contains no changes (only context lines were provided)")
     return errors
@@ -308,7 +321,13 @@ def _write_file_accepts_pre_content(file_ops: Any) -> bool:
 
 
 def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
-    """Create a file from the hunks' '+' lines."""
+    """Create a file from the hunks' '+' lines. Fails closed when the target already
+    exists: validation confirmed the path was free (or freed by an earlier DELETE in
+    this patch, which has already applied by now), so an existing file here is a
+    validate/apply race — never clobber."""
+    read_back = file_ops.read_file_raw(op.file_path)
+    if not read_back.error:
+        return _fail(f"{op.file_path}: file already exists — use Update File, not Add File")
     content_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+']
     result = file_ops.write_file(op.file_path, '\n'.join(content_lines))
     diff = f"--- /dev/null\n+++ b/{op.file_path}\n" + '\n'.join(f"+{line}" for line in content_lines)

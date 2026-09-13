@@ -14,7 +14,9 @@ from functools import wraps
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from gateway.platforms._shared import get_scoped_secret, yaml_env_setter
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret, send_error
+)
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -176,6 +178,7 @@ from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
 
@@ -283,8 +286,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 5.0)
         self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 10.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default`` (fed to asyncio.sleep)."""
@@ -540,10 +541,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
         _unlink_quietly(self._session_path / "bridge.pid")
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._poll_task
+        await cancel_task(self._poll_task)
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
         self._poll_task = self._http_session = self._bridge_process = None
@@ -732,19 +730,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
-    async def _flush_text_batch(self, key: str) -> None:
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            await asyncio.sleep(self._text_batch_split_delay_seconds if last_len >= self._SPLIT_THRESHOLD else self._text_batch_delay_seconds)
-            event = self._pending_text_batches.pop(key, None)
-            if event:
-                await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
-
     @staticmethod
     def _classify_bridge_message(data: Dict[str, Any]) -> MessageType:
         media_type = str(data.get("mediaType", "") or "")
@@ -887,7 +872,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
         normalized_chat_id = to_whatsapp_jid(chat_id)
@@ -902,7 +887,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status == 200:
                         return (await resp.json()).get("messageId"), None
-                    return None, {} if error_label is None else {"error": f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}"}
+                    return None, {} if error_label is None else send_error(f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}")
             # 1) Text first (skipped when media-only or when the text rides as the caption).
             if (message or "").strip() and not media_caption:
                 last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
@@ -917,7 +902,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                             await _post("send", {"chatId": normalized_chat_id, "message": media_caption}, 30)
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
-                    return {"error": f"WhatsApp media file not found: {media_path}"}
+                    return send_error(f"WhatsApp media file not found: {media_path}")
                 media_type = _bridge_media_type(media_path, is_voice, force_document)
                 payload: Dict[str, Any] = {"chatId": normalized_chat_id, "filePath": media_path, "mediaType": media_type}
                 payload.update({k: v for k, v in (("fileName", os.path.basename(media_path) if media_type == "document" else None), ("caption", media_caption)) if v})
@@ -927,7 +912,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 last_message_id = mid or last_message_id
         return {"success": True, "platform": "whatsapp", "chat_id": normalized_chat_id, "message_id": last_message_id}
     except Exception as e:
-        return {"error": f"WhatsApp send failed: {e}"}
+        return send_error(f"WhatsApp send failed: {e}")
 
 
 def interactive_setup() -> None:
@@ -959,34 +944,19 @@ def interactive_setup() -> None:
 
 
 # config.yaml whatsapp: key → env var. Env vars take precedence over YAML.
-_YAML_LOWERCASE_KEYS = (("require_mention", "WHATSAPP_REQUIRE_MENTION"), ("dm_policy", "WHATSAPP_DM_POLICY"), ("group_policy", "WHATSAPP_GROUP_POLICY"))
-_YAML_LIST_KEYS = (("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"), ("allow_from", "WHATSAPP_ALLOWED_USERS"), ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS"))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "WHATSAPP_REQUIRE_MENTION", "lower"), ("dm_policy", "WHATSAPP_DM_POLICY", "lower"),
+    ("group_policy", "WHATSAPP_GROUP_POLICY", "lower"), ("mention_patterns", "WHATSAPP_MENTION_PATTERNS", "json"),
+    ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
+    ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
-    """config.yaml whatsapp: keys → WHATSAPP_* env vars + ``PlatformConfig.extra`` (apply_yaml_config_fn).
+    """``apply_yaml_config_fn`` (#24849): config.yaml whatsapp: keys → WHATSAPP_* env (env wins; skipped under
+    a multiplexed secondary profile's scope, #80099) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(whatsapp_cfg, _YAML_BRIDGE)
 
-    Mirrors the legacy whatsapp_cfg block from gateway/config.py::load_gateway_config(). Env vars take
-    precedence over YAML. The env write is skipped under a multiplexed secondary profile's scope (#80099);
-    every field has an extra-first reader (``WhatsAppAdapter.__init__`` policies/allowlists,
-    ``whatsapp_common`` require_mention/free_response_chats/mention_patterns). See #24849.
-    """
-    import json as _json
-    _set_env = yaml_env_setter()
-    seeded: dict = {}
-    for key, env in _YAML_LOWERCASE_KEYS:
-        if key in whatsapp_cfg:
-            seeded[key] = whatsapp_cfg[key]
-            _set_env(env, str(whatsapp_cfg[key]).lower())
-    if "mention_patterns" in whatsapp_cfg:
-        seeded["mention_patterns"] = whatsapp_cfg["mention_patterns"]
-        _set_env("WHATSAPP_MENTION_PATTERNS", _json.dumps(whatsapp_cfg["mention_patterns"]))
-    for key, env in _YAML_LIST_KEYS:
-        val = whatsapp_cfg.get(key)
-        if val is not None:
-            seeded[key] = val
-            _set_env(env, val)
-    return seeded or None
 
 
 def _is_connected(config) -> bool:
@@ -998,13 +968,10 @@ def _is_connected(config) -> bool:
     return (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower() in {"true", "1", "yes"}
 
 
-def _build_adapter(config):
-    return WhatsAppAdapter(config)
-
 
 def register(ctx) -> None:
     ctx.register_platform(
-        name="whatsapp", label="WhatsApp", adapter_factory=_build_adapter, check_fn=check_whatsapp_requirements,
+        name="whatsapp", label="WhatsApp", adapter_factory=WhatsAppAdapter, check_fn=check_whatsapp_requirements,
         is_connected=_is_connected, required_env=["WHATSAPP_ENABLED"],
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="WHATSAPP_ALLOWED_USERS",

@@ -68,26 +68,6 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     return skills_prompt or None
 
 
-def _configured_mcp_servers() -> tuple[set[str], set[str]]:
-    """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
-    try:
-        from hermes_cli.config import read_raw_config
-        from hermes_cli.tools_config import _parse_enabled_flag
-
-        cfg = read_raw_config()
-        mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-        enabled: set[str] = set()
-        disabled: set[str] = set()
-        for name, server_cfg in mcp_servers.items():
-            if not isinstance(server_cfg, dict):
-                continue
-            target = enabled if _parse_enabled_flag(server_cfg.get("enabled", True), default=True) else disabled
-            target.add(str(name))
-        return enabled, disabled
-    except Exception:
-        return set(), set()
-
-
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -121,10 +101,23 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
             )
         return None, None
 
-    mcp_names, mcp_disabled = _configured_mcp_servers() if unresolved else (set(), set())
-    mcp_valid = [name for name in unresolved if name in mcp_names]
+    mcp_aliases: set[str] = set()
+    mcp_disabled: set[str] = set()
+    if unresolved:
+        try:
+            from hermes_cli.config import read_raw_config
+            from hermes_cli.mcp_toolsets import split_configured_mcp_toolset_aliases
+
+            cfg = read_raw_config()
+            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            mcp_aliases, mcp_disabled = split_configured_mcp_toolset_aliases(mcp_servers)
+        except Exception:
+            mcp_aliases = set()
+            mcp_disabled = set()
+
+    mcp_valid = [name for name in unresolved if name in mcp_aliases]
     disabled = [name for name in unresolved if name in mcp_disabled]
-    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+    unknown = [name for name in unresolved if name not in mcp_aliases and name not in mcp_disabled]
     valid = built_in + mcp_valid
 
     if unknown:

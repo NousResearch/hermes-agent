@@ -19,7 +19,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -347,6 +347,42 @@ class TestBrowserVaultTools:
         assert secret_expressions[0].count(canary) == 2
         assert "submit(" not in secret_expressions[0]
 
+    def test_export_password_refuses_when_owned_session_changes_during_prompt(self):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_tool, browser_vault_tool
+
+        session_key = "task-bound::local"
+        session_info = {"session_name": "h_existing", "features": {"local": True}}
+        supervisor = MagicMock()
+        controls = [
+            {"formIndex": 4, "index": 2, "name": "password", "type": "password"},
+            {"formIndex": 4, "index": 3, "name": "confirm", "type": "password"},
+        ]
+        browser_tool._active_sessions[session_key] = session_info
+
+        def replace_binding_during_prompt(origin, site):
+            with browser_tool._cleanup_lock:
+                browser_tool._active_sessions[session_key] = {"session_name": "replacement"}
+            return "file-secret"
+
+        unlock_mod.set_export_password_prompt_callback(replace_binding_during_prompt)
+        try:
+            with patch.object(browser_vault_tool, "_existing_owned_session",
+                              return_value=(session_key, session_info)), \
+                 patch.object(browser_vault_tool, "_ensure_supervisor", return_value=supervisor), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://seller.test/export"), \
+                 patch.object(browser_vault_tool, "_current_page_origin", return_value="https://seller.test"), \
+                 patch.object(browser_vault_tool, "_eval_js",
+                              return_value={"success": True, "result": json.dumps(controls)}), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_fill_export_password(task_id="task-bound"))
+        finally:
+            unlock_mod.set_export_password_prompt_callback(None)
+            browser_tool._active_sessions.pop(session_key, None)
+
+        assert out["error_type"] == "session_changed"
+        supervisor.evaluate_runtime.assert_not_called()
+
     def test_export_password_refuses_unbound_task_without_starting_browser(self):
         from tools import browser_vault_tool
 
@@ -411,16 +447,40 @@ class TestBrowserVaultTools:
                 dialog_timeout_s=ANY,
             )
 
+            class StatefulRegistry:
+                def __init__(self):
+                    self.current = None
+
+                def get(self, task_id):
+                    return self.current
+
+                def get_or_start(self, **kwargs):
+                    self.current = exact_supervisor
+                    return exact_supervisor
+
+                def discard_if(self, task_id, supervisor):
+                    if self.current is not supervisor:
+                        return False
+                    self.current = None
+                    return True
+
+            stateful_registry = StatefulRegistry()
+
             def drop_binding(*args, **kwargs):
                 browser_tool._active_sessions.pop(session_key)
                 return {"success": True, "data": {"cdpUrl": "http://local:9222"}}
 
-            with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
+            with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY", stateful_registry), \
                  patch("tools.browser_tool_session._run_browser_command", side_effect=drop_binding):
-                registry.get_or_start.return_value = exact_supervisor
                 assert browser_vault_tool._ensure_supervisor(
                     "task-bound", existing_session=local_session, session_key=session_key
                 ) is None
+            assert stateful_registry.current is None
+            with patch.object(browser_vault_tool, "_existing_owned_session", return_value=None), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin") as focus:
+                out = json.loads(browser_vault_tool.browser_vault_fill_export_password(task_id="task-bound"))
+            assert out["error_type"] == "secure_fill_unsupported"
+            focus.assert_not_called()
         finally:
             browser_tool._active_sessions.pop(session_key, None)
 

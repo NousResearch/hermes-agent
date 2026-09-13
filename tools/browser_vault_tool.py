@@ -56,7 +56,7 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
-def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js(task_id: str, expression: str, *, supervisor=None) -> Dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
     Prefers the supervisor's persistent CDP WebSocket, falls back to the
@@ -64,21 +64,25 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    bound_supervisor = supervisor is not None
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        if supervisor is None:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+            supervisor = SUPERVISOR_REGISTRY.get(task_id)
         if supervisor is not None:
             sup = supervisor.evaluate_runtime(expression)
             if sup.get("ok"):
                 return {"success": True, "result": sup.get("result")}
             err = str(sup.get("error") or "")
-            if "supervisor" not in err.lower():
+            if bound_supervisor or "supervisor" not in err.lower():
                 return {"success": False, "error": err}
     except ImportError:
         pass
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
+        if bound_supervisor:
+            return {"success": False, "error": str(exc)}
 
     from tools.browser_tool import _last_session_key
     from tools.browser_tool_session import _run_browser_command
@@ -143,15 +147,24 @@ def _ensure_supervisor(task_id: str, *, existing_session=None, session_key: Opti
         )
         if existing_session is not None:
             with browser_tool._cleanup_lock:
-                if browser_tool._active_sessions.get(effective_session_key) is not existing_session:
-                    return None
+                binding_changed = browser_tool._active_sessions.get(effective_session_key) is not existing_session
+            if binding_changed:
+                SUPERVISOR_REGISTRY.discard_if(task_id, supervisor)
+                return None
         return supervisor
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str, *, supervisor=None) -> Dict[str, Any]:
+def _eval_js_secret(
+    task_id: str,
+    expression: str,
+    *,
+    supervisor=None,
+    session_key: Optional[str] = None,
+    existing_session=None,
+) -> Dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -180,7 +193,21 @@ def _eval_js_secret(task_id: str, expression: str, *, supervisor=None) -> Dict[s
             ),
         }
 
-    sup = supervisor.evaluate_runtime(expression)
+    if existing_session is not None:
+        from tools import browser_tool
+
+        with browser_tool._cleanup_lock:
+            if browser_tool._active_sessions.get(session_key) is not existing_session:
+                return {
+                    "success": False,
+                    "error_type": "session_changed",
+                    "error": "The browser session binding changed before secure fill.",
+                }
+            # Session rebinding and cleanup use this same lock, so the binding
+            # cannot change between this identity check and the secret mutation.
+            sup = supervisor.evaluate_runtime(expression)
+    else:
+        sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -201,8 +228,8 @@ def _parse_json_result(raw: Any) -> Any:
     return raw
 
 
-def _current_page_origin(task_id: str) -> Optional[str]:
-    res = _eval_js(task_id, "window.location.href")
+def _current_page_origin(task_id: str, *, supervisor=None) -> Optional[str]:
+    res = _eval_js(task_id, "window.location.href", supervisor=supervisor)
     if not res.get("success"):
         return None
     href = str(res.get("result") or "").strip().strip('"').strip("'")
@@ -441,6 +468,8 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     effective_task_id = task_id or "default"
+    session_key = None
+    session_info = None
     # This capability check must not attach to or create a Hermes browser for
     # an independent external-browser task that cannot securely redeem secrets.
     existing = _existing_owned_session(effective_task_id)
@@ -470,13 +499,13 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
             "error_type": "no_export_password_fields",
             "error": "No same-form password and confirmation fields were found in this Hermes browser session.",
         })
-    origin = _current_page_origin(effective_task_id)
+    origin = _current_page_origin(effective_task_id, supervisor=supervisor)
     if not origin:
         return json.dumps({"success": False, "error_type": "origin_unavailable",
                            "error": "Could not bind the export-password prompt to a page origin."})
 
     nonce = secrets.token_hex(8)
-    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    inspect = _eval_js(effective_task_id, build_inspection_js(nonce), supervisor=supervisor)
     raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
     if isinstance(raw_controls, str):
         raw_controls = _parse_json_result(raw_controls)
@@ -507,6 +536,8 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
             effective_task_id,
             build_fill_js(fills, expected_origin=origin, nonce=nonce),
             supervisor=supervisor,
+            session_key=session_key,
+            existing_session=session_info,
         )
     finally:
         del password

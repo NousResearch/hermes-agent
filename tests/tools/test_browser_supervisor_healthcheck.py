@@ -131,3 +131,17 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
     assert fresh is not broken
     assert isolated_registry._by_task["t4"] is fresh
     fresh.stop()
+
+
+def test_discard_if_only_removes_the_expected_supervisor(isolated_registry):
+    stale = _make_fake_supervisor("http://h/stale", thread_alive=False, loop_running=False)
+    replacement = _make_fake_supervisor("http://h/current", thread_alive=False, loop_running=False)
+    isolated_registry._by_task["t1"] = replacement
+
+    assert isolated_registry.discard_if("t1", stale) is False
+    assert isolated_registry.get("t1") is replacement
+    assert stale._stop_calls == []
+
+    assert isolated_registry.discard_if("t1", replacement) is True
+    assert isolated_registry.get("t1") is None
+    assert replacement._stop_calls == [True]

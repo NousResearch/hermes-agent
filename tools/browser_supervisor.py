@@ -508,6 +508,15 @@ class _SupervisorRegistry:
         if supervisor is not None:
             supervisor.stop()
 
+    def discard_if(self, task_id: str, supervisor: CDPSupervisor) -> bool:
+        """Stop and remove ``supervisor`` only if it is still the task's current entry."""
+        with self._lock:
+            if self._by_task.get(task_id) is not supervisor:
+                return False
+            self._by_task.pop(task_id)
+        supervisor.stop()
+        return True
+
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:

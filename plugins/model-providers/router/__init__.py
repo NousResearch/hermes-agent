@@ -33,6 +33,8 @@ _efforts_cache: Optional[dict[str, list[str]]] = None
 _efforts_lock = threading.Lock()
 _warm_started = False
 _disk_checked = False
+#: Mirror age past which the cached map still serves the clamp, but a refresh is kicked off.
+_DISK_TTL_SECONDS = 24 * 3600
 
 
 class _CacheState:

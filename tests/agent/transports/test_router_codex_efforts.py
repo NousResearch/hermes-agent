@@ -8,10 +8,12 @@ router profile declares each model's vocabulary from its cached catalog via
 ``ProviderProfile.supported_reasoning_efforts``; these tests pin how the
 codex transport consumes that declaration.
 
-All tests seed the plugin's in-memory cache directly — no network.
+All tests seed the plugin's caches (memory or disk mirror) directly — no network.
 """
 
+import json
 import sys
+import time
 
 import pytest
 
@@ -233,3 +235,71 @@ class TestCatalogIngestValidation:
             ],
         )
         assert profile.fetch_models() == ["b", "a", "c"]
+
+
+class TestDiskMirrorFirstCall:
+    """The first lookup in a cold process must be served by the warm disk mirror.
+
+    The mirror exists for exactly that call: a short-lived process (``hermes -p``,
+    a cron run, a freshly booted gateway) never reaches the background warmer, so
+    if the first lookup cannot read the mirror the transport clamps with its own
+    defaults for the whole turn and Router 400s on a level the model does not
+    publish. These tests leave ``_disk_checked`` False — the state a cold process
+    starts in — which is the branch the rest of the file skips.
+    """
+
+    def _write_mirror(self, mod, ts):
+        path = mod._disk_path()
+        assert path is not None, "the mirror must resolve under the test HERMES_HOME"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"ts": ts, "efforts": {"grok-4.6": ["low", "high"]}}),
+            encoding="utf-8",
+        )
+
+    def _cold_process(self, mod, monkeypatch, warmed):
+        monkeypatch.setattr(mod, "_efforts_cache", None)
+        monkeypatch.setattr(mod, "_disk_checked", False)
+        monkeypatch.setattr(mod, "_warm_efforts_async", lambda: warmed.append(True))
+
+    def test_fresh_mirror_serves_the_first_lookup(self, monkeypatch):
+        profile, mod = _router_plugin_module()
+        self._write_mirror(mod, time.time())
+        warmed = []
+        self._cold_process(mod, monkeypatch, warmed)
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low", "high")
+        assert warmed == [], "a fresh mirror needs no refetch"
+
+    def test_stale_mirror_still_clamps_and_schedules_a_refresh(self, monkeypatch):
+        profile, mod = _router_plugin_module()
+        self._write_mirror(mod, time.time() - 30 * 24 * 3600)
+        warmed = []
+        self._cold_process(mod, monkeypatch, warmed)
+        # Stale is not useless: serve the mirrored vocabulary now, refresh behind it.
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low", "high")
+        assert warmed == [True]
+
+    def test_unparseable_timestamp_is_treated_as_stale_not_fatal(self, monkeypatch):
+        profile, mod = _router_plugin_module()
+        self._write_mirror(mod, "not-a-timestamp")
+        warmed = []
+        self._cold_process(mod, monkeypatch, warmed)
+        assert profile.supported_reasoning_efforts("grok-4.6") == ("low", "high")
+        assert warmed == [True]
+
+    def test_transport_clamps_from_the_mirror_on_the_first_turn(self, transport, monkeypatch):
+        _, mod = _router_plugin_module()
+        self._write_mirror(mod, time.time())
+        self._cold_process(mod, monkeypatch, [])
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.router.com/v1",
+            session_id="sid",
+            provider="router",
+            reasoning_config={"effort": "max"},
+        )
+        # The mirror publishes low/high only, so the first turn clamps max -> high.
+        # Without the mirror the transport keeps its default vocabulary (max -> xhigh).
+        assert kw["reasoning"]["effort"] == "high"

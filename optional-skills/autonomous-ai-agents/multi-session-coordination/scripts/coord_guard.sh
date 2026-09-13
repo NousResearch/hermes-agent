@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# EDIT HISTORY (Hermes agent changes; newest first)
-#   2026-08-16 | model: claude-fable-5 | provider: anthropic | settings: temp=default, reasoning=default | change: Created — shared session-coordination guard for cron wrapper scripts (multi-session coordination board, skill multi-session-coordination). Sourced by nightly_*_backup.sh wrappers as step 0.
 # ===========================================================================
 # Shared cron-side guard for the multi-session coordination board.
 #

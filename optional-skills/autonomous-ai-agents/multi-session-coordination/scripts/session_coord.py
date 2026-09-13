@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# EDIT HISTORY (newest first)
-# 2026-08-31 | claude-fable-5 | anthropic | desktop session | v2.4.0 bot enrollment audit: unenrolled_bot_profiles() scans <profiles>/*/SOUL.md for the BOT_WIRE_MARKER ("session-coord (bot-wire v1)", shipped inside the SOUL.md blurb install.py now appends); cmd_status lists persona-bearing profiles missing it as "— UNENROLLED bot profiles" + unenrolled_bot_profiles in --json, naming the fix. Read-only, fail-open; SOUL-less profiles never flagged (nothing proves they are bots). Companion unwired_profiles(): SOUL-less profiles whose OWN memories/MEMORY.md exists without the standing rule ("session-coord (wire v1)") -> UNWIRED warning + unwired_profiles in --json (store-less fresh profiles never flagged — no evidence; bots are the blurb audit's job). Closes the invisible-unenrolled-actor gap: enrollment is per-persona/per-profile-store and manual post-install, and a missed paste previously surfaced only as a collision. selftest_cron.sh 45->51.  # noqa: E501
-# 2026-08-26 | claude-opus-4-8 | anthropic | desktop session | MASTER SWITCH: whole coordination layer can be turned OFF without uninstalling — `enable`/`disable`/`switch [on|off|toggle]` verbs (persistent sentinel ~/.hermes/state/coordination_disabled; env HERMES_COORD_DISABLED overrides both directions). While OFF every verb is a fail-open no-op (register still prints a synthetic 12-hex id, claim/check succeed FREE, cron-guard stdout stays empty) so a disabled board == "not installed"; switch verbs themselves always run. coordination_enabled()/switch_source() helpers; main() gate short-circuits to disabled_noop(). Mirrors coord_guard.sh _coord_disabled(). 90/90 existing checks still green (enabled path byte-identical) + selftest_toggle.sh 28 new checks.  # noqa: E501
-# 2026-08-18 | claude-fable-5 | anthropic | desktop session | v2.2 Bot Mode integration: cron_store_jobs() now merges EVERY profile store (~/.hermes/profiles/*/cron/jobs.json — a Bot Mode bot IS a profile; its Routines live in its own store) with the default store (id collision: default wins); profile jobs get a "[bot:<profile>]" name tag surfaced through radar/advisories/guard/wait-for-cron; upcoming_cron_conflicts + status rows carry "profile"; resolve_cron_job error names both store locations; HERMES_COORD_PROFILES_DIR override for tests  # noqa: E501
-# 2026-08-16 | claude-fable-5 | anthropic | desktop session | v2.1 cron leg: cron-guard verb (deterministic wrapper for cron scripts: register ephemeral cron session + atomic claim; --policy skip|wait; stdout carries ONLY the coordination id so no_agent stdout-as-message semantics survive; holders get a cron_defer note on skip), cron manifest advisory (~/.hermes/state/cron_resources.json + jobs.json next_run_at -> "cron fires in ~Nm on this resource" warnings on claim/check/status; advisory only, never blocks), cron-aware verbs (HELD labels cron holders, preempt refuses vs crons — they cannot checkpoint/pause; wait or user-approved steal)  # noqa: E501
-# 2026-08-16 | claude-fable-5 | anthropic | desktop session | v2: user-set priority ranks (1,2,3 + reorder), subagent lineage ranks (1a/1b via --parent/--slot, computed live so re-ranking a parent re-ranks its children), preempt protocol (user-priority request -> holder checkpoints+pauses -> auto-queued resume), pause/resume verbs, queue fencing (rank order + FIFO enforced on contended resources, liveness-gated), preempt alerts on every board touch, idempotent schema migration from v1. All v1 commands/outputs byte-compatible (19-test regression suite).  # noqa: E501
-# 2026-08-16 | claude-fable-5 | anthropic | desktop session | Initial build: cooperative multi-session registry (SQLite WAL; sessions/claims/waiters/notifications; atomic all-or-nothing batch claims; shared|exclusive modes; path-boundary dir conflicts; TTL reap w/ expired-holder warnings; wait->notify co-worker protocol; exit 75 = held, matching singleflight convention)  # noqa: E501
 """
 session_coord.py — cooperative coordination registry for concurrent Hermes sessions.
 
@@ -53,6 +46,7 @@ Priority flow (user says "this session first"):
 import argparse
 import contextlib
 import glob
+import hashlib
 import json
 import os
 import re
@@ -60,6 +54,8 @@ import sqlite3
 import sys
 import time
 import uuid
+
+import session_coord_wakes as wakes
 
 
 def _console_safe_stdio():
@@ -199,28 +195,69 @@ CRON_PROFILES_DIR = os.path.expanduser(
 CRON_ADVISORY_S = 90 * 60       # claim/check warn horizon: fires within 90 min
 CRON_STATUS_S = 12 * 3600       # status shows manifested fires within 12 h
 
-# Bot ENROLLMENT audit marker: the SOUL.md coordination blurb (shipped in
-# templates/bot-soul-coordination.md, appended by install.py's bot-wiring
-# step) carries this line. A profile that HAS a persona (SOUL.md) but lacks
-# the marker never enrolled in the protocol — its runs are invisible to the
-# board. `status` surfaces those so an unenrolled bot can't stay unnoticed
-# until a collision. Keep byte-stable and in lock-step with install.py.
-BOT_WIRE_MARKER = "session-coord (bot-wire v1)"
-# Session-enrollment marker (the standing memory rule install.py writes to
-# the main store AND to each non-bot profile's own memories/MEMORY.md — a
-# profile is a full agent instance whose sessions never see the main store).
-WIRE_MARKER = "session-coord (wire v1)"
+# Current managed enrollment fingerprints. Legacy marker substrings are not
+# proof of enrollment: stale native-only or customized instructions must stay
+# visible until install.py migrates them or an operator resolves them.
+BOARD_WIRE_BEGIN = "<!-- BEGIN session-coord managed board-v2 -->"
+BOARD_WIRE_END = "<!-- END session-coord managed board-v2 -->"
+BOT_BOARD_WIRE_BEGIN = "<!-- BEGIN session-coord managed bot-board-v2 -->"
+BOT_BOARD_WIRE_END = "<!-- END session-coord managed bot-board-v2 -->"
+BOARD_WIRE_HASH = "b77c3929f040771f801828141074975c0e7d808f1a7b926027d1d71980332900"
+BOT_BOARD_WIRE_HASH = "ec85e48d40b01f3fdc502e99d00808c3b935ba6f9504b949b246a7fdd7e5abab"
+
+
+def _managed_block(text, begin_marker, end_marker):
+    """Return one complete normalized managed block, else ``None``."""
+    if text.count(begin_marker) != 1 or text.count(end_marker) != 1:
+        return None
+    begin = text.index(begin_marker)
+    try:
+        end = text.index(end_marker, begin) + len(end_marker)
+    except ValueError:
+        return None
+    return text[begin:end].replace("\r\n", "\n")
+
+
+def _current_memory_enrollment(text):
+    """True only for the exact board-v2 block, allowing its installed path."""
+    block = _managed_block(text, BOARD_WIRE_BEGIN, BOARD_WIRE_END)
+    if block is None:
+        return False
+    match = re.search(r"python3 (.+?) status`", block)
+    if match is None:
+        return False
+    prefix = f"python3 {match.group(1)}"
+    if block.count(prefix) != 5:
+        return False
+    normalized = block.replace(prefix, "python3 {sc}")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() == BOARD_WIRE_HASH
+
+
+def _current_bot_enrollment(text, botname):
+    """True only for the exact bot-board-v2 block and its profile identity."""
+    block = _managed_block(text, BOT_BOARD_WIRE_BEGIN, BOT_BOARD_WIRE_END)
+    if block is None:
+        return False
+    normalized = block.replace(f"bot:{botname}", "bot:<botname>")
+    normalized = re.sub(
+        r"^SC=.*$", "SC=<session_coord_path>", normalized,
+        count=1, flags=re.MULTILINE,
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() == BOT_BOARD_WIRE_HASH
 
 
 def unenrolled_bot_profiles():
-    """Profile names with a SOUL.md that lacks BOT_WIRE_MARKER (persona-bearing
+    """Profile names whose SOUL.md lacks an exact current managed enrollment.
+
+    Persona-bearing
     = bot-like; profiles without a persona are skipped — nothing proves they
     are bots). Read-only, fail-open: unreadable files contribute nothing."""
     out = []
     for soul in sorted(glob.glob(os.path.join(CRON_PROFILES_DIR, "*", "SOUL.md"))):
         try:
             with open(soul, encoding="utf-8", errors="replace") as f:
-                if BOT_WIRE_MARKER not in f.read():
+                botname = os.path.basename(os.path.dirname(soul))
+                if not _current_bot_enrollment(f.read(), botname):
                     out.append(os.path.basename(os.path.dirname(soul)))
         except OSError:
             continue
@@ -228,8 +265,9 @@ def unenrolled_bot_profiles():
 
 
 def unwired_profiles():
-    """Non-bot profile names whose OWN memory store exists but lacks the
-    standing rule (WIRE_MARKER) — their sessions never consult the board.
+    """Non-bot profiles whose memory lacks the exact managed board rule.
+
+    Their sessions never consult the board.
     Only flags profiles with an actual memories/MEMORY.md: an existing store
     proves agent sessions run there, while a fresh profile with no store yet
     is no evidence (escalate on confirmation only). Bot profiles (SOUL.md
@@ -242,7 +280,7 @@ def unwired_profiles():
             continue
         try:
             with open(mem, encoding="utf-8", errors="replace") as f:
-                if WIRE_MARKER not in f.read():
+                if not _current_memory_enrollment(f.read()):
                     out.append(os.path.basename(prof_dir))
         except OSError:
             continue
@@ -268,6 +306,7 @@ def db():
             if name not in have:
                 # nosec B608 — identifiers from the hardcoded MIGRATIONS dict
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    wakes.ensure_schema(conn)
     return conn
 
 
@@ -473,6 +512,7 @@ def reap(conn):
         conn.execute(
             "UPDATE claims SET status='expired', released_at=? WHERE id=?", (t, c["id"])
         )
+        wakes.note_expired_holder(conn, c, resources_overlap)
         for w in conn.execute(
             "SELECT * FROM waiters WHERE active=1 AND session_id != ?", (c["session_id"],)
         ).fetchall():
@@ -483,7 +523,11 @@ def reap(conn):
                     f"task '{c['task']}', held {age_str(c['claimed_at'])}). Holder may have "
                     f"died mid-task — VERIFY the resource state before proceeding.",
                 )
-                conn.execute("UPDATE waiters SET active=0 WHERE id=?", (w["id"],))
+                # Legacy polling/read waiters retain the historical one-shot expiry
+                # behavior.  Episode-linked rows are the durable whole-request queue
+                # and must survive a partial expiry until every resource is eligible.
+                if w["episode_id"] is None:
+                    conn.execute("UPDATE waiters SET active=0 WHERE id=?", (w["id"],))
     # paused claims expire too (holder loses its queue spot; owner is warned)
     pexp = conn.execute(
         "SELECT * FROM claims WHERE status='paused' AND "
@@ -499,17 +543,22 @@ def reap(conn):
             f"{int(c['ttl_min'])}m — your resume queue spot lapsed. Re-claim manually "
             f"and VERIFY resource state (others may have modified it).",
         )
+        wakes.note_parked_expiry(conn, c)
         conn.execute(
-            "UPDATE waiters SET active=0 WHERE session_id=? AND resource=? AND note=?",
+            "UPDATE waiters SET active=0 WHERE session_id=? AND resource=? AND note=? "
+            "AND episode_id IS NULL",
             (c["session_id"], c["resource"], PAUSE_NOTE),
         )
     conn.execute(
-        "UPDATE sessions SET status='stale' WHERE status='active' AND last_seen < ?",
+        "UPDATE sessions SET status='stale' WHERE status='active' AND last_seen < ? "
+        "AND id NOT IN (SELECT session_id FROM wait_episodes WHERE status='waiting')",
         (t - STALE_SESSION_S,),
     )
     conn.execute(
         "UPDATE waiters SET active=0 WHERE active=1 AND session_id IN "
-        "(SELECT id FROM sessions WHERE status IN ('done','stale'))"
+        "(SELECT id FROM sessions WHERE status IN ('done','stale')) "
+        "AND (episode_id IS NULL OR episode_id NOT IN "
+        "(SELECT episode_id FROM wait_episodes WHERE status='waiting'))"
     )
     conn.execute(
         "DELETE FROM claims WHERE status IN ('released','expired','stolen') AND released_at < ?",
@@ -519,6 +568,7 @@ def reap(conn):
         "DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?",
         (t - EXPIRED_KEEP_S,),
     )
+    return _schedule(conn, "ttl_expired" if expired else "reconciled")
 
 
 def holders_of(conn, resource, mode, exclude_session):
@@ -544,8 +594,10 @@ def fencers_for(conn, resource, mode, sid, my_rank, my_since):
     out = []
     t = now()
     rows = conn.execute(
-        "SELECT w.*, s.last_seen AS s_seen, s.status AS s_status, s.paused AS s_paused "
+        "SELECT w.*, s.last_seen AS s_seen, s.status AS s_status, s.paused AS s_paused, "
+        "e.status AS episode_status "
         "FROM waiters w LEFT JOIN sessions s ON s.id = w.session_id "
+        "LEFT JOIN wait_episodes e ON e.episode_id = w.episode_id "
         "WHERE w.active=1 AND w.session_id != ?",
         (sid,),
     ).fetchall()
@@ -554,7 +606,8 @@ def fencers_for(conn, resource, mode, sid, my_rank, my_since):
             continue
         polling = (w["last_poll"] or 0) >= t - POLL_FRESH_S
         paused_hold = (w["note"] == PAUSE_NOTE) and (w["s_paused"] or 0) == 1
-        if not (polling or paused_hold):
+        durable_episode = bool(w["episode_id"] and w["episode_status"] == "waiting")
+        if not (polling or paused_hold or durable_episode):
             continue
         if not resources_overlap(norm_resource(w["resource"]), resource):
             continue
@@ -907,6 +960,16 @@ def cmd_register(a):
     if a.slot and not re.match(r"^[a-z0-9]{1,3}$", a.slot.strip().lower()):
         print(f"error: --slot '{a.slot}' invalid (a-z, 0-9, max 3 chars)", file=sys.stderr)
         return 1
+    wake = wakes.registration_values(
+        getattr(a, "wake_target_json", None),
+        getattr(a, "native_session_id", None),
+        getattr(a, "wake_transport", None),
+        a.surface,
+        parent_id,
+    )
+    if wake["error"]:
+        print(f"error: {wake['error']}", file=sys.stderr)
+        return 1
     conn.execute("BEGIN IMMEDIATE")
     reap(conn)
     existing = conn.execute(
@@ -915,16 +978,23 @@ def cmd_register(a):
         # idempotent re-register: refresh task/surface/liveness, reactivate
         conn.execute(
             "UPDATE sessions SET task=?, surface=COALESCE(?,surface), "
+            "native_session_id=COALESCE(?,native_session_id), "
+            "wake_transport=COALESCE(?,wake_transport), "
+            "wake_target_json=COALESCE(?,wake_target_json), "
+            "profile_home=COALESCE(?,profile_home), "
             "status='active', paused=0, last_seen=? WHERE id=?",
-            (a.task, a.surface, now(), sid))
+            (a.task, a.surface, wake["native_session_id"], wake["wake_transport"],
+             wake["wake_target_json"], wake["profile_home"], now(), sid))
     else:
         conn.execute(
             "INSERT INTO sessions(id,task,surface,started_at,last_seen,priority,parent_id,"
-            "slot,rank_set_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "slot,rank_set_at,native_session_id,wake_transport,wake_target_json,profile_home) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, a.task, a.surface, now(), now(),
              (a.rank.strip().lower() if a.rank else None), parent_id,
              (a.slot.strip().lower() if a.slot else None),
-             now() if a.rank else None),
+             now() if a.rank else None, wake["native_session_id"],
+             wake["wake_transport"], wake["wake_target_json"], wake["profile_home"]),
         )
     conn.execute("COMMIT")
     my_r = rank_str(eff_rank(conn, sid))
@@ -947,6 +1017,8 @@ def cmd_register(a):
             )
     emit(
         {"id": sid, "rank": my_r, "parent": short(parent_id) if parent_id else None,
+         "native_session_id": wake["native_session_id"],
+         "wake_transport": wake["wake_transport"],
          "others": [
              {"session": short(o["id"]), "task": o["task"], "surface": o["surface"],
               "rank": rank_str(eff_rank(conn, o["id"])),
@@ -957,42 +1029,119 @@ def cmd_register(a):
     return 0
 
 
-def try_claim(conn, sid, res_mode_pairs, task, ttl):
-    """One atomic all-or-nothing attempt over (resource, mode) pairs.
-    Returns (ok, holders, fencers)."""
-    conn.execute("BEGIN IMMEDIATE")
-    reap(conn)
+def _claim_entries_in_tx(conn, sid, entries):
+    """Attempt an immutable full request while caller holds BEGIN IMMEDIATE.
+
+    Each entry has resource/mode/task/ttl_min.  No partial writes occur when any
+    holder or queue fencer blocks the set.
+    """
     touch_session(conn, sid)
     blockers = []
-    for r, m in res_mode_pairs:
-        blockers.extend(holders_of(conn, r, m, sid))
+    for entry in entries:
+        blockers.extend(
+            holders_of(conn, entry["resource"], entry["mode"], sid)
+        )
     if blockers:
-        conn.execute("COMMIT")  # reap/touch still persist
         return False, blockers, []
+    resources = [entry["resource"] for entry in entries]
     my_rank = eff_rank(conn, sid)
-    my_since = my_earliest_wait(conn, sid, [r for r, _ in res_mode_pairs])
+    my_since = my_earliest_wait(conn, sid, resources)
     fencers = []
-    for r, m in res_mode_pairs:
-        fencers.extend(fencers_for(conn, r, m, sid, my_rank, my_since))
+    for entry in entries:
+        fencers.extend(
+            fencers_for(
+                conn,
+                entry["resource"],
+                entry["mode"],
+                sid,
+                my_rank,
+                my_since,
+            )
+        )
     if fencers:
-        conn.execute("COMMIT")
         return False, [], fencers
     t = now()
-    for r, m in res_mode_pairs:
-        # idempotent refresh of our own existing claim on the same key
+    for entry in entries:
+        resource = entry["resource"]
         conn.execute(
             "UPDATE claims SET status='released', released_at=? "
             "WHERE session_id=? AND resource=? AND status IN ('held','paused')",
-            (t, sid, r),
+            (t, sid, resource),
         )
         conn.execute(
-            "INSERT INTO claims(session_id,resource,mode,task,claimed_at,ttl_min)"
-            " VALUES(?,?,?,?,?,?)",
-            (sid, r, m, task, t, ttl),
+            "INSERT INTO claims(session_id,resource,mode,task,claimed_at,ttl_min) "
+            "VALUES(?,?,?,?,?,?)",
+            (
+                sid,
+                resource,
+                entry["mode"],
+                entry.get("task"),
+                t,
+                entry["ttl_min"],
+            ),
         )
-    clear_my_waiters(conn, sid, [r for r, _ in res_mode_pairs])
-    conn.execute("COMMIT")
+    clear_my_waiters(conn, sid, resources)
     return True, [], []
+
+
+def episode_ready(conn, episode):
+    session = conn.execute(
+        "SELECT status FROM sessions WHERE id=?", (episode["session_id"],)
+    ).fetchone()
+    if not session or session["status"] != "active":
+        return False
+    entries = wakes.request_entries(episode)
+    blockers = []
+    for entry in entries:
+        blockers.extend(
+            holders_of(conn, entry["resource"], entry["mode"], episode["session_id"])
+        )
+    if blockers:
+        return False
+    resources = [entry["resource"] for entry in entries]
+    my_rank = eff_rank(conn, episode["session_id"])
+    my_since = my_earliest_wait(conn, episode["session_id"], resources)
+    for entry in entries:
+        if fencers_for(
+            conn,
+            entry["resource"],
+            entry["mode"],
+            episode["session_id"],
+            my_rank,
+            my_since,
+        ):
+            return False
+    return True
+
+
+def _schedule(conn, reason):
+    return wakes.enqueue_eligible(
+        conn,
+        reason,
+        lambda episode: episode_ready(conn, episode),
+        lambda sid: eff_rank(conn, sid),
+    )
+
+
+def try_claim(conn, sid, res_mode_pairs, task, ttl, supersede_open=False):
+    """One atomic all-or-nothing attempt over (resource, mode) pairs.
+    Returns (ok, holders, fencers)."""
+    entries = [
+        {"resource": resource, "mode": mode, "task": task, "ttl_min": ttl}
+        for resource, mode in res_mode_pairs
+    ]
+    conn.execute("BEGIN IMMEDIATE")
+    reap(conn)
+    result = _claim_entries_in_tx(conn, sid, entries)
+    if result[0] and supersede_open:
+        wakes.cancel_for_session(
+            conn,
+            sid,
+            "yield request changed and acquired immediately",
+            status="superseded",
+        )
+    conn.execute("COMMIT")
+    return result
 
 
 def _claim_loop(conn, a, res_mode_pairs, task, verb="CLAIMED"):
@@ -1002,7 +1151,14 @@ def _claim_loop(conn, a, res_mode_pairs, task, verb="CLAIMED"):
     deadline = now() + a.timeout
     announced = False
     while True:
-        ok, blockers, fencers = try_claim(conn, a.id, res_mode_pairs, task, a.ttl)
+        ok, blockers, fencers = try_claim(
+            conn,
+            a.id,
+            res_mode_pairs,
+            task,
+            a.ttl,
+            supersede_open=getattr(a, "yield_mode", False),
+        )
         if ok:
             w = waiters_on(conn, a.id)
             lines = [f"{verb} ({res_mode_pairs[0][1]}): " + ", ".join(resources)]
@@ -1021,6 +1177,46 @@ def _claim_loop(conn, a, res_mode_pairs, task, verb="CLAIMED"):
             if cron_hits:
                 payload["cron_advisories"] = cron_hits
             return 0, payload, lines
+        if getattr(a, "yield_mode", False):
+            entries = [
+                {"resource": resource, "mode": mode, "task": task, "ttl_min": a.ttl}
+                for resource, mode in res_mode_pairs
+            ]
+            conn.execute("BEGIN IMMEDIATE")
+            reap(conn)
+            episode, reused, error = wakes.park_episode(
+                conn,
+                a.id,
+                "claim",
+                entries,
+                a.checkpoint,
+                task or "yielded claim request",
+            )
+            if error:
+                conn.execute("COMMIT")
+                payload = {"ok": False, "yielded": False, "error": error}
+                lines = [f"BLOCKED — {error}. No automatic wake was promised."]
+                return 75, payload, lines
+            _schedule(conn, "reconciled")
+            conn.execute("COMMIT")
+            instruction = (
+                "STOP now; checkpoint is durable. Do not poll or retry this claim. "
+                "An exact-target continuation will run the event-qualified continue command."
+            )
+            payload = {
+                "ok": False,
+                "yielded": True,
+                "episode_id": episode["episode_id"],
+                "checkpoint": episode["checkpoint_path"],
+                "reused": reused,
+                "instruction": instruction,
+            }
+            lines = [
+                f"YIELDED: whole request parked as {episode['episode_id']}.",
+                f"Checkpoint: {episode['checkpoint_path']}",
+                instruction,
+            ]
+            return 75, payload, lines
         wait_mode = getattr(a, "wait", False)
         if wait_mode:
             conn.execute("BEGIN IMMEDIATE")
@@ -1107,6 +1303,12 @@ def cmd_claim(a):
     if not a.id:
         print("error: --id required (or set HERMES_COORD_ID)", file=sys.stderr)
         return 1
+    if getattr(a, "yield_mode", False):
+        checkpoint, error = wakes.validate_checkpoint(a.checkpoint)
+        if error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        a.checkpoint = checkpoint
     conn = db()
     # Orphan-proofing (v2.3.2): a claim under an id that was never registered
     # auto-creates a minimal session row, so release/done can always resolve
@@ -1248,6 +1450,10 @@ def _release(conn, sid, resources_or_none, final_status="released",
                 # inversion). Rows clear when the waiter claims (try_claim),
                 # sees free (cmd_wait), finishes (done), or stops polling
                 # (POLL_FRESH_S staleness in fencers_for).
+    if released:
+        # The claims and targeted outbox rows commit in the caller's SAME write
+        # transaction.  Scheduling happens only after the full release set is done.
+        _schedule(conn, "released")
     return released
 
 
@@ -1278,6 +1484,7 @@ def cmd_done(a):
     conn = db()
     conn.execute("BEGIN IMMEDIATE")
     reap(conn)
+    wakes.cancel_for_session(conn, a.id, "board session completed", status="canceled")
     released = _release(conn, a.id, None, statuses=("held", "paused"))
     conn.execute("UPDATE waiters SET active=0 WHERE session_id=?", (a.id,))
     conn.execute(
@@ -1333,12 +1540,17 @@ def cmd_inbox(a):
 
 
 def cmd_pause(a):
-    """Holder-side: checkpoint first, then pause. Claims stop blocking but keep
-    a resume queue spot at this session's rank; waiters are told the resource
-    is free for them."""
+    """Park held claims; opted-in callers checkpoint and durably yield."""
     if not a.id:
         print("error: --id required", file=sys.stderr)
         return 1
+    if getattr(a, "yield_mode", False):
+        checkpoint, error = wakes.validate_checkpoint(a.checkpoint)
+        if error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        a.checkpoint = checkpoint
+        a.note = checkpoint
     conn = db()
     conn.execute("BEGIN IMMEDIATE")
     reap(conn)
@@ -1351,6 +1563,22 @@ def cmd_pause(a):
         c for c in rows_all
         if any(resources_overlap(c["resource"], norm_resource(r)) for r in a.res)
     ]
+    episode = None
+    reused = False
+    if targets and getattr(a, "yield_mode", False):
+        entries = [
+            {"resource": c["resource"], "mode": c["mode"] or "exclusive",
+             "task": c["task"],
+             "ttl_min": a.ttl if a.ttl is not None else c["ttl_min"]}
+            for c in targets
+        ]
+        episode, reused, error = wakes.park_episode(
+            conn, a.id, "pause", entries, a.checkpoint, PAUSE_NOTE)
+        if error:
+            conn.execute("ROLLBACK")
+            emit({"paused": [], "yielded": False, "error": error}, a.json,
+                 [f"BLOCKED — {error}. Claims remain held; no automatic wake was promised."])
+            return 75
     paused = []
     for c in targets:
         ttl = a.ttl if a.ttl is not None else c["ttl_min"]
@@ -1359,8 +1587,10 @@ def cmd_pause(a):
             (t, ttl, c["id"]),
         )
         paused.append(c["resource"])
-        # our resume queue spot: a waiter row at our rank, exempt from liveness
-        ensure_waiter(conn, a.id, c["resource"], PAUSE_NOTE, c["mode"])
+        # Legacy pause retains its manual resume waiter.  Yield episodes inserted
+        # their own durable episode-linked full-set waiters above.
+        if not getattr(a, "yield_mode", False):
+            ensure_waiter(conn, a.id, c["resource"], PAUSE_NOTE, c["mode"])
         for w in conn.execute(
             "SELECT * FROM waiters WHERE active=1 AND session_id != ?", (a.id,)
         ).fetchall():
@@ -1377,6 +1607,8 @@ def cmd_pause(a):
             "UPDATE sessions SET paused=1, checkpoint_note=? WHERE id=?",
             (a.note, a.id),
         )
+        # Snapshot, parking, and outbox scheduling share this transaction.
+        _schedule(conn, "released")
     conn.execute("COMMIT")
     my_r = rank_str(eff_rank(conn, a.id))
     lines = (["PAUSED — claims parked (no longer blocking): " + ", ".join(paused),
@@ -1385,8 +1617,14 @@ def cmd_pause(a):
                f"session_coord.py resume --id {a.id} [--wait]"),
               f"Checkpoint note: {a.note or '(none — record one next time!)'}"]
              if paused else ["(nothing held to pause)"])
-    emit({"paused": paused, "checkpoint": a.note, "rank": my_r}, a.json, lines)
-    return 0
+    payload = {"paused": paused, "checkpoint": a.note, "rank": my_r}
+    if episode is not None:
+        instruction = "STOP now; do not poll. Await the targeted continuation event."
+        payload.update({"yielded": True, "episode_id": episode["episode_id"],
+                        "reused": reused, "instruction": instruction})
+        lines.extend([f"Yield episode: {episode['episode_id']}", instruction])
+    emit(payload, a.json, lines)
+    return 75 if episode is not None else 0
 
 
 def cmd_resume(a):
@@ -1413,6 +1651,9 @@ def cmd_resume(a):
     rc, payload, lines = _claim_loop(conn, a, pairs, task, verb="RESUMED")
     if rc == 0:
         conn.execute("BEGIN IMMEDIATE")
+        wakes.cancel_for_session(
+            conn, a.id, "paused task resumed manually outside its wake event",
+            status="canceled")
         conn.execute("UPDATE sessions SET paused=0 WHERE id=?", (a.id,))
         note = conn.execute(
             "SELECT checkpoint_note FROM sessions WHERE id=?", (a.id,)
@@ -1766,6 +2007,8 @@ def cmd_steal(a):
                    f"Your claim on {c['resource']} was force-released by "
                    f"{short(a.id)}. Reason: {a.reason}")
             stolen.append(c["resource"])
+    if stolen:
+        _schedule(conn, "stolen")
     conn.execute("COMMIT")
     emit({"stolen": stolen, "reason": a.reason}, a.json,
          ["FORCE-RELEASED: " + (", ".join(stolen) if stolen else "(nothing matched)")])
@@ -1981,6 +2224,152 @@ def cmd_cron_note(a):
     return 0
 
 
+# ---------------------------------------------------------------- durable wake episodes
+
+def cmd_wake_reconcile(a):
+    """Reap TTLs and idempotently schedule every currently fair full request."""
+    conn = db()
+    conn.execute("BEGIN IMMEDIATE")
+    counts = reap(conn)
+    conn.execute("COMMIT")
+    payload = dict(counts)
+    payload["ok"] = True
+    emit(payload, a.json,
+         ["WAKE RECONCILE: " + ", ".join(f"{k}={v}" for k, v in counts.items())])
+    return 0
+
+
+def cmd_wake_lease(a):
+    """Lease at most one exact profile/native-session/transport wake event."""
+    conn = db()
+    conn.execute("BEGIN IMMEDIATE")
+    reap(conn)
+    event = wakes.lease_one(
+        conn,
+        a.worker,
+        a.transport,
+        a.profile_home,
+        a.native_session_id,
+        a.kind,
+        lambda episode: episode_ready(conn, episode),
+        lambda sid: eff_rank(conn, sid),
+    )
+    conn.execute("COMMIT")
+    emit({"event": event}, a.json,
+         ["(no eligible wake event)" if event is None
+          else f"LEASED wake event {event['event_id']} attempt {event['attempt']}"])
+    return 0
+
+
+def cmd_wake_result(a):
+    """Record exact delivery outcome; unknown is never blindly retried."""
+    conn = db()
+    conn.execute("BEGIN IMMEDIATE")
+    payload, error, stale = wakes.record_result(
+        conn, a.event, a.attempt, a.outcome, a.receipt_json)
+    if error:
+        conn.execute("COMMIT")
+        emit({"ok": False, "stale": stale, "error": error}, a.json,
+             [f"WAKE RESULT REJECTED: {error}"])
+        return 75 if stale else 1
+    conn.execute("COMMIT")
+    payload["ok"] = True
+    emit(payload, a.json,
+         [f"WAKE RESULT: {a.event} attempt {a.attempt} -> {payload['status']}"])
+    return 0
+
+
+def cmd_cancel_wait(a):
+    """Explicit Stop/new/task-end tombstone for episodes and undelivered events."""
+    if not a.id and not (a.native_session_id and a.profile_home):
+        print("error: give --id, or both --native-session-id and --profile-home",
+              file=sys.stderr)
+        return 1
+    if a.episode and not a.id:
+        print("error: --episode requires --id", file=sys.stderr)
+        return 1
+    conn = db()
+    conn.execute("BEGIN IMMEDIATE")
+    reap(conn)
+    if a.id:
+        canceled = wakes.cancel_for_session(conn, a.id, a.reason, a.episode)
+    else:
+        canceled = wakes.cancel_for_native(
+            conn, a.native_session_id, a.profile_home, a.reason)
+    conn.execute("COMMIT")
+    emit({"canceled": canceled, "reason": a.reason}, a.json,
+         ["CANCELED WAIT EPISODES: " + (", ".join(canceled) if canceled else "(none)")])
+    return 0
+
+
+def cmd_continue(a):
+    """Acquire only the immutable full request linked to a delivered event."""
+    conn = db()
+    conn.execute("BEGIN IMMEDIATE")
+    reap(conn)
+    episode, event, error = wakes.load_continuation(conn, a.id, a.event)
+    if error:
+        conn.execute("COMMIT")
+        emit({"acquired": False, "stale": True, "error": error}, a.json,
+             [f"CONTINUE REJECTED: {error}"])
+        return 75
+    entries = wakes.request_entries(episode)
+    ok, blockers, fencers = _claim_entries_in_tx(conn, a.id, entries)
+    details = wakes.verification_details(episode)
+    if ok:
+        wakes.mark_acquired(conn, episode, event)
+        conn.execute("UPDATE sessions SET paused=0 WHERE id=?", (a.id,))
+        conn.execute("COMMIT")
+        payload = {
+            "acquired": True,
+            "claimed": [entry["resource"] for entry in entries],
+            "episode_id": episode["episode_id"],
+            "event_id": event["event_id"],
+            "checkpoint": episode["checkpoint_path"],
+            "verify_required": bool(episode["verify_required"]),
+            "verification": details,
+        }
+        lines = ["CONTINUED — immutable full request acquired: "
+                 + ", ".join(payload["claimed"]),
+                 f"Checkpoint: {episode['checkpoint_path']}"]
+        if episode["verify_required"]:
+            lines.append("WARNING: verify expired-holder evidence before mutations; "
+                         "TTL alone does not prove the holder stopped.")
+        emit(payload, a.json, lines)
+        return 0
+
+    wakes.consume_and_rewait(
+        conn, episode, event, "eligibility changed after prompt admission")
+    _schedule(conn, "reconciled")
+    conn.execute("COMMIT")
+    instruction = "STOP now; the full request remains queued. Do not poll."
+    payload = {
+        "acquired": False,
+        "yielded": True,
+        "episode_id": episode["episode_id"],
+        "event_id": event["event_id"],
+        "checkpoint": episode["checkpoint_path"],
+        "instruction": instruction,
+        "holders": holder_dicts(conn, blockers) if blockers else [],
+        "queue": fencer_dicts(conn, fencers) if fencers else [],
+        "verify_required": bool(episode["verify_required"]),
+        "verification": details,
+    }
+    emit(payload, a.json, ["CONTINUE YIELDED: eligibility changed after admission.",
+                           instruction])
+    return 75
+
+
+def cmd_wake_pending(a):
+    """Read-only discovery metadata for new opted-in episodes/outbox events."""
+    conn = db()
+    payload = wakes.pending_for_profile(conn, a.profile_home)
+    emit(payload, a.json,
+         [(f"WAKE PENDING: {len(payload['episodes'])} episode(s), "
+           f"{len(payload['events'])} event(s)")])
+    return 0
+
+
 # ---------------------------------------------------------------- master switch
 
 def _synthetic_id():
@@ -2000,7 +2389,10 @@ _SWITCH_VERBS = {"switch", "enable", "disable"}
 # lie into an honest failure. Excluded on purpose: `register` (mints a NEW id),
 # and `claim`/`check`/`wait` (read-side / self-attributed; a not-yet-registered
 # id is legitimate there and must not hard-error).
-_ID_RESOLVING_VERBS = {"release", "done", "inbox", "pause", "resume", "preempt"}
+_ID_RESOLVING_VERBS = {
+    "release", "done", "inbox", "pause", "resume", "preempt", "continue",
+    "cancel-wait",
+}
 
 
 def disabled_noop(a):
@@ -2029,6 +2421,23 @@ def disabled_noop(a):
         return 0
     if cmd == "check":
         emit({"free": True, "disabled": True}, j, ["FREE (coordination disabled)"])
+        return 0
+    if cmd == "wake-lease":
+        emit({"event": None, "disabled": True}, j, ["(coordination disabled)"])
+        return 0
+    if cmd == "wake-pending":
+        emit({"episodes": [], "events": [], "disabled": True}, j,
+             ["WAKE PENDING: coordination disabled"])
+        return 0
+    if cmd == "wake-reconcile":
+        emit({"ok": True, "disabled": True, "enqueued": 0,
+              "stale_events_canceled": 0, "unknown_leases": 0,
+              "episodes_checked": 0}, j,
+             ["WAKE RECONCILE: coordination disabled"])
+        return 0
+    if cmd == "continue":
+        emit({"acquired": False, "yielded": True, "disabled": True}, j,
+             ["CONTINUE FROZEN: coordination disabled"])
         return 0
     if cmd == "status":
         emit({"disabled": True, "source": switch_source()}, j,
@@ -2136,6 +2545,12 @@ def main():
     sp.add_argument("--rank", default=None,
                     help="user-granted root rank (1, 2, 3...) if the user already "
                          "stated priority")
+    sp.add_argument("--native-session-id", default=None,
+                    help="trustworthy native Hermes session id (auto-captures "
+                         "HERMES_SESSION_ID when present)")
+    sp.add_argument("--wake-transport", choices=["hermes"], default=None)
+    sp.add_argument("--wake-target-json", default=None,
+                    help="exact immutable receiver target JSON")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(fn=cmd_register)
 
@@ -2145,8 +2560,13 @@ def main():
     sp.add_argument("--ttl", type=float, default=DEFAULT_TTL_MIN,
                     help=f"minutes before claim auto-expires (default {DEFAULT_TTL_MIN:g}); "
                          "re-claim to refresh on long tasks")
-    sp.add_argument("--wait", action="store_true",
-                    help="politely wait (poll) if held or queued; registers as waiter")
+    wait_group = sp.add_mutually_exclusive_group()
+    wait_group.add_argument("--wait", action="store_true",
+                            help="legacy polite polling wait")
+    wait_group.add_argument("--yield", dest="yield_mode", action="store_true",
+                            help="checkpoint and return promptly; targeted wake later")
+    sp.add_argument("--checkpoint", default=None,
+                    help="existing absolute checkpoint path (required with --yield)")
     sp.add_argument("--timeout", type=float, default=300)
     sp.set_defaults(fn=cmd_claim)
 
@@ -2207,6 +2627,10 @@ def main():
                     help="checkpoint note: where you saved state (strongly recommended)")
     sp.add_argument("--ttl", type=float, default=None,
                     help="minutes the paused spot survives (default: claim's ttl)")
+    sp.add_argument("--yield", dest="yield_mode", action="store_true",
+                    help="durably wake this parked full set instead of manual resume")
+    sp.add_argument("--checkpoint", default=None,
+                    help="existing absolute checkpoint path (required with --yield)")
     sp.set_defaults(fn=cmd_pause)
 
     sp = sub.add_parser("resume", help="re-acquire my paused claims (fence-respecting)")
@@ -2256,6 +2680,55 @@ def main():
                     choices=["paused", "resumed", "triggered"])
     sp.add_argument("--reason", default=None)
     sp.set_defaults(fn=cmd_cron_note)
+
+    sp = sub.add_parser("wake-reconcile",
+                        help="reap TTLs and fairly enqueue missing continuation events")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_wake_reconcile)
+
+    sp = sub.add_parser("wake-lease",
+                        help="lease at most one exact-target continuation event")
+    sp.add_argument("--worker", required=True)
+    sp.add_argument("--transport", choices=["hermes"], required=True)
+    sp.add_argument("--profile-home", required=True)
+    sp.add_argument("--native-session-id", required=True)
+    sp.add_argument("--kind", choices=sorted(wakes.TARGET_KINDS), default=None)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_wake_lease)
+
+    sp = sub.add_parser("wake-result",
+                        help="record durable exact-target wake admission outcome")
+    sp.add_argument("--event", required=True)
+    sp.add_argument("--attempt", type=int, required=True)
+    sp.add_argument("--outcome",
+                    choices=["delivered", "not_sent", "unknown", "canceled"],
+                    required=True)
+    sp.add_argument("--receipt-json", required=True)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_wake_result)
+
+    sp = sub.add_parser("cancel-wait",
+                        help="explicitly tombstone opted-in wait episodes/events")
+    sp.add_argument("--id", default=None)
+    sp.add_argument("--episode", default=None)
+    sp.add_argument("--native-session-id", default=None)
+    sp.add_argument("--profile-home", default=None)
+    sp.add_argument("--reason", required=True)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_cancel_wait)
+
+    sp = sub.add_parser("continue",
+                        help="revalidate and acquire an event's immutable full request")
+    sp.add_argument("--id", default=os.environ.get("HERMES_COORD_ID"))
+    sp.add_argument("--event", required=True)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_continue)
+
+    sp = sub.add_parser("wake-pending",
+                        help="read-only opted-in episode/outbox discovery metadata")
+    sp.add_argument("--profile-home", required=True)
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_wake_pending)
 
     sp = sub.add_parser("switch",
                         help="MASTER SWITCH: report state, or on|off|toggle the whole board")

@@ -1,16 +1,14 @@
-# Coordination blurb for Bot Mode SOUL.md files
+# Example bot persona with board enrollment
 
-Paste the managed block below into every bot's SOUL.md. Substitute `<botname>`
-and adapt resource examples. `install.py` adds or upgrades this block for
-existing profiles unless `--no-wire-bots` is used. Keep the begin/end markers:
-they make upgrades exact and let customized blocks fail closed for manual review.
+Use `templates/bot-soul-coordination.md` as the canonical source. `install.py`
+substitutes the profile name and installed CLI path, migrates exact shipped
+bot-wire-v1 variants, and preserves customized variants for manual review.
 
-Bot handoffs start fresh profile-scoped runs, so the persona is the reliable
-carrier for board enrollment. This board-only block requires no Hermes plugin.
-Automatic native continuation is a separate explicit opt-in documented in
-`references/automatic-resume.md`.
+````markdown
+# Scout
 
----
+You are a research bot. Preserve this personality and any other user-owned
+instructions around the managed coordination block.
 
 <!-- BEGIN session-coord managed bot-board-v2 -->
 ## Shared-resource coordination (Hermes co-worker protocol)
@@ -28,7 +26,7 @@ register and claim them. Profile memory is not the machine's main memory store.
 
 ```bash
 SC=<session_coord_path>
-CID=$(python3 "$SC" register --task "<task>" --surface "bot:<botname>" | head -1)
+CID=$(python3 "$SC" register --task "<task>" --surface "bot:scout" | head -1)
 python3 "$SC" claim --id "$CID" --res "<key>" --res "<key2>" --task "<task>"
 # Continue only after CLAIMED. If HELD/QUEUED, do not mutate the requested resources.
 # A shell actor that must stay alive may use one bounded --wait call.
@@ -50,3 +48,8 @@ Rules:
 
 Enrollment marker: session-coord (bot-board-wire v2).
 <!-- END session-coord managed bot-board-v2 -->
+````
+
+The board-only block never tells the bot to `--yield`. Optional native
+continuation is a separate managed block written only after `hermes_setup.py`
+succeeds for this profile.

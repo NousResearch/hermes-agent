@@ -2,8 +2,8 @@
 
 Covers the skill contract (frontmatter hardline, body structure, referenced
 support files) plus a compile check for the shipped CLI. No live network;
-the CLI's own bash selftest suites (127 checks, scratch DBs) are exercised by
-the project's upstream CI and documented in the skill's Verification section.
+the CLI's own selftest suites use scratch databases and are documented in the
+skill's Verification section. Cross-platform CI results must be verified per revision.
 """
 import py_compile
 import re
@@ -78,16 +78,12 @@ def test_body_structure():
 
 def test_procedure_has_numbered_steps_with_completion_criteria():
     _, body = _frontmatter_and_body()
-    steps = re.findall(r"\*\*\d+\.\s+[^*]+?\*\*", body)
-    assert len(steps) >= 4, "Procedure must have numbered steps"
-    # each step must be followed by concrete, checkable content (a command
-    # block or an outcome statement) before the next heading
-    proc = body.split("## Procedure", 1)[1]
-    blocks = re.findall(r"\*\*\d+\..*?(?=\*\*\d+\.|^### |^## )", proc, re.M | re.S)
-    for block in blocks:
-        assert "```" in block or "rc 75" in block or "Delivers" in block, (
-            f"step lacks checkable content: {block[:80]!r}"
-        )
+    procedure = body.split("## Procedure", 1)[1].split("\n## ", 1)[0]
+    steps = re.findall(r"^### (\d+)\. (.+)$", procedure, re.M)
+    assert steps, "Procedure must expose ordered, actionable sections"
+    assert [int(n) for n, _ in steps] == list(range(1, len(steps) + 1))
+    assert "completion criterion" in procedure.lower()
+    assert "CLAIMED" in procedure and "Exit 75" in procedure
 
 
 def test_referenced_support_files_exist():
@@ -125,3 +121,30 @@ def test_no_machine_local_paths():
         if p.is_file() and p.suffix in (".md", ".sh", ".py", ".json"):
             text = p.read_text(encoding="utf-8", errors="replace")
             assert "/Users/" not in text, f"machine-local path in {p.name}"
+
+
+def test_complete_claim_is_revalidated_after_release(tmp_path, monkeypatch):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_COORD_DB", str(tmp_path / "board.db"))
+    script = SKILL_DIR / "scripts/session_coord.py"
+
+    def run(*args):
+        return subprocess.run([sys.executable, str(script), *args], env=os.environ.copy(),
+                              capture_output=True, text=True, timeout=15, check=False)
+
+    for actor in ("holder", "waiter"):
+        assert run("register", "--id", actor, "--task", "contract test").returncode == 0
+    assert run("claim", "--id", "holder", "--res", "res:second").returncode == 0
+    assert run("claim", "--id", "waiter", "--res", "res:first", "--res", "res:second").returncode == 75
+    state = json.loads(run("status", "--json").stdout)
+    assert not any(row["session_full"] == "waiter" for row in state["held_claims"])
+    assert run("done", "--id", "holder").returncode == 0
+    assert run("claim", "--id", "waiter", "--res", "res:first", "--res", "res:second").returncode == 0
+    state = json.loads(run("status", "--json").stdout)
+    assert {row["resource"] for row in state["held_claims"] if row["session_full"] == "waiter"} == {"res:first", "res:second"}

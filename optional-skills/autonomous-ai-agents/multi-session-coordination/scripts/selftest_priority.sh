@@ -22,7 +22,7 @@ first_line() { printf '%s\n' "$1" | head -1; }
 
 # ---------------------------------------------------------------- setup
 OUT=$(co register --task "task A (unranked)" 2>&1); log "$OUT"
-A=$(first_line "$OUT"); A8=${A:0:8}
+A=$(first_line "$OUT")
 OUT=$(co claim --id "$A" --res res:R --task "A work" 2>&1); RC=$?; log "$OUT"
 [ $RC -eq 0 ] || bad "setup: A claims res:R" "rc=$RC out=$OUT"
 OUT=$(co register --task "task B" 2>&1); log "$OUT"; B=$(first_line "$OUT"); B8=${B:0:8}
@@ -77,7 +77,7 @@ if printf '%s' "$OUT" | grep -qi "paused" && printf '%s' "$OUT" | grep -q "ck-no
 else bad "4c. status shows paused + ck-note-xyz" "rc=$RC out=$OUT"; fi
 
 # ---------------------------------------------------------------- check 5
-OUT=$(co done --id "$B" 2>&1); RC=$?; log "$OUT"
+OUT=$(co "done" --id "$B" 2>&1); RC=$?; log "$OUT"
 [ $RC -eq 0 ] || bad "5-pre. B done rc 0" "rc=$RC out=$OUT"
 
 OUT=$(co register --task "helper H" 2>&1); log "$OUT"; H=$(first_line "$OUT")
@@ -104,7 +104,7 @@ else bad "5a. holder of res:Q is E" "status=$OUT"; fi
 CN=$(grep -c "CLAIMED" "$COUT")
 if [ "$CN" -eq 0 ]; then ok "5b. C (rank 2) still waiting while E holds (fenced)"
 else bad "5b. C still waiting while E holds" "c_out=$(cat "$COUT")"; fi
-OUT=$(co done --id "$E" 2>&1); log "$OUT"
+OUT=$(co "done" --id "$E" 2>&1); log "$OUT"
 wait $CPID; CRC=$?
 log "$(cat "$COUT")"
 if [ $CRC -eq 0 ] && grep -q "CLAIMED" "$COUT"; then
@@ -137,7 +137,7 @@ GN=$(grep -c "CLAIMED" "$GOUT")
 if printf '%s' "$OUT" | grep -q "res:S  <- ${F8}" && [ "$GN" -eq 0 ]; then
   ok "6a. FIFO tie-break: F (earlier waiter, equal rank) acquired; G still waiting"
 else bad "6a. FIFO tie-break F before G" "status=$OUT g_out=$(cat "$GOUT")"; fi
-OUT=$(co done --id "$F" 2>&1); log "$OUT"
+OUT=$(co "done" --id "$F" 2>&1); log "$OUT"
 wait $GPID; GRC=$?
 log "$(cat "$GOUT")"
 if [ $GRC -eq 0 ] && grep -q "CLAIMED" "$GOUT"; then
@@ -151,7 +151,7 @@ log "$(cat "$FOUT")"
 OUT=$(co claim --id "$C" --res res:R --task "C ranked beats paused unranked A" 2>&1); RC=$?; log "$OUT"
 if [ $RC -eq 0 ]; then ok "7a. C (rank 2) claims free res:R over A's unranked paused spot -> rc 0"
 else bad "7a. C claims res:R over paused A -> rc 0" "rc=$RC out=$OUT"; fi
-OUT=$(co done --id "$C" 2>&1); RC=$?; log "$OUT"
+OUT=$(co "done" --id "$C" 2>&1); RC=$?; log "$OUT"
 [ $RC -eq 0 ] || bad "7-pre. C done rc 0" "rc=$RC out=$OUT"
 OUT=$(co resume --id "$A" 2>&1); RC=$?; log "$OUT"
 if [ $RC -eq 0 ] && printf '%s' "$OUT" | grep -q "RESUMED" \
@@ -179,7 +179,7 @@ else bad "8b. P resume -> 'nothing paused'" "rc=$RC out=$OUT"; fi
 # ---------------------------------------------------------------- check 9
 OUT=$(co register --task "parent" --rank 1 2>&1); log "$OUT"; PAR=$(first_line "$OUT"); PAR8=${PAR:0:8}
 OUT=$(co register --task "kid1" --parent "$PAR" --slot a 2>&1); log "$OUT"; K1=$(first_line "$OUT"); K18=${K1:0:8}
-OUT=$(co register --task "kid2" --parent "$PAR" --slot b 2>&1); log "$OUT"; K2=$(first_line "$OUT"); K28=${K2:0:8}
+OUT=$(co register --task "kid2" --parent "$PAR" --slot b 2>&1); log "$OUT"; K2=$(first_line "$OUT")
 OUT=$(co claim --id "$PAR" --res res:U --task "parent work" 2>&1); RC=$?; log "$OUT"
 [ $RC -eq 0 ] || bad "9-pre. PARENT claims res:U" "rc=$RC out=$OUT"
 OUT=$(co claim --id "$K2" --res res:U --task "K2 try" 2>&1); RC=$?; log "$OUT"

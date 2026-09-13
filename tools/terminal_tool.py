@@ -211,10 +211,10 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return (
-        any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
-        or _extra_args_expose_host_path(config.get("docker_extra_args"))
-    )
+    if any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", [])):
+        return True
+    from tools.environments.docker import extra_args_may_bind_host_path
+    return extra_args_may_bind_host_path(config.get("docker_extra_args", []))
 
 
 def _check_all_guards(command: str, env_type: str,

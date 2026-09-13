@@ -109,7 +109,7 @@ class TestEssentialSkillsUndisableable:
         assert cfg["skills"]["disabled"] == ["other"]
 
     def test_skill_manage_delete_refused(self):
-        from tools.skill_manager_tool import _pinned_guard
+        from tools.skill_manager_guards import _pinned_guard
         msg = _pinned_guard("hermes-agent")
         assert msg is not None
         assert "essential" in msg.lower()

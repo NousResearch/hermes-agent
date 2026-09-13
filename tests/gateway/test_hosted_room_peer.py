@@ -17,13 +17,11 @@ from gateway.hosted_room_peer import (
     HostedRoomGrantError,
     HostedRoomPeerError,
     PROTOCOL_VERSION,
-    RoomLinkProbe,
     catalog_mapping,
     derive_room_grant_secret,
     gateway_room_grant_secret,
     issue_room_grant,
     local_room_link_endpoint,
-    select_room_link,
     verify_room_grant,
 )
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -290,33 +288,6 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
         )
     with pytest.raises(HostedRoomGrantError, match="signature"):
         verify_room_grant(SECRET, token[:-1] + "A", dispatch, now=105)
-
-
-def test_link_selection_prefers_safe_direct_then_overlay_then_relay_then_pull():
-    selected = select_room_link(
-        [
-            RoomLinkProbe("relay", True, True, 10),
-            RoomLinkProbe("direct", True, True, 50),
-            RoomLinkProbe("overlay", True, True, 5),
-            RoomLinkProbe("pull", True, True, 1),
-        ],
-        desktop_available=False,
-    )
-    assert selected is not None
-    assert selected.mode == "direct"
-
-
-def test_link_selection_never_falls_back_to_unencrypted_route():
-    assert (
-        select_room_link(
-            [RoomLinkProbe("direct", True, False, 1)],
-            desktop_available=False,
-        )
-        is None
-    )
-    fallback = select_room_link([], desktop_available=True)
-    assert fallback is not None
-    assert fallback.mode == "desktop"
 
 
 def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):

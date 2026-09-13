@@ -50,7 +50,7 @@ def _write_arm(root: Path, model: str, arm: str, *, tasks: tuple[str, ...], conf
                 "source_sha": "a" * 40 if arm == "baseline" else "b" * 40,
                 "model_provenance": model_provenance,
                 "evaluator_provenance": evaluator,
-                "tail": "",
+                "tail": "ENV_OK_4477",
             }
         )
     (result_dir / "meta.jsonl").write_text(
@@ -221,3 +221,62 @@ def test_run_rejects_checkout_drift_before_recording(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="must be clean"):
         harness["run"]("baseline", "model", 1, str(source))
     assert not list((tmp_path / "workspace").rglob("meta.jsonl"))
+
+
+def test_complete_battery_rejects_failed_outcomes_and_regressions(tmp_path):
+    for defect in ("success", "latency"):
+        root = tmp_path / defect
+        for arm in ("baseline", "fixes"):
+            _write_arm(root, "test-model", arm, tasks=("err_python_env",), config_digest="c" * 64)
+        mdir = root / "results/test-model"
+        (mdir / "manifest.json").write_text(json.dumps({"tasks": ["err_python_env"], "repetitions": 1}), encoding="utf-8")
+        meta = mdir / "fixes/meta.jsonl"
+        row = json.loads(meta.read_text(encoding="utf-8"))
+        row["tail" if defect == "success" else "wall_s"] = "failed" if defect == "success" else 10
+        meta.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        assert _run_report(root, "test-model").returncode == 1
+        result = json.loads((mdir / "report.json").read_text(encoding="utf-8"))
+        assert result["complete"] is True and result["status"] == "fail"
+        assert result["outcome_failures"]
+
+
+def test_pair_scheduler_counterbalances_each_adjacent_pair(monkeypatch):
+    import runpy
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
+    harness = runpy.run_path(str(SCRIPT))
+    state = harness["run_paired"].__globals__
+    state["TASKS"] = {"one": "first", "two": "second"}
+    state["_resolve_clean_source"] = lambda path: None
+    calls = []
+    state["run"] = lambda arm, model, reps, source, only, only_rep: calls.append((arm, only[0], only_rep))
+    harness["run_paired"]("model", 2, "base", "fix")
+    for index in range(0, len(calls), 2):
+        pair = calls[index:index + 2]
+        assert pair[0][1:] == pair[1][1:]
+        assert [row[0] for row in pair] == (["baseline", "fixes"] if index // 2 % 2 == 0 else ["fixes", "baseline"])
+
+
+def test_credentials_bind_provenance_and_corrupt_resume_stops_early(tmp_path, monkeypatch):
+    import runpy
+    import pytest
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
+    harness = runpy.run_path(str(SCRIPT))
+    state = harness["run"].__globals__
+    state["HOME"] = tmp_path / "home"
+    state["HOME"].mkdir()
+    dotenv = state["HOME"] / ".env"
+    dotenv.write_text("OPENROUTER_API_KEY=first-fake-key\n", encoding="utf-8")
+    old = harness["_model_provenance"]("model")
+    dotenv.write_text("OPENROUTER_API_KEY=second-fake-key\n", encoding="utf-8")
+    new = harness["_model_provenance"]("model")
+    assert old != new
+    assert "fake-key" not in json.dumps(new)
+    assert harness["_safe_config"]({"api_key": "first"}) != harness["_safe_config"]({"api_key": "second"})
+    state["ROOT"] = tmp_path / "workspace"
+    state["_resolve_clean_source"] = lambda path: (tmp_path / "source", "a" * 40)
+    result_dir = state["ROOT"] / "results/model/baseline"
+    result_dir.mkdir(parents=True)
+    (result_dir / "meta.jsonl").write_text('{"run_id":', encoding="utf-8")
+    state["make_sandbox"] = lambda work: pytest.fail("must not execute a corrupt resumed battery")
+    with pytest.raises(SystemExit, match="corrupt resume metadata"):
+        harness["run"]("baseline", "model", 1, str(tmp_path / "source"))

@@ -38,10 +38,7 @@ for source in sys.argv[2:]:
 PYTHON
 
 for model in "${MODELS[@]}"; do
-  echo "=== $model / baseline ==="
-  "$PY" "$EVAL" run --arm baseline --model "$model" --reps "$REPS" --pythonpath "$BASE"
-  echo "=== $model / fixes ==="
-  "$PY" "$EVAL" run --arm fixes --model "$model" --reps "$REPS" --pythonpath "$FIXES"
+  "$PY" "$EVAL" paired --model "$model" --reps "$REPS" --baseline "$BASE" --fixes "$FIXES"
 done
 echo "=== ALL RUNS DONE ==="
 "$PY" "$EVAL" report --models "$(IFS=,; echo "${MODELS[*]}")"

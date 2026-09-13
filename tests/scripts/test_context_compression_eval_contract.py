@@ -26,6 +26,10 @@ def report() -> dict[str, object]:
 
 def test_valid_report_passes() -> None:
     assert validate_report(report()) == []
+    for version in (True, 1.0, "1"):
+        value = report()
+        value["schema_version"] = version
+        assert "schema_version_must_be_1" in validate_report(value)
 
 
 def test_missing_and_invalid_fields_fail_closed() -> None:

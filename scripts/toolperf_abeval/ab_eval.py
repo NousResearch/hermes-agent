@@ -157,7 +157,8 @@ SUCCESS = {
 def _safe_config(value: object) -> object:
     if isinstance(value, Mapping):
         return {
-            str(key): "<redacted>" if _CREDENTIAL_KEY.search(str(key)) else _safe_config(child)
+            str(key): {"credential_digest": hashlib.sha256(json.dumps(child, sort_keys=True).encode()).hexdigest()}
+            if _CREDENTIAL_KEY.search(str(key)) else _safe_config(child)
             for key, child in sorted(value.items(), key=lambda item: str(item[0]))
         }
     if isinstance(value, (list, tuple)):
@@ -174,6 +175,8 @@ from dotenv import dotenv_values
 from hermes_cli.auth import PROVIDER_REGISTRY
 values = dotenv_values(os.path.join(os.environ["HERMES_HOME"], ".env"))
 keys = {p.base_url_env_var for p in PROVIDER_REGISTRY.values() if p.base_url_env_var}
+keys.update(k for p in PROVIDER_REGISTRY.values() for k in p.api_key_env_vars)
+keys.update(k for k in set(os.environ) | set(values) if re.search(r"(?i)(api[_-]?key|token|secret|password|credential)", k))
 keys.update(k for k in set(os.environ) | set(values) if k.endswith(("_BASE_URL", "_ENDPOINT")))
 config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
 if config_path.exists():
@@ -252,7 +255,7 @@ def _resolve_clean_source(pythonpath: str) -> tuple[Path, str]:
     return source_root, source_sha
 
 
-def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
+def run(arm: str, model: str, reps: int, pythonpath: str, only=None, only_rep=None):
     source_root, source_sha = _resolve_clean_source(pythonpath)
     if ROOT == source_root or source_root in ROOT.parents:
         raise SystemExit("evaluation workspace must be outside the evaluated source tree")
@@ -275,8 +278,10 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
         for line in meta_path.read_text(encoding="utf-8").splitlines():
             try:
                 existing_rows.append(json.loads(line))
-            except (ValueError, KeyError):
-                continue
+            except (ValueError, KeyError) as exc:
+                raise SystemExit("corrupt resume metadata; repair before running more evaluations") from exc
+            if not isinstance(existing_rows[-1], dict) or "run_id" not in existing_rows[-1]:
+                raise SystemExit("invalid resume metadata row")
         existing_shas = {row.get("source_sha") for row in existing_rows}
         if existing_shas != {source_sha}:
             raise SystemExit(
@@ -290,6 +295,8 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
         if len(done) != len(existing_rows):
             raise SystemExit("duplicate evaluation run rows")
     for rep in range(reps):
+        if only_rep is not None and rep != only_rep:
+            continue
         for name in TASKS:
             if only and name not in only:
                 continue
@@ -369,6 +376,35 @@ mode = "overwrite"
             with open(meta_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
             print(f"[{arm}/{model}] {run_id} {dt:.0f}s exit={rc}", flush=True)
+
+
+def run_paired(model, reps, baseline, fixes):
+    """Counterbalance adjacent task/repetition pairs across the two arms."""
+    for source in (baseline, fixes):
+        _resolve_clean_source(source)
+    for rep in range(reps):
+        for index, task in enumerate(TASKS):
+            arms = [("baseline", baseline), ("fixes", fixes)]
+            if (rep * len(TASKS) + index) % 2:
+                arms.reverse()
+            for arm, source in arms:
+                run(arm, model, reps, source, only=[task], only_rep=rep)
+
+
+def _outcome_failures(table, expected_tasks):
+    failures = []
+    for task in sorted(expected_tasks):
+        arms = table.get(task, {})
+        baseline, fixes = arms.get("baseline", []), arms.get("fixes", [])
+        if not baseline or not fixes or not all(row["ok"] for row in fixes):
+            failures.append(f"{task}: fixes did not complete every success predicate")
+            continue
+        for metric in ("llm", "tools", "errs", "retries", "kb", "wall"):
+            before = sum(row[metric] for row in baseline) / len(baseline)
+            after = sum(row[metric] for row in fixes) / len(fixes)
+            if after > before:
+                failures.append(f"{task}: {metric} regressed")
+    return failures
 
 
 def score_run(atof: Path):
@@ -546,6 +582,7 @@ def report(models):
             rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()] if meta_path.exists() else []
             observed[arm] = Counter((row.get("task"), row.get("rep")) for row in rows)
         complete = bool(expected) and all(observed[arm] == Counter({pair: 1 for pair in expected}) for arm in ("baseline", "fixes"))
+        outcome_failures = _outcome_failures(table, expected_tasks)
         report_data = {
             "baseline_sha": provenance.get("baseline", "unavailable"),
             "fixes_sha": provenance.get("fixes", "unavailable"),
@@ -555,7 +592,9 @@ def report(models):
             "evaluator_provenance": evaluator_provenance or {},
             "concurrency": 1,
             "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
-            "status": "pass" if complete else "fail",
+            "complete": complete,
+            "outcome_failures": outcome_failures,
+            "status": "pass" if complete and not outcome_failures else "fail",
         }
         if report_data["status"] != "pass":
             all_pass = False
@@ -580,6 +619,11 @@ if __name__ == "__main__":
         only = (sys.argv[sys.argv.index("--only") + 1].split(",")
                 if "--only" in sys.argv else None)
         run(arm, model, reps, pythonpath, only)
+    elif cmd == "paired":
+        run_paired(sys.argv[sys.argv.index("--model") + 1],
+                   int(sys.argv[sys.argv.index("--reps") + 1]),
+                   sys.argv[sys.argv.index("--baseline") + 1],
+                   sys.argv[sys.argv.index("--fixes") + 1])
     elif cmd == "report":
         models = sys.argv[sys.argv.index("--models") + 1].split(",")
         sys.exit(0 if report(models) else 1)

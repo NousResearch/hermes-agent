@@ -74,7 +74,7 @@ def _nonfinite_errors(value: object, path: str) -> list[str]:
 
 def validate_report(report: Mapping[str, object]) -> list[str]:
     errors = [f"missing:{key}" for key in sorted(REQUIRED_KEYS - report.keys())]
-    if report.get("schema_version") != 1:
+    if type(report.get("schema_version")) is not int or report.get("schema_version") != 1:
         errors.append("schema_version_must_be_1")
     fixture_digest = report.get("fixture_digest")
     if not isinstance(fixture_digest, str) or not _FIXTURE_DIGEST.fullmatch(fixture_digest):

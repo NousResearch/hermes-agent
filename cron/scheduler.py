@@ -2745,9 +2745,17 @@ def _save_compose_deliver(
         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
 
-def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Optional[str]) -> None:
+def _finish_interrupted_run(
+    job: dict, execution_id: str, delivery_error: Optional[str], *, delivered: bool = False,
+) -> None:
     """Shutdown already wrote last_status, so mark_job_run is skipped (a second call would skip a
-    fire or auto-delete the job); an unsent notice is recorded via update_job instead."""
+    fire or auto-delete the job); an unsent notice is recorded via update_job instead.
+
+    ``delivered`` — the run's notice already left the process before the shutdown flag was consumed.
+    A shutdown latch that fires after the side effect is not a lost run, so this attempt's OWN
+    ledger row decides the outcome (WH-CREATED-23D2B8E1FBE6) instead of writing the shutdown
+    narrative for a run that completed its delivery one line earlier.
+    """
     if delivery_error:
         try:
             # The gateway shutdown already wrote last_status for this run, so mark_job_run is skipped below
@@ -2760,6 +2768,16 @@ def _finish_interrupted_run(job: dict, execution_id: str, delivery_error: Option
         except Exception as _rec_err:
             logger.debug(
                 "Failed recording delivery_error for interrupted job %s: %s", job["id"], _rec_err)
+    if delivered and not delivery_error:
+        # The notice left the process before the latch was consumed: classify from this attempt's own
+        # ledger row exactly like the post-delivery loss path, so a run that delivered is never
+        # recorded as "Interrupted by gateway shutdown before terminal completion."
+        outcome = record_post_delivery_outcome(
+            job["id"], execution_id, delivered=True, finish=finish_execution)
+        logger.info(
+            "Job '%s': attempt %s already delivered before the shutdown flag; recorded %s",
+            job["id"], execution_id, outcome)
+        return
     finish_execution(
         execution_id, success=False,
         error="Interrupted by gateway shutdown before terminal completion.")
@@ -2992,7 +3010,9 @@ def _run_one_job_body(
             d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if _consume_interrupted_flag(job["id"], execution_token):
-            _finish_interrupted_run(job, execution_id, delivery_error)
+            _finish_interrupted_run(
+                job, execution_id, delivery_error,
+                delivered=bool(d.delivery_attempted and not d.delivery_error))
             return True
 
         return _finish_completed_run(d, fire_owner, execution_id)

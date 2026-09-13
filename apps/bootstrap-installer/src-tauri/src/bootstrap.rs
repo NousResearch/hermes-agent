@@ -262,7 +262,30 @@ pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
         && resolve_hermes_desktop_exe(install_root).is_some()
 }
 
+/// Return the immutable provenance commit for a deliberately git-free release
+/// runtime. A file merely named `.hermes-release.json` is not enough: this
+/// narrow path accepts only the release schema and a full hexadecimal commit.
+fn pinned_git_free_release_commit(install_root: &Path) -> Option<String> {
+    let manifest_path = install_root.join(".hermes-release.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest_path).ok()?).ok()?;
+    let commit = manifest.get("commit")?.as_str()?;
+    let valid_commit = commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if manifest.get("schema")?.as_str() == Some("hermes-agent-release/v1")
+        && manifest.get("final_runtime_git_free")?.as_bool() == Some(true)
+        && valid_commit
+    {
+        Some(commit.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
 fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
+    if let Some(commit) = pinned_git_free_release_commit(install_root) {
+        return Some(commit);
+    }
+
     if let Some(commit) = pin
         .commit
         .as_ref()
@@ -1106,6 +1129,29 @@ mod tests {
             from_disk["completedAtUnix"].as_u64().is_some(),
             "marker must carry a completion timestamp"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_marker_prefers_verified_git_free_release_provenance() {
+        let root = unique_tmp_dir("git-free-release-marker");
+        let release_commit = "A".repeat(40);
+        let canonical_release_commit = "a".repeat(40);
+        std::fs::write(
+            root.join(".hermes-release.json"),
+            format!(
+                r#"{{"schema":"hermes-agent-release/v1","commit":"{release_commit}","final_runtime_git_free":true}}"#
+            ),
+        )
+        .unwrap();
+        let pin = Pin {
+            commit: Some("b".repeat(40)),
+            branch: Some("main".to_string()),
+        };
+
+        let marker = write_bootstrap_complete_marker(&root, &pin).unwrap();
+
+        assert_eq!(marker["pinnedCommit"], canonical_release_commit);
         let _ = std::fs::remove_dir_all(&root);
     }
 

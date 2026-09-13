@@ -19,6 +19,7 @@ from typing import List, Tuple
 
 
 SCANNER_VERSION = "skills-guard-v2"
+SCAN_CACHE_FINGERPRINT_VERSION = "skills-guard-cache-v1"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -440,6 +441,14 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
                       _build_summary(name, source, trust, verdict, findings))
 
 
+def _update_hashes_from_file(path: Path, *hashes) -> None:
+    """Feed exact file bytes to each hash without buffering the whole file."""
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            for digest in hashes:
+                digest.update(chunk)
+
+
 def _content_digest(skill_path: Path) -> str:
     """Canonical SHA-256 over (POSIX relative path, file bytes) ORDERED by the rel-path STRING — Path sorting is
     case-insensitive on Windows and diverged from ``skills_hub.bundle_content_hash`` (every installed skill then
@@ -449,13 +458,37 @@ def _content_digest(skill_path: Path) -> str:
     case-insensitive there (normcase), while ``bundle_content_hash`` sorts plain strings — the same skill
     hashed to different digests and every installed skill reported ``update_available`` forever (#62310).
     """
+    digest = hashlib.sha256()
     if not skill_path.is_dir():
-        return hashlib.sha256(skill_path.read_bytes()).hexdigest()
-    h = hashlib.sha256()
-    for rel, p in sorted((p.relative_to(skill_path).as_posix(), p) for p in skill_path.rglob("*") if p.is_file()):
-        h.update(rel.encode("utf-8") + b"\x00")
-        h.update(p.read_bytes())
-    return h.hexdigest()
+        _update_hashes_from_file(skill_path, digest)
+        return digest.hexdigest()
+    for rel, path in sorted((p.relative_to(skill_path).as_posix(), p)
+                            for p in skill_path.rglob("*") if p.is_file()):
+        digest.update(rel.encode("utf-8") + b"\x00")
+        _update_hashes_from_file(path, digest)
+    return digest.hexdigest()
+
+
+def _scan_cache_identities(skill_path: Path) -> Tuple[str, str]:
+    """Return the public bundle digest and an unambiguous scan-cache identity in one read pass."""
+    directory = skill_path.is_dir()
+    files = (sorted((p.relative_to(skill_path).as_posix(), p)
+                    for p in skill_path.rglob("*") if p.is_file())
+             if directory else [(skill_path.name, skill_path)])
+    bundle_digest = hashlib.sha256()
+    fingerprint = hashlib.sha256(
+        SCAN_CACHE_FINGERPRINT_VERSION.encode("ascii") + b"\x00"
+        + (b"directory\x00" if directory else b"file\x00")
+    )
+    for relative_name, path in files:
+        name = relative_name.encode("utf-8")
+        if directory:
+            bundle_digest.update(name + b"\x00")
+        fingerprint.update(len(name).to_bytes(8, "big") + name)
+        file_digest = hashlib.sha256()
+        _update_hashes_from_file(path, bundle_digest, file_digest)
+        fingerprint.update(file_digest.digest())
+    return bundle_digest.hexdigest(), fingerprint.hexdigest()
 
 
 def content_hash(skill_path: Path) -> str:
@@ -466,14 +499,14 @@ def content_hash(skill_path: Path) -> str:
 
 def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url: str = "",
                       cache_dir: Path | None = None) -> Tuple[ScanResult, dict]:
-    """Scan plus attestation dict; the cache (keyed by content digest + source identity) only serves exact
-    current content under the current scanner version."""
-    digest = _content_digest(skill_path)
+    """Scan plus attestation dict; a framed identity keys verdict reuse without changing the public bundle hash."""
+    digest, fingerprint = _scan_cache_identities(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
     source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
-    cache_file = cache_root / f"{digest}-{source_identity}.json"
+    cache_file = cache_root / f"{fingerprint}-{source_identity}.json"
     expected = {"bundle_hash": f"sha256:{digest}", "scanner_version": SCANNER_VERSION, "source": source,
-                "source_url": source_url}
+                "source_url": source_url, "cache_fingerprint": f"sha256:{fingerprint}",
+                "cache_fingerprint_version": SCAN_CACHE_FINGERPRINT_VERSION}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
         cached = json.loads(cache_file.read_text(encoding="utf-8"))

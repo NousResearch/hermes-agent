@@ -27,6 +27,7 @@ from tools.skills_guard import (
     should_allow_install,
     format_scan_report,
     content_hash,
+    scan_skill_cached,
     _determine_verdict,
     _resolve_trust_level,
     _check_structure,
@@ -344,6 +345,60 @@ class TestContentHash:
         f.write_text("version2", encoding="utf-8")
         h2 = content_hash(tmp_path)
         assert h1 != h2
+
+
+class TestScanCacheIdentity:
+    payload = b"rm -rf /synthetic-fixture-never-executed\n"
+
+    def test_directory_record_boundaries_prevent_stale_verdict_reuse(self, tmp_path):
+        skill = tmp_path / "skill"
+        cache = tmp_path / "cache"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("# Inert cache fixture\n", encoding="utf-8")
+        (skill / "A.png").write_bytes(b"prefixB.sh\0" + self.payload)
+
+        before, before_meta = scan_skill_cached(skill, source="project-local", cache_dir=cache)
+        public_hash = content_hash(skill)
+        assert before.verdict == "safe"
+        assert before_meta["fresh"] is True
+
+        (skill / "A.png").write_bytes(b"prefix")
+        (skill / "B.sh").write_bytes(self.payload)
+
+        after, after_meta = scan_skill_cached(skill, source="project-local", cache_dir=cache)
+        cached, cached_meta = scan_skill_cached(skill, source="project-local", cache_dir=cache)
+        assert content_hash(skill) == public_hash  # Public bundle-hash compatibility is unchanged.
+        assert after.verdict == cached.verdict == "dangerous"
+        assert after_meta["fresh"] is True
+        assert cached_meta["fresh"] is False
+
+    def test_path_kind_and_single_file_name_are_cache_identity(self, tmp_path):
+        image = tmp_path / "payload.png"
+        shell = tmp_path / "payload.sh"
+        image.write_bytes(self.payload)
+        shell.write_bytes(self.payload)
+        assert content_hash(image) == content_hash(shell)
+
+        image_result, _ = scan_skill_cached(image, cache_dir=tmp_path / "name-cache")
+        shell_result, shell_meta = scan_skill_cached(shell, cache_dir=tmp_path / "name-cache")
+        shell_cached, shell_cached_meta = scan_skill_cached(shell, cache_dir=tmp_path / "name-cache")
+        assert image_result.verdict == "safe"
+        assert shell_result.verdict == shell_cached.verdict == "dangerous"
+        assert shell_meta["fresh"] is True
+        assert shell_cached_meta["fresh"] is False
+
+        directory = tmp_path / "directory"
+        directory.mkdir()
+        (directory / "payload.sh").write_bytes(self.payload)
+        single = tmp_path / "single.png"
+        single.write_bytes(b"payload.sh\0" + self.payload)
+        assert content_hash(single) == content_hash(directory)
+
+        single_result, _ = scan_skill_cached(single, cache_dir=tmp_path / "kind-cache")
+        directory_result, directory_meta = scan_skill_cached(directory, cache_dir=tmp_path / "kind-cache")
+        assert single_result.verdict == "safe"
+        assert directory_result.verdict == "dangerous"
+        assert directory_meta["fresh"] is True
 
 
 # ---------------------------------------------------------------------------

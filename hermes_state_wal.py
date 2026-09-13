@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
@@ -96,6 +97,69 @@ def _darwin_pragma(conn: sqlite3.Connection, pragma: str) -> None:
     if sys.platform == "darwin":
         with contextlib.suppress(sqlite3.OperationalError):
             conn.execute(pragma)
+
+
+def disable_close_time_wal_reset(conn: sqlite3.Connection) -> bool:
+    """Best-effort ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`` for short-lived connections to a shared DB.
+
+    sqlite3's ``close()`` runs the last-connection WAL reset: it checkpoints and, when the WAL
+    is empty, **unlinks** ``-wal``/``-shm``. A long-lived holder of that generation (the
+    messaging gateway) is left on unlinked inodes and every subsequent opener is blocked by
+    ``refuse_deleted_wal_generation()`` (#109786). Arming this flag on the short-lived writer
+    keeps the sidecars in place across its close.
+
+    Python 3.12+ exposes the switch via ``Connection.setconfig``. On 3.11 (the production
+    runtime) it is unavailable — callers that still must close a writer on a shared DB need
+    their own generation-preserving strategy (see SessionDB's retire-unclosed path); this
+    helper returning False means exactly that.
+    """
+    flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+    setconfig = getattr(conn, "setconfig", None)
+    if flag is None or setconfig is None:
+        return False
+    try:
+        setconfig(flag, True)
+    except Exception:  # noqa: BLE001 - best-effort by contract
+        return False
+    return True
+
+
+def schema_is_canonical(db_path, *, expected_sql) -> bool:
+    """True when every table/column ``expected_sql`` declares already exists on ``db_path``.
+
+    Read-only probe (``mode=ro`` URI): answers "would reconcile_state_schema write anything?"
+    without taking a writer on the shared store. Table presence via ``sqlite_master``,
+    columns via ``PRAGMA table_info`` — the same sources ``_reconcile_columns`` diffs, so the
+    answer stays true to the writer's own decision logic. Any error (missing file, locked,
+    malformed) returns False so callers fall back to the durable write path.
+    """
+    try:
+        ref = sqlite3.connect(":memory:")
+        try:
+            ref.executescript(expected_sql)
+            expected = {
+                tbl: {row[1] for row in ref.execute(f'PRAGMA table_info("{tbl}")').fetchall()}
+                for (tbl,) in ref.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        finally:
+            ref.close()
+        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+        live = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            for tbl, cols in expected.items():
+                rows = live.execute(f'PRAGMA table_info("{tbl}")').fetchall()
+                if not rows:
+                    return False
+                live_cols = {row[1] for row in rows}
+                if not cols.issubset(live_cols):
+                    return False
+        finally:
+            live.close()
+        return True
+    except Exception:  # noqa: BLE001 - probe answer is "not known canonical" on any failure
+        return False
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:

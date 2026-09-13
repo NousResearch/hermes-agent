@@ -90,12 +90,30 @@ def _connect() -> sqlite3.Connection:
     # sidecars) at the process umask. See hermes_state._secure_state_db_files.
     from hermes_state import _secure_state_db_files
     _secure_state_db_files(path, create_main=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        _initialize_schema(conn)
-    except Exception:
-        conn.close()  # don't leak the connection on PRAGMA/DDL failure
-        raise
+    # Import-time reachability (#109786): this module imports on every CLI/gateway/worker
+    # start, and reconcile_state_schema's DDL takes the WAL write lock even when it is a
+    # complete no-op. sqlite3's close() then runs the last-connection WAL reset and unlinks
+    # -wal/-shm while a live gateway holds that generation — every subsequent opener is
+    # refused (DeletedWalGenerationError) until an operator restarts things. When the
+    # ledger's shape is already canonical (steady state), skip the writer entirely: the
+    # connection opens read-write (the ledger functions below do write) but performs no
+    # schema DDL, so an idle import never arms the reset on a shared store.
+    from hermes_state_schema import SCHEMA_SQL
+    from hermes_state_wal import disable_close_time_wal_reset, schema_is_canonical
+    if not schema_is_canonical(path, expected_sql=SCHEMA_SQL):
+        conn = sqlite3.connect(path, timeout=10)
+        # A writer must close on a shared DB: keep the sidecars alive across this close
+        # where the runtime allows it (3.12+). On 3.11 the DDL path still runs — fresh
+        # installs only, since the canonical probe above skips it in steady state.
+        disable_close_time_wal_reset(conn)
+        try:
+            _initialize_schema(conn)
+        except Exception:
+            conn.close()  # don't leak the connection on PRAGMA/DDL failure
+            raise
+    else:
+        conn = sqlite3.connect(path, timeout=10)
+        disable_close_time_wal_reset(conn)
     _secure_state_db_files(path)
     return conn
 

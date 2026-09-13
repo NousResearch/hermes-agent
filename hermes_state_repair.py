@@ -760,6 +760,10 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     # base table. REINDEX rewrites the index b-tree from the canonical table rows using the existing index
     # definition, fixing the mismatch without touching data or FTS schema.
     conn = _connect_repair_durable(db_path)
+    # The probe's rolled-back messages write makes it a writer; its close would run the
+    # last-connection WAL reset and unlink -wal/-shm under a live holder (#109786).
+    from hermes_state_wal import disable_close_time_wal_reset
+    disable_close_time_wal_reset(conn)
     try:
         with contextlib.closing(conn):
             # Best-effort tokenizer load: messages_fts_cjk needs cjk_unicode61 before any statement can touch it;

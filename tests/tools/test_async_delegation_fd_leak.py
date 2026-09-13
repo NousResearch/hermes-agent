@@ -50,23 +50,42 @@ def _point_ledger(monkeypatch, tmp_path):
     return ad
 
 
-def _track_connections(monkeypatch):
+def _track_connections(monkeypatch, tmp_path):
+    """Track opens/closes of connections to the LEDGER path only.
+
+    The canonical-shape probe (#109786) opens its own short-lived connections (in-memory
+    reference + mode=ro probe) that are not part of the ledger's fd contract.
+    """
     opened, closed = [], []
     real_connect = sqlite3.connect
+    ledger_path = str(tmp_path / "state.db")
+
+    def _is_ledger(args):
+        import os as _os
+
+        for a in args:
+            try:
+                if isinstance(a, (str, _os.PathLike)) and _os.fspath(a) == ledger_path:
+                    return True
+            except TypeError:
+                continue
+        return False
 
     def tracking_connect(*args, **kwargs):
         conn = real_connect(*args, **kwargs)
-        opened.append(id(conn))
-        return _TrackingConnection(conn, closed)
+        if _is_ledger(args):
+            opened.append(id(conn))
+            return _TrackingConnection(conn, closed)
+        return conn
 
     monkeypatch.setattr(ad.sqlite3, "connect", tracking_connect)
     return opened, closed
 
 
 def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
-    """Public durable-ledger reads/writes must close every connection opened."""
+    """Public durable-ledger reads/writes must close every ledger connection opened."""
     _point_ledger(monkeypatch, tmp_path)
-    opened, closed = _track_connections(monkeypatch)
+    opened, closed = _track_connections(monkeypatch, tmp_path)
 
     ad.get_durable_delegation("nope")
     ad.recover_abandoned_delegations()
@@ -74,7 +93,7 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     ad.mark_completion_delivered("nope")
     ad.claim_completion_delivery("nope", "claim-1")
 
-    assert opened, "expected at least one connection to be opened"
+    assert opened, "expected at least one ledger connection to be opened"
     assert len(opened) == len(closed)
     assert set(opened) == set(closed)
 
@@ -94,6 +113,7 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
     _point_ledger(monkeypatch, tmp_path)
     opened, closed = [], []
     real_connect = sqlite3.connect
+    ledger_path = str(tmp_path / "state.db")
 
     class _FailingSchemaConnection(_TrackingConnection):
         def execute(self, sql, *args, **kwargs):
@@ -101,10 +121,22 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
                 raise sqlite3.OperationalError("simulated schema init failure")
             return self._real.execute(sql, *args, **kwargs)
 
+    # The canonical-shape probe (#109786) legitimately opens its own short-lived
+    # connections (an in-memory reference DB and a mode=ro probe of the ledger).
+    # Track only connections to the LEDGER path: the leak contract is about the
+    # ledger's own handles, and the failing one of those must still close.
     def tracking_connect(*args, **kwargs):
         conn = real_connect(*args, **kwargs)
-        opened.append(id(conn))
-        return _FailingSchemaConnection(conn, closed)
+        import os as _os
+
+        is_ledger = any(
+            isinstance(a, (str, _os.PathLike)) and _os.fspath(a) == ledger_path
+            for a in args
+        )
+        if is_ledger:
+            opened.append(id(conn))
+            return _FailingSchemaConnection(conn, closed)
+        return conn
 
     monkeypatch.setattr(ad.sqlite3, "connect", tracking_connect)
 

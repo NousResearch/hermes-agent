@@ -154,7 +154,14 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 def _session_count(state_db_path: Path):
     import sqlite3
-    conn = sqlite3.connect(str(state_db_path))
+    # Read-only URI: a diagnostic must not attach a writer to a live state.db — a
+    # write-then-close here runs SQLite's last-connection WAL reset and unlinks
+    # -wal/-shm under the running gateway (#109786). Plain-open fallback covers a
+    # missing/unreadable file exactly as before.
+    try:
+        conn = sqlite3.connect(state_db_path.resolve().as_uri() + "?mode=ro", uri=True)
+    except (sqlite3.OperationalError, ValueError, OSError):
+        conn = sqlite3.connect(str(state_db_path))
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:

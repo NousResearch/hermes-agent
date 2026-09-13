@@ -273,15 +273,15 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
 
     See #97052.
     """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _should_skip_upstream_prompt
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
         return False
     print("\n→ Fetching upstream...")
-    try:
-        subprocess.run(git_cmd + ["fetch", "upstream", "main", "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
+    # network=True: a transport dead-stall must end in a failed sync, not a hung
+    # update (same class as #93759; the push below already rides this path).
+    if not _git_ok(git_cmd, ["fetch", "upstream", "main", "--quiet"], cwd, network=True):
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
     origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
@@ -300,9 +300,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         print("  ✓ Fork is up to date with upstream")
         return True
     print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
-    try:
-        subprocess.run(git_cmd + ["pull", "--ff-only", "upstream", "main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
+    if not _git_ok(git_cmd, ["pull", "--ff-only", "upstream", "main"], cwd, network=True):
         print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
         return False
     print("  ✓ Updated from upstream\n→ Syncing fork...")

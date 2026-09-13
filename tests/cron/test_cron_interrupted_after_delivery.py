@@ -112,3 +112,49 @@ def test_an_interrupted_run_with_a_delivery_error_still_records_the_defect(store
     assert get_job(job_id)["last_delivery_error"] == "telegram: 502"
     row = get_execution(attempt_id)
     assert row["status"] == "failed", row
+
+
+def _silent_success(claimed: dict):
+    """A successful run whose contract was "no message" ([SILENT] suppression)."""
+    from cron.scheduler import _RunDelivery
+
+    return _RunDelivery(
+        job=claimed, success=True, error=None, delivery_attempted=False, delivery_error=None,
+        should_deliver=False, silence_suppressed=True)
+
+
+def test_a_silenced_success_is_a_terminal_outcome_not_a_lost_delivery(store):
+    """Only a delivered run or an intentional [SILENT] counts; everything else stays interrupted."""
+    from cron.scheduler import _RunDelivery, _attempt_reached_terminal_delivery
+
+    _job_id, claimed, _owner, _attempt_id = _claimed_job_and_attempt("helper-shapes")
+    assert _attempt_reached_terminal_delivery(_silent_success(claimed)) is True
+    # A failure that suppressed its own notice is NOT a terminal delivery.
+    assert _attempt_reached_terminal_delivery(
+        _RunDelivery(job=claimed, success=False, error="boom")) is False
+    # Nor is a successful run that was cut off before it could deliver (latched before delivery).
+    assert _attempt_reached_terminal_delivery(
+        _RunDelivery(job=claimed, success=True, error=None)) is False
+
+
+def test_a_silenced_success_under_a_post_hoc_latch_is_not_recorded_as_error(store):
+    """The [SILENT] contract is not an interruption: last_status must read ok, not error.
+
+    Base behaviour (68e742a9ad + the gap-1 fix alone): ``delivered`` was computed only from
+    ``delivery_attempted``, so this shape classified INTERRUPTED and ``mark_job_run(False,
+    INTERRUPTED_ERROR)`` flipped ``last_status`` to error for a run that succeeded by design.
+    """
+    from cron.executions import get_execution
+    from cron.jobs import get_job
+    from cron.scheduler import _attempt_reached_terminal_delivery, _finish_overtaken_run
+
+    job_id, claimed, owner, attempt_id = _claimed_job_and_attempt("silent-success")
+    d = _silent_success(claimed)
+
+    assert _finish_overtaken_run(
+        d, owner, attempt_id, delivered=_attempt_reached_terminal_delivery(d)) is True
+
+    assert get_execution(attempt_id)["status"] == "completed"
+    record = get_job(job_id)
+    assert record["last_status"] == "ok"
+    assert record["last_error"] is None

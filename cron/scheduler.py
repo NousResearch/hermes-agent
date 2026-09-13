@@ -2629,6 +2629,20 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    silence_suppressed: bool = False
+
+
+def _attempt_reached_terminal_delivery(d: _RunDelivery) -> bool:
+    """True when the run reached its intended terminal outcome.
+
+    A notice that left the process counts; so does an intentional ``[SILENT]`` suppression of a
+    SUCCESSFUL run — nothing was lost, the run's own contract was "no message". Without this a
+    silenced success was classified INTERRUPTED under a post-hoc latch and written to the job record
+    as ``error`` (WH-CREATED-23D2B8E1FBE6, gap 2).
+    """
+    if d.delivery_attempted and not d.delivery_error:
+        return True
+    return bool(d.success and d.silence_suppressed)
 
 
 def _finish_overtaken_run(
@@ -2713,6 +2727,7 @@ def _save_compose_deliver(
         # and wrongly swallowed a real report that merely quoted "[SILENT]" mid-sentence (#51438, #46917).
         logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
         d.should_deliver = False
+        d.silence_suppressed = True
 
     if d.should_deliver and fence.lost():
         d.should_deliver = False
@@ -2786,7 +2801,7 @@ def _finish_interrupted_run(
 def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_id: str) -> bool:
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
-    delivered = bool(d.delivery_attempted and not d.delivery_error)
+    delivered = _attempt_reached_terminal_delivery(d)
     if attempt_overtaken(job["id"], execution_id):
         # The job record describes the NEWEST attempt of the occurrence. This attempt keeps its own
         # ledger outcome and must not overwrite a later fire's status.
@@ -3002,7 +3017,7 @@ def _run_one_job_body(
         if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
             return _finish_overtaken_run(
                 d, fire_owner, execution_id,
-                delivered=bool(d.delivery_attempted and not d.delivery_error))
+                delivered=_attempt_reached_terminal_delivery(d))
 
         # Empty final_response is a soft failure so last_status is not "ok".
         if d.success and not final_response.strip():
@@ -3012,7 +3027,7 @@ def _run_one_job_body(
         if _consume_interrupted_flag(job["id"], execution_token):
             _finish_interrupted_run(
                 job, execution_id, delivery_error,
-                delivered=bool(d.delivery_attempted and not d.delivery_error))
+                delivered=_attempt_reached_terminal_delivery(d))
             return True
 
         return _finish_completed_run(d, fire_owner, execution_id)

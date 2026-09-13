@@ -176,7 +176,7 @@ dependencies = [
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
   "nemo-relay>=0.8.3,<0.9; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
-  "hermes-yeoman-a2a-contracts==1.0.0",
+  "hermes-yeoman-a2a-contracts==1.0.1",
 ]
 
 [project.optional-dependencies]
@@ -412,7 +412,7 @@ override-dependencies = [
 exclude-newer = "14 days"
 
 [tool.uv.sources]
-hermes-yeoman-a2a-contracts = { git = "https://github.com/dimitree2k/hermes-yeoman-a2a-contracts.git", rev = "e408cc3d10cc9c76a245d851d7abfa2027874d51" }
+hermes-yeoman-a2a-contracts = { git = "https://github.com/dimitree2k/hermes-yeoman-a2a-contracts.git", rev = "b8886616664b922538a91c7f78c608c963d0826c" }
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
 # request-smuggling) fix in 4.4.1, published 2026-08-03. Remove after 2026-08-17.
 # aiohttp, cryptography: same shape — the advisory fixes are newer than the

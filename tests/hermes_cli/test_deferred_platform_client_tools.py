@@ -3,8 +3,9 @@
 Issue #78050: a bundled ``kind: platform`` plugin is registered as a deferred
 loader so ``hermes chat`` doesn't import ~20 gateway SDKs. The a2a plugin ships
 two independent things behind that one deferral — an inbound adapter (heavy)
-and five outbound client tools (``a2a_call``, ``a2a_discover``, ``a2a_list``,
-``a2a_history``, ``a2a_orchestrate``). Deferring the plugin deferred both, so
+and six outbound client tools (``a2a_call``, ``a2a_discover``,
+``a2a_skill_call``, ``a2a_list``, ``a2a_history``, ``a2a_orchestrate``).
+Deferring the plugin deferred both, so
 in a CLI/TUI process the client tools never registered at all:
 ``resolve_toolset("a2a")`` returned ``[]`` and the toolset was absent from the
 ``hermes tools`` checklist. The same tools worked in gateway/web processes only
@@ -30,6 +31,7 @@ A2A_CLIENT_TOOLS = {
     "a2a_history",
     "a2a_list",
     "a2a_orchestrate",
+    "a2a_skill_call",
 }
 
 
@@ -166,20 +168,16 @@ def clean_registry():
 class TestA2AClientToolsInCliProcess:
     """The issue's exact repro: a CLI/TUI process, no gateway startup."""
 
-    def test_manifest_declares_the_client_tools(self):
-        """The opt-in lives in the manifest, so it is pinned like any contract.
+    def test_manifest_declaration_registers_all_client_tools(self):
+        """The parsed manifest must publish every tool the plugin registers."""
+        from hermes_cli.plugins import PluginManager
 
-        Dropping ``provides_tools`` from plugin.yaml silently reverts a2a to
-        the deferred-and-invisible behaviour of #78050, with every other test
-        here still passing on the synthetic plugins — so assert it directly.
-        """
-        manifest_path = (
-            Path(__file__).resolve().parents[2]
-            / "plugins" / "platforms" / "a2a" / "plugin.yaml"
-        )
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        loaded = mgr._plugins.get("a2a-platform")
 
-        assert set(manifest.get("provides_tools") or []) == A2A_CLIENT_TOOLS
+        assert loaded is not None
+        assert set(loaded.manifest.provides_tools) == A2A_CLIENT_TOOLS
 
     def test_a2a_toolset_resolves_without_materializing_the_platform(self):
         from hermes_cli.plugins import PluginManager

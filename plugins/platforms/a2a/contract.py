@@ -17,7 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.0.1"
 PROFILE_URI = "urn:hermes-yeoman:a2a-profile:v1"
 JSON_MEDIA_TYPE = "application/json"
 
@@ -101,7 +101,7 @@ def contract_root() -> Path:
             _assert_contract_version(root)
             return root
     raise ContractViolation(
-        "Hermes/Yeoman contract v1.0.0 is not installed; set A2A_CONTRACTS_PATH to a pinned checkout"
+        f"Hermes/Yeoman contract v{CONTRACT_VERSION} is not installed; set A2A_CONTRACTS_PATH to a pinned checkout"
     )
 
 

@@ -1973,7 +1973,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
-    { name = "hermes-yeoman-a2a-contracts", git = "https://github.com/dimitree2k/hermes-yeoman-a2a-contracts.git?rev=e408cc3d10cc9c76a245d851d7abfa2027874d51" },
+    { name = "hermes-yeoman-a2a-contracts", git = "https://github.com/dimitree2k/hermes-yeoman-a2a-contracts.git?rev=b8886616664b922538a91c7f78c608c963d0826c" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
@@ -2057,8 +2057,8 @@ provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge
 
 [[package]]
 name = "hermes-yeoman-a2a-contracts"
-version = "1.0.0"
-source = { git = "https://github.com/dimitree2k/hermes-yeoman-a2a-contracts.git?rev=e408cc3d10cc9c76a245d851d7abfa2027874d51#e408cc3d10cc9c76a245d851d7abfa2027874d51" }
+version = "1.0.1"
+source = { git = "https://github.com/dimitree2k/hermes-yeoman-a2a-contracts.git?rev=b8886616664b922538a91c7f78c608c963d0826c#b8886616664b922538a91c7f78c608c963d0826c" }
 dependencies = [
     { name = "jsonschema" },
 ]

@@ -23,6 +23,8 @@ must not touch core files.** A2A now lives entirely under
   task to a peer, return the reply. Multi-turn via `context_id` (carried
   inside the Message per v1.0). Surfaces `TASK_STATE_INPUT_REQUIRED` so the
   model knows to answer and continue the context.
+- `a2a_skill_call(agent, skill, input)` — send a validated Hermes/Yeoman
+  profile skill invocation.
 - `a2a_list()` — configured peers + persisted conversations + metrics.
 - `a2a_history(context_id, limit?)` — recall a persisted conversation
   (this is the production consumer of the persistence layer).

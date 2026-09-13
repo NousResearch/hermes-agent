@@ -35,6 +35,21 @@ def test_peer_auth_can_reference_a_service_environment_secret(monkeypatch):
         tools._auth_header({"type": "bearer", "token_env": "../../secret"})
 
 
+def test_contract_loader_rejects_previous_release(tmp_path, monkeypatch):
+    """The Hermes consumer must reject a v1.0.0 checkout after the pin bump."""
+    old_checkout = tmp_path / "a2a-contracts"
+    (old_checkout / "schemas" / "common").mkdir(parents=True)
+    (old_checkout / "schemas" / "common" / "invocation.schema.json").write_text("{}\n", encoding="utf-8")
+    (old_checkout / "pyproject.toml").write_text(
+        "[project]\nname = 'hermes-yeoman-a2a-contracts'\nversion = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("A2A_CONTRACTS_PATH", str(old_checkout))
+
+    with pytest.raises(contract.ContractViolation, match="expected 1.0.1"):
+        contract.contract_root()
+
+
 def test_structured_message_has_one_authoritative_data_part():
     invocation = {"skill": "whatsapp.send", "input": _whatsapp_input()}
     message = protocol.structured_message(protocol.ROLE_USER, invocation, context_id="ctx-test")

@@ -358,24 +358,31 @@ def _run_single_child(
 
 
 def _build_children(
-    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
+    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list,
+    live_deleg_id: Optional[str], live_writers: list, resolved_task_creds: List[Dict[str, Any]],
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
-    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
+    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure.
+    ``resolved_task_creds`` is pass-1's per-task resolution from ``delegate_task``:
+    one entry per task — the batch ``creds`` when the task carries no override,
+    else the override's own credential bundle (#97653)."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
+        # Per-task override creds resolved in pass 1 above (two-pass, so a
+        # later invalid override never orphans already-constructed children).
+        # Tasks with no override carry the batch-level `creds`.
+        task_creds = resolved_task_creds[i]
+        overrides = {
+            "override_provider": task_creds["provider"], "override_base_url": task_creds["base_url"],
+            "override_api_key": task_creds["api_key"], "override_api_mode": task_creds["api_mode"],
+            "override_request_overrides": task_creds.get("request_overrides"),
+            "override_acp_command": task_creds.get("command"),
+            "override_acp_args": task_creds.get("args"),
+            "routing_cfg": routing_cfg,
+        }
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -384,7 +391,7 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=task_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
@@ -473,6 +480,56 @@ def delegate_task(
     if err:
         return tool_error(err)
 
+    # Per-dispatch model/provider override (#97653) — TWO-PASS RESOLUTION.
+    # Pass 1 resolves EVERY task's override creds BEFORE any child is
+    # constructed, so an invalid override on task N fails the whole dispatch
+    # with a clean tool_error naming that task WITHOUT having built (and
+    # orphaned) tasks 0..N-1. Constructing a child opens a dedicated
+    # SessionDB handle (#81267) and registers it on parent._active_children;
+    # a constructed-but-never-run child leaks both, so resolving all overrides
+    # first is required for failure isolation. Tasks with no override keep the
+    # batch-level `creds` (no redundant re-resolution).
+    # Never persisted: only _load_config (read-only) is consulted — there is
+    # no config write anywhere in this path.
+    resolved_task_creds: List[Dict[str, Any]] = []
+    assert isinstance(task_list, list)
+    for i, t in enumerate(task_list):
+        task_model_override = str(t.get("model") or "").strip() or None
+        task_provider_override = str(t.get("provider") or "").strip() or None
+        if task_model_override or task_provider_override:
+            per_task_cfg = dict(routing_cfg)
+            if task_model_override:
+                per_task_cfg["model"] = task_model_override
+            if task_provider_override:
+                task_provider = task_provider_override.strip()
+                # Compare the override and configured provider tokens symmetrically.
+                # A provider switch must not reuse the previous route's endpoint,
+                # credentials or request personality; model-only and same-provider
+                # overrides still honor an explicitly configured direct endpoint.
+                # (.strip() here keeps the guard self-contained; task_provider_override
+                # is already stripped at the extraction above.)
+                if task_provider.lower() != str(routing_cfg.get("provider") or "").strip().lower():
+                    for key in ("base_url", "api_key", "api_mode", "request_overrides"):
+                        per_task_cfg.pop(key, None)
+                per_task_cfg["provider"] = task_provider
+            try:
+                resolved_task_creds.append(
+                    _resolve_delegation_credentials(per_task_cfg, parent_agent)
+                )
+            except Exception as exc:
+                # Unexpected resolution errors are attributed to the task but
+                # logged at exception level first (GPT-OSS R2 SHOULD-FIX) so a
+                # programming error (TypeError, etc.) is diagnosable from logs
+                # rather than silently flattened into a tool_error string.
+                logger.exception(
+                    "Task %s model/provider override resolution failed", i
+                )
+                return tool_error(f"Task {i} model/provider override failed: {exc}")
+        else:
+            # No override: keep the batch-level `creds` (no redundant
+            # re-resolution, and unprefixed tasks stay on the parent's path).
+            resolved_task_creds.append(creds)
+
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
@@ -484,8 +541,9 @@ def delegate_task(
     origin = _capture_origin()
 
     children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+        task_list, task_schemas, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        resolved_task_creds=resolved_task_creds,
     )
     if err:
         return tool_error(err)
@@ -641,6 +699,25 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
+                        # Per-dispatch model/provider override (#97653).
+                        # Optional; resolved to runtime creds and applied to
+                        # THIS child only. Never persisted — config unchanged.
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Optional model override for this subagent "
+                                "only. Never persisted; empty inherits "
+                                "delegation.model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Optional provider override for this subagent "
+                                "only. Never persisted; empty inherits "
+                                "delegation.provider."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },

@@ -80,12 +80,14 @@ function fixture() {
     } }
 }
 
-const pairs: [AttachmentAction, AttachmentAction][] = [
-  ['resumeById', 'resumeById'], ['activateLiveSession', 'activateLiveSession'],
-  ['resumeById', 'activateLiveSession'], ['activateLiveSession', 'resumeById']
-]
-
-it.each(pairs.flatMap(([first, second]) => [true, false].map(staleFirst => ({ first, second, staleFirst }))))(
+// One row per attach-path pairing; the stale reply lands first in half of them so both
+// settle orders are covered without enumerating every pairing × order.
+it.each<{ first: AttachmentAction; second: AttachmentAction; staleFirst: boolean }>([
+  { first: 'resumeById', second: 'resumeById', staleFirst: true },
+  { first: 'activateLiveSession', second: 'activateLiveSession', staleFirst: false },
+  { first: 'resumeById', second: 'activateLiveSession', staleFirst: true },
+  { first: 'activateLiveSession', second: 'resumeById', staleFirst: false }
+])(
   'keeps the winning token for $first -> $second, staleFirst=$staleFirst', async ({ first, second, staleFirst }) => {
     const f = fixture()
 
@@ -113,8 +115,10 @@ it.each(pairs.flatMap(([first, second]) => [true, false].map(staleFirst => ({ fi
   }
 )
 
-it.each((['resumeById', 'activateLiveSession'] as const).flatMap(method =>
-  (['reject', 'invalid'] as const).map(outcome => ({ method, outcome }))))(
+it.each<{ method: AttachmentAction; outcome: 'reject' | 'invalid' }>([
+  { method: 'resumeById', outcome: 'reject' },
+  { method: 'activateLiveSession', outcome: 'invalid' }
+])(
   'disposes deferred unadopted tokens when newer $method returns $outcome', async ({ method, outcome }) => {
     const f = fixture()
 

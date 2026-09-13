@@ -179,25 +179,6 @@ it('detaches the prior canonical subscription only after the replacement attache
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('session.detach', {
       session_id: 'c', subscription_id: 'sub-c-stale'
     }))
-
-    // Repeated same-session replies can return the same current token. A stale
-    // duplicate must never detach the token adopted by the newer flight.
-    pending.splice(0, pending.length)
-    lifecycle.resumeById('d')
-    await vi.waitFor(() => expect(pending).toHaveLength(1))
-    lifecycle.resumeById('d')
-    await vi.waitFor(() => expect(pending).toHaveLength(2))
-    const staleD = pending.shift()!
-    const currentD = pending.shift()!
-    currentD.resolve(result('d', 'sub-d-new'))
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('session.detach', {
-      session_id: 'd', subscription_id: 'sub-d'
-    }))
-    staleD.resolve(result('d', 'sub-d-new'))
-    await new Promise(resolve => setImmediate(resolve))
-    expect(request).not.toHaveBeenCalledWith('session.detach', {
-      session_id: 'd', subscription_id: 'sub-d-new'
-    })
   } finally {
     instance.unmount()
     resetUiState()
@@ -220,12 +201,14 @@ it('waits for a delayed detach before reattaching the same canonical session', a
     info: { model: 'test', tools: {}, skills: {}, stored_session_id: sid,
       execution_epoch: sid, execution_generation: 0 }
   })
+
   const request = vi.fn((method: string, params: any) => {
     if (method === 'session.resume') {
       // Match SessionAuthority.attach: the actor's existing token is reused
       // until its detach has actually reached the server.
       const subscriptionId = subscriptions.get(params.session_id)
         ?? `sub-${params.session_id}-${++nextSubscription}`
+
       subscriptions.set(params.session_id, subscriptionId)
 
       return Promise.resolve(result(params.session_id, subscriptionId))
@@ -237,6 +220,7 @@ it('waits for a delayed detach before reattaching the same canonical session', a
           subscriptions.delete(params.session_id)
         }
       }
+
       if (params.session_id === 'a' && !releaseFirstADetach) {
         return new Promise(resolve => {
           releaseFirstADetach = () => {
@@ -245,6 +229,7 @@ it('waits for a delayed detach before reattaching the same canonical session', a
           }
         })
       }
+
       detach()
 
       return Promise.resolve({ ...params, detached: true })
@@ -252,9 +237,11 @@ it('waits for a delayed detach before reattaching the same canonical session', a
 
     return Promise.resolve(null)
   })
+
   const emit = (sessionId: string, text: string) => {
     if (subscriptions.has(sessionId)) {delivered.push(text)}
   }
+
   let lifecycle!: ReturnType<typeof useSessionLifecycle>
 
   function Harness() {

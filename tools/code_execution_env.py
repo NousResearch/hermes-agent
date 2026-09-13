@@ -121,8 +121,11 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     # code page (cp1252) and print("→") raises; harmless under a C/POSIX locale (containers).
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
-    # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting.
-    _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
+    # Only TZ reaches the child; HERMES_TIMEZONE is an internal setting (and under the multiplexed
+    # gateway holds only the default profile's value — hermes_time resolves the routed profile's).
+    from hermes_time import get_timezone_name
+
+    _tz_name = get_timezone_name()
     if _tz_name:
         child_env["TZ"] = _tz_name
     child_env.pop("HERMES_TIMEZONE", None)

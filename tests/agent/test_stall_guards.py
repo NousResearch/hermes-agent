@@ -387,3 +387,50 @@ def test_ignores_conversational_future_offers():
     assert not trailing_continue_intent(
         "If you want, I will happily review the PR once CI is green. Just say so!"
     )
+
+
+# ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────
+
+
+def test_repeating_two_call_cycle_fires_notice_and_halts_under_hard_stop():
+    """An A,B,A,B,... cycle of identical (args, result) pairs defeats the
+    consecutive streak (every alternation resets it) but must still be caught:
+    notice at the threshold-th lap, halt at no_progress_block_after laps."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    pairs = (({"command": "make build"}, "error: X\n"),
+             ({"command": "tail -5 build.log"}, "still broken\n"))
+    first_notice_call = None
+    calls = 0
+    for _ in range(30):
+        for args, result in pairs:
+            calls += 1
+            notice = c.observe_call("terminal", args, result).notice
+            if notice is not None and first_notice_call is None:
+                first_notice_call = calls
+                assert "cycle" in notice
+        if c.halt_decision is not None:
+            break
+    # Notice on the last call of the threshold-th lap (period 2 × threshold 3).
+    assert first_notice_call == 2 * STALL_GUARD_IDENTICAL_CALL_THRESHOLD
+    assert c.halt_decision is not None
+    assert c.halt_decision.code == "identical_cycle_halt"
+
+
+def test_cycle_guard_stays_silent_for_progressing_and_poller_cycles():
+    """A cycle whose results change every lap is real work; a cycle made only
+    of poller-exempt tools is legitimate waiting. Neither may fire."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig
+
+    progressing = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for i in range(20):
+        for args in ({"command": "make"}, {"command": "tail log"}):
+            assert progressing.observe_call("terminal", args, f"output {i}").notice is None
+    assert progressing.halt_decision is None
+
+    pollers = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for _ in range(20):
+        for args in ({"action": "poll", "session_id": "a"}, {"action": "poll", "session_id": "b"}):
+            assert pollers.observe_call("process_manage", args, "running").notice is None
+    assert pollers.halt_decision is None

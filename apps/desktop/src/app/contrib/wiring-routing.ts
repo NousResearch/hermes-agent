@@ -7,6 +7,11 @@
 
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 
+import { SETTINGS_ROUTE } from '../routes'
+
+/** The in-app destination for pool-cap recovery. */
+export const POOL_LIMITS_SETTINGS_ROUTE = `${SETTINGS_ROUTE}?tab=config:advanced`
+
 /**
  * Resolve a runtime session id back to its stored id by reverse-scanning the
  * stored->runtime binding map — the same ladder use-session-tile-delegate's

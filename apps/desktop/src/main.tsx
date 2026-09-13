@@ -51,12 +51,35 @@ if (winParam === 'hud') {
   document.title = 'Hermes HUD'
 }
 
+// The `?win=` kinds whose Electron window is `transparent: true` and so paints
+// nothing but its own surface over the user's desktop. `secondary` (a session
+// window) and `browser` are ordinary opaque windows and are deliberately not
+// in here. index.html's pre-paint script skips exactly this list — keep the
+// two in step.
+const TRANSPARENT_WINDOWS = new Set(['hud', 'overlay', 'quick', 'wake', 'intro'])
+
+// Each transparent root used to force its host layers see-through when it
+// MOUNTED. That is far too late: `styles.css` above paints the theme's opaque
+// `--background` as soon as it lands, and the root behind it is a dynamic
+// import — a couple of seconds of module fetches under the dev server. The gap
+// rendered as a full-screen near-white rectangle. Claim it here instead, in the
+// same task as the stylesheet, so no window ever paints a background it does
+// not want.
+if (winParam && TRANSPARENT_WINDOWS.has(winParam)) {
+  const transparent = document.createElement('style')
+
+  transparent.textContent = 'html,body,#root{background:transparent !important;}'
+  document.head.appendChild(transparent)
+}
+
 if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else if (winParam === 'quick') {
   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
 } else if (winParam === 'wake') {
   void import('./app/wake-indicator/wake-indicator-root').then(({ mountWakeIndicator }) => mountWakeIndicator())
+} else if (winParam === 'intro') {
+  void import('./components/intro-reveal/intro-root').then(({ mountIntroReveal }) => mountIntroReveal())
 } else {
   // CSS animations do not inherit Chromium's JS-loop pause policy. Mirror the
   // main window's visibility state to :root so decorative infinite

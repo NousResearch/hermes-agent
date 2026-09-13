@@ -52,6 +52,8 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+# Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
+_permanent_approved_by_home: dict[str, set] = {}
 
 # --- Consecutive-denial circuit breaker for smart approvals ---------------------------------------------------------
 # Each retry of a smart-denied command burns another guardian LLM call. After ``approvals.denial_breaker_threshold``
@@ -288,25 +290,49 @@ def _yolo_active() -> bool:
     return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
 
 
+def _permanent_set() -> set:
+    """The permanent allowlist that governs the ACTIVE profile. Unscoped (single-profile process,
+    or the multiplexer's own launch profile) → the module-level set tests and the CLI seed. A routed
+    profile (HERMES_HOME override) → its own set, lazily loaded from ITS ``command_allowlist``: the
+    launch profile's "always" approvals must not pre-approve commands for a secondary, nor may a
+    secondary's "always" choice be written back into the launch profile's config. Callers hold ``_lock``.
+    """
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _permanent_approved
+    home_key = hermes_home_key()
+    approved = _permanent_approved_by_home.get(home_key)
+    if approved is None:
+        try:
+            approved = _read_permanent_allowlist()
+        except Exception as e:
+            logger.warning("Failed to load permanent allowlist: %s", e)
+            approved = set()
+        _permanent_approved_by_home[home_key] = approved
+    return approved
+
+
 def is_approved(session_key: str, pattern_key: str) -> bool:
     """Session-scoped or permanent approval. Accepts the canonical key and the legacy
     regex-derived key so existing command_allowlist entries survive key migrations."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        approved = _permanent_approved | _session_approved.get(session_key, set())
+        approved = _permanent_set() | _session_approved.get(session_key, set())
     return any(alias in approved for alias in aliases)
 
 
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
-        _permanent_approved.add(pattern_key)
+        _permanent_set().add(pattern_key)
 
 
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_approved.update(patterns)
+        governing = _permanent_set()
+        governing.clear()
+        governing.update(patterns)
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
@@ -319,36 +345,58 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
         approve_session(session_key, key)
         if choice == "always" and not is_tirith:
             approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+            with _lock:
+                snapshot = set(_permanent_set())
+            save_permanent_allowlist(snapshot)
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
+
+def _read_permanent_allowlist() -> set:
+    """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
+    raw = config.get("command_allowlist")
+    legacy = isinstance(raw, str)
+    if legacy:
+        # Old config-set versions serialized list values as scalar strings.
+        import yaml
+        try:
+            raw = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            raw = False
+    if raw is None and not legacy:
+        raw = []
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
+        return set()
+    if legacy:
+        logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
+    return set(raw)
+
+
+# What ``command_allowlist`` held the last time this process synchronised with the
+# file, per profile home ("" = the unscoped launch profile). Everything in the
+# governing permanent set beyond it is an approval THIS process made, and is the
+# only thing a save is entitled to add: the difference separates "the operator
+# granted this here" from "this was on disk when we started, and may since have
+# been revoked".
+_permanent_baseline_by_home: dict[str, set] = {}
+
+
+def _baseline_key() -> str:
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return "" if get_hermes_home_override() is None else hermes_home_key()
+
 
 def load_permanent_allowlist() -> set:
     """Load ``command_allowlist`` from config and sync it into the approval state
     so is_approved() honors 'always' choices from previous sessions."""
     try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-        raw = config.get("command_allowlist")
-        legacy = isinstance(raw, str)
-        if legacy:
-            # Old config-set versions serialized list values as scalar strings.
-            import yaml
-            try:
-                raw = yaml.safe_load(raw)
-            except yaml.YAMLError:
-                raw = False
-        if raw is None and not legacy:
-            raw = []
-        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-            logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
-            return set()
-        if legacy:
-            logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
-        patterns = set(raw)
-        if patterns:
-            load_permanent(patterns)
+        patterns = _read_permanent_allowlist()
+        load_permanent(patterns)
+        with _lock:
+            _permanent_baseline_by_home[_baseline_key()] = set(patterns)
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -356,12 +404,35 @@ def load_permanent_allowlist() -> set:
 
 
 def save_permanent_allowlist(patterns: set):
-    """Save permanently allowed command patterns to config."""
+    """Save permanently allowed command patterns to config, reconciling with the file.
+
+    ``command_allowlist`` is a file an operator edits by hand; removing an entry
+    there is the documented way to withdraw a standing approval. This process read
+    it once at import and ``load_permanent`` only ever unions, so writing the
+    in-memory set straight back deleted entries added on disk since import and
+    resurrected the ones removed. The result written is ``what is on disk now``
+    plus ``what this process approved since its own baseline``; revoked entries are
+    also dropped from the governing permanent set so ``is_approved()`` stops
+    honouring them. Nothing re-reads the file on the approval hot path.
+
+    ``patterns`` may only ADD: an entry left out of it is not removed, because the
+    on-disk list wins for anything this process did not approve itself. Remove
+    entries by editing ``command_allowlist`` in config.yaml.
+    """
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        config["command_allowlist"] = list(patterns)
-        save_config(config)
+        on_disk = set(config.get("command_allowlist", []) or [])
+        with _lock:
+            key = _baseline_key()
+            baseline = _permanent_baseline_by_home.get(key, set())
+            merged = on_disk | (set(patterns) - baseline)
+            config["command_allowlist"] = sorted(merged)
+            save_config(config)
+            _permanent_baseline_by_home[key] = set(merged)
+            governing = _permanent_set()
+            governing.clear()
+            governing.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
 

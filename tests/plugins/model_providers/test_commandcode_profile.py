@@ -85,32 +85,28 @@ class TestCommandCodeProfileIdentity:
         assert commandcode_profile.get_hostname() == "api.commandcode.ai"
 
 
-class TestCommandCodeProfileNoThinkingInterference:
-    """Chat completions profile is a no-op for thinking config — it delegates
-    to the underlying model's provider (DeepSeek, Qwen, etc.) for wire format.
-    """
+class TestCommandCodeReasoningWireControls:
+    """DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so the profile
+    must put the user's setting on the wire (#95232); other families stay a no-op."""
 
-    def test_passthrough_no_reasoning_config(self, commandcode_profile):
+    def test_deepseek_disabled_reasoning_sends_thinking_disabled(self, commandcode_profile):
         extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config=None, model="deepseek/deepseek-v4-pro"
+            reasoning_config={"enabled": False}, model="deepseek/deepseek-v4-flash",
         )
-        # Chat completions profile doesn't inject thinking params — that's
-        # the DeepSeek provider's job when routed through DeepSeek's own profile.
-        # When routed through CommandCode, the underlying model API handles it.
-        assert isinstance(extra_body, dict)
-        assert isinstance(top_level, dict)
-        # Default ProviderProfile returns ({}, {}).
+        assert extra_body.get("thinking") == {"type": "disabled"}
+        assert top_level == {}
 
-    def test_passthrough_with_reasoning_config(self, commandcode_profile):
-        extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "high"},
-            model="deepseek/deepseek-v4-pro",
-        )
-        assert isinstance(extra_body, dict)
-        assert isinstance(top_level, dict)
+    def test_deepseek_effort_matches_native_profile_and_others_noop(self, commandcode_profile):
+        from plugins.model_providers.deepseek import deepseek
 
+        rc = {"enabled": True, "effort": "low"}
+        assert commandcode_profile.build_api_kwargs_extras(
+            reasoning_config=rc, model="deepseek/deepseek-v4.1-flash"
+        ) == deepseek.build_api_kwargs_extras(reasoning_config=rc, model="deepseek-v4.1-flash")
+        assert commandcode_profile.build_api_kwargs_extras(
+            reasoning_config=rc, model="Qwen/Qwen3.7-Max"
+        ) == ({}, {})
 
-# ── Anthropic Messages profile ────────────────────────────────────────────────
 
 class TestCommandCodeAnthropicProfileIdentity:
     """Anthropic-compatible profile metadata."""

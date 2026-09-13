@@ -215,3 +215,25 @@ def test_existing_system_install_repairs_linger_for_configured_user(monkeypatch,
     gateway.systemd_install(system=True, run_as_user="alice")
 
     assert helper_calls == ["alice"]
+
+
+@pytest.mark.parametrize("system", [False, True])
+def test_systemd_install_repair_path_keeps_linger_guarantee(monkeypatch, tmp_path, system):
+    """Repairing a stale unit used to return before the linger step, so an upgraded headless
+    user service died at logout (#12863). System scope never touches user linger."""
+    unit_path = tmp_path / "hermes-gateway.service"
+    unit_path.write_text("old unit\n", encoding="utf-8")
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "systemd_unit_is_current", lambda system=False: False)
+    monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: False)
+    monkeypatch.setattr(gateway, "_require_root_for_system_service", lambda _action: None)
+    monkeypatch.setattr(gateway, "_sync_hermes_home_from_systemd_unit", lambda system=False: None)
+    monkeypatch.setattr(gateway, "_read_systemd_user_from_unit", lambda path: None)
+    monkeypatch.setattr(gateway, "refresh_systemd_unit_if_needed", lambda system=False: None)
+    monkeypatch.setattr(gateway, "_run_systemctl", lambda *args, **kwargs: None)
+    helper_calls = []
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+
+    gateway.systemd_install(force=False, system=system)
+
+    assert helper_calls == ([] if system else [True])

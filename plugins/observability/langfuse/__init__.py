@@ -52,6 +52,10 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # Bounds the leak, not concurrency.
 _MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
+# Under a multiplexed profile override, one settled client (or _INIT_FAILED) per Hermes home: the
+# keys live in each profile's .env, so a single slot would trace profile B into profile A's project
+# (or pin B to A's failed init). The slot above stays for the unscoped single-profile path.
+_LANGFUSE_CLIENT_BY_HOME: Dict[str, Any] = {}
 # Separate from _STATE_LOCK (hot path) so the two never nest; serializes the
 # first client build so racing callers can't each construct a client.
 _LANGFUSE_CLIENT_LOCK = threading.Lock()
@@ -81,6 +85,19 @@ _USAGE_FIELDS = (
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def _secret(name: str) -> str:
+    """Credential read honoring the active profile's secret scope; plain os.environ when unscoped."""
+    try:
+        from agent.secret_scope import UnscopedSecretError, get_secret
+        try:
+            return (get_secret(name) or "").strip()
+        except UnscopedSecretError:
+            pass
+    except Exception:
+        pass
+    return _env(name)
 
 
 def _debug(message: str) -> None:
@@ -181,24 +198,48 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     return f"{env_name}={preview} (expected {expected!r} prefix)"
 
 
+def _settled_client() -> Any:
+    """The active profile's settled client slot value (client, ``_INIT_FAILED`` or ``None`` = never
+    built). Never initializes."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    if get_hermes_home_override() is None:
+        return _LANGFUSE_CLIENT
+    return _LANGFUSE_CLIENT_BY_HOME.get(hermes_home_key())
+
+
+def _settle_client() -> Any:
+    """Build once and store for the active profile. Caller holds ``_LANGFUSE_CLIENT_LOCK``."""
+    global _LANGFUSE_CLIENT
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    client = _build_client()
+    settled = _INIT_FAILED if client is None else client
+    if get_hermes_home_override() is None:
+        _LANGFUSE_CLIENT = settled
+    else:
+        _LANGFUSE_CLIENT_BY_HOME[hermes_home_key()] = settled
+    if client is not None:
+        # atexit is LIFO: registering AFTER the SDK's constructor means our
+        # finalizer runs first, so root spans ended there still get flushed
+        # by the SDK (short-lived processes: kanban workers, chat -q, cron).
+        atexit.register(_finalize_all_traces)
+    return settled
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Cached Langfuse client, or ``None`` if the SDK/credentials are unavailable.
     The first build is serialized so racing callers can't each construct a client
     and leak the loser's HTTP connection + flush thread."""
-    global _LANGFUSE_CLIENT
     # Fast path — already settled (success or _INIT_FAILED) needs no lock;
     # re-check under it since a racing thread may have finished init.
-    if _LANGFUSE_CLIENT is None:
+    settled = _settled_client()
+    if settled is None:
         with _LANGFUSE_CLIENT_LOCK:
-            if _LANGFUSE_CLIENT is None:
-                client = _build_client()
-                _LANGFUSE_CLIENT = _INIT_FAILED if client is None else client
-                if client is not None:
-                    # atexit is LIFO: registering AFTER the SDK's constructor means our
-                    # finalizer runs first, so root spans ended there still get flushed
-                    # by the SDK (short-lived processes: kanban workers, chat -q, cron).
-                    atexit.register(_finalize_all_traces)
-    return None if _LANGFUSE_CLIENT is _INIT_FAILED else _LANGFUSE_CLIENT
+            settled = _settled_client()
+            if settled is None:
+                settled = _settle_client()
+    return None if settled is _INIT_FAILED else settled
 
 
 def _build_client() -> Optional[Langfuse]:
@@ -211,7 +252,7 @@ def _build_client() -> Optional[Langfuse]:
         )
         return None
 
-    public_key, secret_key = (_env(f"HERMES_LANGFUSE_{n}") or _env(f"LANGFUSE_{n}") for n in ("PUBLIC_KEY", "SECRET_KEY"))
+    public_key, secret_key = (_secret(f"HERMES_LANGFUSE_{n}") or _secret(f"LANGFUSE_{n}") for n in ("PUBLIC_KEY", "SECRET_KEY"))
     if not (public_key and secret_key):
         return None
 
@@ -234,10 +275,10 @@ def _build_client() -> Optional[Langfuse]:
     kwargs: Dict[str, Any] = {"public_key": public_key, "secret_key": secret_key}
     for key, name, default in (("base_url", "BASE_URL", "https://cloud.langfuse.com"), ("environment", "ENV", ""),
                                ("release", "RELEASE", "")):
-        value = _env(f"HERMES_LANGFUSE_{name}") or _env(f"LANGFUSE_{name}") or default
+        value = _secret(f"HERMES_LANGFUSE_{name}") or _secret(f"LANGFUSE_{name}") or default
         if value:
             kwargs[key] = value
-    sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
+    sample_rate = _secret("HERMES_LANGFUSE_SAMPLE_RATE")
     if sample_rate:
         try:
             kwargs["sample_rate"] = float(sample_rate)
@@ -596,7 +637,10 @@ def _finalize_all_traces() -> None:
             _end_children(state, include_subagents=True)
             _end_root(state, f"atexit finalize for {key}")
     if states:
-        _flush(_get_langfuse())
+        # atexit runs unscoped; flush every profile's client, not just the launch profile's.
+        for client in (_get_langfuse(), *_LANGFUSE_CLIENT_BY_HOME.values()):
+            if client is not _INIT_FAILED:
+                _flush(client)
 
 
 def _flush(client: Any) -> None:
@@ -909,7 +953,7 @@ def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> 
     tool-only or empty final response never reaches ``_finish_trace``; its root
     would dangle until eviction and queued events could be lost on exit."""
     # Never lazily initialize a client here — if init never happened there are no traces.
-    client = _LANGFUSE_CLIENT
+    client = _settled_client()
     if client is None or client is _INIT_FAILED or not hasattr(client, "flush"):
         return
 

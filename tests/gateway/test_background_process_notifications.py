@@ -520,6 +520,73 @@ def test_parse_session_key_with_extra_parts():
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
+def test_parse_session_key_named_profile():
+    """A named-profile namespace parses and is reported as ``profile``."""
+    result = _parse_session_key("agent:work:telegram:dm:123")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+    }
+
+
+def test_parse_session_key_named_profile_thread_id():
+    """Thread-slot handling is identical for named-profile keys."""
+    result = _parse_session_key("agent:work:telegram:thread:100:42")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "thread",
+        "chat_id": "100",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_named_profile_group_suffix_omitted():
+    """Group-suffix (user_id) stays omitted for named-profile keys too."""
+    result = _parse_session_key("agent:work:discord:group:chan1:user9")
+    assert result == {
+        "profile": "work",
+        "platform": "discord",
+        "chat_type": "group",
+        "chat_id": "chan1",
+    }
+
+
+def test_parse_session_key_main_shape_unchanged():
+    """``main`` keys keep their historical dict shape exactly (no ``profile`` key)."""
+    result = _parse_session_key("agent:main:telegram:dm:123:42")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_rejects_invalid_namespace():
+    """A namespace slot that cannot be a profile id still parses to None."""
+    assert _parse_session_key("agent:Bad_NS:telegram:dm:123") is None
+    assert _parse_session_key("agent:main:telegram:dm") is None
+    assert _parse_session_key("raw-session-id") is None
+
+
+def test_build_process_event_source_named_profile_key(monkeypatch, tmp_path):
+    """A synthetic event keyed by a named-profile session resolves platform/chat and keeps
+    the profile, instead of being unresolvable and dropped with a warning."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    source = runner._build_process_event_source({
+        "session_id": "proc_watch",
+        "session_key": "agent:work:telegram:dm:123",
+    })
+    assert source is not None
+    assert source.platform is Platform.TELEGRAM
+    assert source.chat_id == "123"
+    assert source.chat_type == "dm"
+    assert source.profile == "work"
+
+
 # ---------------------------------------------------------------------------
 # api_server (stateless) wake routing — gateway/wake.py self-post path
 # ---------------------------------------------------------------------------

@@ -798,8 +798,10 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
-# Per-process probe cache keyed by (env_type, cwd_hint) so a mid-process backend switch rebuilds.
-_BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
+# Per-process probe cache keyed by (home key, env_type, cwd_hint) so a mid-process backend switch
+# rebuilds; the home key because the probe runs against the profile's own terminal.* backend
+# (docker image / ssh host) and one multiplexed process serves several profiles.
+_BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 def _plugin_backend_attr(backend: str, attr: str, default=None):
@@ -918,7 +920,8 @@ def _format_backend_probe(output: str) -> str:
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
-    cache_key = (env_type, _tenv_read("TERMINAL_CWD", ""))
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
         formatted = ""

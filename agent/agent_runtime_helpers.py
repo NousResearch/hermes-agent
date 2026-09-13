@@ -749,7 +749,8 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             )
             return False, has_retried_429
     _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    agent._swap_credential(refreshed)
+    if agent._swap_credential(refreshed) is False:
+        return False, has_retried_429
     return True, has_retried_429
 
 
@@ -847,8 +848,7 @@ def recover_with_credential_pool(
             "Credential %s (%s) — rotated to pool entry %s",
             rotate_status, label, getattr(next_entry, "id", "?"),
         )
-        agent._swap_credential(next_entry)
-        return True
+        return agent._swap_credential(next_entry) is not False
     if effective_reason == FailoverReason.upstream_rate_limit:
         # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
         # healthy. Do not rotate/exhaust; let fallback switch models.
@@ -889,7 +889,8 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent.provider = rt["provider"]
     agent.requested_provider = rt.get("requested_provider", agent.provider)
     agent.base_url = rt["base_url"]           # setter updates _base_url_lower
-    agent.api_mode = rt["api_mode"]
+    from hermes_cli.providers import is_actual_route
+    agent.api_mode = "chat_completions" if is_actual_route(agent.provider, agent.base_url) else rt["api_mode"]
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
@@ -923,6 +924,9 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         # factory so the restored facade keeps the reference_callback relay wired at init — a bare
         # MoAClient() would silently stop emitting moa.reference/moa.aggregating display events (#53802).
         agent._anthropic_client = None
+    elif agent.provider == "bedrock" and agent.api_mode in ("anthropic_messages", "bedrock_converse"):
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
     else:
@@ -957,16 +961,7 @@ def try_recover_primary_transport(
                 agent._retire_shared_openai_client(agent.client, reason="primary_recovery")
         rt = agent._primary_runtime
         _apply_primary_runtime_fields(agent, rt)
-        if agent.api_mode == "anthropic_messages":
-            _build_anthropic_client_from_runtime(agent, rt)
-        elif (agent.provider or "").strip().lower() == "moa":
-            # MoA is a virtual provider with empty client_kwargs — rebuilding via _create_openai_client
-            # would raise "api_key client option must be set". Recreate the facade through the shared
-            # factory so the reference_callback relay survives recovery (#53802).
-            from agent.moa_loop import build_moa_facade
-            agent.client = build_moa_facade(agent, agent.model)
-        else:
-            agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason="primary_recovery", shared=True)
+        _rebuild_primary_client(agent, rt, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "
@@ -1124,6 +1119,13 @@ def restore_primary_runtime(agent) -> bool:
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
+    primary_model = str((rt or {}).get("model") or "").strip()
+    from agent.fallback_cooldown import _is_entitlement_rejected
+    if primary_model and _is_entitlement_rejected(agent, primary_provider, primary_model):
+        # The primary slug was rejected as unentitled for this account (#106475): restoring
+        # here would announce a recovery that was never verified and re-fail every turn.
+        # Stay on the fallback; the user sees the terminal entitlement error instead.
+        return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
     def _matches_primary(candidate) -> bool:
@@ -1684,6 +1686,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", ""))
+        if profile is not None:
+            for key, value in profile.build_client_kwargs_extras(
+                base_url=client_kwargs.get("base_url", "")
+            ).items():
+                client_kwargs.setdefault(key, value)
+    except Exception:
+        _ra().logger.debug("Provider client-kwargs hook skipped", exc_info=True)
     # The MoA virtual provider has no OpenAI wire endpoint; the facade *is* the client. Rebuild the
     # facade, never a native client (TypeError; relay re-wire).
     # Rebuilding a native OpenAI client while agent.provider == "moa" (client replacement, stream-retry pool
@@ -1696,7 +1709,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
-    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
+    httpx_verify = resolve_httpx_verify(
+        ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg,
+        base_url=str(client_kwargs.get("base_url", "")),
+    )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     # Provider-supplied client (registration seam): a provider whose wire protocol is not
@@ -1732,6 +1748,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # gets its OWN fresh ``httpx.Client`` whose lifetime is tied to the OpenAI client it is passed to. When
     # the OpenAI client is closed (rebuild, teardown, credential rotation), the paired ``httpx.Client``
     # closes with it, and the next call constructs a fresh one — no stale closed transport can be reused.
+    # Bedrock Mantle: the ``aws-sdk`` placeholder is a sentinel for IAM-chain auth, not a bearer token.
+    # Every rebuild from bare ``{api_key, base_url}`` kwargs (switch_model, fallback restore, credential
+    # rotation, request-scoped clients) must reinstall the SigV4 http_client or Mantle answers 401.
+    if "bedrock-mantle." in str(client_kwargs.get("base_url") or ""):
+        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+        timeout = client_kwargs.get("timeout")
+        configure_bedrock_openai_client_kwargs(
+            client_kwargs, timeout=timeout if isinstance(timeout, (int, float)) else None,
+        )
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""), verify=httpx_verify)
         if keepalive_http is not None:
@@ -1820,7 +1845,7 @@ def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
 
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):
     """Resolve ``(api_mode, base_url, destination_capabilities)`` for the switch target."""
-    from hermes_cli.providers import determine_api_mode
+    from hermes_cli.providers import determine_api_mode, is_actual_route
     from agent.native_compaction import resolve_native_compaction_capabilities
     from hermes_cli.models import opencode_provider_family
     # Pass model so dual-wire providers (Nous Portal anthropic/* -> Messages) resolve correctly.
@@ -1834,6 +1859,11 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
     effective_base_url = base_url
     if not effective_base_url and old_norm == new_norm:
         effective_base_url = getattr(agent, "base_url", "")
+    if is_actual_route(new_provider, effective_base_url):
+        api_mode = "chat_completions"
+        if effective_base_url:
+            from hermes_cli.auth import normalize_actual_base_url
+            base_url = normalize_actual_base_url(effective_base_url)
     destination_capabilities = (
         dict(capabilities)
         if isinstance(capabilities, dict)
@@ -1866,6 +1896,12 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent.base_url = "moa://local"
         agent._client_kwargs = {}
         agent.client = build_moa_facade(agent, agent.model)
+        return
+    if new_provider == "bedrock" and api_mode in ("anthropic_messages", "bedrock_converse"):
+        # Non-Mantle Bedrock wires authenticate through boto3, never through the generic
+        # Anthropic/OpenAI builders (which would ship the ``aws-sdk`` sentinel as a credential).
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, base_url or agent.base_url, api_mode)
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client

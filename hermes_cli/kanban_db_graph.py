@@ -196,15 +196,27 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    # Delivery-chain fidelity (#2830): pass through build-card fields when
+    # the decomposed child carries them (injected by the decomposer LLM or
+    # the orchestrator at decomposition time).
+    card_type = child.get("card_type")
+    delivery_method = child.get("delivery_method")
+    context_package = child.get("context_package")
+    checkpoint_tier = child.get("checkpoint_tier")
+    cp0_intake_completed = child.get("cp0_intake_completed")
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, "
+        " card_type, delivery_method, context_package, "
+        " checkpoint_tier, cp0_intake_completed) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
             root_row["tenant"], now, (author or "decomposer"),
+            card_type, delivery_method, context_package,
+            checkpoint_tier, int(cp0_intake_completed) if cp0_intake_completed else 0,
         ),
     )
     _append_event(

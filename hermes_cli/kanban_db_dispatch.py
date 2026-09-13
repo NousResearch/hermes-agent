@@ -122,6 +122,10 @@ class DispatchResult:
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    skipped_card_validation: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, validation_error)`` build cards rejected by the card
+    validation gate (#2830). The dispatcher posts a GitHub comment on the
+    linked issue naming the missing fields; the card stays unclaimed."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -1487,6 +1491,61 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _post_validation_comment(task_id: str, validation_error: str, body: Optional[str] = None) -> None:
+    """Post a GitHub comment on the issue linked to ``task_id`` naming the
+    missing build-card fields (#2830 Story 3).
+
+    Best-effort: if ``gh`` is unavailable or the task has no linked issue,
+    the comment is silently skipped — the ``validation_error`` column on the
+    task row and the ``card_validation_failed`` event already carry the detail.
+    """
+    import logging
+    import re
+    import shutil
+    import subprocess
+
+    logger = logging.getLogger(__name__)
+    gh = shutil.which("gh")
+    if not gh:
+        return
+    # Prefer the body passed by the caller (already in scope); fall back to
+    # a DB read only when not provided.
+    if body is None:
+        try:
+            from hermes_cli import kanban_db_connect as kbc
+            with kbc.connect_closing() as vconn:
+                row = _kb.get_task(vconn, task_id)
+        except Exception:
+            return
+        if row is None:
+            return
+        body = row.body
+    if not body:
+        return
+    url_match = re.search(
+        r"https://github\.com/([^/]+)/([^/]+)/issues/(\d+)",
+        body,
+    )
+    if not url_match:
+        return
+    owner, repo, number = url_match.groups()
+    comment_body = (
+        f"⚠️ **Delivery-chain validation rejected card `{task_id}`**\n\n"
+        f"The card was not claimed by the dispatcher because it failed build-card validation:\n\n"
+        f"> {validation_error}\n\n"
+        f"Required fields for build cards: `delivery_method`, `context_package`, "
+        f"`checkpoint_tier`. Please update the card body and re-queue.\n\n"
+        f"_Automated message from the delivery-chain fidelity gate (#2830)._"
+    )
+    try:
+        subprocess.run(
+            [gh, "issue", "comment", number, "--repo", f"{owner}/{repo}", "--body", comment_body],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:
+        logger.debug("validation comment post failed for %s: %s", task_id, exc)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1535,6 +1594,28 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+
+    # Delivery-chain fidelity (#2830): Python-level card validation before
+    # claiming. The SQL filter in _lane_rows() already hides invalid build
+    # cards, but a card may have been promoted by a path that bypassed the
+    # filter (e.g. manual status change). This is the second enforcement
+    # layer; the third is the CAS-level rejection in claim_task().
+    validation_error = _kb.validate_build_card(conn, task_id)
+    if validation_error:
+        result.skipped_card_validation.append((task_id, validation_error))
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _kb._append_event(
+                    conn, task_id, "card_validation_failed",
+                    {"error": validation_error},
+                )
+            # Post the GitHub comment outside the write txn to avoid
+            # blocking the dispatch lock on a network call.
+            _post_validation_comment(
+                task_id, validation_error,
+                body=_kb._row_get(row, "body"),
+            )
         return False
 
     def _count_spawn(name: str) -> None:
@@ -1709,10 +1790,23 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    Build cards (``card_type='build'``) that fail validation are filtered out
+    at the SQL level (#2830) — they are invisible to the dispatcher until the
+    operator fixes the missing fields.
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, body FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
+        # Delivery-chain fidelity (#2830): hide invalid build cards from the
+        # dispatcher. A build card is valid when all three required fields are
+        # present. Non-build cards (card_type IS NULL or != 'build') are
+        # always visible.
+        "AND (card_type IS NULL OR card_type != 'build' "
+        "     OR (delivery_method IS NOT NULL "
+        "         AND context_package IS NOT NULL "
+        "         AND checkpoint_tier IS NOT NULL)) "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
 

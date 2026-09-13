@@ -37,6 +37,70 @@ from github_pr_feedback.policy import (
 from github_pr_feedback.repair_controller import pr_repair_attribution_line
 
 
+def test_single_merge_handoff_uses_deployment_executor_on_every_path(monkeypatch):
+    import github_pr_feedback.cli as cli
+
+    merge_policy = SimpleNamespace(repository="acme/widgets", post_merge=object())
+    policy = SimpleNamespace(
+        merge_policy_for=lambda _repository: merge_policy,
+        repair_steward=None,
+    )
+    calls = []
+    merge = SimpleNamespace(
+        tested_head_sha="b" * 40,
+        method="squash",
+        merge_commit_oid="c" * 40,
+    )
+
+    class Deployment:
+        status = "completed"
+        blocker = None
+
+        def to_payload(self):
+            return {"status": self.status}
+
+    class Executor:
+        def __init__(self, received_policy, received_ledger):
+            calls.append(("init", received_policy, received_ledger))
+
+        def run(self, received_merge):
+            calls.append(("run", received_merge))
+            return Deployment()
+
+    class Ledger:
+        def is_merge_enrolled(self, _repository, _pr_number):
+            return True
+
+        def latest_deployment_receipt(self, _repository, _pr_number):
+            return None
+
+    class MergeController:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, _pr_number):
+            return SimpleNamespace(receipt=merge, decision=SimpleNamespace(blockers=()))
+
+    monkeypatch.setattr(cli, "PostMergeExecutor", Executor)
+    monkeypatch.setattr(cli, "CanonicalMergeEvidenceSource", lambda *_args: object())
+    monkeypatch.setattr(cli, "MergeController", MergeController)
+
+    result = cli._run_single_pr_merge_handoff(
+        policy,
+        Ledger(),
+        17,
+        repository="acme/widgets",
+        github=object(),
+        kanban=object(),
+    )
+
+    assert result["status"] == "merged"
+    assert result["deployment"] == {"status": "completed", "blocker": None}
+    assert [call[0] for call in calls] == ["init", "run"]
+    assert calls[0][1] is merge_policy.post_merge
+    assert calls[1][1] is merge
+
+
 def test_grouped_audit_opens_sqlite_ledger_in_worker_thread(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -740,7 +804,7 @@ def test_retry_deployment_recovers_completed_merge_without_receipt_and_holds_sca
     monkeypatch.setattr(cli, "_load_policy_from_context", lambda _ctx: policy)
     monkeypatch.setattr(cli, "_exclusive_scan_lock", lambda: Lock())
     monkeypatch.setattr(cli.FeedbackLedger, "for_current_profile", lambda: Ledger())
-    monkeypatch.setattr("github_pr_feedback.post_merge.PostMergeExecutor", Executor)
+    monkeypatch.setattr("github_pr_feedback.cli.PostMergeExecutor", Executor)
 
     assert _retry_deployment(
         None, SimpleNamespace(repository="acme/widgets", pr_number=17)

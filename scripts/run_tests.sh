@@ -126,6 +126,8 @@ then
     fi
     if (cd "$REPO_ROOT" && UV_CACHE_DIR="$uv_cache_dir" "$UV_BIN" pip install \
         --python "$bootstrap_python" -r "$requirements_file" >/dev/null) \
+        && (cd "$REPO_ROOT" && UV_CACHE_DIR="$uv_cache_dir" "$UV_BIN" pip install \
+          --python "$bootstrap_python" --no-deps --editable "$REPO_ROOT" >/dev/null) \
         && "$bootstrap_python" -c 'import pytest' 2>/dev/null; then
     VENV="$bootstrap_venv"
     VENV_PYTHON="$bootstrap_python"
@@ -160,6 +162,7 @@ else
   fi
   exit 1
 fi
+VENV_BIN="$(dirname "$PYTHON")"
 
 
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
@@ -230,7 +233,7 @@ echo "▶ pre-compiling bytecode cache"
 
 echo "▶ launching test runner"
 env -i \
-  PATH="$PATH" \
+  PATH="$VENV_BIN:$PATH" \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
   ${TEST_ENV[@]+"${TEST_ENV[@]}"} \

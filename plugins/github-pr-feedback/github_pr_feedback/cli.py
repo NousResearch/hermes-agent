@@ -70,6 +70,7 @@ from .release_maintenance import (
     MaintenanceWorkspaces,
     ReleaseMaintenanceController,
 )
+from .post_merge import PostMergeExecutor
 
 try:
     from hermes_constants import get_default_hermes_root
@@ -1292,8 +1293,6 @@ def _retry(ctx: Any, args: argparse.Namespace) -> int:
 
 
 def _retry_deployment(ctx: Any, args: argparse.Namespace) -> int:
-    from .post_merge import PostMergeExecutor
-
     try:
         policy = _load_policy_from_context(ctx)
         merge_policy = policy.merge_policy_for(args.repository)
@@ -2107,8 +2106,6 @@ def _run_merge_scan_for_policy(
                         merge_policy.repository, number
                     )
                     if getattr(existing, "status", None) != "completed":
-                        from .post_merge import PostMergeExecutor
-
                         deployment = PostMergeExecutor(
                             merge_policy.post_merge, ledger
                         ).run(result.receipt)

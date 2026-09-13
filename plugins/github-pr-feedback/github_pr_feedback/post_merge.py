@@ -126,7 +126,7 @@ class SystemProcessController:
             try:
                 pid = int(parts[0])
                 argv = tuple(shlex.split(parts[2]))
-            except (ValueError, shlex.Error) as error:
+            except ValueError as error:
                 raise DeploymentError("process_census_ambiguous") from error
             if not argv:
                 raise DeploymentError("process_census_ambiguous")

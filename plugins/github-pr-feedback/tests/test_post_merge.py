@@ -13,6 +13,7 @@ from github_pr_feedback.post_merge import (
     GitDeploymentRepository,
     PostMergeExecutor,
     ProcessRecord,
+    SystemProcessController,
     _require_package_provenance,
     _require_runtime_absent,
     _wait_for_process_to_appear,
@@ -45,6 +46,18 @@ def test_process_shutdown_wait_rechecks_the_current_census():
     controller = Controller()
     _wait_for_processes_to_exit([process], controller, timeout=0.2)
     assert controller.censuses == []
+
+
+def test_process_census_reports_malformed_ps_rows_as_deployment_errors(monkeypatch):
+    monkeypatch.setattr(
+        "github_pr_feedback.post_merge.subprocess.run",
+        lambda *_args, **_kwargs: type(
+            "Completed", (), {"returncode": 0, "stdout": "123 /usr/bin/example foo'\n"}
+        )(),
+    )
+
+    with pytest.raises(DeploymentError, match="process_census_ambiguous"):
+        SystemProcessController().census()
 
 
 def _merge_receipt(merge_commit_oid: str) -> MergeReceipt:

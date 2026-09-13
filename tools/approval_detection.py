@@ -1516,13 +1516,22 @@ def _dispatcher_targets_hermes(
                 " ".join(shlex.quote(arg) for arg in payload if arg not in {";", "+"})
             )
         return False
-    if dispatcher == "cmd":
-        destructive_re = r"(?:^|\s)(?:del|erase|rd|rmdir)(?:\s|$)"
-    else:
-        destructive_re = r"(?:^|\s)(?:del|erase|rd|ri|rm|remove-item)(?:\s|$)"
-    destructive = any(re.search(destructive_re, arg, re.IGNORECASE) for arg in argv[1:])
-    path_words = [word for arg in argv[1:] for word in re.split(r"\s+", arg)]
-    return destructive and any(_is_hermes_managed_path(arg.strip("'\"")) for arg in path_words)
+    destructive_names = (
+        {"del", "erase", "rd", "rmdir"}
+        if dispatcher == "cmd" else
+        {"del", "erase", "rd", "ri", "rm", "remove-item"}
+    )
+    payload_words = [word for arg in argv[1:] for word in re.split(r"\s+", arg) if word]
+    for index, word in enumerate(payload_words):
+        if word.strip("'\";,(){}").lower() not in destructive_names:
+            continue
+        targets = (
+            target.strip("'\";,(){}") for target in payload_words[index + 1:]
+            if target and not target.startswith("-")
+        )
+        if any(_operand_is_managed(target, cwd_candidates) for target in targets):
+            return True
+    return False
 
 
 _XARGS_OPTIONS_WITH_ARG = frozenset({

@@ -466,6 +466,8 @@ class TestHermesHomeHardline:
         assert detect_hardline_command("truncate -s0 state.db", cwd=str(home))[0] is True
         assert detect_hardline_command("cd $HERMES_HOME && : > state.db")[0] is True
         assert detect_hardline_command("find . -delete", cwd=str(home))[0] is True
+        assert detect_hardline_command("cmd.exe /c del state.db", cwd=str(home))[0] is True
+        assert detect_hardline_command("powershell Remove-Item state.db", cwd=str(home))[0] is True
         assert detect_hardline_command("rm ../state.db", cwd=str(home / "sub"))[0] is True
         assert detect_hardline_command("cd /missing || rm state.db", cwd=str(home))[0] is True
 

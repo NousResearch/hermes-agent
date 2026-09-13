@@ -731,6 +731,7 @@ def _cmd_pinned(db, args):
 
 
 def _cmd_retitle_skills(db, args):
+    from agent.memory_manager import sanitize_context
     from agent.skill_commands import describe_skill_invocation
     from agent.title_generator import generate_title
     limit = max(1, int(getattr(args, "limit", 200) or 200))
@@ -745,7 +746,7 @@ def _cmd_retitle_skills(db, args):
     for row in candidates:
         session_id = row["id"]
         typed = describe_skill_invocation(row["content"]) or ""
-        new_title = generate_title(typed)
+        new_title = generate_title(typed, provider_text_sanitizer=sanitize_context)
         if not new_title or new_title == row["title"]:
             continue
         if not new_title[0].isalnum():

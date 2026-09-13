@@ -179,6 +179,8 @@ class GitDeploymentRepository:
         self._run(root, "fetch", "--prune", "origin", merge.base_branch)
         remote_ref = f"refs/remotes/origin/{merge.base_branch}"
         deployed_sha = self._run(root, "rev-parse", remote_ref).strip().lower()
+        if deployed_sha != merge.merge_commit_oid.casefold():
+            raise DeploymentError("remote_base_merge_commit_mismatch")
         try:
             ancestor = subprocess.run(
                 (
@@ -284,12 +286,14 @@ class PostMergeExecutor:
             # Packaging can take a long time. Re-census immediately before
             # termination so an exited process cannot leave a stale PID (or a
             # reused PID) as the deployment target.
+            termination_census = self._processes.census()
+            _require_runtime_absent(termination_census, self._policy)
             terminated = []
-            for process in self._processes.census():
+            for process in termination_census:
                 if process.executable.resolve() == identity.executable_path.resolve():
                     self._processes.terminate(process.pid)
                     terminated.append(process)
-            _wait_for_processes_to_exit(self._processes, terminated)
+            _wait_for_processes_to_exit(terminated, self._processes)
             relaunch = self._commands.run(
                 self._policy.relaunch_argv + (str(bundle),),
                 cwd=self._policy.deployment_path,

@@ -38,7 +38,7 @@ import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
-import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { installPtyBrowserInput } from "@/lib/pty-browser-input";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -57,11 +57,6 @@ import {
   shouldFinishResumeHydrationOnChunk,
   shouldShowResumeLoadingOverlay,
 } from "@/lib/pty-resume-loading";
-import {
-  MOBILE_REPLACEMENT_WINDOW_MS,
-  normalizePtyMobileInput,
-  shouldTreatInputAsMobileReplacement,
-} from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
@@ -230,8 +225,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the async ticket/URL await gap where wsRef.current is not yet assigned.
   const connectInFlightRef = useRef(false);
   const connectingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ptyInputLineRef = useRef("");
-  const mobileReplacementInputUntilRef = useRef(0);
   const [ptyState, setPtyState] =
     useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
@@ -262,8 +255,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
-    mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setLastCloseCode(null);
     setPtyState("connecting");
@@ -274,8 +265,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
-    mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setLastCloseCode(null);
     setPtyState("connecting");
@@ -289,8 +278,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
-    ptyInputLineRef.current = "";
-    mobileReplacementInputUntilRef.current = 0;
     setSearchParams(next, { replace: true });
     setBanner(null);
     setLastCloseCode(null);
@@ -576,7 +563,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //      has selected with the mouse outside of Ink's selection model.
     //
     //   3. **Ctrl/Cmd+Shift+V.**  Prefers clipboard.read() for images
-    //      (upload → `/image`), else readText() into term.paste().
+    //      (upload → `/image`), else readText() into browserInput.paste().
     //      preventDefault here suppresses the DOM paste event, so image
     //      handling must live in this key path — not only the host
     //      listener below.
@@ -664,7 +651,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const files = imageFilesFromTransfer(ev.clipboardData);
       if (!files.length) return;
       ev.preventDefault();
-      ev.stopPropagation();
+      ev.stopImmediatePropagation();
       uploadAndAttachImages(files);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
@@ -776,7 +763,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }
           try {
             const text = await navigator.clipboard.readText();
-            if (text) term.paste(text);
+            if (text) browserInput.paste(text);
           } catch (err) {
             const message =
               err instanceof Error ? err.message : String(err);
@@ -815,72 +802,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.loadAddon(new WebLinksAddon());
 
-    let mobileInputCleanup: (() => void) | null = null;
-    // xterm occasionally drops committed dead-key/IME text instead of emitting
-    // onData. The compositionend event supplies the authoritative text.
-    let sendComposedText: (data: string) => void = () => undefined;
-    const compositionForwarder = createPtyCompositionForwarder((data) => {
-      sendComposedText(data);
-    });
     term.open(host);
-
-    // IME composition guard (fixes #52111).
-    //
-    // React 18's root-level event delegation intercepts keydown events with
-    // keyCode 229 (the "composition in progress" signal sent by the browser
-    // during non-Latin IME input) and synthesises an onCompositionStart
-    // event.  That synthetic path sets internal composing state that
-    // interferes with xterm.js's own IME handling on its hidden textarea,
-    // causing the first keystroke of each composition chunk to be silently
-    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
-    // Firefox-based browsers, but affects any locale that uses composition
-    // events (CJK, Arabic, Hebrew).
-    //
-    // xterm.js relies on native compositionstart/compositionend on its
-    // internal textarea, not on keydown, so blocking the keyCode-229
-    // keydown from reaching React's delegation layer is safe.  The listener
-    // sits in the *capture* phase on the terminal host so it fires before
-    // the event bubbles up to the React root.
-    const _imeCompositionGuard = (e: KeyboardEvent) => {
-      if (e.keyCode === 229 || e.key === "Process") {
-        e.stopPropagation();
-      }
-    };
-    host.addEventListener("keydown", _imeCompositionGuard, true);
-
+    const browserInput = installPtyBrowserInput(term, () =>
+      wsRef.current?.readyState === WebSocket.OPEN &&
+      !shouldBlockPtyInput(ptyStateRef.current),
+    );
     const textarea = term.textarea;
     if (textarea) {
-      textarea.setAttribute("autocomplete", "off");
-      textarea.setAttribute("autocorrect", "off");
-      textarea.setAttribute("autocapitalize", "off");
-      textarea.setAttribute("spellcheck", "false");
-
-      const isMobileLike =
-        typeof navigator !== "undefined" &&
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-      const markReplacementInput = (ev: Event) => {
-        const input = ev as InputEvent;
-        if (
-          shouldTreatInputAsMobileReplacement(
-            input.inputType,
-            input.data,
-            isMobileLike,
-          )
-        ) {
-          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        }
-      };
-      const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
-      };
-
-      textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
-      mobileInputCleanup = () => {
-        textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
-      };
+      textarea.setAttribute("autocomplete", "on");
+      textarea.setAttribute("autocorrect", "on");
+      textarea.setAttribute("autocapitalize", "sentences");
+      textarea.setAttribute("spellcheck", "true");
+      textarea.setAttribute("enterkeyhint", "send");
+      textarea.setAttribute("inputmode", "text");
     }
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
@@ -1439,7 +1373,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // behave normally.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-      const forwardPtyData = (data: string, useMobileReplacement = true) => {
+      const forwardPtyData = (data: string) => {
         // Mouse reports (scroll wheel etc.) are not typed input — swallow
         // them before the blocked-input check so scrolling a disconnected
         // terminal doesn't trip the "reconnecting" notice.
@@ -1460,27 +1394,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
-        const normalized = normalizePtyMobileInput(
-          data,
-          ptyInputLineRef.current,
-          useMobileReplacement && Date.now() <= mobileReplacementInputUntilRef.current,
-        );
-        ptyInputLineRef.current = normalized.nextLine;
-        if (normalized.normalized) {
-          mobileReplacementInputUntilRef.current = 0;
-        }
-        ws.send(normalized.data);
+        // Native edits already have a single owner at the browser boundary.
+        // This transport must not reinterpret text by equality or elapsed time.
+        ws.send(data);
       };
-      // The deferred composition fallback is already committed text, so it
-      // must not consume the mobile replacement window intended for xterm's
-      // normal onData path.
-      sendComposedText = (data) => forwardPtyData(data, false);
-      onDataDisposable = term.onData((data) => {
-        if (!SGR_MOUSE_RE.test(data)) {
-          compositionForwarder.noteTerminalData(data);
-        }
-        forwardPtyData(data);
-      });
+      onDataDisposable = term.onData(forwardPtyData);
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -1508,8 +1426,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
-      mobileInputCleanup?.();
-      compositionForwarder.dispose();
+      browserInput.dispose();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
@@ -1535,7 +1452,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
-      host.removeEventListener("keydown", _imeCompositionGuard, true);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

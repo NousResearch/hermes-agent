@@ -15,6 +15,7 @@ import {
   type StructuredTimelineItem,
 } from "@/lib/structured-chat";
 import { buildWsUrl } from "@/lib/api";
+import { ptyChatHref } from "@/lib/phone-structured-chat";
 
 export interface StructuredGateway {
   connect(token?: string): Promise<void>;
@@ -390,7 +391,7 @@ export default function StructuredChatPage({
           <p className="text-sm text-text-secondary">Geschlossen. Schreibbesitz muss zuerst eindeutig hier liegen; sonst entsteht ein zweiter Schreiber.</p>
         ) : (
           <p className="text-sm">
-            <a href={`/chat?resume=${encodeURIComponent(durableSessionId)}`}>PTY derselben Session öffnen</a>
+            <a href={ptyChatHref(durableSessionId, profile)}>PTY derselben Session öffnen</a>
             {" "}— der strukturierte Client wird beim Verlassen beendet.
           </p>
         )}

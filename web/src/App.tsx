@@ -108,7 +108,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
 import {
   readPhonePointer,
-  shouldUseStructuredChatOnPhone,
+  shouldRedirectChatToStructured,
   structuredChatLocationFromChat,
 } from "@/lib/phone-structured-chat";
 import { api } from "@/lib/api";
@@ -408,13 +408,13 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const isChatSurface = isChatRoute || normalizedPath === "/chat/structured";
-  const phoneStructuredChat = shouldUseStructuredChatOnPhone(readPhonePointer());
+  const phoneStructuredChat = shouldRedirectChatToStructured(readPhonePointer(), search);
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(
-    () => normalizedPath === "/chat" && !shouldUseStructuredChatOnPhone(readPhonePointer()),
+    () => normalizedPath === "/chat" && !shouldRedirectChatToStructured(readPhonePointer(), search),
   );
   useEffect(() => {
     if (phoneStructuredChat) return;

@@ -280,4 +280,36 @@ describe("StructuredChatPage", () => {
     expect(calls.some(([method, params]) => method === "session.takeover" && params?.confirmed === true)).toBe(true);
     expect(composer.disabled).toBe(false);
   });
+
+  it("keeps a native iPhone composer and opens PTY only with an explicit diagnostic bypass", async () => {
+    const client: StructuredGateway = {
+      connect: async () => undefined,
+      close: vi.fn(),
+      onAny: vi.fn(() => () => undefined),
+      onState: vi.fn((handler) => { handler("open"); return () => undefined; }),
+      request: vi.fn(async (method) => {
+        if (method === "session.resume") {
+          return { session_id: "runtime-1", running: false, read_only: false, ownership_epoch: 1 };
+        }
+        return {};
+      }),
+    };
+    await render(client);
+    await settle();
+    const composer = container?.querySelector("#structured-chat-composer") as HTMLTextAreaElement;
+    expect(composer.getAttribute("autocapitalize")).toBe("sentences");
+    expect(composer.getAttribute("inputmode")).toBe("text");
+    expect(composer.getAttribute("spellcheck")).not.toBe("false");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(composer, "Hallo Welt");
+      composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "Hallo Welt" }));
+      composer.setSelectionRange(5, 5);
+      composer.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+    });
+    expect(composer.selectionStart).toBe(5);
+    expect(composer.selectionEnd).toBe(5);
+    const pty = container?.querySelector("a") as HTMLAnchorElement;
+    expect(pty.textContent).toBe("PTY derselben Session öffnen");
+    expect(pty.getAttribute("href")).toBe("/chat?resume=durable-1&profile=worker&pty=1");
+  });
 });

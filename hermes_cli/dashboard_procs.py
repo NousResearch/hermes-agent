@@ -16,6 +16,8 @@ _DASHBOARD_PATTERNS = tuple(
     f"{launcher} {cmd}"
     for cmd in ("dashboard", "serve")
     for launcher in ("hermes", "hermes_cli.main", "hermes_cli/main.py"))
+_DASHBOARD_PATTERNS += ("hermes-dashboard",)
+_DASHBOARD_LIFECYCLE_FLAGS = ("--status", "--stop")
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
@@ -85,8 +87,15 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     """
     skip = {os.getpid(), *(exclude_pids or ())}
     try:
-        found = [(pid, cmd) for pid, cmd in _iter_process_table()
-                 if pid not in skip and any(p in cmd for p in _DASHBOARD_PATTERNS)]
+        found = [
+            (pid, cmd)
+            for pid, cmd in _iter_process_table()
+            if (
+                pid not in skip
+                and not any(flag in cmd for flag in _DASHBOARD_LIFECYCLE_FLAGS)
+                and any(pattern in cmd for pattern in _DASHBOARD_PATTERNS)
+            )
+        ]
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
     # Spawn-ledger augmentation: substring patterns miss profiled launches (`hermes --profile p

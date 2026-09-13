@@ -40,6 +40,22 @@ def _active_goal_manager(session: dict):
     return goal_mgr if goal_mgr.is_active() else None
 
 
+def _revive_blocked_goal_for_user_turn(sid: str, session: dict, user_turn: bool) -> None:
+    """A real user message revives a goal the judge paused as BLOCKED: that pause means
+    "needs user input", and this message IS the input. Without this the answer runs as a
+    plain prompt — no judge, no continuation — while the card keeps saying "Goal paused".
+    ``user_turn`` is positive identification from the ``prompt.submit`` entry points; every
+    self-dispatched turn (goal continuation, auto-continue, notification poller, /loop and
+    heartbeat wakeups) leaves it False and leaves the pause alone."""
+    if not user_turn or not session.get("session_key"):
+        return
+    from hermes_cli.goals import GoalManager
+    goal_mgr = GoalManager(session_id=str(session["session_key"]))
+    if goal_mgr.resume_for_user_input():
+        _emit("status.update", sid, {"kind": "goal", "text": f"▶ Goal resumed: {goal_mgr.state.goal}"})
+        _publish_session_control_snapshot(sid, session, only_if_present=True)
+
+
 def _plan_goal_compression_recovery(
     session: dict, result: Any, *, status: str, raw: Any) -> tuple[str | None, str | None]:
     """Bounded active-goal retry after compression exhaustion: ``(continuation, notice)``.
@@ -793,7 +809,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    user_turn: bool = False, turn_author: dict | None = None) -> bool:
+    """Only real user entry points set ``user_turn``; automatic wakeups leave it False."""
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -834,6 +851,10 @@ def _run_prompt_submit(
                     st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
+            # The answer has arrived before the model starts. Waiting until a successful
+            # final reply leaves long or failed turns working under a stale BLOCKED card.
+            # Preparation has bound the owning profile and rejected invalid input.
+            _revive_blocked_goal_for_user_turn(sid, session, user_turn)
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
                 display_metadata, turn_author)

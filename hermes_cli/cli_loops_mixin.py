@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 import time
+from typing import Any
 
 from rich.markup import escape as _escape
 
@@ -25,6 +26,24 @@ def _print_decision_message(decision: dict) -> bool:
     if msg:
         _cprint(f"  {msg}")
     return bool(msg)
+
+
+# Leading frames of the prompts the CLI itself puts on ``_pending_input``: goal continuations,
+# heartbeat / loop wakeups, process + delegation notifications, /browser system notes. None of
+# these is the user answering, so none may un-pause a goal waiting on user input.
+_SELF_INJECTED_TURN_PREFIXES = (
+    "[Continuing toward your standing goal]", "[Continuing toward this kanban task",
+    "[Heartbeat —", "[/loop wakeup", "[IMPORTANT:",
+    "[ASYNC DELEGATION BATCH COMPLETE", "[System note:", "[System:",
+)
+
+
+def _is_self_injected_turn(text: Any) -> bool:
+    from tools.process_registry_notifications import SubagentNotification
+
+    return isinstance(text, SubagentNotification) or (
+        isinstance(text, str) and text.lstrip().startswith(_SELF_INJECTED_TURN_PREFIXES)
+    )
 
 
 class CLILoopsMixin:
@@ -516,6 +535,16 @@ class CLILoopsMixin:
                 and mgr.state is not None):
             _cprint(f"  {_DIM}↻ Loop: {mgr.state.remaining_label()}.{_RST}")
 
+    def _revive_blocked_goal_for_user_turn(self, message) -> None:
+        """Recover on admitted input, not on a successful model response."""
+        from cli import _cprint
+
+        if not isinstance(message, str) or not message.strip() or _is_self_injected_turn(message):
+            return
+        mgr = self._get_goal_manager()
+        if mgr is not None and mgr.resume_for_user_input():
+            _cprint(f"  ▶ Goal resumed: {mgr.state.goal}")
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Post-turn hook: judge the goal and maybe re-queue a continuation. A real user
         message already queued preempts judging (re-judged after their turn). Ctrl+C
@@ -524,7 +553,9 @@ class CLILoopsMixin:
         via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
         mgr = self._get_goal_manager()
-        if mgr is None or not mgr.is_active():
+        if mgr is None:
+            return
+        if not mgr.is_active():
             return
 
         # Slash commands don't count as "real user messages": they're dispatched via

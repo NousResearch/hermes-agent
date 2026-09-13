@@ -49,7 +49,8 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
 
 def _compute_host_turn_frame(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    user_turn: bool = False) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
@@ -58,6 +59,7 @@ def _compute_host_turn_frame(
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
+        **({"user_turn": True} if user_turn else {}),
         "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
@@ -212,11 +214,12 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    user_turn: bool = False) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
-                                     display_kind=display_kind)
+                                     display_kind=display_kind, user_turn=user_turn)
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex

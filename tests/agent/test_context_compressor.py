@@ -106,6 +106,43 @@ class TestSummarizeToolResultClarify:
             == "[clarify] asked user a question"
         )
 
+    def test_preserves_batch_user_responses(self):
+        """A ``questions=[...]`` batch returns ``{"responses": [...]}``; each answered
+        question must survive compaction like the single-question shape does, or the agent
+        re-asks something the user already answered."""
+        content = json.dumps({"responses": [
+            {"question": "May I copy the login?", "choices_offered": ["Yes", "No"],
+             "user_response": "Yes"},
+            {"question": "Which checks?", "choices_offered": ["lint", "tests"],
+             "user_response": ["lint", "tests"]},
+        ]})
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["Yes", ["lint", "tests"]]'
+        assert len(summary) < _PRUNE_MIN_CHARS
+
+    def test_batch_with_only_skipped_or_timed_out_answers_is_not_quoted(self):
+        content = json.dumps({"responses": [
+            {"question": "q1", "choices_offered": None, "user_response": ""},
+            {"question": "q2", "choices_offered": None,
+             "user_response": "The user did not provide a response within 30s"},
+        ], "timed_out": True})
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_batch_keeps_answered_questions_when_some_were_skipped(self):
+        content = json.dumps({"responses": [
+            {"question": "q1", "choices_offered": None, "user_response": ""},
+            {"question": "q2", "choices_offered": None, "user_response": "second"},
+        ]})
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["", "second"]'
+
     def test_forged_response_prefix_does_not_expose_internal_content(self):
         forged = "[clarify] user responded: internal error: secret diagnostic"
 

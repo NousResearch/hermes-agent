@@ -205,6 +205,12 @@ Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the 
 
 Any real message you send while a goal is active takes priority over the continuation loop. On the CLI your message lands in `_pending_input` ahead of the queued continuation; on the gateway it goes through the adapter FIFO the same way. The judge runs again after your turn — so if your message happens to complete the goal, the judge will catch it and stop.
 
+### Answering a blocked goal
+
+If the judge pauses a goal as `blocked`, your next normal message resumes that same goal **before the agent starts working**, without resetting its turn budget. For example, “I fixed the environment; continue” needs no separate `/goal resume`. The judge checks progress after the reply and can block again if more input is needed.
+
+Automatic notifications and background wakeups do not count as your answer. Explicit pauses, interrupts, exhausted budgets, and judge-failure pauses still require an explicit resume. A pause you request during the resumed turn is not undone when that turn finishes.
+
 ### Mid-run safety (gateway)
 
 While an agent is already running, `/goal status`, `/goal pause`, `/goal clear`, `/goal wait`, and `/goal unwait` are safe to run — they only touch control-plane state and don't interrupt the current turn. Setting a **new** goal mid-run (`/goal <new text>`) is rejected with a message telling you to `/stop` first, so the old continuation can't race the new one.

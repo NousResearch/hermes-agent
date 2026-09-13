@@ -15,7 +15,8 @@
     "./i18n": "./src/i18n.ts",
     "./model-search-text": "./src/model-search-text.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",
-    "./skin": "./src/skin.ts"
+    "./skin": "./src/skin.ts",
+    "./slash": "./src/slash.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

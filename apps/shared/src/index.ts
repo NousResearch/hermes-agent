@@ -103,6 +103,19 @@ export {
   type SkinColorToken
 } from './skin'
 export {
+  type AliasCommandDispatchResponse,
+  type CommandDispatchResponse,
+  type ExecCommandDispatchResponse,
+  looksLikeSlashCommand,
+  parseCommandDispatch,
+  type ParsedSlashCommand,
+  parseSlashCommand,
+  type PrefillCommandDispatchResponse,
+  type SendCommandDispatchResponse,
+  type SkillCommandDispatchResponse,
+  SLASH_COMMAND_RE
+} from './slash'
+export {
   backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,

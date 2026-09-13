@@ -123,31 +123,46 @@ export function readableOn(bg: string, inks: readonly [string, ...string[]] = DE
 }
 
 /**
- * Step-mix `color` toward the readable pole of `bg` until the contrast ratio
- * clears `min`. Each step re-mixes from the ORIGINAL color in 0.05 increments
- * so hue decays linearly, not exponentially, and the color stops at the first
- * rung that passes — minimal hue loss for the ratio. Returns the original when
- * it already passes or isn't parseable.
+ * Step-mix `color` toward the pole opposite `bg` (white on a dark background,
+ * black on a light one) until the contrast ratio clears `min`. Each rung
+ * re-mixes from the ORIGINAL color, so hue decays linearly, not
+ * exponentially, and the color stops at the first rung that passes. Returns
+ * the original when it already passes or isn't parseable.
+ *
+ * `step` is the rung size. The default 0.2 (5 rungs) is the desktop's ladder
+ * and MUST stay: `--dt-primary-solid` for every shipped preset is derived
+ * from it and a finer ladder lands visibly different fills (nous `#3b6acb` vs
+ * `#3f70d8`). The TUI's chainable form opts into 0.05 for less hue loss.
+ * The accumulating loop (rather than `i * step`) is deliberate — it is the
+ * exact float sequence the old desktop ladder produced.
  */
-export function ensureContrast(color: string, bg: string, min: number): string {
-  if (relativeLuminance(bg) === null || parseColor(color) === null) {
+export function ensureContrast(color: string, bg: string, min: number, step = 0.2): string {
+  const bgLuminance = relativeLuminance(bg)
+
+  if (bgLuminance === null || parseColor(color) === null) {
     return color
   }
 
-  const pole = readableOn(bg)
-  let current = color
+  const ratio = contrastRatio(color, bg)
 
-  for (let step = 0; step <= 20; step++) {
-    const ratio = contrastRatio(current, bg)
-
-    if (ratio === null || ratio >= min) {
-      return current
-    }
-
-    current = mix(color, pole, Math.min(1, (step + 1) * 0.05))
+  if (ratio === null || ratio >= min) {
+    return color
   }
 
-  return current
+  const pole = bgLuminance < 0.5 ? '#ffffff' : '#000000'
+  let best = color
+
+  for (let amount = step; amount <= 1.0001; amount += step) {
+    best = mix(color, pole, Math.min(amount, 1))
+
+    const stepRatio = contrastRatio(best, bg)
+
+    if (stepRatio !== null && stepRatio >= min) {
+      return best
+    }
+  }
+
+  return best
 }
 
 /** Recede toward the background pole (opposite of `readableOn`). */

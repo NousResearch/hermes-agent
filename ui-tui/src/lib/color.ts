@@ -202,8 +202,9 @@ class ColorChain {
     return new ColorChain(darken(this.value, t))
   }
 
+  /** Fine 0.05 ladder: the terminal palette is derived here and pays for hue loss. */
   ensureContrast(bg: string, min: number): ColorChain {
-    return new ColorChain(ensureContrast(this.value, bg, min))
+    return new ColorChain(ensureContrast(this.value, bg, min, 0.05))
   }
 
   luminance(): null | number {

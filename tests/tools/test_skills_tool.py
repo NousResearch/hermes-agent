@@ -947,6 +947,32 @@ class TestSkillViewCollisionDetection:
         assert result["path"] == "creative/sketch/SKILL.md"
         assert "REAL SKETCH SKILL" in result["content"]
 
+    def test_nested_support_markdown_is_only_available_via_file_path(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        owner = _make_skill(local_dir, "illustrator")
+        support_file = owner / "creative-design" / "references" / "sketch.md"
+        support_file.parent.mkdir(parents=True)
+        support_file.write_text("REFERENCE ONLY")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            missing = json.loads(skill_view("sketch"))
+            reference = json.loads(
+                skill_view(
+                    "illustrator",
+                    file_path="creative-design/references/sketch.md",
+                )
+            )
+            _make_skill(local_dir, "sketch", body="REAL SKETCH SKILL")
+            real = json.loads(skill_view("sketch"))
+
+        assert missing["success"] is False
+        assert reference["success"] is True
+        assert reference["content"] == "REFERENCE ONLY"
+        assert real["success"] is True
+        assert "REAL SKETCH SKILL" in real["content"]
+
 
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with

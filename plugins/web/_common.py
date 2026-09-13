@@ -138,7 +138,7 @@ def http_status_detail(response: Any) -> str:
 
 
 def http_get_json(
-    label: str, url: str, *, params: Dict[str, Any], headers: Dict[str, str], timeout: int,
+    label: str, url: str, *, params: Dict[str, Any], headers: Dict[str, str], timeout: float,
     logger: logging.Logger, reach_target: Optional[str] = None,
 ) -> tuple[Any, Optional[Dict[str, Any]]]:
     """GET ``url`` and parse JSON → ``(data, None)`` or ``(None, failure_dict)``.

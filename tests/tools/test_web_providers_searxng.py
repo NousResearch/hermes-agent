@@ -111,6 +111,112 @@ class TestSearXNGSearchProviderSearch:
 
 
 # ---------------------------------------------------------------------------
+# web.searxng_timeout config: default, valid override, invalid-value rejection
+# ---------------------------------------------------------------------------
+
+
+class TestSearXNGTimeoutConfig:
+    """``web.searxng_timeout`` — default preservation, valid override, invalid rejection (#99399)."""
+
+    def _make_mock_response(self, json_data, status_code=200):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = json_data
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    def test_default_timeout_is_15_when_unset(self, monkeypatch):
+        """No web.searxng_timeout configured -> the historical hardcoded 15s is preserved exactly."""
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        timeout, error = _resolve_searxng_timeout()
+        assert error is None
+        assert timeout == 15.0
+
+    def test_valid_override_is_used_in_the_request(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": 45})
+
+        captured = {}
+
+        def capture_get(url, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return self._make_mock_response({"results": []})
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert result["success"] is True
+        assert captured["timeout"] == 45.0
+
+    def test_valid_float_override_is_accepted(self, monkeypatch):
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": 30.5})
+        timeout, error = _resolve_searxng_timeout()
+        assert error is None
+        assert timeout == 30.5
+
+    def test_zero_is_rejected(self, monkeypatch):
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": 0})
+        timeout, error = _resolve_searxng_timeout()
+        assert timeout is None
+        assert error is not None and "positive" in error
+
+    def test_negative_is_rejected(self, monkeypatch):
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": -5})
+        timeout, error = _resolve_searxng_timeout()
+        assert timeout is None
+        assert error is not None and "positive" in error
+
+    def test_nan_is_rejected(self, monkeypatch):
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": float("nan")})
+        timeout, error = _resolve_searxng_timeout()
+        assert timeout is None
+        assert error is not None and "finite" in error
+
+    def test_infinity_is_rejected(self, monkeypatch):
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": float("inf")})
+        timeout, error = _resolve_searxng_timeout()
+        assert timeout is None
+        assert error is not None and "finite" in error
+
+    def test_non_numeric_string_is_rejected(self, monkeypatch):
+        from plugins.web.searxng.provider import _resolve_searxng_timeout
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": "not-a-number"})
+        timeout, error = _resolve_searxng_timeout()
+        assert timeout is None
+        assert error is not None and "positive number" in error
+
+    def test_invalid_value_fails_search_with_clear_error_not_a_request(self, monkeypatch):
+        """An invalid configured timeout must fail the search call with a clear error and must
+        never fall through to an HTTP request (which would use an unvalidated/undefined timeout)."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"searxng_timeout": -1})
+
+        with patch("httpx.get") as mock_get:
+            result = SearXNGWebSearchProvider().search("query", limit=5)
+
+        mock_get.assert_not_called()
+        assert result["success"] is False
+        assert "searxng_timeout" in result["error"]
+
+
+# ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"
 # ---------------------------------------------------------------------------
 

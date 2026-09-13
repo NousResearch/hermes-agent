@@ -86,12 +86,41 @@ def _catalog_roots(vault: Path) -> Iterable[Path]:
         yield vault / "Reference" / "Agent Skills" / agent
 
 
+def _sorted_catalog_paths(root: Path, limit: int) -> Iterable[Path]:
+    """Walk a catalog root in stable depth-first order without reading notes."""
+
+    if limit <= 0:
+        return
+
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return
+
+    for path in children:
+        try:
+            if path.is_dir():
+                if path.is_symlink():
+                    continue
+                for child in _sorted_catalog_paths(path, limit):
+                    yield child
+                    limit -= 1
+                    if limit <= 0:
+                        return
+            elif path.is_file() and path.match("*.md"):
+                yield path
+                limit -= 1
+        except OSError:
+            continue
+
+
 def _catalog_files(vault: Path) -> Iterable[Path]:
     seen = 0
     for root in _catalog_roots(vault):
         if not root.exists():
             continue
-        for path in sorted(root.rglob("*.md")):
+        remaining = MAX_CATALOG_FILES - seen
+        for path in _sorted_catalog_paths(root, remaining):
             if seen >= MAX_CATALOG_FILES:
                 return
             seen += 1

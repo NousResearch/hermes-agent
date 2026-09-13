@@ -54,7 +54,7 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
         value = int(os.environ.get(name, "").strip() or default)
     except (TypeError, ValueError):
         return default
-    return max(value, minimum)
+    return value if value >= minimum else default
 
 
 def _resolve_busy_timeout_ms() -> int:

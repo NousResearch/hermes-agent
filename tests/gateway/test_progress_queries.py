@@ -214,6 +214,24 @@ def test_progress_query_summarizes_multiple_matching_roots(kanban_home):
     assert "Please name one" not in result.response
 
 
+def test_progress_query_reports_total_when_display_is_bounded(kanban_home):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    from gateway.progress_queries import resolve_progress_query
+
+    with _hermes_cli_kanban_db_connect.connect(board=BOARD) as conn:
+        roots = [_task(conn, f"Exception Burndown {index}") for index in range(4)]
+        for root in roots:
+            _sub(conn, root)
+
+    result = resolve_progress_query(
+        "How did the exception burndown go?", source=_source(), board=BOARD
+    )
+
+    assert result.handled is True
+    assert "I found 4 matching subscribed workstreams (showing 3)." in result.response
+    assert result.response.count("Progress for `") == 3
+
+
 def test_single_subscribed_root_does_not_override_zero_topic_score(kanban_home):
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     from gateway.progress_queries import resolve_progress_query

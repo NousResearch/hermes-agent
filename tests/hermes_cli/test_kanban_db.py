@@ -66,6 +66,13 @@ def test_research_intake_key_has_typed_schema(key, expected):
     assert kb.is_governed_research_intake(idempotency_key=key) is expected
 
 
+@pytest.mark.parametrize("raw_value", ["0", "-1"])
+def test_busy_timeout_below_minimum_uses_default(monkeypatch, raw_value):
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", raw_value)
+
+    assert kbc._resolve_busy_timeout_ms() == kbc.DEFAULT_BUSY_TIMEOUT_MS
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

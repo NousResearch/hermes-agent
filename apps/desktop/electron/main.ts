@@ -160,6 +160,7 @@ import { adoptServedDashboardToken } from './dashboard-token'
 import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import { withPoolBackendAuthorityEnv } from './desktop-pool-cron-authority'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -12614,7 +12615,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
+      env: withPoolBackendAuthorityEnv({
         ...process.env,
         HERMES_HOME,
         ...backend.env,
@@ -12623,18 +12624,13 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
         // can still point at the install dir even when spawn cwd is home.
         TERMINAL_CWD: hermesCwd,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
-        // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // lifecycle. Pool helpers must not also become machine-wide cron
-        // authorities: the primary backend alone multiplexes every profile.
-        HERMES_DESKTOP: '1',
-        HERMES_DESKTOP_POOL: '1',
         // Exact parent identity lets the backend self-exit after an unclean
         // Desktop death without mistaking a reused PID for its owner. If the
         // optional marker probe fails, retain legacy PID-only tracking.
         ...parentIdentityEnv,
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-      },
+      }),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })

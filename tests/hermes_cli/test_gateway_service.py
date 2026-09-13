@@ -416,6 +416,22 @@ class TestGatewayStopCleanup:
 
         assert events[:2] == ["drain", "stop"]
 
+    def test_stop_without_all_does_not_drain_every_profile(self, monkeypatch):
+        drained = []
+        monkeypatch.setattr(gateway_cli, "_dispatch_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway_cli, "_stop_installed_service", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "stop_profile_gateway", lambda: False)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_desktop_drain.drain_all_desktop_work",
+            lambda: drained.append(True),
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="stop", all=False, system=False, drain=True)
+        )
+
+        assert drained == []
+
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call

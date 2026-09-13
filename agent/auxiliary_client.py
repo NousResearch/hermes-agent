@@ -2400,16 +2400,12 @@ def _auxiliary_egress_binding(
         or raw_runtime.get("llm_egress_policy_digest")
         or DEFAULT_POLICY_DIGEST
     )
-    candidate_base_url = getattr(client, "base_url", "")
-    if candidate_base_url:
-        candidate_base_url = str(candidate_base_url)
-    if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
-        ("http://", "https://")
-    ):
+    candidate_base_url = str(getattr(client, "base_url", "") or "")
+    if not candidate_base_url.startswith(("http://", "https://")):
         candidate_base_url = raw_runtime.get("base_url")
-    if not isinstance(candidate_base_url, str) or not candidate_base_url.startswith(
-        ("http://", "https://")
-    ):
+    if not isinstance(candidate_base_url, str):
+        candidate_base_url = str(candidate_base_url or "")
+    if not candidate_base_url.startswith(("http://", "https://")):
         if normalized_provider == "openai-codex":
             candidate_base_url = "https://chatgpt.com/backend-api/codex"
         elif normalized_provider == "anthropic":

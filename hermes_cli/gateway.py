@@ -6056,7 +6056,7 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
-    if getattr(args, "drain", False):
+    if stop_all and getattr(args, "drain", False):
         from hermes_cli.gateway_desktop_drain import desktop_profile_homes, drain_all_desktop_work
         # Register cleanup before the s6 dispatch: the supervisor path returns
         # immediately, so it must not bypass the drain or leave its marker behind

@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
 
 import { test } from 'vitest'
 
-const mainSource = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+import {
+  poolBackendAuthorityEnv,
+  withPoolBackendAuthorityEnv
+} from './desktop-pool-cron-authority'
 
 test('pooled Desktop profile backends are marked as non-authoritative cron workers', () => {
-  const spawnStart = mainSource.indexOf('async function spawnPoolBackend')
-  const spawnEnd = mainSource.indexOf('// Bounded, deduplicated pool teardown', spawnStart)
-  const spawnBody = mainSource.slice(spawnStart, spawnEnd)
+  const env = withPoolBackendAuthorityEnv({ HERMES_DESKTOP: '0', CUSTOM: 'kept' })
 
-  assert.ok(spawnStart >= 0 && spawnEnd > spawnStart)
-  assert.match(spawnBody, /HERMES_DESKTOP_POOL:\s*'1'/)
+  assert.equal(env.HERMES_DESKTOP, poolBackendAuthorityEnv.HERMES_DESKTOP)
+  assert.equal(env.HERMES_DESKTOP_POOL, poolBackendAuthorityEnv.HERMES_DESKTOP_POOL)
+  assert.equal(env.CUSTOM, 'kept')
 })

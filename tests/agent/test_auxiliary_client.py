@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
+from httpx import URL
 
 from agent.llm_egress_firewall import EgressBlocked
 from agent.llm_egress_runtime import authorize_agent_sdk_kwargs
@@ -242,6 +243,16 @@ def test_auxiliary_binding_protects_every_provider_under_kanban_protected_remote
         client, provider="custom", model="some-local-model", api_mode="chat_completions",
     )
     assert binding is not None
+
+
+def test_auxiliary_binding_uses_sdk_url_objects_for_egress_identity():
+    client = SimpleNamespace(base_url=URL("https://aux.example/v1"))
+
+    _agent, route = _auxiliary_egress_binding(
+        client, provider="nous", model="some-model", api_mode="chat_completions"
+    )
+
+    assert route.base_url == "https://aux.example/v1"
 
 
 def test_only_compression_auxiliary_binding_gets_larger_exact_grant_caps():
@@ -3158,13 +3169,17 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch, tmp_path):
         stale_client = MagicMock()
         cache_key = ("anthropic", False, None, None, None)
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        monkeypatch.setattr(
+            "agent.anthropic_credentials.claude_code_credentials_path",
+            lambda: tmp_path / ".claude" / ".credentials.json",
+        )
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),

@@ -528,11 +528,18 @@ describe('useVirtualHistory offset cache reuse', () => {
     })
 
     try {
-      await delay(20)
+      await vi.waitFor(() => {
+        expect(expose.current?.scroll).not.toBeNull()
+        expect(expose.current?.virtualHistory.start).toBeGreaterThan(0)
+      })
       const scroll = expose.current!.scroll!
 
       scroll.scrollTo(0)
-      await delay(20)
+      await vi.waitFor(() => {
+        expect(scroll.getScrollTop()).toBe(0)
+        expect(scroll.isSticky()).toBe(false)
+        expect(expose.current?.virtualHistory.start).toBe(0)
+      })
       scroll.scrollTo(5)
       const adjustScrollTop = vi.spyOn(scroll, 'adjustScrollTop')
       const staleHeights = new Map(initialHeights)

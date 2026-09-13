@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import agent.learning_vault as learning_vault
 from agent.learning_vault import read_vault_learning
 
 
@@ -131,4 +132,76 @@ def test_missing_vault_returns_bounded_diagnostic(tmp_path: Path) -> None:
     assert nodes == []
     assert [diagnostic.reason_code for diagnostic in diagnostics] == [
         "vault_unavailable"
+    ]
+
+
+def test_catalog_file_cap_uses_deterministic_depth_first_order_before_consuming_cap(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "catalog"
+    (root / "a-dir").mkdir(parents=True)
+    (root / "b-dir").mkdir()
+    (root / "a-dir" / "inside.md").touch()
+    (root / "b-dir" / "inside.md").touch()
+    (root / "a.md").touch()
+    (root / "z.md").touch()
+
+    class UnorderedRoot:
+        name = root.name
+
+        def exists(self):
+            return True
+
+        def iterdir(self):
+            return iter(
+                (
+                    root / "z.md",
+                    root / "b-dir",
+                    root / "a.md",
+                    root / "a-dir",
+                )
+            )
+
+    monkeypatch.setattr(learning_vault, "MAX_CATALOG_FILES", 3)
+    monkeypatch.setattr(learning_vault, "_catalog_roots", lambda _vault: (UnorderedRoot(),))
+
+    assert list(learning_vault._catalog_files(tmp_path)) == [
+        root / "a-dir" / "inside.md",
+        root / "a.md",
+        root / "b-dir" / "inside.md",
+    ]
+
+
+def test_catalog_file_cap_stops_traversal_before_descending_past_cap(monkeypatch, tmp_path):
+    (tmp_path / "note-0.md").touch()
+    (tmp_path / "note-1.md").touch()
+
+    class BoundedRoot:
+        def exists(self):
+            return True
+
+        def iterdir(self):
+            return iter((tmp_path / "note-0.md", tmp_path / "note-1.md", OverflowRoot()))
+
+    class OverflowRoot:
+        name = "overflow"
+
+        def is_dir(self):
+            return True
+
+        def is_file(self):
+            return False
+
+        def is_symlink(self):
+            return False
+
+        def iterdir(self):
+            raise AssertionError("catalog traversal exceeded the file cap")
+
+    monkeypatch.setattr(learning_vault, "MAX_CATALOG_FILES", 2)
+    monkeypatch.setattr(learning_vault, "_catalog_roots", lambda _vault: (BoundedRoot(),))
+
+    assert list(learning_vault._catalog_files(tmp_path)) == [
+        tmp_path / "note-0.md",
+        tmp_path / "note-1.md",
     ]

@@ -67,3 +67,20 @@ def test_shell_hooks_allowlist_survives_failed_replace_without_temp(tmp_path, mo
     shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})  # logs, never raises
     assert json.loads(target.read_text(encoding="utf-8")) == {"approvals": []}
     assert _leftovers(target.parent, target.name) == []
+
+
+def test_surrogate_escaped_strings_round_trip_through_atomic_json_write(tmp_path):
+    """A non-UTF-8 cwd/argv (``os.fsdecode`` → lone surrogate) must be persisted, not raise.
+
+    Breadcrumbs, the shell-hook allowlist and the active-sessions ledger all persist paths and
+    guard only ``OSError``; a ``UnicodeEncodeError`` (a ValueError) escaping the canonical writer
+    silently stopped those writes.
+    """
+    from utils import atomic_json_write
+
+    payload = {"cwd": "a\udcffb", "plain": "caf\u00e9"}
+    target = tmp_path / "crumbs" / "crumb.json"
+    atomic_json_write(target, payload)
+    assert json.loads(target.read_bytes()) == payload
+    assert _leftovers(target.parent, target.name) == []
+

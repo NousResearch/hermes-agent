@@ -255,19 +255,36 @@ def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: st
                   mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
 
 
+def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_kwargs: dict) -> None:
+    """``json.dump`` that survives surrogate-escaped strings.
+
+    ``os.fsdecode`` of a non-UTF-8 filename/argv yields lone surrogates (``'\\udcff'``); a utf-8
+    text handle rejects them with ``UnicodeEncodeError`` — a ValueError, which callers guarding
+    ``except OSError`` never see. ``ensure_ascii=True`` escapes them as ``\\udcff`` and
+    ``json.loads`` restores the identical str, so the retry round-trips; ``surrogateescape``
+    would emit a raw 0xFF byte that the reader's utf-8 decode rejects. Serializing to a str first
+    keeps the failure before any byte reaches the file, so no partial payload is left behind.
+    """
+    text = json.dumps(data, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs)
+    try:
+        f.write(text)
+    except UnicodeEncodeError:
+        f.write(json.dumps(data, indent=indent, ensure_ascii=True, **dump_kwargs))
+
+
 def atomic_json_write(
     path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
     ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
 
-    ``ensure_ascii=True`` lets callers persist surrogate-escaped strings (non-UTF-8 argv/paths)
-    that a utf-8 text handle would otherwise reject with ``UnicodeEncodeError``. ``mode=0o600``
-    is the private-credential form: the temp file is 0600 from creation (mkstemp), so the payload
-    is never umask-readable.
+    Surrogate-escaped strings (non-UTF-8 argv/paths) are always persisted: the write falls back
+    to ``ensure_ascii=True`` escapes for that payload only, so normal content keeps its raw UTF-8
+    bytes. ``mode=0o600`` is the private-credential form: the temp file is 0600 from creation
+    (mkstemp), so the payload is never umask-readable.
     """
     path = Path(path)
-    _atomic_write(path, lambda f: json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs),
+    _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
                   fsync_dir=fsync_dir)
 

@@ -2425,6 +2425,7 @@ export const ja = defineLocale({
 
   composer: {
     message: 'メッセージ',
+    draftRestored: '下書きを復元しました',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',

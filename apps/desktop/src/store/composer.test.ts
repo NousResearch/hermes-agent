@@ -9,8 +9,10 @@ import {
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
   migrateSessionDraft,
+  reloadPersistedDrafts,
   removeComposerAttachment,
   requestVoiceConversationStart,
+  SESSION_DRAFT_MAX_AGE_MS,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
   takeSessionDraft,
@@ -208,7 +210,7 @@ describe('updateComposerAttachment', () => {
 
 describe('session drafts', () => {
   afterEach(() => {
-    for (const scope of ['session-a', 'session-b', null]) {
+    for (const scope of ['session-a', 'session-b', 'session-fresh', 'session-stale', null]) {
       clearSessionDraft(scope)
     }
 
@@ -238,10 +240,35 @@ describe('session drafts', () => {
 
     const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<
       string,
-      string
+      { savedAt: number; text: string }
     >
 
-    expect(persisted['session-a']).toBe('survives reload')
+    expect(persisted['session-a']?.text).toBe('survives reload')
+    expect(persisted['session-a']?.savedAt).toEqual(expect.any(Number))
+  })
+
+  it('restores fresh persisted drafts and expires stale ones after seven days', () => {
+    const now = Date.now()
+
+    window.localStorage.setItem(
+      SESSION_DRAFTS_STORAGE_KEY,
+      JSON.stringify({
+        'session-fresh': { savedAt: now - SESSION_DRAFT_MAX_AGE_MS, text: 'still here' },
+        'session-stale': { savedAt: now - SESSION_DRAFT_MAX_AGE_MS - 1, text: 'too old' }
+      })
+    )
+
+    reloadPersistedDrafts()
+
+    expect(takeSessionDraft('session-fresh').text).toBe('still here')
+    expect(takeSessionDraft('session-stale').text).toBe('')
+
+    const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<
+      string,
+      unknown
+    >
+
+    expect(Object.keys(persisted)).toEqual(['session-fresh'])
   })
 
   it('evicts empty drafts instead of leaving stale entries behind', () => {

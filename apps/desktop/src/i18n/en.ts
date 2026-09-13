@@ -2930,6 +2930,7 @@ export const en: Translations = {
 
   composer: {
     message: 'Message',
+    draftRestored: 'Draft restored',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',

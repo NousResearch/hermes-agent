@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { SECTIONS } from '@/app/settings/constants'
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
 
 import { TRANSLATIONS } from './catalog'
+import { en } from './en'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
 import { zh } from './zh'
 
@@ -57,6 +59,35 @@ describe('desktop i18n runtime translator', () => {
 
     expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
+  })
+
+  // Contract shape: the zh overlay supplies a real translation (non-empty,
+  // contains CJK) instead of falling through to the English source. Assumes
+  // the intended translation never equals the English text — don't reuse
+  // this shape for keys where zh legitimately mirrors en (brand names etc.).
+  const CJK = /[\u4e00-\u9fff]/
+
+  it('localizes the browser real-profile setting instead of falling back to English', () => {
+    const field = 'browser.use_real_profile'
+
+    const label = fieldCopyForSchemaKey(zh.settings.fieldLabels, field)
+    const description = fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)
+
+    expect(label).toBeTruthy()
+    expect(label).not.toBe(fieldCopyForSchemaKey(en.settings.fieldLabels, field))
+    expect(label).toMatch(CJK)
+    expect(description).toBeTruthy()
+    expect(description).not.toBe(fieldCopyForSchemaKey(en.settings.fieldDescriptions, field))
+    expect(description).toMatch(CJK)
+  })
+
+  it('localizes the browser settings section title', () => {
+    const englishLabel = SECTIONS.find(section => section.id === 'browser')?.label
+    const title = zh.settings.sections.browser
+
+    expect(title).toBeTruthy()
+    expect(title).not.toBe(englishLabel)
+    expect(title).toMatch(CJK)
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

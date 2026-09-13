@@ -19,8 +19,8 @@ def _login(monkeypatch, provider_id):
                         lambda p: {"logged_in": p == provider_id})
 
 
-def _config(monkeypatch, model_cfg):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg})
+def _config(monkeypatch, model_cfg, **extra):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg, **extra})
 
 
 def _no_aws(monkeypatch):
@@ -30,7 +30,8 @@ def _no_aws(monkeypatch):
 
 def _clear_provider_env(monkeypatch):
     for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "GLM_API_KEY", "ZAI_API_KEY",
-                "KIMI_API_KEY", "MINIMAX_API_KEY", "HERMES_INFERENCE_PROVIDER"):
+                "KIMI_API_KEY", "MINIMAX_API_KEY", "CUSTOM_BASE_URL", "CUSTOM_API_KEY",
+                "HERMES_INFERENCE_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -42,6 +43,92 @@ class TestProviderPrecedence:
         _login(monkeypatch, "anthropic")           # stale OAuth login
         _config(monkeypatch, {"provider": "zai", "default": "glm-4.6"})
         assert resolve_provider("auto") == "zai"
+
+    @pytest.mark.parametrize("provider", ["custom", "openrouter"])
+    def test_config_special_provider_counts_as_inference_route(self, monkeypatch, provider):
+        """Dashboard readiness accepts configured routes outside the auth registry."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, {
+            "provider": provider,
+            "default": "local-model",
+            "base_url": "http://127.0.0.1:8080/v1",
+        })
+
+        assert resolve_provider("auto", skip_free_tier=True) == provider
+
+    def test_config_named_custom_provider_counts_as_inference_route(self, monkeypatch):
+        """Named custom routes are ready only when their provider definition exists."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(
+            monkeypatch,
+            {"provider": "custom:llama-local", "default": "local-model"},
+            providers={"llama-local": {"base_url": "http://127.0.0.1:8080/v1"}},
+        )
+
+        assert resolve_provider("auto", skip_free_tier=True) == "custom:llama-local"
+
+    def test_custom_base_url_env_counts_as_inference_route(self, monkeypatch):
+        """Bootstrap and runtime accept the same scoped bare-custom endpoint source."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, {"provider": "custom", "default": "local-model"})
+        monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:8080/v1")
+
+        assert resolve_provider("auto", skip_free_tier=True) == "custom"
+
+    def test_bare_custom_provider_entry_counts_as_inference_route(self, monkeypatch):
+        """A providers.custom endpoint is routable without duplicating model.base_url."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(
+            monkeypatch,
+            {"provider": "custom", "default": "local-model"},
+            providers={"custom": {"base_url": "http://127.0.0.1:8080/v1"}},
+        )
+
+        assert resolve_provider("auto", skip_free_tier=True) == "custom"
+
+    def test_available_llamacpp_endpoint_counts_as_inference_route(self, monkeypatch):
+        """Dashboard readiness recognizes the managed endpoint used by runtime routing."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, {"provider": "llamacpp", "default": "local-model"})
+        monkeypatch.setattr(
+            "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+            lambda **kwargs: {"base_url": "http://127.0.0.1:18434/v1", "api_key": "local-key"},
+        )
+
+        assert resolve_provider("auto", skip_free_tier=True) == "llamacpp"
+
+    @pytest.mark.parametrize("model_cfg", [
+        {"provider": "custom", "default": "local-model"},
+        {"provider": "custom:missing", "default": "local-model"},
+    ])
+    def test_incomplete_custom_provider_is_not_an_inference_route(self, monkeypatch, model_cfg):
+        """Bootstrap readiness rejects custom identities that runtime resolution cannot build."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _logged_out(monkeypatch)
+        _config(monkeypatch, model_cfg, providers={})
+
+        with pytest.raises(AuthError, match="No inference provider configured"):
+            resolve_provider("auto", skip_free_tier=True)
+
+    def test_config_auto_provider_continues_resolution(self, monkeypatch):
+        """The auto sentinel is not itself a resolved inference route."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _login(monkeypatch, "anthropic")
+        _config(monkeypatch, {"provider": "auto", "default": "some-model"})
+
+        assert resolve_provider("auto") == "anthropic"
 
     def test_env_key_beats_stale_oauth(self, monkeypatch):
         """An exported provider API key wins over a logged-in OAuth active_provider."""

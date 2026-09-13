@@ -341,6 +341,10 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
+    # Dispatcher contract: expose the tool matcher so invoke_hook can skip non-matching tools
+    # BEFORE the single-flight window — an unmatched callback must never contend for (nor be
+    # skipped because of) another session's in-flight run (upstream #105223).
+    _callback._hermes_matches_tool = spec.matches_tool
     return _callback
 
 

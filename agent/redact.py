@@ -149,6 +149,9 @@ _PREFIX_PATTERNS = [
     r"bb_live_[A-Za-z0-9_-]{10,}",      # BrowserBase
     r"gAAAA[A-Za-z0-9_=-]{20,}",        # Codex encrypted tokens
     r"AKIA[A-Z0-9]{16}",                # AWS Access Key ID
+    r"GOCSPX-[A-Za-z0-9_-]{10,}",       # Google OAuth client secret (GOCSPX- prefix; leaked to
+                                        # disk-cleared dumps 2026-09-12: absent here meant the
+                                        # request-dump redaction pass never matched it)
     r"sk_live_[A-Za-z0-9]{10,}",        # Stripe secret key (live)
     r"sk_test_[A-Za-z0-9]{10,}",        # Stripe secret key (test)
     r"rk_live_[A-Za-z0-9]{10,}",        # Stripe restricted key

@@ -73,7 +73,8 @@ _STATIC_FEATURE_FLAGS = {
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
-# /v1/capabilities "endpoints" table: name -> (method, path).
+# /v1/capabilities "endpoints" table: name -> (method, path[, feature]). An entry naming a
+# feature is advertised only while that "features" flag is truthy on this listener.
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
     ("models", ("GET", "/v1/models")), ("model_options", ("GET", "/api/model/options")),
@@ -83,7 +84,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
-    ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown")),
+    ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
@@ -2276,7 +2277,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
         runner = getattr(self, "gateway_runner", None)
-        canonical_authority = getattr(runner, "session_authority", None) is not None
+        features = {
+            "chat_completions": True, "chat_completions_streaming": True,
+            "responses_api": True, "responses_streaming": True, "run_submission": True,
+            "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
+            **_STATIC_FEATURE_FLAGS,
+            "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
+            "cors": bool(self._cors_origins),
+            # Always advertised for feature-detection; enabled follows config.
+            "browser_extension_control": {
+                "enabled": self._browser_control_enabled(),
+                "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
+                "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
+                "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
+                "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
+                "developer_mode": self._browser_control_developer_mode(),
+                "artifact_transport": {
+                    "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
+                    "download": {
+                        "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
+                    "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
+                    "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
+                    "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
+                "real_browser_actions": True,
+                "transports": {
+                    "local_vps": "websocket-subprotocol-ticket",
+                    "cloud": "authenticated-gateway-rpc"}}}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
@@ -2287,36 +2313,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "The API server creates a server-side Hermes AIAgent; "
                     "tools execute on the API-server host unless a future "
                     "explicit split-runtime mode is enabled.")},
-            "features": {
-                "chat_completions": True, "chat_completions_streaming": True,
-                "responses_api": True, "responses_streaming": True, "run_submission": True,
-                "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
-                **_STATIC_FEATURE_FLAGS,
-                "run_unknown_resolution": canonical_authority,
-                "cors": bool(self._cors_origins),
-                # Always advertised for feature-detection; enabled follows config.
-                "browser_extension_control": {
-                    "enabled": self._browser_control_enabled(),
-                    "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
-                    "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
-                    "artifact_capabilities": sorted(BROWSER_CONTROL_ARTIFACT_CAPABILITIES),
-                    "developer_capabilities": sorted(BROWSER_CONTROL_DEVELOPER_CAPABILITIES),
-                    "developer_mode": self._browser_control_developer_mode(),
-                    "artifact_transport": {
-                        "upload": {"method": "POST", "path": "/v1/artifacts/upload"},
-                        "download": {
-                            "method": "GET", "path": "/v1/artifacts/download/{artifact_id}"},
-                        "max_bytes": DEFAULT_MAX_ARTIFACT_BYTES,
-                        "ttl_seconds": DEFAULT_ARTIFACT_TTL_SECONDS,
-                        "allowed_mime_types": sorted(DEFAULT_ALLOWED_MIME_TYPES)},
-                    "real_browser_actions": True,
-                    "transports": {
-                        "local_vps": "websocket-subprotocol-ticket",
-                        "cloud": "authenticated-gateway-rpc"}}},
+            "features": features,
             "endpoints": {
-                name: {"method": m, "path": p}
-                for name, (m, p) in _CAPABILITY_ENDPOINTS
-                if name != "run_unknown_resolution" or canonical_authority},
+                name: {"method": entry[0], "path": entry[1]}
+                for name, entry in _CAPABILITY_ENDPOINTS
+                if len(entry) < 3 or features[entry[2]]},
         })
 
     # -- Browser-extension control (authenticated local/VPS API) ----------------------

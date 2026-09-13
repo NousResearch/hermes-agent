@@ -4,8 +4,8 @@ Covers:
 - ``hermes_state_dbfile.collect_state_db_stats``: read-only, best-effort stats
   (page_count, freelist, WAL size, journal mode, row counts, FTS presence,
   pending v23 FTS-rebuild bookkeeping).
-- ``hermes_state_dbfile.count_db_holders``: /proc-based best-effort probe for how
-  many processes hold the DB file open (Linux only; None elsewhere/on error).
+- ``hermes_state_dbfile.count_db_holders``: best-effort probe for how many processes
+  hold the DB file open (/proc on Linux, libproc on macOS; None elsewhere/on error).
 - ``hermes_cli.doctor_state._render_state_db_stats``: formatting/threshold helper
   the doctor state.db section prints from.
 """
@@ -142,7 +142,7 @@ def test_count_db_holders_sees_open_connection(populated_db):
     conn = sqlite3.connect(str(populated_db))
     try:
         holders = count_db_holders(populated_db)
-        if sys.platform.startswith("linux"):
+        if sys.platform.startswith("linux") or sys.platform == "darwin":
             assert isinstance(holders, int)
             assert holders >= 1
         else:

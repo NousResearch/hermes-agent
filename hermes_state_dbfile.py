@@ -801,13 +801,15 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
 
 
 def count_db_holders(db_path: Path) -> Optional[int]:
-    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` scan); ``None``
-    on any error or non-Linux host, never raises.  Unreadable fd dirs (other users' processes
-    without root) are skipped, so this is a lower bound."""
+    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` scan on Linux,
+    libproc on macOS); ``None`` on any error or other host, never raises.  Uninspectable
+    processes (other users' without root) are skipped, so this is a lower bound."""
     try:
+        target = os.path.realpath(str(db_path))
+        if sys.platform == "darwin":
+            return len({pid for pid, path, _identity in _iter_darwin_fd_targets() if path == target})
         if not sys.platform.startswith("linux"):
             return None
-        target = os.path.realpath(str(db_path))
         return len({pid for pid, link, _fd_path in _iter_proc_fd_targets() if link == target})
     except Exception:
         return None

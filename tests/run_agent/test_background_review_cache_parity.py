@@ -455,7 +455,7 @@ def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
         parent_scope = resolve_prompt_cache_scope(agent)
         assert parent_scope.startswith("gwk_"), parent_scope
         # The fork stamps the parent's resolved scope; both resolvers honor it.
-        assert fork._inherited_cache_scope == parent_scope
+        assert getattr(fork, "_inherited_cache_scope", None) == parent_scope
         assert declared_conversation_scope(fork) == parent_scope
         assert resolve_prompt_cache_scope(fork) == parent_scope
     finally:
@@ -486,7 +486,7 @@ def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
 
         assert not routed
         assert resolve_prompt_cache_scope(agent) == "root-sid"
-        assert fork._inherited_cache_scope == "root-sid"
+        assert getattr(fork, "_inherited_cache_scope", None) == "root-sid"
         assert resolve_prompt_cache_scope(fork) == "root-sid"
     finally:
         db.close()

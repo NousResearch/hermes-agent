@@ -524,7 +524,7 @@ class TestBrowserVaultTools:
             {"autocomplete": "current-password", "formIndex": 0, "index": 1, "label": "", "name": "pw", "type": "password"},
         ]
 
-        def fake_eval(task_id, expression):
+        def fake_eval(task_id, expression, *, supervisor=None):
             if "location.href" in expression:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
@@ -568,7 +568,7 @@ class TestBrowserVaultTools:
             {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
         ]
 
-        def fake_eval(task_id, expression):
+        def fake_eval(task_id, expression, *, supervisor=None):
             if "location.href" in expression:
                 # Pre-check sees the allowed origin.
                 return {"success": True, "result": "https://example.com/login"}
@@ -606,7 +606,7 @@ class TestBrowserVaultTools:
             {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
         ]
 
-        def fake_eval(task_id, expression):
+        def fake_eval(task_id, expression, *, supervisor=None):
             if "location.href" in expression:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
@@ -654,7 +654,7 @@ class TestBrowserVaultTools:
             {"autocomplete": "current-password", "formIndex": 0, "index": 0, "label": "", "name": "pw", "type": "password"},
         ]
 
-        def fake_eval(task_id, expression):
+        def fake_eval(task_id, expression, *, supervisor=None):
             if "location.href" in expression:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
@@ -700,7 +700,7 @@ class TestBrowserVaultTools:
             {"autocomplete": "email", "index": 3, "type": "email"},
         ]
 
-        def fake_eval(task_id, expression):
+        def fake_eval(task_id, expression, *, supervisor=None):
             if "location.href" in expression:
                 return {"success": True, "result": "https://shop.test/checkout"}
             return {"success": True, "result": json.dumps(controls)}
@@ -920,7 +920,7 @@ class TestTwoFactor:
         controls = [{"index": 0, "type": "text", "name": "otp", "label": "Authentication code", "autocomplete": "one-time-code"}]
         seen = {}
 
-        def fake_eval(task_id, expr):
+        def fake_eval(task_id, expr, *, supervisor=None):
             return {"success": True, "result": json.dumps(controls) if "querySelectorAll" in expr else "https://github.com/sessions/two-factor"}
 
         def fake_secret(task_id, expr):
@@ -946,7 +946,7 @@ class TestTwoFactor:
         boxes = [{"index": i, "type": "tel", "name": f"digit{i}", "label": "", "autocomplete": "one-time-code",
                   "formIndex": 0, "maxLength": 1} for i in range(6)]
         seen = {}
-        fake_eval = lambda t, e: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
+        fake_eval = lambda t, e, *, supervisor=None: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
 
         def fake_secret(t, e):
             seen["expr"] = e
@@ -985,7 +985,7 @@ class TestTwoFactor:
     def test_no_code_field_points_at_passkey_or_device_approval(self):
         from tools import browser_vault_tool
 
-        fake_eval = lambda t, e: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
+        fake_eval = lambda t, e, *, supervisor=None: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
         with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))

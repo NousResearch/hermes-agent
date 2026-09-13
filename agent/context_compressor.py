@@ -25,6 +25,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
+from agent.historical_tool_arguments import omit_historical_tool_arguments
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
@@ -1261,27 +1262,6 @@ def evict_stale_outbound_tool_images(
     persisted history — the rewrite is send-path only.
     """
     return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
-
-
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
-    try:
-        parsed = json.loads(args)
-    except (ValueError, TypeError):
-        return args
-
-    def _shrink(obj: Any) -> Any:
-        if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
-        if isinstance(obj, dict):
-            return {k: _shrink(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_shrink(v) for v in obj]
-        return obj
-
-    shrunken = _shrink(parsed)
-    # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
@@ -2656,15 +2636,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return pruned
 
     @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+    def _omit_historical_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
+        """Omit large historical tool-call arguments at ``idx`` with valid JSON."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
         new_tcs = []
         for tc in msg["tool_calls"]:
             args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            new_args = omit_historical_tool_arguments(args) if len(args) > 500 else args
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:
@@ -2724,7 +2704,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
+            if self._omit_historical_tool_call_args_at(result, i):
                 pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -2775,7 +2755,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             for i in range(max(0, prune_boundary))
         )
         for i in range(max(0, prune_boundary)):
-            self._truncate_tool_call_args_at(result, i)
+            self._omit_historical_tool_call_args_at(result, i)
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.

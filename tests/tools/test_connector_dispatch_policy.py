@@ -5,6 +5,49 @@ import json
 import pytest
 
 
+def test_non_replayable_connector_entry_does_not_block_fresh_batch_sibling(monkeypatch):
+    import model_tools
+    from agent.historical_tool_arguments import omit_historical_tool_arguments
+    from tools.registry import invalidate_check_fn_cache
+    from tools.tool_gateway import bridge, config
+
+    monkeypatch.setattr(config, "connectors_available", lambda: True)
+    monkeypatch.setattr(bridge, "connectors_available", lambda: True)
+    invalidate_check_fn_cache()
+    wire = []
+
+    class Client:
+        def execute(self, planned):
+            wire.extend(planned)
+            return [{"data": "remote-ok", "error": None} for _ in planned]
+
+    monkeypatch.setattr(bridge, "_default_client_factory", Client)
+    calls = [
+        {
+            "name": "connectors__gmail__SEND_EMAIL",
+            "arguments": json.loads(omit_historical_tool_arguments("x" * 900)),
+        },
+        {
+            "name": "connectors__slack__POST_MESSAGE",
+            "arguments": {"body": "fresh"},
+        },
+    ]
+
+    result = json.loads(model_tools.handle_function_call(
+        "tool_call",
+        {"calls": calls},
+        enabled_toolsets=["connections"],
+        session_id="integrity-session",
+        tool_call_id="integrity-call",
+    ))
+
+    assert result["results"][0]["error"]["code"] == "non_replayable_history_arguments"
+    assert result["results"][1]["response"] == "remote-ok"
+    assert [(plan.name, plan.arguments) for plan in wire] == [
+        ("connectors__slack__POST_MESSAGE", {"body": "fresh"})
+    ]
+
+
 @pytest.mark.parametrize("blocked_by", ["hook", "execution"])
 def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blocked_by):
     import model_tools

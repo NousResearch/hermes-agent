@@ -30,6 +30,12 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.historical_tool_arguments import (
+    NON_REPLAYABLE_HISTORY_MESSAGE,
+    TOOL_ARGUMENTS_TOO_COMPLEX_MESSAGE,
+    ToolArgumentTraversalLimit,
+    contains_non_replayable_history_args,
+)
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -144,18 +150,64 @@ class _BatchAbandoned(BaseException):
     so ``except Exception`` handlers in the middleware chain can't swallow it."""
 
 
+def _non_replayable_history_error() -> str:
+    from tools.registry import tool_error
+
+    return tool_error(NON_REPLAYABLE_HISTORY_MESSAGE, code="non_replayable_history_arguments")
+
+
+def _tool_arguments_too_complex_error() -> str:
+    from tools.registry import tool_error
+
+    return tool_error(TOOL_ARGUMENTS_TOO_COMPLEX_MESSAGE, code="tool_arguments_too_complex")
+
+
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
-    try:
-        arguments = json.loads(raw_arguments)
-    except (json.JSONDecodeError, TypeError):
-        arguments = None
+    if isinstance(raw_arguments, dict):
+        arguments = raw_arguments
+    else:
+        try:
+            arguments = json.loads(raw_arguments)
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            arguments = None
     if isinstance(arguments, dict):
         return arguments, None
     return {}, json.dumps(
         {"error": "Invalid tool arguments", "message": "Tool arguments must be a valid JSON object; tool was not executed."},
         ensure_ascii=False,
     )
+
+
+def _direct_argument_error(args: dict) -> Optional[str]:
+    try:
+        if contains_non_replayable_history_args(args):
+            return _non_replayable_history_error()
+    except ToolArgumentTraversalLimit:
+        return _tool_arguments_too_complex_error()
+    return None
+
+
+def _deferred_argument_error(name: str, args: dict) -> Optional[str]:
+    """Validate decoded arguments nested inside the deferred tool wrapper."""
+    if name != "tool_call":
+        return None
+
+    from tools.registry import tool_error
+    from tools.tool_gateway.names import is_connector_name
+    from tools.tool_search_validation import normalize_tool_call_entries
+
+    entries, error = normalize_tool_call_entries(args)
+    if error:
+        return tool_error(error, code="invalid_tool_arguments")
+    if entries and all(is_connector_name(entry["name"]) for entry in entries):
+        return None
+    try:
+        if any(contains_non_replayable_history_args(entry["arguments"]) for entry in entries):
+            return _non_replayable_history_error()
+    except ToolArgumentTraversalLimit:
+        return _tool_arguments_too_complex_error()
+    return None
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
@@ -433,6 +485,12 @@ def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _Parse
     name = _canonical_tool_name(tool_call.function.name)
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
     scope_block = None
+    if parse_error is None:
+        parse_error = (
+            _deferred_argument_error(name, args)
+            if name == "tool_call"
+            else _direct_argument_error(args)
+        )
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)
     return _ParsedCall(tool_call, name, args, [], parse_error, scope_block)

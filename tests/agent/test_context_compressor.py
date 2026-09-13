@@ -2292,92 +2292,75 @@ class TestThresholdTokensCap:
 
 
 
-class TestTruncateToolCallArgsJson:
-    """Regression tests for #11762.
+class TestHistoricalToolCallArgumentOmission:
+    """Oversized historical arguments stay valid for providers but cannot be
+    mistaken for complete inputs to a future tool call."""
 
-    The previous implementation produced invalid JSON by slicing
-    ``function.arguments`` mid-string, which caused non-retryable 400s from
-    strict providers (observed on MiniMax) and stuck long sessions in a
-    re-send loop. The helper here must always emit parseable JSON whose
-    shape matches the original — shrunken, not corrupted.
-    """
-
-    def _helper(self):
-        from agent.context_compressor import _truncate_tool_call_args_json
-        return _truncate_tool_call_args_json
-
-    def test_shrunken_args_remain_valid_json(self):
+    def test_oversized_args_become_bounded_non_replayable_json(self):
         import json as _json
-        shrink = self._helper()
+
+        from agent.historical_tool_arguments import omit_historical_tool_arguments
+
         original = _json.dumps({
-            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+            "path": "/tmp/synthetic-target.md",
+            "content": "SYNTHETIC-START-" + "abc " * 400,
         })
-        assert len(original) > 500
-        shrunk = shrink(original)
-        parsed = _json.loads(shrunk)  # must not raise
-        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
-        assert len(shrunk) < len(original)
+        omitted = omit_historical_tool_arguments(original)
+        parsed = _json.loads(omitted)
 
+        assert len(omitted) <= 200
+        assert parsed["_hermes_history_omitted"]["non_replayable"] is True
+        assert parsed["_hermes_history_omitted"]["reason"] == "context_compression"
+        assert parsed["_hermes_history_omitted"]["original_chars"] == len(original)
+        assert "/tmp/synthetic-target.md" not in omitted
+        assert "SYNTHETIC-START" not in omitted
 
+        malformed = "{\"path\":\"/tmp/incomplete" + "x" * 800
+        malformed_marker = _json.loads(omit_historical_tool_arguments(malformed))
+        assert malformed_marker["_hermes_history_omitted"]["original_chars"] == len(malformed)
 
-
-    def test_non_string_leaves_preserved(self):
+    def test_pass3_omits_only_historical_args_and_preserves_pairing(self):
         import json as _json
-        shrink = self._helper()
-        payload = _json.dumps({
-            "retries": 3,
-            "enabled": True,
-            "timeout": None,
-            "items": [1, 2, 3],
-            "note": "z" * 500,
-        })
-        parsed = _json.loads(shrink(payload))
-        assert parsed["retries"] == 3
-        assert parsed["enabled"] is True
-        assert parsed["timeout"] is None
-        assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
 
-
-
-    def test_pass3_emits_valid_json_for_downstream_provider(self):
-        """End-to-end: Pass 3 must never produce the exact failure payload
-        that caused the 400 loop (unterminated string, missing brace)."""
-        import json as _json
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="test/model",
                 threshold_percent=0.85,
                 protect_first_n=1,
-                protect_last_n=1,
+                protect_last_n=2,
                 quiet_mode=True,
             )
-        huge_content = "# Shopping Browser Setup Notes\n\n## Overview\n" + "x " * 400
-        args_payload = _json.dumps({
-            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": huge_content,
+        historical_args = _json.dumps({
+            "path": "/tmp/historical.md",
+            "content": "historical-" + "x " * 400,
         })
-        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+        current_args = _json.dumps({
+            "path": "/tmp/current.md",
+            "content": "current-" + "y " * 400,
+        })
         messages = [
-            {"role": "user", "content": "please write two files"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "type": "function",
-                 "function": {"name": "write_file", "arguments": args_payload}},
-            ]},
-            {"role": "tool", "tool_call_id": "call_1",
-             "content": '{"bytes_written": 727}'},
-            {"role": "user", "content": "ok"},
-            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "write the historical file"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call-old", "type": "function",
+                "function": {"name": "write_file", "arguments": historical_args},
+            }]},
+            {"role": "tool", "tool_call_id": "call-old", "content": '{"ok": true}'},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call-current", "type": "function",
+                "function": {"name": "write_file", "arguments": current_args},
+            }]},
+            {"role": "tool", "tool_call_id": "call-current", "content": '{"ok": true}'},
         ]
-        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
-        shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
-        # Must parse — otherwise downstream provider returns 400
-        parsed = _json.loads(shrunk)
-        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
 
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+
+        historical = result[1]["tool_calls"][0]
+        omitted = _json.loads(historical["function"]["arguments"])
+        assert historical["id"] == "call-old"
+        assert omitted["_hermes_history_omitted"]["non_replayable"] is True
+        assert result[2]["tool_call_id"] == "call-old"
+        assert result[3]["tool_calls"][0]["function"]["arguments"] == current_args
+        assert result[4]["tool_call_id"] == "call-current"
 
 class TestLazyContextResolution:
     """Verify that ContextCompressor defers get_model_context_length until

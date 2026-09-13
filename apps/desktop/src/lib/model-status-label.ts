@@ -1,4 +1,4 @@
-import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from './reasoning-effort.ts'
 
 /** Which model/provider pair a picker should mark "current". SessionView state
  *  also drives the composer label, so a complete pair there wins over an older
@@ -109,17 +109,27 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast).
- *  `defaultEffort` is the profile's configured level, used when the surface has
- *  no explicit effort so the label never advertises a default the agent won't use. */
-export function formatModelStatusLabel(
+/** Provider prefix of a model id (`openai` from `openai/gpt-5.5`), '' when the
+ *  id is bare or the slash is malformed. */
+function providerPrefixOf(model: string): string {
+  const trimmed = model.trim()
+  const slash = trimmed.indexOf('/')
+
+  return slash > 0 ? trimmed.slice(0, slash) : ''
+}
+
+/** Status-bar trigger label split into renderable parts so a host can style
+ *  segments differently (the composer pill dims the provider). `provider` is
+ *  '' when unknown or when the model id already carries it as its `provider/`
+ *  prefix — a duplicate "openai · openai" reads as a rendering bug. */
+export function modelStatusLabelParts(
   model: string,
-  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
-): string {
+  options?: { defaultEffort?: string; fastMode?: boolean; provider?: string; reasoningEffort?: string }
+): { meta: string; name: string; provider: string } {
   const name = displayModelName(model)
 
   if (!model.trim()) {
-    return name
+    return { meta: '', name, provider: '' }
   }
 
   const parts: string[] = []
@@ -134,5 +144,43 @@ export function formatModelStatusLabel(
   // glance, not just when non-default.
   parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
-  return `${name} · ${parts.join(' ')}`
+  const slug = options?.provider?.trim() ?? ''
+  const trimmedModel = model.trim()
+  const idPrefix = providerPrefixOf(trimmedModel)
+  // Only a bare `provider/model` id makes the row's provider redundant with
+  // the id's own prefix (e.g. `openai/gpt-5.5` + `openai` → hide). Relay-style
+  // ids (`openrouter/anthropic/claude-opus-4.8` + `openrouter`) carry an
+  // upstream vendor in the deeper path: the top-level prefix names the relay,
+  // so both halves are information and both show.
+  const relayPath = idPrefix !== '' && trimmedModel.slice(idPrefix.length + 1).includes('/')
+
+  return {
+    meta: parts.join(' '),
+    name,
+    provider:
+      slug && (slug.toLowerCase() !== idPrefix.toLowerCase() || relayPath) ? slug : ''
+  }
+}
+
+/** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `defaultEffort` is the profile's configured level, used when the surface has
+ *  no explicit effort so the label never advertises a default the agent won't use.
+ *  `provider` is shown between name and state when it adds information (it is
+ *  skipped when the model id already carries the same provider prefix). */
+export function formatModelStatusLabel(
+  model: string,
+  options?: { defaultEffort?: string; fastMode?: boolean; provider?: string; reasoningEffort?: string }
+): string {
+  const parts = modelStatusLabelParts(model, options)
+  const segments = [parts.name]
+
+  if (parts.provider) {
+    segments.push(parts.provider)
+  }
+
+  if (parts.meta) {
+    segments.push(parts.meta)
+  }
+
+  return segments.join(' · ')
 }

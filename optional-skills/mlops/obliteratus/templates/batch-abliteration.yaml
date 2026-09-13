@@ -2,13 +2,13 @@
 # Abliterate multiple models with the same method for comparison.
 #
 # Run each one sequentially:
-#   for model in models; do obliteratus obliterate $model --method informed; done
+#   for model in models; do obliteratus obliterate $model --method advanced --output-dir ./liberated; done
 #
 # Or use this as a reference for which models to process.
 
 # Common settings
 defaults:
-  method: "informed"
+  method: "advanced"
   quantization: "4bit"
   output_dir: "./abliterated-models"
 

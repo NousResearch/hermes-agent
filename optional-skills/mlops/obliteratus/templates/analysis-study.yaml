@@ -23,7 +23,7 @@ study:
   #   - ffn_ablation
   #   - embedding_ablation
 
-# Analysis modules to run (subset of the 27 available)
+# Analysis modules to run (subset of the 15 documented in the README)
 analysis:
   - alignment_imprint        # Detect DPO/RLHF/CAI/SFT training method
   - concept_geometry          # Map refusal cone geometry

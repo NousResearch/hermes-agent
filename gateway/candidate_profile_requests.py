@@ -194,7 +194,7 @@ class CandidateProfileRequests:
             raise ValueError("source_key must be a bounded non-empty string")
         local_resolution = CapabilityRegistry(
             db_path=self._db_path, board=self._board
-        ).resolve(signature, profile_id=profile_id)
+        ).resolve(signature, profile_id=profile_id, connection=connection)
         if local_resolution.status not in {"no_match", "ambiguous"}:
             return CandidateProfileRequest(
                 request_id="",
@@ -333,7 +333,8 @@ class CandidateProfileRequests:
         with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
             original = conn.execute(
                 """
-                SELECT request_id, request_hash, signature_hash, permissions_hash, policy_digest
+                SELECT request_id, generation_id, request_hash, signature_hash, permissions_hash,
+                       policy_digest
                 FROM candidate_profile_requests WHERE request_id = ?
                 """,
                 (candidate_id,),
@@ -343,9 +344,9 @@ class CandidateProfileRequests:
             latest = conn.execute(
                 """
                 SELECT lifecycle_status FROM candidate_profile_requests
-                WHERE request_hash = ? ORDER BY id DESC LIMIT 1
+                WHERE generation_id = ? ORDER BY id DESC LIMIT 1
                 """,
-                (original["request_hash"],),
+                (original["generation_id"] or original["request_id"],),
             ).fetchone()
         if latest is None:
             return None
@@ -384,8 +385,8 @@ class CandidateProfileRequests:
             with kanban_db.write_txn(conn):
                 original = conn.execute(
                     """
-                    SELECT request_id, request_hash, signature_hash, permissions_hash, source_key_hash,
-                           policy_digest, evidence_ref_hashes_json
+                    SELECT request_id, generation_id, request_hash, signature_hash, permissions_hash,
+                           source_key_hash, policy_digest, evidence_ref_hashes_json
                     FROM candidate_profile_requests WHERE request_id = ?
                     """,
                     (candidate_id,),
@@ -395,9 +396,9 @@ class CandidateProfileRequests:
                 latest = conn.execute(
                     """
                     SELECT lifecycle_status FROM candidate_profile_requests
-                    WHERE request_hash = ? ORDER BY id DESC LIMIT 1
+                    WHERE generation_id = ? ORDER BY id DESC LIMIT 1
                     """,
-                    (original["request_hash"],),
+                    (original["generation_id"] or original["request_id"],),
                 ).fetchone()
                 if latest is None or latest["lifecycle_status"] != expected_status:
                     return None
@@ -410,13 +411,14 @@ class CandidateProfileRequests:
                 conn.execute(
                     """
                     INSERT INTO candidate_profile_requests (
-                        request_id, request_hash, signature_hash, permissions_hash, source_key_hash,
+                        request_id, generation_id, request_hash, signature_hash, permissions_hash, source_key_hash,
                         policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
                         cooldown_until, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                     """,
                     (
                         transition_id,
+                        original["generation_id"] or original["request_id"],
                         original["request_hash"],
                         original["signature_hash"],
                         original["permissions_hash"],
@@ -483,13 +485,13 @@ class CandidateProfileRequests:
         conn.execute(
             """
             INSERT INTO candidate_profile_requests (
-                request_id, request_hash, signature_hash, permissions_hash, source_key_hash,
+                request_id, generation_id, request_hash, signature_hash, permissions_hash, source_key_hash,
                 policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
                 cooldown_until, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                request_id, request_hash, signature.signature_hash, signature.permissions_hash,
+                request_id, request_id, request_hash, signature.signature_hash, signature.permissions_hash,
                 _hash(source_key), policy_digest, _canonical_json(evidence_ref_hashes),
                 lifecycle_status, reason_code, cooldown_until, now,
             ),

@@ -903,10 +903,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     canonical_candidate_columns = {
         "id", "request_id", "request_hash", "signature_hash", "permissions_hash",
         "source_key_hash", "policy_digest", "evidence_ref_hashes_json",
-        "lifecycle_status", "reason_code", "cooldown_until", "created_at",
+        "generation_id", "lifecycle_status", "reason_code", "cooldown_until", "created_at",
     }
     if _table_exists(conn, "candidate_profile_requests"):
-        if _column_names(conn, "candidate_profile_requests") != canonical_candidate_columns:
+        existing_columns = _column_names(conn, "candidate_profile_requests")
+        legacy_columns = canonical_candidate_columns - {"generation_id"}
+        if existing_columns == legacy_columns:
+            conn.execute(
+                "ALTER TABLE candidate_profile_requests ADD COLUMN generation_id TEXT"
+            )
+            conn.execute(
+                "UPDATE candidate_profile_requests SET generation_id = request_id "
+                "WHERE generation_id IS NULL"
+            )
+        elif existing_columns != canonical_candidate_columns:
             conn.execute("DROP TABLE candidate_profile_requests")
         else:
             conn.execute(
@@ -924,6 +934,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             source_key_hash          TEXT NOT NULL,
             policy_digest            TEXT NOT NULL,
             evidence_ref_hashes_json TEXT NOT NULL,
+            generation_id            TEXT,
             lifecycle_status         TEXT NOT NULL,
             reason_code              TEXT NOT NULL,
             cooldown_until           INTEGER,

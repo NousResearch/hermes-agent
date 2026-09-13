@@ -1234,6 +1234,7 @@ CREATE TABLE IF NOT EXISTS candidate_profile_requests (
     source_key_hash          TEXT NOT NULL,
     policy_digest             TEXT NOT NULL,
     evidence_ref_hashes_json TEXT NOT NULL,
+    generation_id             TEXT,
     lifecycle_status         TEXT NOT NULL,
     reason_code              TEXT NOT NULL,
     cooldown_until           INTEGER,

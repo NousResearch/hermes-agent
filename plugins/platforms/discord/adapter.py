@@ -4991,12 +4991,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Build the board-local registry from explicit operator declarations."""
         raw = settings.get("capabilities")
         from gateway.capability_registry import CapabilityRegistry, CapabilitySignature
+        from gateway.configured_board import configured_board_db_path
         from gateway.specialist_routing import SPECIALIST_PROFILES
+
+        db_path = configured_board_db_path(settings["board"])
 
         if not isinstance(raw, dict) or not raw:
             # Specialist routing is enabled only by explicit configuration;
             # without declarations it remains fail-closed and cannot hand off.
-            return CapabilityRegistry(board=settings["board"], configured_profiles={})
+            return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})
 
         declarations = {}
         try:
@@ -5010,7 +5013,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     # Any malformed declaration invalidates the whole registry;
                     # returning None would be interpreted as "no registry" and
                     # let arbitrary specialist profiles through.
-                    return CapabilityRegistry(board=settings["board"], configured_profiles={})
+                    return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})
                 declarations[profile] = CapabilitySignature(
                     domain=value["domain"],
                     actions=tokens(value["actions"]),
@@ -5018,11 +5021,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     requested_permissions=tokens(value["requested_permissions"]),
                 )
             registry = CapabilityRegistry(
-                board=settings["board"], configured_profiles=declarations,
+                db_path=db_path, board=settings["board"], configured_profiles=declarations,
             )
             return registry
         except (KeyError, TypeError, ValueError):
-            return CapabilityRegistry(board=settings["board"], configured_profiles={})
+            return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})
 
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """Return source-scoped toolsets; voice fast-lane turns are tool-free."""

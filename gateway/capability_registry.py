@@ -482,15 +482,20 @@ class CapabilityRegistry:
         with self._connection():
             pass
 
-    def resolve(self, signature: CapabilitySignature, *, profile_id: str | None = None) -> RegistryResolution:
+    def resolve(
+        self,
+        signature: CapabilitySignature,
+        *,
+        profile_id: str | None = None,
+        connection: object | None = None,
+    ) -> RegistryResolution:
         """Resolve exactly one active, unexpired, non-expanding local profile."""
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")
         if profile_id is not None:
             self._validate_profile_id(profile_id)
-        try:
-            with self._connection() as conn:
-                rows = conn.execute(
+        def _read_rows(conn: object):
+            return conn.execute(
                     """
                     SELECT profile_id, signature_hash, permissions_hash, domain,
                            actions_json, evidence_class, requested_permissions_json, expires_at
@@ -514,7 +519,17 @@ class CapabilityRegistry:
                         profile_id,
                         profile_id,
                     ),
-                ).fetchall()
+            ).fetchall()
+
+        try:
+            if connection is not None:
+                # Handoff callers already hold the authoritative Kanban write
+                # transaction. Opening a second connection here would wait on
+                # that transaction's RESERVED lock and eventually time out.
+                rows = _read_rows(connection)
+            else:
+                with self._connection() as conn:
+                    rows = _read_rows(conn)
         except Exception as exc:
             return RegistryResolution(
                 status="unavailable",

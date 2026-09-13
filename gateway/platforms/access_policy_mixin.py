@@ -24,6 +24,13 @@ OPTIN_TRUTHY = frozenset({"true", "1", "yes"})
 class OwnAccessPolicyMixin:
     ALLOW_ALL_ENV_PREFIX: str = ""
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # A host that forgets its prefix would silently read ``_ALLOW_ALL_USERS`` and deny every
+        # open-DM deployment whose setup wrote ``<PLATFORM>_ALLOW_ALL_USERS`` — refuse at class creation.
+        if not str(cls.ALLOW_ALL_ENV_PREFIX or "").strip():
+            raise TypeError(f"{cls.__qualname__} mixes in OwnAccessPolicyMixin but sets no ALLOW_ALL_ENV_PREFIX")
+
     @property
     def enforces_own_access_policy(self) -> bool:
         return True

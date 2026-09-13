@@ -101,6 +101,7 @@ def _content_of(container: Dict[str, Any], key: str) -> str:
 class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
+    ALLOW_ALL_ENV_PREFIX = "WECOM"
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
     SUPPORTS_NATIVE_STREAMING = True  # msgtype "stream" via aibot_respond_msg, not edit-based

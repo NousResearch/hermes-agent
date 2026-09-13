@@ -60,21 +60,43 @@ def _verdicts(host, name, dm_policy, group_policy):
     return out
 
 
-@pytest.mark.parametrize("opt_in", [{}, {"GATEWAY_ALLOW_ALL_USERS": "true"}])
-def test_all_own_policy_adapters_agree(monkeypatch, opt_in):
-    for var in ("GATEWAY_ALLOW_ALL_USERS", "WEIXIN_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
-                "QQ_ALLOW_ALL_USERS", "WHATSAPP_ALLOW_ALL_USERS", "YUANBAO_ALLOW_ALL_USERS"):
+# Per-host opt-in var (the one ``hermes gateway setup`` writes). Setting only GATEWAY_ALLOW_ALL_USERS
+# would pass with a host whose prefix is missing — that is exactly how WeCom regressed once.
+PLATFORM_OPT_IN = {"weixin": "WEIXIN_ALLOW_ALL_USERS", "wecom": "WECOM_ALLOW_ALL_USERS",
+                   "qqbot": "QQ_ALLOW_ALL_USERS", "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",
+                   "yuanbao": "YUANBAO_ALLOW_ALL_USERS"}
+
+
+def _all_agree(hosts, opt_in_for, label):
+    for dm_policy, group_policy in itertools.product(POLICIES, POLICIES):
+        table = {}
+        for name, host in hosts.items():
+            with _scope(opt_in_for(name)):
+                table[name] = _verdicts(host, name, dm_policy, group_policy)
+        for name, verdicts in table.items():
+            assert verdicts == table["weixin"], (name, dm_policy, group_policy, label)
+        expected_open = bool(opt_in_for("weixin")) and dm_policy == "open"
+        assert table["weixin"][("dm", "stranger")] is expected_open
+        assert table["weixin"][("intake", "   ")] is False  # blank principal never admitted
+        assert table["weixin"][("intake", "stranger")] is (dm_policy == "pairing" or expected_open)
+
+
+@pytest.mark.parametrize("mode", ["none", "gateway", "platform"])
+def test_all_own_policy_adapters_agree(monkeypatch, mode):
+    for var in ("GATEWAY_ALLOW_ALL_USERS", *PLATFORM_OPT_IN.values()):
         monkeypatch.delenv(var, raising=False)
-    hosts = _hosts()
-    with _scope(opt_in):
-        for dm_policy, group_policy in itertools.product(POLICIES, POLICIES):
-            table = {name: _verdicts(host, name, dm_policy, group_policy) for name, host in hosts.items()}
-            for name, verdicts in table.items():
-                assert verdicts == table["weixin"], (name, dm_policy, group_policy, opt_in)
-            expected_open = bool(opt_in) and dm_policy == "open"
-            assert table["weixin"][("dm", "stranger")] is expected_open
-            assert table["weixin"][("intake", "   ")] is False  # blank principal never admitted
-            assert table["weixin"][("intake", "stranger")] is (dm_policy == "pairing" or expected_open)
+    opt_in_for = {
+        "none": lambda name: {},
+        "gateway": lambda name: {"GATEWAY_ALLOW_ALL_USERS": "true"},
+        "platform": lambda name: {PLATFORM_OPT_IN[name]: "true"},
+    }[mode]
+    _all_agree(_hosts(), opt_in_for, mode)
+
+
+def test_mixin_host_without_prefix_is_rejected_at_class_creation():
+    with pytest.raises(TypeError, match="ALLOW_ALL_ENV_PREFIX"):
+        class Host(OwnAccessPolicyMixin):  # noqa: F841
+            _dm_policy = "open"
 
 
 def test_platform_prefix_env_name_is_scoped_and_fail_closed(monkeypatch):

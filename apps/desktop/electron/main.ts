@@ -12742,7 +12742,13 @@ const poolStopper = createPoolStopper({
   // immediate; hold the same in-flight fence through bootstrap drain + SSH
   // teardown so a reconnect cannot publish into a dying scope (#106935).
   afterStop: async key => {
-    await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
+    try {
+      await sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
+    } catch (err) {
+      // The idle reaper calls stopPoolBackend un-awaited; a failed SSH teardown
+      // must not surface as an unhandled rejection or block the pool fence.
+      sshRememberLog(`[ssh-teardown] ${key}: ${String(err)}`)
+    }
   }
 })
 

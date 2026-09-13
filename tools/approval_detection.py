@@ -286,6 +286,19 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
+    # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
+    # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
+    # The host literals have no other use, so their appearance ANYWHERE in the command (any HTTP
+    # client, env assignment, or script argument) is the signal; lookarounds keep other 169.254.x.x
+    # link-local addresses and longer dotted strings out. This prompts for approval (legit uses
+    # exist on real cloud VMs) — it is NOT a hardline block. Covers the link-local IPv4 endpoint
+    # (AWS/Azure/GCP/OpenStack), its AWS IPv6 form fd00:ec2::254, the GCP hostname, and Alibaba
+    # Cloud's 100.100.100.200.
+    (r'(?<![\d.])(?:169\.254\.169\.254|100\.100\.100\.200)(?![\d.])'
+     r'|(?<![\w.-])metadata\.google\.internal(?![\w.-])'
+     r'|fd00:ec2::254',
+     "cloud metadata endpoint access (instance credentials)"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the
     # raw text yet runs arbitrary commands.
     (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe decoded content to shell (possible command obfuscation)"),

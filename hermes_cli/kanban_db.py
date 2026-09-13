@@ -2642,15 +2642,28 @@ def _gate_created_cards(
     return verified_cards
 
 
-def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata: dict, now: int) -> None:
+def _stage_completion_artifacts(
+    conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
+    uploaded_by: str = "kanban_complete",
+) -> None:
     """Copy scratch artifacts to the attachments dir and record each as an attachment row."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
     for stored_path in metadata.pop("_staged_artifacts", []):
         path = Path(stored_path)
         _insert_completion_attachment(
             conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now,
+            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
         )
+
+
+def _cleaned_artifact_paths(metadata: Any) -> list[str]:
+    """Non-blank string paths declared in ``metadata["artifacts"]``."""
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
 
 
 def _completed_event_payload(
@@ -2672,11 +2685,9 @@ def _completed_event_payload(
     if verified_cards:
         payload["verified_cards"] = verified_cards
     if isinstance(metadata, dict):
-        md_artifacts = metadata.get("artifacts")
-        if isinstance(md_artifacts, (list, tuple)):
-            cleaned = [str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()]
-            if cleaned:
-                payload["artifacts"] = cleaned
+        cleaned = _cleaned_artifact_paths(metadata)
+        if cleaned:
+            payload["artifacts"] = cleaned
     return payload
 
 
@@ -2835,16 +2846,16 @@ def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
 
 def _insert_completion_attachment(
     conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str, size: int,
-    created_at: int,
+    created_at: int, uploaded_by: str = "kanban_complete",
 ) -> None:
     """Record a worker-produced artifact in the existing attachment table."""
     conn.execute(
         "INSERT INTO task_attachments "
         "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+        "VALUES (?, ?, ?, NULL, ?, ?, ?)",
+        (task_id, filename, stored_path, size, uploaded_by, created_at),
     )
-    _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": "kanban_complete"})
+    _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": uploaded_by})
 
 
 def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
@@ -2994,10 +3005,30 @@ def redact_review_value(value: Any) -> Any:
     return value
 
 
+def _declare_handoff_artifacts(
+    metadata: Optional[dict], artifacts: Optional[Iterable[str]],
+) -> Optional[dict]:
+    """Fold an explicit ``artifacts`` argument into ``metadata["artifacts"]``
+    (order-preserving, deduped). Returns ``metadata`` untouched when there is
+    nothing to add, so callers can pass ``None`` through."""
+    if not artifacts:
+        return metadata
+    items = [str(item).strip() for item in artifacts if item is not None and str(item).strip()]
+    if not items:
+        return metadata
+    updated = dict(metadata) if isinstance(metadata, dict) else {}
+    existing = updated.get("artifacts")
+    merged = list(existing) if isinstance(existing, (list, tuple)) else []
+    merged.extend(items)
+    updated["artifacts"] = list(dict.fromkeys(str(p).strip() for p in merged if str(p).strip()))
+    return updated
+
+
 def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    artifacts: Optional[Iterable[str]] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3006,6 +3037,15 @@ def request_review(
     re-review defaults to the latest ``changes_requested`` provenance. A live
     claim is only cleared with proof of ownership (``expected_run_id``) or
     ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+
+    ``artifacts`` (or ``metadata["artifacts"]``) names the handoff's deliverable
+    files; a review handoff is the last implementer transition, and the
+    *reviewer's* completion is what cleans the managed scratch workspace up, so
+    the files are staged into the task's durable attachments dir here and the
+    staged paths ride the ``review_requested`` payload for the notifier to
+    upload. A declared artifact that cannot be preserved raises
+    :class:`ArtifactPreservationError`, rolling the whole transition back: the
+    task stays ``running`` and retryable, with no attachments and no event.
     """
 
     def _ret(ok: bool, reason: Optional[str] = None):
@@ -3013,6 +3053,12 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
+    # Declared (explicit arg or metadata["artifacts"]) and prose-referenced files
+    # must be durable BEFORE anything can clean the scratch workspace up: for a
+    # review-bound card the reviewer's completion is the cleanup trigger.
+    metadata = _declare_handoff_artifacts(metadata, artifacts)
+    metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
+    now = int(time.time())
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
@@ -3068,21 +3114,23 @@ def request_review(
             return _ret(
                 False, "task is not in running/ready (or expected_run_id did not match the current run)",
             )
+        if isinstance(metadata, dict):
+            _stage_completion_artifacts(
+                conn, task_id, metadata, now, uploaded_by="kanban_request_review",
+            )
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="review_requested", status="review",
             summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
         )
-        _append_event(
-            conn,
-            task_id,
-            "review_requested",
-            {
-                "summary": _first_line(summary, 400) or None,
-                "implementer": implementer,
-                "reviewer": reviewer,
-            },
-            run_id=run_id,
-        )
+        payload: dict = {
+            "summary": _first_line(summary, 400) or None,
+            "implementer": implementer,
+            "reviewer": reviewer,
+        }
+        staged = _cleaned_artifact_paths(metadata)
+        if staged:
+            payload["artifacts"] = staged
+        _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
     return _ret(True)
 
 

@@ -548,9 +548,12 @@ class _KanbanNotification:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
-        # Upload artifact paths from the completion payload / legacy result as
-        # native files. Only on ``completed`` so retries never spam attachments.
-        if ev.kind == "completed":
+        # Upload artifact paths from the handoff payload / legacy result as
+        # native files. Both handoff kinds stage files for exactly this: a
+        # review-bound card's files exist precisely so the human sees them at
+        # handoff time. Retry exposure matches ``completed`` (the sub cursor is
+        # rewound only when a send failed).
+        if ev.kind in ("completed", "review_requested"):
             try:
                 await self.runner._deliver_kanban_artifacts(
                     adapter=adapter, chat_id=sub["chat_id"], metadata=metadata,

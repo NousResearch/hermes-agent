@@ -337,6 +337,54 @@ function validLock(lock, ownershipId) {
   )
 }
 
+// #95532 parity (POSIX fix: 3ee0c62224, remote-lifecycle.ts's lockfileSkew).
+// A lock read back from the remote that EXISTS but fails validLock() (wrong
+// schema/protocol version, foreign ownershipId, malformed shape) is skew --
+// most likely a different (e.g. forked) desktop build owns this remote, or
+// the file is corrupt -- not the same as "no lock". Only called once the
+// caller already knows validLock(lock, ownershipId) is false for a truthy
+// lock, so this never needs to re-check the happy path; it just names which
+// check failed, in validLock's own condition order, for the thrown error.
+function windowsLockSkewReason(lock, ownershipId) {
+  if (lock.schemaVersion !== LOCKFILE_SCHEMA_VERSION) {
+    return `schema-version ${JSON.stringify(lock.schemaVersion ?? null)}`
+  }
+
+  if (lock.protocolVersion !== PROTOCOL_VERSION) {
+    return `protocol-version ${JSON.stringify(lock.protocolVersion ?? null)}`
+  }
+
+  if (lock.ownershipId !== ownershipId) {
+    return 'ownership-mismatch'
+  }
+
+  if (!/^[0-9a-f]{16}$/.test(lock.spawnNonce || '')) {
+    return 'malformed-spawn-nonce'
+  }
+
+  if (!Number.isInteger(lock.pid) || lock.pid <= 0) {
+    return 'malformed-pid'
+  }
+
+  if (!/^[0-9]{10,20}$/.test(lock.creationTimeNs || '')) {
+    return 'malformed-creation-time'
+  }
+
+  if (!Number.isInteger(lock.port) || lock.port < 0 || lock.port > 65535) {
+    return 'malformed-port'
+  }
+
+  if (!/^[0-9a-f]{32}$/.test(lock.tokenFingerprint || '')) {
+    return 'malformed-token-fingerprint'
+  }
+
+  if (typeof lock.hermesPath !== 'string' || typeof lock.hermesHome !== 'string') {
+    return 'malformed-path-fields'
+  }
+
+  return 'unknown-mismatch'
+}
+
 function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
   return Boolean(
     state.alive &&
@@ -636,8 +684,20 @@ async function connectWindowsRemote(deps) {
       await cleanupOwned(ssh, runtime, ownershipId, lock)
     }
   } else if (lock) {
-    await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
-    await helper(ssh, runtime, 'remove-lock', [ownershipId])
+    // #95532: the lockfile exists but was written by a different (fork)
+    // build or is corrupt. FAIL CLOSED: no reap, no removal, no overwrite,
+    // no spawn on top of foreign live state -- deleting it here is how a
+    // live tunnel some other build depends on gets killed (mirrors the
+    // POSIX-side fix in remote-lifecycle.ts).
+    const reason = windowsLockSkewReason(lock, ownershipId)
+    const error: any = new Error(
+      `The remote ownership record for this connection does not match this Hermes Desktop build (${reason}). ` +
+        'It was probably written by a different or modified desktop build sharing this remote, or the file is corrupt. ' +
+        'Refusing to remove or overwrite it -- that could kill a live SSH backend owned by another build. ' +
+        'If nothing else uses this remote, delete the remote lock file and reconnect.'
+    )
+    error.kind = 'remote-lockfile-skew'
+    throw error
   }
 
   assertBootstrapNotSuperseded(signal)
@@ -779,5 +839,6 @@ export {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  windowsLockSkewReason
 }

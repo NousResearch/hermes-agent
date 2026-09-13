@@ -60,3 +60,16 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     _fresh_lease.release("viewer-1")
     assert _call(server, "display.thumbnail", {})["result"]["data_url"].endswith("SECRET")
 
+
+def test_release_without_viewer_id_cannot_yank_another_viewers_lease(_fresh_lease):
+    """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
+    must be refused unless it forces; a matching viewer id and force keep working."""
+    import tui_gateway.server as server
+
+    _fresh_lease.acquire("viewer-1")
+    refused = _call(server, "display.lease.release", {})
+    assert refused["error"]["data"]["code"] == "viewer_mismatch"
+    assert _fresh_lease.get().holder == _fresh_lease.HUMAN
+    assert _call(server, "display.lease.release", {"viewer_id": "viewer-1"})["result"]["lease"]["holder"] == _fresh_lease.AGENT
+    _fresh_lease.acquire("viewer-2")
+    assert _call(server, "display.lease.release", {"force": True})["result"]["lease"]["holder"] == _fresh_lease.AGENT

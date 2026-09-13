@@ -169,16 +169,35 @@ def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None,
     return uri, port
 
 
+def _stdin_is_console() -> bool:
+    """A human can type on stdin. ``isatty()`` alone is wrong on Windows: the CRT reports True for
+    a DEVNULL / detached / CREATE_NO_WINDOW stdin (the gateway's), so a background process looked
+    interactive and launched browser OAuth flows nobody could finish. Confirm with the console API
+    there: ``GetConsoleMode`` fails on anything that is not a real console handle."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+    except (AttributeError, ValueError):
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        mode = ctypes.c_ulong()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
 def _is_interactive() -> bool:
     """True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
         return False
     if _oauth_interactive_forced.get():
         return True
-    try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False
+    return _stdin_is_console()
 
 
 def _raise_if_non_interactive(lead: str) -> None:

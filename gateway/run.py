@@ -1808,18 +1808,25 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     Under multiplex, run it once per served profile inside that profile's ``_profile_runtime_scope`` and
     carry the scope into the executor thread with ``copy_context()`` (the same shape as
     ``_run_in_executor_with_context``). See #95518.
+
+    No gateway run can complete a browser OAuth flow (nobody watches its stdout; on Windows its
+    DEVNULL stdin even passes ``isatty``), so discovery runs with interactive OAuth suppressed — the
+    same gate the CLI's background discovery uses. An expired token then parks the server with an
+    actionable ``hermes mcp login`` warning instead of opening an authorize tab.
     """
+    from tools.mcp_oauth import suppress_interactive_oauth
     from tools.mcp_tool_discovery import discover_mcp_tools
     loop = asyncio.get_running_loop()
-    if not getattr(config, "multiplex_profiles", False):
-        await loop.run_in_executor(None, discover_mcp_tools)
-        return
-    for profile_name, profile_home in _multiplex_profile_homes(config):
-        try:
-            with _profile_runtime_scope(Path(profile_home)):
-                await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
-        except Exception:
-            logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
+    with suppress_interactive_oauth():
+        if not getattr(config, "multiplex_profiles", False):
+            await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            return
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            try:
+                with _profile_runtime_scope(Path(profile_home)):
+                    await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            except Exception:
+                logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
@@ -4516,6 +4523,49 @@ def _housekeeping_memory_trim() -> None:
     trim_memory(reason="messaging gateway housekeeping")
 
 
+def _mcp_config_reconciler(runner=None):
+    """Chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry the user
+    removed (or disabled) after boot must stop — a parked one otherwise self-probes every
+    ``_PARKED_RETRY_INTERVAL`` for the life of the process (and, before the OAuth gating in this
+    same change, opened a browser tab each time). One ``stat`` per profile per tick; the reconcile
+    runs only when ``config.yaml``'s (mtime, size) changed. Interactive OAuth is suppressed — this
+    runs on a housekeeping thread nobody is watching."""
+    from hermes_cli.config import get_config_path
+    seen: dict = {}
+
+    def _sig(path) -> tuple:
+        try:
+            st = os.stat(path)
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return (None, None)
+
+    def _reconcile_current(label: str) -> None:
+        from tools.mcp_oauth import suppress_interactive_oauth
+        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+        path = get_config_path()
+        sig = _sig(path)
+        prev = seen.get(label)
+        seen[label] = sig
+        if prev is None or prev == sig:
+            return  # first tick just records the baseline; startup discovery already ran
+        with suppress_interactive_oauth():
+            result = reconcile_mcp_servers_with_config()
+        if result["removed"] or result["added"]:
+            logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
+
+    def _tick() -> None:
+        config = getattr(runner, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            _reconcile_current("default")
+            return
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            with _profile_runtime_scope(Path(profile_home)):
+                _reconcile_current(str(profile_name))
+
+    return _tick
+
+
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
@@ -4565,7 +4615,8 @@ def _start_gateway_housekeeping(
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
-        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim)]
+        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "MCP config reconcile", _mcp_config_reconciler(runner))]
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0

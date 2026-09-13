@@ -2192,12 +2192,19 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_process_hermes_home
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
+    try:
+        target_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"refusing to spawn Kanban worker for unresolved profile {profile_arg!r}") from exc
+    # Preserve main's launch-setting scrub BEFORE applying target provenance and
+    # HOME policy; scrubbing afterwards could discard freshly resolved target values.
+    base = strip_launch_profile_env(dict(os.environ), target_home)
     env = build_subprocess_env(
-        scrub_secrets=is_multiplex_active(),
-        inherit_profile_home=True,
+        base=base, scrub_secrets=True, profile_home=target_home,
+        source_profile_home=get_process_hermes_home(), enforce_profile_boundary=True,
     )
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
@@ -2205,19 +2212,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     for key in _VAR_MAP:
         env.pop(key, None)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
-    # without it the child's get_hermes_home() falls back to the DEFAULT
-    # profile root because `hermes -p` applies its override before
-    # hermes_constants is imported.
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-        # A multiplexer dispatching for another profile must not hand it the launch
-        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
-        strip_launch_profile_env(env, env["HERMES_HOME"])
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        pass
+    # The factory sets target HERMES_HOME before deriving subprocess HOME.
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

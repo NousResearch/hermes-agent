@@ -171,6 +171,7 @@ class BaseEnvironment(ABC):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        self._profile_env_boundary = None
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -244,14 +245,27 @@ class BaseEnvironment(ABC):
         retaining the exclusion keeps that old value from leaking to a later profile."""
         if not self._profile_scoped_passthrough:
             return ()
+        from agent.secret_scope import is_multiplex_active
+        multiplex = is_multiplex_active()
         try:
-            from agent.secret_scope import is_multiplex_active
-            if is_multiplex_active():
+            if multiplex:
+                from agent.secret_scope import (
+                    build_profile_env_boundary, get_profile_owned_secret_names, profile_env_name,
+                )
                 from tools.env_passthrough import get_all_passthrough
-                names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
+                boundary = self._profile_env_boundary
+                if boundary is None:
+                    boundary = self._profile_env_boundary = build_profile_env_boundary()
+                # A shared environment outlives dotenv/external-source reloads.
+                # Refresh at both capture and source, retaining exclusions forever.
+                owned = get_profile_owned_secret_names(boundary.source_home, fail_closed_external=True)
+                names = (*owned, *(profile_env_name(name) for name in owned),
+                         *get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
                 self._snapshot_passthrough_names.update(
                     name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
-        except Exception:
+        except Exception as exc:
+            if multiplex:
+                raise RuntimeError("profile-owned snapshot exclusions could not be refreshed; refusing to source") from exc
             logger.debug("Could not refresh profile-scoped snapshot exclusions", exc_info=True)
         return tuple(sorted(self._snapshot_passthrough_names))
 

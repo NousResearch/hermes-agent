@@ -28,9 +28,9 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Config-based allowlist, keyed by Hermes home: under gateway.multiplex_profiles one process serves
-# many profiles, and a single slot would let the first profile's operator allowlist decide which env
-# vars tunnel into every other profile's sandbox children.
+# Last observed projection per Hermes home, for diagnostics. Authorization reads
+# current config through its canonical reader so revocation takes effect without
+# restarting a multiplexed gateway.
 _config_passthrough: dict[str, frozenset[str]] = {}
 
 
@@ -81,7 +81,7 @@ def _accepted(names, refusal_msg: str):
 
 
 def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
+    """Load ``terminal.env_passthrough`` from current config. Same credential
     filter as register_env_passthrough: operator config must not tunnel provider
     credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
     from hermes_constants import hermes_home_key
@@ -91,9 +91,6 @@ def _load_config_passthrough() -> frozenset[str]:
     except (RuntimeError, OSError):
         # No resolvable home (stripped environ in a sandbox child): nothing to scope by.
         home_key = ""
-    cached = _config_passthrough.get(home_key)
-    if cached is not None:
-        return cached
     result: set[str] = set()
     try:
         passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")

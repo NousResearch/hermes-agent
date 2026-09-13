@@ -258,8 +258,10 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     return spawned, payloads, handoff, get
 
 
+@pytest.mark.parametrize("launch_has_key", [False, True])
+@pytest.mark.parametrize("caller_is_target", [False, True])
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, launch_has_key, caller_is_target
 ):
     import cron.scheduler as scheduler
     from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
@@ -269,6 +271,12 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     (tmp_path / ".env").write_text(
         "SERVICE_TOKEN=target-profile-token\n", encoding="utf-8"
     )
+    launch_home = tmp_path / "launch"
+    launch_home.mkdir()
+    (launch_home / ".env").write_text(
+        "SERVICE_TOKEN=launch-profile-token\n" if launch_has_key else "", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
     register_env_passthrough(["SERVICE_TOKEN"])
     wrapped_commands = []
     from tools.process_registry import GatewayChildDispatch
@@ -286,10 +294,14 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     monkeypatch.setenv("SERVICE_TOKEN", "default-profile-token")
     from agent.secret_scope import set_multiplex_active
 
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_token = set_hermes_home_override(tmp_path if caller_is_target else launch_home)
     set_multiplex_active(True)
     try:
         assert scheduler._launch_external_cron_worker(job) is True
     finally:
+        reset_hermes_home_override(home_token)
         clear_env_passthrough()
         set_multiplex_active(False)
     assert wrapped_commands[0][1] == "cron-job-1-exec-exec-1"

@@ -465,7 +465,7 @@ class TestTerminalFirstPartySnapshotIsolation:
     save/restored per command.
     """
 
-    def test_snapshot_exclusion_set_includes_first_party_names(self, monkeypatch):
+    def test_snapshot_exclusion_set_includes_first_party_names(self, monkeypatch, tmp_path):
         """Under multiplex, BUZZ_* names present in the env are added to the
         snapshot exclusion set, so the dump excludes them and _wrap_command
         save/restores them per command."""
@@ -473,14 +473,13 @@ class TestTerminalFirstPartySnapshotIsolation:
         from tools.environments.local import LocalEnvironment
 
         monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec-profile-a")
-        env = LocalEnvironment.__new__(LocalEnvironment)
-        env.env = {}
-        env._snapshot_passthrough_names = set()
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
         ss.set_multiplex_active(True)
         try:
             excluded = env._snapshot_excluded_passthrough_names()
         finally:
             ss.set_multiplex_active(False)
+            env.cleanup()
 
         assert "BUZZ_PRIVATE_KEY" in excluded
         # The set is monotonic for the environment lifetime: the name stays

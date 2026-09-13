@@ -314,6 +314,17 @@ def _(rid, params: dict) -> dict:
             if after == loaded:
                 break
             loaded = after
+        # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
+        # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
+        # that registry would lose its MCP tools until its own reload.
+        with _sessions_lock:
+            homes = {sess.get("profile_home") for sess in _sessions.values() if sess.get("agent") is not None}
+        for home in sorted(homes - {None}):
+            try:
+                with _session_profile_runtime_scope({"profile_home": home}):
+                    _mcp_discovery.discover_mcp_tools()
+            except Exception as _exc:
+                logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
         _refresh_session_agent()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1

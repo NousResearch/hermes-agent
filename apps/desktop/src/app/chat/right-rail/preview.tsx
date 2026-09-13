@@ -39,6 +39,7 @@ export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
       embedded
       onRestartServer={target.kind === 'url' ? (restartPreviewServer ?? undefined) : undefined}
       ownerSessionId={tab.ownerSessionId}
+      ownerStoredSessionId={tab.ownerStoredSessionId}
       reloadRequest={previewReloadRequest}
       tabId={tabId}
       target={target}

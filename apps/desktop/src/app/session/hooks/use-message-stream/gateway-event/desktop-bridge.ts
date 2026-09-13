@@ -116,19 +116,28 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         (activePreviewId !== null && isLivePreviewTabOwnedBySession(activePreviewId, ctx.sessionId ?? ''))
 
       if (previewAllowed) {
+        // The authorized identity rides THROUGH the async engine load: the
+        // dynamic import awaits, and a tab switch in that window must never
+        // redirect an already-authorized action onto whatever becomes active
+        // next. actOnActivePreview resolves every effect handle against
+        // exactly this tab id and fails closed if it no longer exists
+        // (#95475 review, admission/effect TOCTOU).
         void loadPreviewEngine()
           .then(run =>
-            run({
-              amount: payload?.amount,
-              key: payload?.key,
-              kind: payload?.action ?? '',
-              max: payload?.max,
-              ref: payload?.ref,
-              selector: payload?.selector,
-              submit: payload?.submit,
-              text: payload?.text,
-              to: payload?.to as PreviewActAction['to']
-            })
+            run(
+              {
+                amount: payload?.amount,
+                key: payload?.key,
+                kind: payload?.action ?? '',
+                max: payload?.max,
+                ref: payload?.ref,
+                selector: payload?.selector,
+                submit: payload?.submit,
+                text: payload?.text,
+                to: payload?.to as PreviewActAction['to']
+              },
+              { tabId: activePreviewId ?? undefined }
+            )
           )
           .then(answer, error =>
             answer({ error: error instanceof Error ? error.message : String(error), success: false })

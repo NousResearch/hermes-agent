@@ -1,8 +1,22 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { $previewTabs, decodePreviewTabs, openPreview } from '@/store/preview'
 
 import { isLivePreviewTabOwnedBySession, registerPreviewPageReader } from './preview-reader'
+
+// The durable-ownership leg translates a runtime id to its stored id via the
+// session-states map. Model the wiring layer's runtime→stored bindings this
+// conversation has had across its restarts (R1 pre-restart, R2 post-restart)
+// plus a foreign conversation. Tiles/mirror state is irrelevant here.
+const storedByRuntime: Record<string, string> = {
+  'runtime-R1': 'stored-conversation',
+  'runtime-R2': 'stored-conversation',
+  'runtime-mine': 'stored-mine'
+}
+
+vi.mock('@/store/session-states', () => ({
+  storedSessionIdForRuntimeId: (runtimeId: string) => storedByRuntime[runtimeId] ?? null
+}))
 
 describe('session-scoped preview reader gate (#95459)', () => {
   const setupTabs = () => {
@@ -86,48 +100,102 @@ describe('session-scoped preview reader gate (#95459)', () => {
   })
 
   // The scenario in #95459's title, end to end through the real persistence
-  // codec: a bot's preview must still be drivable after Desktop restarts, even
-  // though the runtime session id rotates. Owner stamped -> round-tripped
-  // through decodePreviewTabs -> session id rotated -> the NEW id authorizes.
-  it('re-owns a restored tab after the runtime session id rotates', () => {
+  // codec, with the EXACT reported sequence: preview works → restart → the
+  // bot interacts with the ALREADY-OPEN preview. No fresh openPreview re-stamp
+  // exists between hydration and the action — the restored tab must still
+  // admit the same conversation under its NEW runtime id, via the durable
+  // (stored) owner that survives the restart while the runtime id rotates.
+  it('admits the restarted conversation on the already-open tab, no re-stamp (#95459)', () => {
     $previewTabs.set([])
 
-    // R1 opens the preview; the tab is stamped with that runtime id.
+    // R1 opens the preview; the tab is stamped with BOTH identity kinds — the
+    // live runtime id and the durable stored id of the owning conversation.
     openPreview(
       { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' },
       'tool-result',
-      'runtime-R1'
+      'runtime-R1',
+      'stored-conversation'
     )
     const beforeRestart = $previewTabs.get()[0]
 
     expect(beforeRestart.ownerSessionId).toBe('runtime-R1')
+    expect(beforeRestart.ownerStoredSessionId).toBe('stored-conversation')
 
-    // Restart: tabs round-trip through the persistence codec and the gateway
-    // mints a new runtime id (R2) for the same conversation.
+    // Restart: tabs round-trip through the persistence codec. The RUNTIME id
+    // is dead (dropped at hydration), the gateway mints a new runtime id (R2)
+    // for the same conversation — but the STORED id survives, so the restored
+    // tab still knows which conversation owns it.
     const restored = decodePreviewTabs(JSON.stringify($previewTabs.get()))
 
     $previewTabs.set(restored)
-    expect(restored[0].ownerSessionId).toBeUndefined()
 
-    // A fresh routed open from R2 can now claim the restored tab...
-    openPreview(
-      { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' },
-      'tool-result',
-      'runtime-R2'
-    )
-    const afterRestart = $previewTabs.get()[0]
+    const afterRestart = restored[0]
+    expect(afterRestart.ownerSessionId).toBeUndefined()
+    expect(afterRestart.ownerStoredSessionId).toBe('stored-conversation')
 
-    expect(afterRestart.ownerSessionId).toBe('runtime-R2')
-
-    // ...and the gate admits R2 while still refusing the dead R1.
+    // The pane re-registers the live reader for the restored tab (the
+    // webview remounts after restart), binding the durable owner.
     const unregister = registerPreviewPageReader(
       afterRestart.id,
       async () => ({ text: '', title: '', url: '' }),
-      afterRestart.ownerSessionId
+      undefined,
+      afterRestart.ownerStoredSessionId
     )
 
+    // #95459's exact action: the bot's NEW runtime id (R2) interacts with the
+    // ALREADY-OPEN preview — admitted through the durable owner, with no
+    // second openPreview in between. R1 maps to the same conversation, so it
+    // answers the same way (a dead runtime id never sends events; what matters
+    // is that a DIFFERENT conversation still cannot act on this tab).
     expect(isLivePreviewTabOwnedBySession(afterRestart.id, 'runtime-R2')).toBe(true)
-    expect(isLivePreviewTabOwnedBySession(afterRestart.id, 'runtime-R1')).toBe(false)
+    expect(isLivePreviewTabOwnedBySession(afterRestart.id, 'runtime-R1')).toBe(true)
+    expect(isLivePreviewTabOwnedBySession(afterRestart.id, 'runtime-other-conversation')).toBe(false)
+
+    unregister()
+  })
+
+  // The durable leg goes through the real translation: a runtime id whose
+  // stored id is NOT the tab's owner must not be admitted by it.
+  it('durable owner admits only the same conversation, not any rotated runtime id', () => {
+    $previewTabs.set([
+      {
+        id: 'url:tab-a',
+        ownerStoredSessionId: 'stored-mine',
+        target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }
+      }
+    ])
+
+    const unregister = registerPreviewPageReader(
+      'url:tab-a',
+      async () => ({ text: '', title: '', url: '' }),
+      undefined,
+      'stored-mine'
+    )
+
+    // runtime-X translates to stored-X: same conversation -> admitted.
+    expect(isLivePreviewTabOwnedBySession('url:tab-a', 'runtime-mine')).toBe(true)
+    // Different conversation -> refused.
+    expect(isLivePreviewTabOwnedBySession('url:tab-a', 'runtime-elsewhere')).toBe(false)
+    // A runtime id with no stored binding -> refused (fail closed).
+    expect(isLivePreviewTabOwnedBySession('url:tab-a', 'unbound-runtime')).toBe(false)
+
+    unregister()
+  })
+
+  it('a tab with no durable owner never admits through the durable leg', () => {
+    $previewTabs.set([
+      { id: 'url:tab-a', target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' } }
+    ])
+
+    const unregister = registerPreviewPageReader(
+      'url:tab-a',
+      async () => ({ text: '', title: '', url: '' }),
+      'runtime-live-only'
+    )
+
+    // Runtime leg still works; the durable leg has nothing to admit on.
+    expect(isLivePreviewTabOwnedBySession('url:tab-a', 'runtime-live-only')).toBe(true)
+    expect(isLivePreviewTabOwnedBySession('url:tab-a', 'runtime-anyone')).toBe(false)
 
     unregister()
   })

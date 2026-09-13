@@ -29,6 +29,7 @@
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
+import type { RightRailTabId } from '@/store/layout'
 
 import { clickAt, glideTo, pointerPlaced, pressKey, selectAll, typeText, wheelBy } from './preview-drive'
 import { activePreviewInput, type PreviewInputHandle } from './preview-input'
@@ -481,16 +482,29 @@ async function driveScroll(
   return { ...after.result, acted: 'scrolled the page', success: true }
 }
 
-/** Run one action against the ACTIVE preview tab's page. `kind` is a bare
+/** Options carrying the ADMISSION LAYER's captured identity into the effect.
+ *  `tabId` is the exact preview tab that was authorized (#95475 review): the
+ *  dynamic import below awaits, and a tab switch during that window must not
+ *  redirect an already-authorized action onto whatever is active afterwards.
+ *  Every effect handle (runner/input/nav) resolves against this id and fails
+ *  closed when the tab no longer exists. */
+export interface ActOnPreviewOptions {
+  tabId?: RightRailTabId
+}
+
+/** Run one action against the ACTIVE preview tab's page — or, when the
+ *  admission layer captured one, against THAT EXACT tab. `kind` is a bare
  *  string: the verb arrives off the wire, and the history ones never reach
  *  the in-page engine. */
 export async function actOnActivePreview(
-  action: Omit<PreviewActAction, 'kind'> & { kind: string }
+  action: Omit<PreviewActAction, 'kind'> & { kind: string },
+  options: ActOnPreviewOptions = {}
 ): Promise<PreviewActResult> {
+  const { tabId } = options
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
-    const handle = activePreviewNav()
+    const handle = activePreviewNav(tabId)
 
     if (!handle) {
       return { error: NOTHING_OPEN, success: false }
@@ -503,7 +517,7 @@ export async function actOnActivePreview(
     return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
   }
 
-  const run = activePreviewScriptRunner()
+  const run = activePreviewScriptRunner(tabId)
 
   if (!run) {
     return { error: NOTHING_OPEN, success: false }
@@ -532,7 +546,7 @@ export async function actOnActivePreview(
     return trip.kind === 'answered' ? trip.result : { acted: typed.kind, note: NAVIGATED, success: true }
   }
 
-  const input = activePreviewInput()
+  const input = activePreviewInput(tabId)
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
     return driveAction(run, input, typed)

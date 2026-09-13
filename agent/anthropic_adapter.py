@@ -339,10 +339,41 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
-    return _new_sdk_client(sdk, kwargs, headers)
+    return _new_sdk_client(sdk, kwargs, headers, route_base_url=base_url)
 
 
-def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
+def _custom_provider_extra_headers(route_base_url) -> Dict[str, str]:
+    """Per-provider ``extra_headers`` for the custom provider whose route matches *route_base_url*.
+    The OpenAI-wire clients get these through ``apply_custom_provider_extra_headers_to_client_kwargs``;
+    this is the same lookup for the Anthropic wire, so a custom provider configured with
+    ``api_mode: anthropic_messages`` sends its Cloudflare Access / gateway / attribution headers
+    too (#56244). Empty on any failure. SECURITY: values may carry credentials; never log them."""
+    if not route_base_url:
+        return {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        return get_custom_provider_extra_headers(str(route_base_url))
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped", exc_info=True)
+        return {}
+
+
+def _merge_extra_headers(headers: Dict[str, Any], extra_headers: Dict[str, str]) -> Dict[str, Any]:
+    """Return *headers* with *extra_headers* layered on top. Provider config is the most specific
+    level, so it wins over Hermes' beta/identity defaults and over the credential ``Omit()``
+    sentinel when the user explicitly names that header; HTTP header names are case-insensitive,
+    so an existing key that differs only by case is replaced rather than duplicated."""
+    if not extra_headers:
+        return headers
+    merged = dict(headers)
+    for name, value in extra_headers.items():
+        for existing in [k for k in merged if k.lower() == name.lower()]:
+            del merged[existing]
+        merged[name] = value
+    return merged
+
+
+def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], *, route_base_url=None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
 
     The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
@@ -350,12 +381,16 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
     auth — x-api-key *and* Authorization: Bearer — shipping a foreign credential to Portal / MiniMax
     / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
     SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
-    ``with_options()``, which re-runs the constructor and re-reads the environment."""
+    ``with_options()``, which re-runs the constructor and re-reads the environment.
+
+    ``route_base_url`` is the caller's (un-normalized) base URL, used to look up the matching custom
+    provider's ``extra_headers``; those are applied last so the most specific config level wins."""
     merged = dict(headers)
     if "api_key" in kwargs and "auth_token" not in kwargs:
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:
         merged["X-Api-Key"] = sdk.Omit()
+    merged = _merge_extra_headers(merged, _custom_provider_extra_headers(route_base_url))
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
@@ -409,7 +444,7 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
-    return _new_sdk_client(sdk, kwargs, headers)
+    return _new_sdk_client(sdk, kwargs, headers, route_base_url=base_url)
 
 
 def build_anthropic_bedrock_client(region: str):

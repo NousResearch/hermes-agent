@@ -2,6 +2,7 @@
 across process replacement so ``hermes sessions browse`` / post-setup relaunch keep the user's mode."""
 
 import os
+import pathlib
 import shutil
 import sys
 from typing import Optional, Sequence
@@ -73,25 +74,14 @@ def resolve_hermes_bin() -> Optional[str]:
     def _is_python_script(p: str) -> bool:
         return p.lower().endswith((".py", ".pyc"))
 
-    def _has_python_shebang(p: str) -> bool:
-        try:
-            with open(p, "rb") as fh:
-                shebang = fh.readline(256)
-        except OSError:
-            return False
-        if not (shebang.startswith(b"#!") and b"python" in shebang.lower()):
-            return False
-        # A console script pinned to the running venv (``#!<venv>/bin/python``) keeps the venv
-        # and stays exec-able; only a shebang that resolves elsewhere (``env python3``, another
-        # interpreter) loses it.
-        from hermes_cli.linux_desktop_entry import _shebang_escapes_running_env
-
-        return _shebang_escapes_running_env(shebang.decode("utf-8", "replace"))
-
     def _is_unsafe_python_launcher(p: str) -> bool:
         if _is_windows:
             return _is_python_script(p)
-        return _has_python_shebang(p)
+        # A console script pinned to the running venv (``#!<venv>/bin/python``) keeps the venv and
+        # stays exec-able; a shebang that resolves elsewhere (``env python3``) loses it.
+        from hermes_cli.linux_desktop_entry import _needs_interpreter
+
+        return _needs_interpreter(pathlib.Path(p))
 
     # Absolute executable (nix store, venv wrappers, …), then relative-to-CWD, then PATH.
     if (

@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 
-from plugins.google_meet._jsonfile import read_json, write_json_atomic
+from plugins.google_meet._jsonfile import read_json
+from utils import atomic_json_write
 
 
 def _default_path() -> Path:
@@ -33,7 +34,7 @@ class NodeRegistry:
         return nodes if isinstance(nodes, dict) else {}
 
     def _save(self, nodes: Dict[str, Dict[str, Any]]) -> None:
-        write_json_atomic(self.path, {"nodes": nodes})
+        atomic_json_write(self.path, {"nodes": nodes})
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         entry = self._load().get(name)

@@ -4,15 +4,14 @@
 import asyncio
 import logging
 import ipaddress
-import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from utils import atomic_json_write
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn
@@ -212,25 +211,9 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     if not target:
         return
 
-    tmp_name = ""
     try:
-        path = Path(target)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp", delete=False
-        ) as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-            tmp_name = fh.name
-        os.replace(tmp_name, path)
+        atomic_json_write(Path(target), {"port": int(actual_port)}, indent=None, separators=(",", ":"))
     except Exception as exc:
-        if tmp_name:
-            try:
-                Path(tmp_name).unlink(missing_ok=True)
-            except Exception:
-                pass
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 

@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from contextlib import ExitStack, contextmanager, suppress
@@ -31,7 +30,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from hermes_constants import get_hermes_home
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -469,16 +468,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
     """Atomic write; on OSError log and keep the in-process approval."""
     p = allowlist_path()
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(data, indent=2, sort_keys=True))
-            atomic_replace(tmp_path, p)
-        except Exception:
-            with suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+        atomic_json_write(p, data, sort_keys=True)
     except OSError as exc:
         logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is in-memory for this run, "
                        "but the next startup will re-prompt (or skip registration on non-TTY runs without "

@@ -681,13 +681,8 @@ def save_banner_snapshot(tools: List[dict], enabled_toolsets: List[str], availab
     }
 
     def _write():
-        import tempfile
-        path = _banner_snapshot_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".banner_snap.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, path)
+        from utils import atomic_json_write
+        atomic_json_write(_banner_snapshot_path(), payload, indent=None)
     _quiet(_write)
 
 

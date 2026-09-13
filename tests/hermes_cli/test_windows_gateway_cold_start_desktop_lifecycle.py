@@ -7,6 +7,13 @@ control plane, the updater must not spawn a competing messaging daemon.
 Serve/dashboard are the control plane, not the messaging gateway (#92091).
 ``looks_like_gateway_command_line`` stays strict; ownership is a separate
 predicate.
+
+#109538: ownership alone must not hide a gateway that *died*. The Desktop
+hand-off exits the app before the updater starts and can kill the running
+gateway in those same seconds, so discovery finds no live PID while a start
+attestation still vouches for the dead one. In that case the cold-start
+survives both the plan-time and the spawn-time ownership check — the Desktop
+does not restart the messaging gateway itself.
 """
 
 from __future__ import annotations
@@ -94,6 +101,7 @@ def test_pause_skips_cold_start_plan_when_desktop_owns_lifecycle(monkeypatch):
         hermes_gateway, "find_windows_gateway_services", lambda **_k: []
     )
     monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda: False)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
 
@@ -122,11 +130,38 @@ def test_pause_still_cold_starts_when_autostart_and_no_desktop_owner(monkeypatch
     }
 
 
+def test_pause_keeps_cold_start_plan_when_desktop_owns_but_attested_gateway_died(monkeypatch):
+    """#109538: the Desktop hand-off can kill the running gateway moments before this
+    discovery runs, so a dead start attestation is the surviving "a gateway was up"
+    evidence. The plan must keep the cold-start instead of silently leaving the bot down."""
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(
+        hermes_gateway, "find_windows_gateway_services", lambda **_k: []
+    )
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda: True)
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
+
+    token = update_cmd._pause_windows_gateways_for_update()
+
+    assert token == {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [],
+        "unmapped": [],
+        "cold_start_if_installed": True,
+    }
+
+
 def test_cold_start_aborts_when_desktop_owns_lifecycle(monkeypatch):
     spawned = []
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda: False)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(
@@ -136,3 +171,27 @@ def test_cold_start_aborts_when_desktop_owns_lifecycle(monkeypatch):
     update_cmd._cold_start_windows_gateway_after_update()
 
     assert spawned == []
+
+
+def test_cold_start_restores_attested_dead_gateway_despite_desktop_ownership(monkeypatch, capsys):
+    """#109538: the same dead attestation must also survive the spawn-time ownership
+    re-check — nothing else brings the messaging gateway back on this install."""
+    spawned = []
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(gateway_windows, "attested_gateway_died", lambda: True)
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242
+    )
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [4242])
+    monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
+
+    assert update_cmd._cold_start_windows_gateway_after_update() is True
+    assert spawned == [1]
+    assert (
+        "Gateway started via cold-start after update (PID: 4242)"
+        in capsys.readouterr().out
+    )

@@ -189,3 +189,36 @@ def test_breakaway_fallback_warns_even_on_success(monkeypatch, attest_home, caps
     assert "✓" in out
     assert "could not break away" in out
     assert "schtasks /Run /TN Hermes_Gateway" in out
+
+
+# ---------------------------------------------------------------------------
+# #109538: read-only death probe for the update path
+# ---------------------------------------------------------------------------
+
+
+def test_attested_probe_is_read_only_and_never_reads_unknown_as_dead(attest_home):
+    """The update path needs the death verdict without consuming the one-shot marker the
+    next CLI start still owes the user; and only a *detectable* death may read True.
+
+    ``hermes update`` consults this probe to keep the cold-start plan when Desktop owns
+    the lifecycle (#109538) — consuming the marker here would silence the CLI-start
+    warning that reports the same death to the user.
+    """
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # no marker yet
+
+    gateway_windows._write_start_attestation([555], "cold-start after update")
+
+    assert gateway_windows.attested_gateway_died(current_pids=[555]) is False  # alive
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is True  # dead, unclean
+    marker = attest_home / "state" / "gateway.start-attestation.json"
+    assert marker.exists()  # unconsumed — the CLI start below still reports it
+    assert gateway_windows.check_start_attestation(current_pids=[]) is not None
+
+    state = attest_home / "state"
+    state.mkdir(exist_ok=True)
+    (state / "gateway.lifecycle.json").write_text(
+        json.dumps({"phase": "exited", "pid": 556, "exit_reason": "graceful_shutdown"}),
+        encoding="utf-8",
+    )
+    gateway_windows._write_start_attestation([556], "cold-start after update")
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # planned stop

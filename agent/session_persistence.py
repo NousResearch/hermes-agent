@@ -240,24 +240,36 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
 def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int) -> bool:
     """Classify a failed flush; True when the caller should retry once on an adopted compression tip."""
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
+    agent._persistence_spool_saved = False
+    agent._persistence_spool_path = None
     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
     # explanation can distinguish lock contention from disk-full/read-only.
-    from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
+    from hermes_state import classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
-    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
-        # A replaced/quarantined handle will not take this batch again — keep it on disk.
-        try:
-            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
-        except Exception:
-            logger.warning("JSONL divert failed after state.db %s for %s",
-                           agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)
     if isinstance(e, CompressionSessionClosedError):
         # Compression race: another path rotated this session mid-write. Retry exactly once on the live tip; a
         # second closed-parent write fails closed.
         if adoption_budget > 0 and _db_flush_adopt_compression_tip(agent):
             return True
         agent._compression_adoption_failed = True  # lets the turn explanation name rotation, not full-disk advice
+    # Preserve the uncommitted batch for recovery on every terminal DB failure,
+    # not only structural corruption.  A successful spool is still fail-closed
+    # for this turn; it is recovery evidence, not proof of canonical persistence.
+    if batch_rows:
+        try:
+            spool_path = divert_session_transcript_jsonl(
+                getattr(agent, "session_id", "") or "", batch_rows
+            )
+            if spool_path is not None:
+                agent._persistence_spool_path = str(spool_path)
+                agent._persistence_spool_saved = True
+            else:
+                logger.warning("JSONL spool returned no path after state.db %s for %s",
+                               agent._last_persistence_error_cause, getattr(agent, "session_id", None))
+        except Exception:
+            logger.warning("JSONL spool failed after state.db %s for %s",
+                           agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)
     logger.warning("Session DB append_message failed: %s", e)
     return False
 
@@ -323,11 +335,17 @@ class SessionPersistenceMixin:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            persisted = self._flush_messages_to_session_db(messages, conversation_history)
+            if persisted is not True:
+                # Do not clear the in-flight marker when the canonical DB write failed.
+                # Preserve None (disabled/unavailable) so callers can distinguish it from
+                # an explicit write failure and still suppress external delivery.
+                return persisted
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
+            return True
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Pop empty-response retry scaffolding from the tail, then (only if any was present) rewind the
@@ -379,9 +397,9 @@ class SessionPersistenceMixin:
             return None
         batch_rows: List[Dict[str, Any]] = []
         try:
+            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
-            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
             _db_flush_write(self, batch_rows, batch_msgs)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()

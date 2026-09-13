@@ -399,9 +399,9 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
-    messages,
+    messages, emit_post_hook=True,
 ) -> Tuple[Any, bool, Optional[Any]]:
-    """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
+    """Fire ``transform_llm_output`` and optionally ``post_llm_call`` after the tool loop.
     Returns ``(final_response, transformed, pre_transform_response)``."""
     transformed, pre_transform = False, None
     # First hook to return a string wins; None/empty leaves the text unchanged.
@@ -415,7 +415,18 @@ def _apply_output_hooks(
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
-    # post_llm_call (e.g. sync conversation data to an external memory system).
+    if emit_post_hook:
+        _emit_post_llm_call(
+            agent, final_response, logger, platform=platform, effective_task_id=effective_task_id,
+            turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+        )
+    return final_response, transformed, pre_transform
+
+
+def _emit_post_llm_call(
+    agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message, messages,
+) -> None:
+    """Notify external observers only after the canonical persistence receipt exists."""
     _invoke_hook_safely(
         "post_llm_call", logger,
         session_id=agent.session_id,
@@ -427,13 +438,12 @@ def _apply_output_hooks(
         model=agent.model,
         platform=platform,
     )
-    return final_response, transformed, pre_transform
 
 
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
-    _turn_exit_reason, _pending_verification_response=None,
+    _turn_exit_reason, blocked=False, _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
@@ -453,37 +463,89 @@ def finalize_turn(
         and not failed
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
+    # External delivery requires positive proof of canonical persistence.  The
+    # default is deliberately negative; only the successful return from the
+    # canonical persistence operation can mint this receipt.
+    persistence_confirmed = False
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     _cleanup_errors: List[str] = []
-    # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
-    _guarded_cleanup(
-        "save_trajectory",
-        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
-        _cleanup_errors, logger,
-    )
+    _platform = getattr(agent, "platform", None) or ""
+    _response_transformed = False
+    _pre_transform_response = None
+
     _guarded_cleanup(
         "cleanup_task_resources", lambda: agent._cleanup_task_resources(effective_task_id),
         _cleanup_errors, logger,
     )
     # Persist only after the transcript tail is shaped and scaffolding removed. Each
-    # sub-step runs in the same order as the original inline block, and the
-    # stream-recovered ``final_response`` is rebound the moment it is computed — BEFORE
-    # the fallible tail-shaping / override / micro-compaction / persist calls — so a
-    # raise in any of them can't drop text the user already saw (#95514, #8049).
+    # sub-step runs in the same order as the original inline block. The stream-recovered
+    # response is rebound before the fallible work so the durable transcript is shaped
+    # consistently; if any step fails, _mark_persistence_failed() invalidates the
+    # response and blocks external delivery.
+    def _mark_persistence_failed():
+        nonlocal final_response, failed, completed, _turn_exit_reason, persistence_confirmed
+        persistence_confirmed = False
+        failed = True
+        completed = False
+        _turn_exit_reason = "session_persistence_failed"
+        final_response = ""
+        if getattr(agent, "_last_persistence_error_cause", None) is None:
+            agent._last_persistence_error_cause = "unknown"
+
     def _persist_step():
-        nonlocal final_response
-        _drop_transcript_scaffolding(agent, messages)
-        final_response, _recovered_from_stream = _recover_final_from_stream(
-            agent, final_response, interrupted, failed
-        )
-        _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
-        if not interrupted and not failed:
-            _micro_compact_after_turn(agent, messages, final_response, logger)
-        agent._persist_session(messages, conversation_history)
+        nonlocal final_response, failed, _turn_exit_reason, persistence_confirmed, completed
+        nonlocal _response_transformed, _pre_transform_response
+        try:
+            _drop_transcript_scaffolding(agent, messages)
+            final_response, _recovered_from_stream = _recover_final_from_stream(
+                agent, final_response, interrupted, failed
+            )
+            if final_response and not interrupted:
+                final_response = _append_file_mutation_footer(agent, final_response, logger)
+            if not interrupted:
+                final_response = _explain_abnormal_exit(
+                    agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
+                )
+            if isinstance(final_response, str):
+                final_response = _sanitize_surrogates(final_response)
+            _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
+            if not interrupted and not failed:
+                _micro_compact_after_turn(agent, messages, final_response, logger)
+            _persisted = agent._persist_session(messages, conversation_history)
+        except Exception:
+            _mark_persistence_failed()
+            raise
+        if _persisted is None:
+            # Persistence is unavailable/disabled: do not mint a receipt or
+            # notify observers, but retain the normal turn completion state.
+            return
+        if _persisted is not True:
+            _mark_persistence_failed()
+            return
+        persistence_confirmed = True
+        if final_response and not interrupted:
+            final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
+                agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
+                turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+                emit_post_hook=False,
+            )
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+
+    # Save the trajectory only after the canonical persistence outcome is known.
+    _guarded_cleanup(
+        "save_trajectory",
+        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
+        _cleanup_errors, logger,
+    )
+
+    if persistence_confirmed and final_response and not interrupted:
+        _emit_post_llm_call(
+            agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
+            turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+        )
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.
@@ -492,35 +554,22 @@ def finalize_turn(
 
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
-    # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
-        final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
-        final_response = _explain_abnormal_exit(
-            agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
-        )
 
-    _platform = getattr(agent, "platform", None) or ""
-    _response_transformed = False
-    _pre_transform_response = None
-    if final_response and not interrupted:
-        final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
-            agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
-            turn_id=turn_id, original_user_message=original_user_message, messages=messages,
-        )
+
 
     # Context engine observation hook: the turn finished with the finalized transcript.
     # Fail-open. ``_last_turn_usage`` is the last response's canonical usage dict, or
     # ``None`` on turns that never reached a provider response — by contract.
-    try:
-        from agent.conversation_loop import _notify_context_engine_turn_complete
-        _notify_context_engine_turn_complete(
-            agent, messages, usage=getattr(agent, "_last_turn_usage", None), logger=logger,
-            turn_id=turn_id, task_id=effective_task_id, api_call_count=api_call_count,
-            interrupted=interrupted, failed=failed, turn_exit_reason=_turn_exit_reason,
-        )
-    except Exception as exc:
-        logger.warning("on_turn_complete notification failed: %s", exc)
+    if persistence_confirmed:
+        try:
+            from agent.conversation_loop import _notify_context_engine_turn_complete
+            _notify_context_engine_turn_complete(
+                agent, messages, usage=getattr(agent, "_last_turn_usage", None), logger=logger,
+                turn_id=turn_id, task_id=effective_task_id, api_call_count=api_call_count,
+                interrupted=interrupted, failed=failed, turn_exit_reason=_turn_exit_reason,
+            )
+        except Exception as exc:
+            logger.warning("on_turn_complete notification failed: %s", exc)
 
     # Surrogate chokepoint: RAW SDK text with a lone UTF-16 surrogate crashes downstream
     # consumers (stdout, Telegram ``utf16_len``, JSON); scrub once where it leaves the loop.
@@ -530,8 +579,6 @@ def finalize_turn(
     # consumers — oneshot stdout writes, Telegram's ``utf16_len`` length check, Signal formatting, JSON
     # envelope encodes — on every provider (Ollama, NVIDIA NIM, …). Scrub once here, where model text leaves
     # the conversation loop, so every delivery surface receives valid Unicode.
-    if isinstance(final_response, str):
-        final_response = _sanitize_surrogates(final_response)
 
     result = {
         "final_response": final_response,
@@ -539,6 +586,8 @@ def finalize_turn(
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,
+        "blocked": blocked,
+        "persistence_confirmed": persistence_confirmed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
@@ -593,18 +642,20 @@ def finalize_turn(
     if _should_review_skills:
         agent._iters_since_skill = 0
 
-    # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message, final_response=final_response,
-        interrupted=interrupted, messages=messages,
-    )
+    # External observers may consume only a canonically persisted turn.
+    if persistence_confirmed:
+        agent._sync_external_memory_for_turn(
+            original_user_message=original_user_message, final_response=final_response,
+            interrupted=interrupted, messages=messages,
+        )
 
     # Background memory/skill review runs AFTER delivery so it never competes with the
     # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
     # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
     # clones the snapshot structurally so its sanitizers can't reach the live transcript.
     if (
-        final_response
+        persistence_confirmed
+        and final_response
         and not interrupted
         and not getattr(agent, "skip_background_review", False)
         and (_should_review_memory or _should_review_skills)
@@ -617,18 +668,19 @@ def finalize_turn(
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
-    _invoke_hook_safely(
-        "on_session_end", logger,
-        session_id=agent.session_id,
-        task_id=effective_task_id,
-        turn_id=turn_id,
-        completed=completed,
-        failed=failed,
-        interrupted=interrupted,
-        turn_exit_reason=_turn_exit_reason,
-        model=agent.model,
-        platform=_platform,
-    )
+    if persistence_confirmed:
+        _invoke_hook_safely(
+            "on_session_end", logger,
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            completed=completed,
+            failed=failed,
+            interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
+            model=agent.model,
+            platform=_platform,
+        )
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False

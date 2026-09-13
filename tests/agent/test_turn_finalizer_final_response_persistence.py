@@ -58,6 +58,7 @@ class FakeAgent:
         # Capture the durable write before finalization restores API-local
         # guidance to the returned/live transcript.
         self.persisted_messages = [dict(message) for message in messages]
+        return True
 
     def _apply_persist_user_message_override(self, messages):
         idx = self._persist_user_message_idx
@@ -130,6 +131,52 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert agent.persisted_messages[-1] == result["messages"][-1]
 
 
+def test_missing_canonical_persistence_blocks_external_observers(monkeypatch):
+    """A skipped canonical store is not a persistence receipt or delivery proof."""
+    hook_names = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda name, **_kwargs: hook_names.append(name) or [],
+    )
+    agent = FakeAgent()
+    trajectory_calls = []
+    sync_calls = []
+    context_calls = []
+    monkeypatch.setattr(
+        "agent.conversation_loop._notify_context_engine_turn_complete",
+        lambda *args, **kwargs: context_calls.append((args, kwargs)),
+    )
+    agent._save_trajectory = lambda *args: trajectory_calls.append(args)
+    agent._sync_external_memory_for_turn = lambda **kwargs: sync_calls.append(kwargs)
+    agent._persist_session = lambda *_args: None  # type: ignore[assignment]
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "do it"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=True,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["persistence_confirmed"] is False
+    assert result["failed"] is False
+    assert result["final_response"] == "Done."
+    assert result["turn_exit_reason"] == "text_response(final)"
+    assert trajectory_calls[-1][2] is True
+    assert sync_calls == []
+    assert "post_llm_call" not in hook_names
+    assert "on_session_end" not in hook_names
+    assert context_calls == []
+
+
 def test_fallback_timestamp_survives_delayed_sqlite_persistence(
     monkeypatch, tmp_path
 ):
@@ -149,6 +196,7 @@ def test_fallback_timestamp_survives_delayed_sqlite_persistence(
     def persist_to_sqlite(messages, _conversation_history):
         db.replace_messages(agent.session_id, messages)
         agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+        return True
 
     agent._persist_session = persist_to_sqlite
     messages = [
@@ -295,6 +343,7 @@ def test_empty_final_response_recovers_stream_buffer_into_blank_assistant_row(
     def persist_to_sqlite(messages, _conversation_history):
         db.replace_messages(agent.session_id, messages)
         agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+        return True
 
     agent._persist_session = persist_to_sqlite
     messages = [
@@ -366,12 +415,13 @@ def test_failed_turn_does_not_recover_stream_buffer_as_final_response(monkeypatc
     assert result["failed"] is True
 
 
-def test_stream_recovered_final_response_survives_persist_step_failure(monkeypatch):
-    """#95514 + #8049 ordering: the stream-recovered ``final_response`` is bound as soon
-    as it is computed, BEFORE the fallible tail-shaping / override / persist calls in the
-    guarded persist step. A raise later in that step (here the persist-override) must not
-    drop text the user already saw — the caller still gets the streamed answer and the
-    failure is reported via ``cleanup_errors``."""
+def test_persist_step_failure_is_not_external_delivery_proof(monkeypatch):
+    """A persist-step exception must leave the turn fail-closed.
+
+    The stream-recovered value is still bound before the fallible work, but
+    that value is not a delivery authorization. Without a positive canonical
+    persistence receipt, the result must not expose a final response.
+    """
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = FakeAgent()
     agent._current_streamed_assistant_text = "  streamed answer  "
@@ -398,7 +448,11 @@ def test_stream_recovered_final_response_survives_persist_step_failure(monkeypat
         _turn_exit_reason="text_response(final)",
     )
 
-    assert result["final_response"] == "streamed answer"
+    assert result["final_response"] == ""
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["persistence_confirmed"] is False
+    assert result["turn_exit_reason"] == "session_persistence_failed"
     assert result["cleanup_errors"] == ["persist_session: override exploded"]
     # The blank tail was filled before the raise (same order as the inline BASE block).
     assert messages[-1]["content"] == "streamed answer"

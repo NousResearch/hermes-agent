@@ -1694,6 +1694,9 @@ DEFAULT_CONFIG = {
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,
+        # Keep the newest N SessionDB rows per recurring job; 0 clears run history after each fire.
+        # Env override: HERMES_CRON_RUN_HISTORY_RETENTION.
+        "run_history_retention": 50,
         # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
         # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,

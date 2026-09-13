@@ -1109,6 +1109,28 @@ _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
+def _cron_run_history_retention() -> int:
+    """How many cron run sessions to keep per job (env > config > 50)."""
+    try:
+        env_value = os.getenv("HERMES_CRON_RUN_HISTORY_RETENTION", "").strip()
+        if env_value:
+            return max(0, int(float(env_value)))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid HERMES_CRON_RUN_HISTORY_RETENTION=%r; using config/default",
+            env_value,
+        )
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("run_history_retention")
+        if configured is not None:
+            return max(0, int(float(configured)))
+    except (AttributeError, TypeError, ValueError) as exc:
+        logger.debug("Failed to load cron run-history retention: %s", exc)
+    return 50
+
+
 def _cron_cleanup_timeout_seconds() -> float:
     """Return the wall-clock bound for cron post-run cleanup."""
     default = 10.0
@@ -1907,6 +1929,16 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
             agent._end_session_on_close = False
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': failed to end session: %s", job_id, e)
+    # Keep per-run history without allowing frequent jobs to grow state.db
+    # forever. Best-effort: cleanup must never change the run result.
+    try:
+        pruned = _session_db.prune_cron_job_runs(
+            job_id, keep=_cron_run_history_retention()
+        )
+        if pruned:
+            logger.info("Job '%s': pruned %d old run sessions", job_id, pruned)
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to prune run history: %s", job_id, e)
     try:
         from hermes_state_registry import release_or_close
         release_or_close(_session_db)

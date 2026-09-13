@@ -183,6 +183,66 @@ class SessionPortabilityMixin:
         )
         return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
 
+    def prune_cron_job_runs(self, job_id: str, keep: int = 50) -> int:
+        """Delete a cron job's oldest run sessions, keeping the newest ``keep``.
+
+        Cron runs are flat per-tick sessions keyed ``cron_{job_id}_{timestamp}``
+        (see ``cron/scheduler.run_job``). A busy job appends one row per fire,
+        which grows ``state.db`` unbounded and floods the BOTS/SESSIONS view
+        with duplicates (#88268). The run-history contract (desktop cron
+        detail, ``list_cron_job_runs``) only needs the recent window, so the
+        scheduler prunes beyond it after each run. Returns the number of rows
+        deleted; never touches other jobs' runs or non-cron sessions.
+
+        Bounded by the same ``[prefix, prefix_hi)`` id-range scan as
+        ``list_cron_job_runs`` so the DELETE scales with the excess, not the
+        whole cron pile.
+        """
+        if keep < 0:
+            return 0
+        prefix = f"cron_{job_id}_"
+        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        # _execute_write owns self._lock (BEGIN IMMEDIATE + jitter retry);
+        # wrapping it here would double-acquire a non-reentrant lock.
+        #
+        # The bare range leaks runs across jobs when one job id is an
+        # underscore-extension of another (backup vs backup_weekly —
+        # #92133): constrain the remainder to this run's timestamp shape
+        # (%Y%m%d_%H%M%S), which free-form job ids cannot satisfy.
+        ts_glob = "[0-9]" * 8 + "_" + "[0-9]" * 6
+        keep_clause = ""
+        params: tuple = (prefix, prefix_hi, len(prefix), ts_glob)
+        if keep > 0:
+            keep_clause = (
+                "AND id NOT IN ("
+                "SELECT id FROM sessions "
+                "WHERE source = 'cron' AND id >= ? AND id < ? "
+                "AND substr(id, ? + 1) GLOB ? "
+                "ORDER BY started_at DESC, id DESC LIMIT ?)"
+            )
+            params = (
+                prefix,
+                prefix_hi,
+                len(prefix),
+                ts_glob,
+                prefix,
+                prefix_hi,
+                len(prefix),
+                ts_glob,
+                keep,
+            )
+        select_query = (
+            "SELECT id FROM sessions WHERE source = 'cron' "
+            "AND id >= ? AND id < ? AND substr(id, ? + 1) GLOB ? " + keep_clause
+        )
+
+        victim_ids = [row[0] for row in self._read_rows(select_query, params)]
+        if not victim_ids:
+            return 0
+        # Reuse the canonical bulk-delete path for delegate cascades, branch
+        # orphaning, message cleanup, prompt GC, and concurrent-delete races.
+        return self.delete_sessions(victim_ids)
+
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
         ``compact_rows=True`` omits the ``system_prompt`` blob. Public alias:

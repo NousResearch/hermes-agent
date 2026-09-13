@@ -170,6 +170,16 @@ class TelegramInboundMixin:
         user_id = getattr(from_user, "id", None)
         return bot_id is not None and user_id is not None and bot_id == user_id
 
+    def _sender_is_other_bot(self, message: Message) -> bool:
+        """True when the sender is a bot other than this one (this bot's own echoes are already
+        filtered by ``_is_own_message``)."""
+        sender = getattr(message, "from_user", None)
+        if sender is None or not getattr(sender, "is_bot", False):
+            return False
+        bot_id = getattr(self._bot, "id", None)
+        sender_id = getattr(sender, "id", None)
+        return bot_id is None or sender_id is None or sender_id != bot_id
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
@@ -199,6 +209,14 @@ class TelegramInboundMixin:
             return guest_mention
         if guest_mention or chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return True
+        # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
+        # plain chatter does not count (two bots answering each other's replies never stop otherwise).
+        if (
+            self._telegram_bots_require_mention()
+            and self._sender_is_other_bot(message)
+            and not self._message_mentions_bot(message)
+        ):
+            return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):

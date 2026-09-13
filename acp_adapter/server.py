@@ -244,6 +244,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
     _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
 
+    def __new__(cls, session_manager=None):
+        if session_manager is None:
+            from acp_adapter.gateway_server import GatewayACPAgent
+            return GatewayACPAgent()
+        return super().__new__(cls)
+
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
@@ -312,8 +318,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
+            raw = new_model
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            # An explicit ``provider:model`` prefix is a selection; detection is a fallback for bare
+            # names only and must not second-guess it (#59089).
+            if target_provider == current_provider and new_model == raw:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected
@@ -875,7 +884,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         streamed_message: bool,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
-        if result.get("messages"):
+        # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844);
+        # only a result without the key leaves the history untouched.
+        if "messages" in result and isinstance(result["messages"], list):
             state.history = result["messages"]
             self.session_manager.save_session(session_id)
 

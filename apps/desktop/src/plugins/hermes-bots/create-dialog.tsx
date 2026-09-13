@@ -43,6 +43,9 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { registerCanonicalGroup } from './canonical-group-registry'
+import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import {
@@ -68,7 +71,6 @@ import {
   markHostedRoomLocallyDeleted,
   probeHostedRoomMembers
 } from './hosted-room-runtime'
-import type { HostedRoomProbe } from './hosted-room-runtime'
 import { useBots } from './i18n'
 import { displayName, slugify } from './labels'
 import { McpSetupButton } from './mcp-setup'
@@ -1166,7 +1168,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
-  const [hostProbe, setHostProbe] = useState<null | { key: string; probe: HostedRoomProbe | null }>(null)
   const [createPending, setCreatePending] = useState(false)
   const [createError, setCreateError] = useState('')
 
@@ -1177,7 +1178,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setChecked({})
       setName('')
       setImage(null)
-      setHostProbe(null)
       setCreatePending(false)
       setCreateError('')
     }
@@ -1195,86 +1195,31 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
-  const selectedRouteKey = selected.map(botRosterKey).sort().join('|')
-  const resolvedProbe = hostProbe?.key === selectedRouteKey ? hostProbe.probe : null
-  const hostProbePending = selected.length >= 2 && hostProbe?.key !== selectedRouteKey
-
-  useEffect(() => {
-    let cancelled = false
-
-    if (!open || selected.length < 2) {
-      setHostProbe(null)
-
-      return () => {
-        cancelled = true
-      }
-    }
-
-    void probeHostedRoomMembers(durableGroupChatMembers(selected))
-      .then(probe => {
-        if (cancelled) {
-          return
-        }
-
-        setHostProbe({
-          key: selectedRouteKey,
-          probe
-        })
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setHostProbe({
-            key: selectedRouteKey,
-            probe: null
-          })
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-    // Stable member ownership, not object identity, is the probe boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selectedRouteKey])
+  const creating = useRef(false)
 
   const create = async () => {
     const base = (name.trim() || placeholder).slice(0, 64)
 
-    if (selected.length < 2 || !base) {
+    if (creating.current || selected.length < 2 || !base) {
       return
     }
 
-    // Creating a group is always a FRESH room. Without this, re-creating a
-    // group under an existing name (easy — the default name is just the
-    // member names) silently reopens the old room with its full log, which
-    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping, then mint a fresh
-    // roomId: member sessions are titled by that roomId, so a
-    // disbanded-and-recreated group with the SAME display name still gets
-    // new sessions instead of resuming the old room's by title.
-    const taken = new Set(liveGroupChatNames())
-
-    for (const meta of Object.values($botMeta.get() || {})) {
-      for (const existing of botGroups(meta)) {
-        taken.add(existing)
-      }
-    }
-
-    const groupName = uniqueGroupChatName(base, taken)
-    let roomId = mintGroupRoomId()
-
+    creating.current = true
     setCreatePending(true)
     setCreateError('')
+    let sourceCurrent: (() => boolean) | undefined
 
     try {
-      if (hostProbePending) {
-        return
-      }
-
+      const route = captureCanonicalGroupRoute()
+      sourceCurrent = groupCreationSource(route)
       // RPCs below can refresh or switch the live roster before they settle.
-      // Capture immutable member ownership now so the local projection matches
-      // the exact source routes used to create the hosted room.
-      const roomMembers = durableGroupChatMembers(selected)
+      // Freeze ownership AND the visible handles before the capability read.
+      const roomMembers = durableGroupChatMembers(selected).map((member, index) => ({
+        ...member,
+        ...(member.route ? { route: { ...member.route } } : {}),
+        handle: botHandle(member.name, selected[index]),
+        display_name: displayName(selected[index], botRosterMeta(selected[index], allMeta))
+      }))
 
       const metadataOwners = selected.map(bot => ({
         ...bot,
@@ -1285,21 +1230,47 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           : {})
       }))
 
-      const autonomousMembers = roomMembers.map((member, index) => {
-        const bot = selected[index]
-        const label = displayName(bot, botRosterMeta(bot, allMeta))
+      const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+      const mode = groupExecutionMode(capabilities)
 
-        return {
-          member,
-          profile: member.targetProfile || member.name,
-          handle: botHandle(member.name, member),
-          ...(label
-            ? {
-                displayName: label
-              }
-            : {})
+      if (!sourceCurrent()) {return}
+      if (mode === 'unavailable') {throw new Error(b.canonical.driverUnavailable)}
+
+      if (mode === 'canonical') {
+        const created = await createCanonicalGroup(route, base, roomMembers)
+
+        // Creation succeeded on its owner; never adopt it into a changed source.
+        if (!sourceCurrent()) {return}
+        const key = registerCanonicalGroup(route, created.room)
+        onClose()
+        onCreated?.(key)
+
+        return
+      }
+
+      // Only positively classified legacy sources may probe the retained hosted
+      // protocol or create a Desktop room. Canonical errors never fall through.
+      const resolvedProbe = await probeHostedRoomMembers(roomMembers).catch(() => null)
+      if (!sourceCurrent()) {return}
+
+      // A recreated display name must not reopen the old room's sessions.
+      const taken = new Set(liveGroupChatNames())
+
+      for (const meta of Object.values($botMeta.get() || {})) {
+        for (const existing of botGroups(meta)) {
+          taken.add(existing)
         }
-      })
+      }
+
+      const groupName = uniqueGroupChatName(base, taken)
+      let roomId = mintGroupRoomId()
+
+      const autonomousMembers = roomMembers.map(member => ({
+        member,
+        profile: member.targetProfile || member.name,
+        handle: member.handle,
+        ...(member.display_name ? { displayName: member.display_name } : {})
+      }))
 
       const hostName = selected[0]?.connectionLabel || b.group.thisHost
       let hosted: Awaited<ReturnType<typeof createAutonomousHostedGroupChat>> | null = null
@@ -1316,6 +1287,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
             members: autonomousMembers
           })
         } catch (error) {
+          if (!sourceCurrent()) {return}
           if ((error as { fallbackSafe?: boolean })?.fallbackSafe === false) {
             setCreateError(describeHostedRoomCreationError(error) || b.group.createFailed)
 
@@ -1348,6 +1320,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       // Persist every machine identity, including today's active source. That
       // member becomes remote after a source switch and cannot rely on the new
       // gateway's name-keyed bot metadata to remain seated in this room.
+      if (!sourceCurrent()) {return}
       updateGroupChat(groupName, (room: GroupChatRoom) => {
         room.members = roomMembers
         room.roomId = roomId
@@ -1388,6 +1361,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         }
       }
 
+      if (!sourceCurrent()) {return}
       host.notify({
         kind: metadataSyncFailed ? 'warning' : 'info',
         message: metadataSyncFailed
@@ -1396,9 +1370,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       })
       onClose()
       onCreated?.(groupName)
-    } catch {
-      setCreateError(b.group.createFailed)
+    } catch (error) {
+      if (!sourceCurrent || sourceCurrent()) {
+        setCreateError(error instanceof Error ? error.message : b.group.createFailed)
+      }
     } finally {
+      creating.current = false
       setCreatePending(false)
     }
   }
@@ -1536,7 +1513,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
           </Button>
-          <Button disabled={!canCreate || createPending || hostProbePending} onClick={() => void create()}>
+          <Button disabled={!canCreate || createPending} onClick={() => void create()}>
             {createPending ? b.group.creating : b.group.createAction(selected.length)}
           </Button>
         </DialogFooter>

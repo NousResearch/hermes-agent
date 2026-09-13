@@ -964,27 +964,27 @@ class SlackDeliveryMixin:
 
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         from . import adapter as _adapter
 
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
-            return
+            return _adapter.SendResult(success=False, error="ignored_channel")
         if not self._app:
-            return
+            return _adapter.SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return _adapter.SendResult(success=False, error="no images to send")
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
             from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
         except Exception:
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         thread_ts = self._resolve_thread_ts(None, metadata)
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered = False
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await _adapter.asyncio.sleep(human_delay)
@@ -1001,12 +1001,15 @@ class SlackDeliveryMixin:
                     channel=chat_id, file_uploads=file_uploads, initial_comment=initial_comment,
                     thread_ts=thread_ts)
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
+                delivered = True
             except Exception as e:
                 _adapter.logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True)
-                await super().send_multiple_images(
+                fallback = await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
+        return _adapter.SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     @staticmethod
     async def _collect_image_uploads(

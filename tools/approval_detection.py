@@ -82,6 +82,8 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# Package-manager global options, each optionally taking ONE non-dash operand.
+_PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
@@ -393,6 +395,17 @@ DANGEROUS_PATTERNS = [
     (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form (-nS, -sa, -las).
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    # Package-manager uninstall commands can remove installed software outside
+    # the current project (notably `npm uninstall -g`). Treat their destructive
+    # subcommands like other state-removing operations while leaving installs
+    # and updates alone.
+    # _CMDPOS-anchored (quoted prose like `git commit -m "npm uninstall docs"` is data); the
+    # option group also swallows one operand (`--prefix DIR`, `--proxy URL`, `--cwd DIR`).
+    (_CMDPOS + r'npm\s+' + _PKG_OPTS + r'(?:uninstall|unlink|remove|rm|r|un)\b', "package manager uninstall"),
+    (_CMDPOS + r'pnpm\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm|un)\b', "package manager uninstall"),
+    (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
+    (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
+    (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
 ]
 
 

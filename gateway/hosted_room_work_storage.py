@@ -106,6 +106,7 @@ def scope_disposition(conn, table, row):
     else:
         current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?",
                                (row["room_id"],)).fetchone()
+
     if current is None or tuple(current) == (row["producer_gateway_id"], row["producer_epoch"]):
         return "current"
     return "superseded_authority" if table == work.PENDING_TABLE and row["status"] != "acked" else "historical"

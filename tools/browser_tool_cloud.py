@@ -10,8 +10,6 @@ from typing import Callable, Optional
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider
 from agent.browser_registry import get_provider as _registry_get_browser_provider
 from hermes_constants import get_hermes_home_override, hermes_home_key
-from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
-from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 from utils import is_truthy_value
 from tools.browser_tool_origin import origin_module as _origin
@@ -19,7 +17,14 @@ from tools import browser_tool_cdp as _cdp
 
 
 def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object]):
-    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored."""
+    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored.
+
+    Under a routed profile (HERMES_HOME override, multiplexed gateway) the slot is NOT consulted: every
+    ``_memo`` here caches a ``browser.*`` config read, and one process-wide slot would hand the launch
+    profile's engine/headed/private-URL policy to every other profile (same rule as ``_allow_private_urls``).
+    """
+    if get_hermes_home_override() is not None:
+        return compute()
     if not getattr(_bt, resolved_attr):
         setattr(_bt, resolved_attr, True)
         setattr(_bt, cache_attr, compute())
@@ -96,6 +101,10 @@ def _autodetect_cloud_provider() -> Optional[CloudBrowserProvider]:
     Third-party plugins are only reachable via explicit ``browser.cloud_provider: <name>``.
     """
     _bt = _origin()
+    # Late import: this module is on run_agent's import path, and a core tool must not
+    # execute bundled plugin code before a browser session is actually being resolved.
+    from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+    from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
     try:
         for cls in (BrowserUseBrowserProvider, BrowserbaseBrowserProvider):
             fallback_provider = cls()

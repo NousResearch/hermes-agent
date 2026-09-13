@@ -191,13 +191,14 @@ class MatrixDeliveryMixin:
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0) -> None:
+        human_delay: float = 0.0) -> SendResult:
         from . import adapter as _adapter
 
         if not images:
-            return
+            return _adapter.SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         total = len(images)
+        delivered = False
         for idx, (image_url, alt_text) in enumerate(images, start=1):
             if human_delay > 0 and idx > 1:
                 await _adapter.asyncio.sleep(human_delay)
@@ -209,6 +210,8 @@ class MatrixDeliveryMixin:
                 result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata)
             if not result.success:
                 _adapter.logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
+            delivered = delivered or result.success
+        return _adapter.SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     @mark_native_document_guard
     async def send_document(

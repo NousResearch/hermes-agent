@@ -341,6 +341,29 @@ parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
 :::
 
+## Enabling tools for a chat profile
+
+The Desktop Kanban plugin displays the board; it does not grant the chat agent
+permission to manage tasks. Enable the `kanban` toolset for the profile and
+platform that should orchestrate work:
+
+```bash
+hermes -p planner tools enable kanban                      # CLI / TUI / Desktop chats
+hermes -p planner tools enable kanban --platform telegram  # a gateway platform
+```
+
+Each platform has its own selection under `platform_toolsets.<platform>` in
+`config.yaml`; the toolset is also a checkbox in `hermes tools` and the dashboard.
+A gateway agent that has it can `kanban_create` from a chat and is auto-subscribed
+to that task's completion/block notifications in the same thread. Start a new chat
+after changing this setting; existing conversations retain their tool schemas and
+prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
+`toolsets: [kanban]` is honoured as a fallback only when no platform selection was
+saved; `all` alone is not a Kanban opt-in.
+
+Dispatcher-owned workers receive their task lifecycle tools automatically.
+`delegate_task` children do not gain permission to mutate the board.
+
 ## How workers interact with the board
 
 **Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
@@ -1152,6 +1175,21 @@ in the board DB. No relays, credential sharing, or extra dispatchers are
 needed — each profile gateway simply delivers through its own adapters.
 
 ## Runs — one row per attempt
+
+Canonical workers execute through the assigned profile's gateway owner. The local
+transport carries the dispatcher's exact board database path, including custom
+paths and shared boards assigned to another profile; it does not create a separate
+transcript writer. The owner validates the task/run/claim and freezes its policy.
+
+If the owner or managed worker disappears with an **unknown** admission, the card
+keeps its run and claim. PID death, expired claims, stale heartbeats and runtime
+limits do not automatically reexecute that ambiguous attempt. An unavailable
+owner ledger also pauses reclaim. Resolve the unknown admission explicitly using
+`prompt.resolve_unknown` with its admission ID and execution generation. This
+acknowledges uncertainty; it does **not** authorize another Kanban attempt. Inspect
+the effects, then explicitly complete or block the card; unblock a blocked card
+only when a new attempt is intended. Confirmed timeouts and provider rate-limit
+results retain their ordinary retry/failure-accounting behavior.
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.
 

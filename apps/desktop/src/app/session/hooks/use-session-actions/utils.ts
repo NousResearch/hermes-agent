@@ -1,3 +1,4 @@
+import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
@@ -7,6 +8,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
@@ -15,6 +17,9 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
+  getSessionOwnerHint,
+  knownSessionOwner,
+  ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCronSessions,
@@ -34,6 +39,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
+import { sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -1570,6 +1576,17 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
     return undefined
   }
 
+  const owner = resolveSessionRpcOwner({
+    routingSessionId: storedSessionId,
+    tileOwnerRoute: sessionTileOwnerRoute,
+    sessionOwnerHint: getSessionOwnerHint,
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id)
+  })
+
+  if (owner) {
+    return owner
+  }
+
   const row = await resolveStoredSession(storedSessionId)
 
   return sessionOwnerRouteFromRow(row) ?? (row?.profile?.trim() || undefined)
@@ -1655,9 +1672,13 @@ export function applyRuntimeInfo(
     return null
   }
 
+  if (info.stored_session_id) {
+    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions)
+  }
+
   // App/profile-level reporting is session-independent — a tile's runtime
   // reports backend skew and credential warnings just as usefully.
-  reportBackendContract(info.desktop_contract)
+  reportBackendContract(info.desktop_contract, info.desktop_protocol)
 
   if (info.approval_mode !== undefined) {
     reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)

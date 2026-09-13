@@ -26,7 +26,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_HOURS, DEFAULT_MIN_IDLE_HOURS = 24 * 7, 2  # 7 days
-DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 30, 90
+DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 14, 30
 # The LLM consolidation fork is opt-in; the deterministic inactivity prune
 # (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False

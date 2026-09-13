@@ -95,25 +95,18 @@ def test_export_record_count_switches_unit_for_prompt_only_exports():
     )
 
 
-def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
+def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys, tmp_path):
     import hermes_cli.main as main_mod
     import hermes_state
 
-    captured = {}
-
-    class FakeDB:
-        def resolve_session_id(self, session_id):
-            captured["resolved_from"] = session_id
-            return "sess-123"
-
-        def export_session(self, session_id):
-            captured["exported"] = session_id
-            return _sample_session()
-
-        def close(self):
-            captured["closed"] = True
-
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "state.db"
+    db = hermes_state.SessionDB(db_path=path)
+    db.create_session("sess-123", "cli")
+    for message in _sample_session()["messages"]:
+        db.append_message("sess-123", message["role"], message["content"])
+    db.close()
+    before = path.read_bytes()
     monkeypatch.setattr(
         sys,
         "argv",
@@ -128,10 +121,6 @@ def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
         "Why is login broken?",
         "Only show me the prompts.",
     ]
-    assert captured == {
-        "resolved_from": "sess",
-        "exported": "sess-123",
-        "closed": True,
-    }
+    assert path.read_bytes() == before
 
 

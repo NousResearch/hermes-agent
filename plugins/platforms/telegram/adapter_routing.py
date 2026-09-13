@@ -422,7 +422,7 @@ class TelegramRoutingMixin:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return _adapter.os.getenv(env_name, default).lower() in {"true", "1", "yes", "on"}
+        return _adapter._scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
         """Comma/list allowlist from ``config.extra[key]``, else the profile-scoped env var."""
@@ -434,6 +434,13 @@ class TelegramRoutingMixin:
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_bots_require_mention(self) -> bool:
+        """Whether another bot's message must explicitly @mention us (a quote-reply alone won't);
+        breaks two-bot reply loops in groups while human replies stay unaffected."""
+        return self._extra_bool(
+            "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
+        )
 
     def _telegram_require_mention(self) -> bool:
         """Return whether group chats should require an explicit bot trigger."""
@@ -516,7 +523,7 @@ class TelegramRoutingMixin:
 
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = _adapter.os.getenv("TELEGRAM_MENTION_PATTERNS", "").strip()
+            raw = _adapter._scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
             if raw:
                 try:
                     loaded = _adapter.json.loads(raw)

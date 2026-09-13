@@ -78,6 +78,19 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
     assert sudo_stdin == "\n"
 
 
+def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
+    """No prompt can fire without a UI, so the backend round trip must not be paid."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    terminal_tool.set_sudo_password_callback(None)
+
+    def _fail_probe():
+        raise AssertionError("headless sudo must not probe the backend")
+
+    assert terminal_tool_sudo._transform_sudo_command("sudo true", sudo_nopasswd_check=_fail_probe) == (
+        "sudo true", None)
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")

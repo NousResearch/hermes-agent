@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import hermes_constants
 
 pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
@@ -755,3 +756,164 @@ class TestSystemServiceIdentityRootHandling:
         except ValueError as e:
             # "nobody" might not exist on all systems
             assert "Unknown user" in str(e)
+
+
+class TestServiceIdentityForForeignHome:
+    """A HERMES_HOME that is neither ``~/.hermes`` nor ``~/.hermes/profiles/<name>`` must never resolve to
+    the default profile's ``hermes-gateway`` unit (a temp-home harness uninstalled the production gateway)."""
+
+    @pytest.fixture
+    def machine_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        return home
+
+    def test_foreign_home_gets_its_own_unit(self, machine_home, tmp_path, monkeypatch):
+        foreign = tmp_path / "elsewhere"
+        foreign.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(foreign))
+
+        default_unit = machine_home / ".config" / "systemd" / "user" / "hermes-gateway.service"
+        assert gateway_cli.get_service_name() != "hermes-gateway"
+        assert gateway_cli.get_systemd_unit_path() != default_unit
+        assert gateway_cli.get_systemd_unit_path().parent == default_unit.parent
+
+    def test_default_and_named_profile_homes_keep_their_names(self, machine_home, monkeypatch):
+        default_home = machine_home / ".hermes"
+        (default_home / "profiles" / "alpha").mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "alpha"))
+        assert gateway_cli.get_service_name() == "hermes-gateway-alpha"
+
+    def test_sudo_user_default_home_keeps_bare_service_name(self, machine_home, tmp_path, monkeypatch):
+        sudo_home = tmp_path / "alice"
+        sudo_default = sudo_home / ".hermes"
+        sudo_default.mkdir(parents=True)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "alice")
+        monkeypatch.setattr(pwd, "getpwnam", lambda user: SimpleNamespace(pw_dir=str(sudo_home)))
+
+        # Before unit sync, sudo resolves the root process's native home.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+        # After unit sync, HERMES_HOME points at the invoking user's native home.
+        monkeypatch.setenv("HERMES_HOME", str(sudo_default))
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+
+class TestUninstallRefusesForeignUnit:
+    """systemd_uninstall must not stop/disable/unlink a unit pinned to another HERMES_HOME."""
+
+    def test_unit_for_other_home_is_left_alone(self, tmp_path, monkeypatch, capsys):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text('[Service]\nEnvironment="HERMES_HOME=/somewhere/else"\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "mine"))
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_systemd_scope_preamble", lambda *a, **k: False)
+        calls = []
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", lambda args, **k: calls.append(args))
+
+        gateway_cli.systemd_uninstall(system=False)
+
+        assert unit_path.exists()
+        assert calls == []
+        assert "/somewhere/else" in capsys.readouterr().out
+
+
+class TestUnitAnchoredServiceIdentity:
+    """The installed ``hermes-gateway.service`` owns the bare name: under ``sudo`` the naming basis moves
+    mid-command when ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's HERMES_HOME (#108674).
+
+    ``linux_only`` because ``_bare_unit_pinned_home()`` is Linux- and root-gated on purpose: a systemd unit
+    is not an identity authority for launchd labels, Windows tasks, or s6 slots, which share the same
+    resolver, and only an elevated process operates the system unit.
+    """
+
+    @pytest.mark.linux_only
+    def test_home_not_pinned_by_unit_keeps_its_suffix(self, tmp_path, monkeypatch):
+        alice_home = tmp_path / "alice" / ".hermes"
+        alice_home.mkdir(parents=True)
+        bob_home = tmp_path / "bob" / ".hermes"
+        bob_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(bob_home))
+        name = gateway_cli.get_service_name()
+        assert name != gateway_cli._SERVICE_BASE
+        assert name.startswith(gateway_cli._SERVICE_BASE + "-")
+
+    @pytest.mark.linux_only
+    def test_unprivileged_profile_command_ignores_the_system_unit(self, tmp_path, monkeypatch):
+        """A bare system unit pinning ``profiles/<name>`` must not alias that profile onto the user's
+        default unit when an unprivileged user-scope command resolves the name."""
+        profile_home = tmp_path / "alice" / ".hermes" / "profiles" / "kimi"
+        profile_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "alice")
+        monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert gateway_cli.get_service_name() == "hermes-gateway-kimi"
+
+    @pytest.mark.linux_only
+    def test_bare_unit_pinning_a_named_profile_home_keeps_the_bare_name(self, tmp_path, monkeypatch):
+        """``sudo ... install --system`` names the unit from root's default but pins the invoking user's
+        remapped home, so the BARE unit legitimately carries a ``profiles/<name>`` home. The unit-pinned
+        check therefore has to win over the profile branch, which would answer ``-kimi`` for a unit that
+        was installed bare."""
+        profile_home = tmp_path / "alice" / ".hermes" / "profiles" / "kimi"
+        profile_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
+        unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert gateway_cli.get_service_name() == gateway_cli._SERVICE_BASE
+        # The profile branch, consulted against the home that owns the profile, would have answered
+        # with the readable suffix -- which is why the unit-pinned check has to be evaluated first.
+        assert gateway_cli._profile_name_from_home(profile_home, profile_home.parent.parent) == profile_home.name
+
+    @pytest.mark.linux_only
+    def test_real_unit_sync_keeps_the_name_it_validated(self, tmp_path, monkeypatch):
+        """Drive the production sync instead of simulating the adoption with setenv: the name resolved
+        before ``_sync_hermes_home_from_systemd_unit()`` must survive the mutation it performs."""
+        alice_home = tmp_path / "alice" / ".hermes"
+        alice_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        pre_sync_name = gateway_cli.get_service_name()
+        gateway_cli._sync_hermes_home_from_systemd_unit(system=True)
+
+        assert os.environ["HERMES_HOME"] == str(alice_home)  # the sync really ran
+        assert gateway_cli.get_service_name() == pre_sync_name

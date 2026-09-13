@@ -1,6 +1,7 @@
 import type { ConnectionState } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
@@ -870,6 +871,7 @@ export const $awaitingResponse = atom(false)
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
+  authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
   sequence: number
   sessionId: string
@@ -1176,6 +1178,15 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
+
+  // Null descriptor = reconnect blip; keep the last resolved mode (same
+  // contract as rescopeConnectionScopedStores above).
+  const mode = $connection.get()?.mode
+
+  if (mode) {
+    setApiRequestLocalMode(mode === 'local')
+  }
+
   rescopeComposerSelection(composerScopeForConnection($connection.get()))
 }
 
@@ -1277,7 +1288,11 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
+export const requestSessionResume = (
+  sessionId: string,
+  ownerRoute?: SessionOwnerRoute,
+  options?: { authoritativeSnapshot?: boolean }
+) => {
   const id = sessionId.trim()
 
   if (!id) {
@@ -1299,6 +1314,7 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   }
 
   $sessionResumeRequest.set({
+    ...(options?.authoritativeSnapshot ? { authoritativeSnapshot: true } : {}),
     ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
     sequence: ++sessionResumeRequestSequence,
     sessionId: id

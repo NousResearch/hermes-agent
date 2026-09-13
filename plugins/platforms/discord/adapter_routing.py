@@ -34,12 +34,13 @@ class DiscordRoutingMixin:
         unless in {false,0,no,off} — matching each flag's historical default shape."""
         from . import adapter as _adapter
 
-        configured = self.config.extra.get(key)
+        extra = getattr(self.config, "extra", None)
+        configured = extra.get(key) if isinstance(extra, dict) else None
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        env = _adapter.os.getenv(env_key, env_default).lower()
+        env = _adapter._scoped_gate_env(env_key, env_default).lower()
         return env in {"true", "1", "yes", "on"} if truthy else env not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
@@ -52,7 +53,7 @@ class DiscordRoutingMixin:
 
         configured = self.config.extra.get("max_attachment_bytes")
         if configured is None:
-            configured = _adapter.os.getenv("DISCORD_MAX_ATTACHMENT_BYTES")
+            configured = _adapter._scoped_gate_env("DISCORD_MAX_ATTACHMENT_BYTES") or None
         if configured is None or configured == "":
             return 32 * 1024 * 1024
         try:
@@ -186,7 +187,8 @@ class DiscordRoutingMixin:
 
     def _get_allow_bots(self) -> str:
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
-        return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+        raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
+        return str(raw or "none").lower().strip() or "none"
 
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
@@ -280,10 +282,7 @@ class DiscordRoutingMixin:
         """Return whether history backfill is enabled for shared sessions."""
         from . import adapter as _adapter
 
-        configured = self.config.extra.get("history_backfill")
-        if configured is not None:
-            return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
-        return _adapter.os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
+        return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
 
     def _discord_history_backfill_limit(self) -> int:
         """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message."""
@@ -295,7 +294,7 @@ class DiscordRoutingMixin:
                 return int(configured)
             except (ValueError, TypeError):
                 pass
-        raw = _adapter.os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
+        raw = _adapter._scoped_gate_env("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
         try:
             return int(raw)
         except (ValueError, TypeError):

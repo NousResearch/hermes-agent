@@ -66,6 +66,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # — Session —
         _field("sessionPeerPrefix", "Session peer prefix", KIND_BOOL, "Prefix session peer names with the host.",
                default="false", group="Session"),
+        _field("a2aSessions", "Bot DM sessions", KIND_BOOL,
+               "Write DMs from other bots into their own Honcho session per sender. Off skips bot-authored turns.",
+               default="true", group="Session"),
         _field("sessions", "Session overrides", KIND_JSON, "Explicit session ID overrides keyed by resolver.",
                placeholder='{"key": "session-id"}', group="Session", scope="root"),
         # — Message writing —

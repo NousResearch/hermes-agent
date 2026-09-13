@@ -76,8 +76,8 @@ def test_curator_defaults(curator_env):
     c = curator_env["curator"]
     assert c.get_interval_hours() == 24 * 7  # 7 days
     assert c.get_min_idle_hours() == 2
-    assert c.get_stale_after_days() == 30
-    assert c.get_archive_after_days() == 90
+    assert c.get_stale_after_days() == 14
+    assert c.get_archive_after_days() == 30
 
 
 

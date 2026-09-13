@@ -4,25 +4,27 @@ import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
-import type { SlashHandlerContext } from './interfaces.js'
+import type { SlashHandler, SlashHandlerContext, SlashSubmission } from './interfaces.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
 
-export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
+export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
   const { gw } = ctx.gateway
   const { catalog } = ctx.local
   const { page, send, sys } = ctx.transcript
 
-  const handler = (cmd: string): boolean => {
+  const handler = (cmd: string, submission?: SlashSubmission): boolean => {
     const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
     const sid = ui.sid
+    const destination = captureDestination()
     const parsed = parseSlashCommand(cmd)
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
-    const stale = () => flight !== ctx.slashFlightRef.current || getUiState().sid !== sid
+    const stale = () => flight !== ctx.slashFlightRef.current || !isCurrentDestination(destination)
 
     const guarded =
       <T>(fn: (r: T) => void) =>
@@ -67,7 +69,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
       if (exact) {
         if (exact.toLowerCase() !== needle) {
-          return handler(`${exact}${argTail}`)
+          return handler(`${exact}${argTail}`, submission)
         }
       } else {
         // Tiered name scoring (ported from grok-cli's slash menu): prefix
@@ -85,7 +87,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         const matches = [...new Set(scored.filter(entry => entry.score === best).map(entry => entry.canon))]
 
         if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
-          return handler(`${matches[0]}${argTail}`)
+          return handler(`${matches[0]}${argTail}`, submission)
         }
 
         if (matches.length > 1) {
@@ -108,7 +110,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
 
       if (d.type === 'alias') {
-        return void handler(`/${d.target}${argTail}`)
+        return void handler(`/${d.target}${argTail}`, submission)
       }
 
       // A skill/bundle dispatch's `message` is the expanded skill body —
@@ -119,6 +121,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       // version-skew (unlike the desktop, which can meet an older backend).
       const sendDispatch = (display: string | undefined, message: string) => {
         const shown = display?.trim()
+
+        if (submission) {
+          return send(message, true, shown || undefined, submission.expand, { attachments: submission.attachments })
+        }
 
         return shown ? send(message, true, shown) : send(message)
       }
@@ -168,6 +174,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
       .catch(() => {
+        if (stale()) {return}
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
           .then((raw: unknown) => {
             if (stale()) {

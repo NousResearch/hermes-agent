@@ -108,7 +108,8 @@ Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavi
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
-- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
+- **Typing while the agent is busy** (`display.busy_input_mode: queue`, the TUI default) submits the message to the gateway immediately. The gateway's durable session queue orders it behind the running turn, so it survives a gateway crash or restart and shows up as `[queued] …` in the `queued (N)` panel of every client attached to the session — the Desktop app sees the same list. Your message's transcript bubble appears when its turn actually starts. `steer` and `interrupt` still act on the live turn as before.
+- **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead — for a gateway-queued row this cancels it on the gateway (`prompt.cancel`), so it disappears for every viewer; picking and re-sending an edited row cancels the original and submits the edit as a new input. **`Esc`** cancels editing and unhighlights without deleting.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands

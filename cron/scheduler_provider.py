@@ -66,6 +66,14 @@ def _existing_profile_homes(profile_homes: list) -> list:
     profile's home untouched, which is the correct invariant: a home that does not exist cannot hold jobs to
     fire.
     """
+    if callable(profile_homes):
+        # Live enumerator (multiplex gateway): a profile created after startup is ticked without a
+        # restart; a raising enumerator keeps this cycle at zero homes rather than killing the ticker.
+        try:
+            profile_homes = list(profile_homes())
+        except Exception:
+            logger.warning("cron profile enumeration failed; skipping this cycle", exc_info=True)
+            return []
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
 
 
@@ -136,16 +144,20 @@ class CronScheduler(ABC):
 
     def fire_due(
         self, job_id: str, *, adapters: Any = None, loop: Any = None, force: bool = False,
+        manual: bool = False,
     ) -> bool:
         """Run one job NOW (inbound fire webhook entry). Store CAS claim (multi-machine
         at-most-once) then shared ``run_one_job``. True if THIS caller claimed and processed the
-        attempt (even if the job failed); False if the claim was lost or the job is gone."""
-        claimed_job = self.claim_fire(job_id, force=force)
+        attempt (even if the job failed); False if the claim was lost or the job is gone.
+        ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
+        ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
+        misfire fires run the slot that is due and keep the stamp."""
+        claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False
         return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
 
-    def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
+    def claim_fire(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
         """Durably claim one fire + create its audit attempt. Transports call this synchronously
         before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
         from cron.executions import create_execution, finish_execution, set_execution_occurrence
@@ -155,6 +167,8 @@ class CronScheduler(ABC):
         claim_kwargs = {"return_job": True}
         if force:
             claim_kwargs["force"] = True
+        if manual:
+            claim_kwargs["manual"] = True
         try:
             claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
             if isinstance(claimed_job, dict):
@@ -189,6 +203,11 @@ class CronScheduler(ABC):
 
 def provider_supports_force_fire(provider: Any) -> bool:
     """Return whether a provider can safely receive ``fire_due(force=...)`` (signature-detected)."""
+    return provider_fire_due_accepts(provider, "force")
+
+
+def provider_fire_due_accepts(provider: Any, name: str) -> bool:
+    """Whether ``provider.fire_due`` takes keyword ``name`` (third-party providers may predate it)."""
     try:
         parameters = inspect.signature(provider.fire_due).parameters.values()
     except (TypeError, ValueError):
@@ -196,7 +215,7 @@ def provider_supports_force_fire(provider: Any) -> bool:
     return any(
         p.kind is inspect.Parameter.VAR_KEYWORD
         or (
-            p.name == "force"
+            p.name == name
             and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         )
         for p in parameters
@@ -382,7 +401,7 @@ class InProcessCronScheduler(CronScheduler):
         # jobs actually fire instead of languishing in a store no ticker owns (#69377). Without this, only
         # the process-global HERMES_HOME (the default profile) is ticked. Heartbeats and recovery are also
         # scoped per profile so `hermes cron status` reflects liveness for every profile independently.
-        if profile_homes:
+        if profile_homes is not None and (callable(profile_homes) or profile_homes):
             self._start_multiplex(
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
                 interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
@@ -451,10 +470,12 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
+        initial_homes = _existing_profile_homes(profile_homes)
         logger.info(
-            "Multiplex cron scheduler started for %d profile(s): %s",
-            len(profile_homes),
-            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+            "Multiplex cron scheduler started for %d profile(s): %s%s",
+            len(initial_homes),
+            [p[0] if isinstance(p, tuple) else p for p in initial_homes],
+            " (re-enumerated every cycle)" if callable(profile_homes) else "",
         )
 
         def tick_adapters_for(profile_name):
@@ -471,7 +492,7 @@ class InProcessCronScheduler(CronScheduler):
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
         # cron workspace via the heartbeat below (#47368).
-        for entry in _existing_profile_homes(profile_homes):
+        for entry in initial_homes:
             _, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):

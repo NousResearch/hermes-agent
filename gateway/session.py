@@ -1056,14 +1056,21 @@ class SessionStore(
 
     def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""
+        from dataclasses import replace
+
         cleaned = sanitize_model_override(override)
 
-        def _apply(entry: SessionEntry):
-            if entry.model_override == cleaned:
-                return False
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.model_override == cleaned:
+                return
+            # Publish only after persistence so a failed clear remains retryable.
+            data, generation = self._snapshot_routing_locked()
+            # Snapshot reconciliation may replace the entry after database recovery.
+            entry = self._entries[session_key]
+            data[session_key] = replace(entry, model_override=cleaned).to_dict()
+            self._persist_routing_data(data, generation)
             entry.model_override = cleaned
-
-        self._update_entry(session_key, _apply)
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
@@ -1079,6 +1086,9 @@ class SessionStore(
                 return None
             now = _now()
             session_id = _new_session_id(now)
+            if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
+                from gateway.session_local_recovery import reset_local_session
+                return reset_local_session(self, old_entry, session_id, now, display_name)
             new_entry = self._replace_route_locked(
                 session_key, old_entry, session_id, now,
                 display_name=display_name if display_name is not None else old_entry.display_name,
@@ -1146,8 +1156,9 @@ class SessionStore(
             entries = list(self._entries.values())
         if active_minutes is not None:
             cutoff = _now() - timedelta(minutes=active_minutes)
-            entries = [e for e in entries if e.updated_at >= cutoff]
-        entries.sort(key=lambda e: e.updated_at, reverse=True)
+            entries = [e for e in entries if e.updated_at.timestamp() >= cutoff.timestamp()]
+        # Legacy local timestamps and canonical UTC timestamps can coexist after recovery.
+        entries.sort(key=lambda e: e.updated_at.timestamp(), reverse=True)
         return entries
 
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:

@@ -97,17 +97,22 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.profiles import (
+                _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
 
+            # Same served set as the multiplexer: default + every live profile under profiles/.
             profile_homes = list(profiles_to_serve(multiplex=True))
-            if len(profile_homes) > 1:
+            if profile_homes:
+                # Even one profile needs the per-tick gateway gate; otherwise
+                # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
-                # Stand down, per tick, for a profile whose OWN gateway runs:
-                # it ticks with live adapters, and the tick-lock race would
-                # otherwise deliver through the standalone path (#100489).
-                from hermes_cli.profiles import _check_gateway_running
-
-                start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
+                # Stand down, per tick, for a profile already owned by a gateway — its OWN
+                # process, or the live default multiplexer (a served satellite has no gateway.pid
+                # of its own). That gateway ticks with live adapters; winning the tick-lock race
+                # here would deliver through the standalone path (#100489, #107485).
+                start_kwargs["profile_gate"] = lambda name, home: not (
+                    _check_gateway_running(Path(home))
+                    or (name != "default" and _served_by_running_multiplexer(name)))
                 from hermes_logging import enable_profile_log_routing
 
                 enable_profile_log_routing(profile_homes)
@@ -129,133 +134,7 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
-@asynccontextmanager
-async def _lifespan(app: "FastAPI"):
-    app.state.event_channels = {}  # dict[str, set]
-    app.state.event_lock = asyncio.Lock()
-    app.state.pty_active_session_files = {}  # dict[str, Path]
-    # Serializes chat-argv resolution so concurrent /api/pty connections don't
-    # overlap ``npm install`` / ``npm run build``. Locks live on app.state (not
-    # module globals) so they bind to the running loop, not the import-time one.
-    app.state.chat_argv_lock = asyncio.Lock()
-
-    # Bring state.db schema current BEFORE the first session-list poll
-    # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
-    # every poll while the read-probe heal loses to sibling lock contention.
-    # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
-        target=_eager_reconcile_own_session_db,
-        daemon=True,
-        name="statedb-eager-reconcile",
-    ).start()
-
-    # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
-    # import holds the GIL, so run_in_executor still froze the loop 15-22s and
-    # the Desktop's 10s ready-probe timed out (GH-73083).
-    _warm_gateway_module()
-
-    # Snapshot the checkout revision so lazy-import paths (model picker) can
-    # refuse with "restart required" after `hermes update` replaced the code
-    # (#86207); the update flow does not reliably restart the dashboard.
-    from gateway.code_skew import record_boot_fingerprint
-
-    record_boot_fingerprint()
-
-    # Hosted Bot rooms belong to the backend process. Recovery may need a
-    # contended state.db migration, so keep it off the pre-yield path: Group
-    # Chat must degrade on its own rather than block every Desktop feature.
-    from tui_gateway import methods_groups as _hosted_groups
-    import tui_gateway.server  # noqa: F401
-
-    hosted_room_start_cancel = threading.Event()
-
-    def _start_hosted_rooms() -> None:
-        try:
-            _hosted_groups.start_hosted_room_service()
-        except Exception:
-            _log.exception("Hosted Group Chat recovery failed during backend startup")
-        finally:
-            if hosted_room_start_cancel.is_set():
-                _hosted_groups.stop_hosted_room_service(timeout=1.0)
-
-    hosted_room_start_thread = threading.Thread(
-        target=_start_hosted_rooms,
-        daemon=True,
-        name="hosted-room-startup",
-    )
-    hosted_room_start_thread.start()
-
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
-        # Reap an orphaned gateway from an abnormal previous exit (reparented to
-        # launchd, still holding the platform WebSocket) before forking a fresh
-        # one that would race the same credential (#77276). Runs
-        # unconditionally; protection of a healthy standalone gateway lives
-        # INSIDE the reaper (registration probed with cleanup_stale=False).
-        try:
-            from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
-
-            _reap_unsupervised_gateway_orphans()
-        except Exception:
-            _log.exception("Desktop startup: orphan gateway reap failed")
-
-        cron_stop = threading.Event()
-        cron_thread = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(cron_stop,),
-            daemon=True,
-            name="desktop-cron-ticker",
-        )
-        cron_thread.start()
-
-    # Reap idle/dead keep-alive PTY sessions (30-min TTL).
-    pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
-    # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
-    selftest_task = asyncio.create_task(_dashboard_selftest_loop())
-    # Live auto-archive timer, independent of list requests.
-    auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
-
-    # Managed local runtime (local_runtime.enabled): bring llama-server back so a
-    # restart doesn't strand a llamacpp main model. Off-thread and best-effort;
-    # failure falls back to cloud providers like a cold start. Server only —
-    # models load on first inference (an empty router holds no VRAM).
-    def _boot_local_runtime():
-        try:
-            from hermes_cli.config import load_config
-            from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
-
-            ensure_local_runtime(load_config())
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning("local runtime boot failed: %s", exc)
-
-    threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
-
-    try:
-        yield
-    finally:
-        hosted_room_start_cancel.set()
-        _hosted_groups.stop_hosted_room_service(timeout=5.0)
-        hosted_room_start_thread.join(timeout=1.0)
-        if cron_stop is not None:
-            cron_stop.set()
-        pty_reaper_task.cancel()
-        selftest_task.cancel()
-        auto_archive_task.cancel()
-        await PTY_REGISTRY.close_all()
-        # Stop the managed llama-server with its parent (an orphan pins VRAM).
-        try:
-            from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
-
-            shutdown_local_runtime()
-        except Exception:  # noqa: BLE001
-            pass
-        if os.getenv("HERMES_DESKTOP") == "1":
-            _terminate_desktop_managed_gateway()
+from hermes_cli.web_server_app import app_lifespan  # noqa: E402
 
 
 def _app_state_default(app: "FastAPI", name: str, factory):
@@ -280,7 +159,7 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=__version__, lifespan=app_lifespan)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
@@ -410,7 +289,12 @@ def _require_token(request: Request) -> None:
     ``gated_auth_middleware`` already 401'd anything without a verified
     ``request.state.session`` — requiring the absent token here would make every
     ``_require_token`` endpoint unreachable behind the gate, so defer to it.
+    A verified native owner (``authenticate_native_http``) is the same-user
+    principal the outer seams already accepted; local Desktop runs with no
+    static token, so that principal must satisfy route-local policy too.
     """
+    if getattr(request.state, "native_http_principal", None):
+        return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
     else:
@@ -631,6 +515,7 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if (
         not getattr(request.state, "token_authenticated", False)
+        and not getattr(request.state, "native_http_principal", None)
         and not getattr(request.app.state, "auth_required", False)
         and path.startswith("/api/")
         and path not in _PUBLIC_API_PATHS
@@ -650,8 +535,13 @@ async def _token_auth_seam(request: Request, call_next):
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
     routes pass through untouched.
     """
+    from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
-    return await token_auth_middleware(request, call_next)
+    rejection = await authenticate_native_http(request)
+    if rejection is not None:
+        return rejection
+    with native_profile_scope(request):
+        return await token_auth_middleware(request, call_next)
 
 
 _DASHBOARD_HEALTH_WINDOW_SECONDS = 300.0

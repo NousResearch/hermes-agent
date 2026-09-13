@@ -3,6 +3,13 @@ from types import SimpleNamespace
 
 from cli import HermesCLI
 from hermes_cli.main_agent_cmds import cmd_insights
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def existing_store(tmp_path, monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    (tmp_path / "state.db").touch()
 
 
 class _InsightsEngineStub:

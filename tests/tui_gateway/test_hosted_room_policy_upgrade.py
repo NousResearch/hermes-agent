@@ -96,7 +96,12 @@ def test_upgrade_preserves_an_already_admitted_frozen_turn(tmp_path, monkeypatch
     service = HostedRoomService(server, db_path=db)
     service.local_profiles = lambda: PROFILES
     service.runtime.clock = lambda: clock[0]
+    monkeypatch.setattr(driver, "admit_task", lambda *a, **kw: pytest.fail("cache rebuild readmitted work"))
     service.prepare_room(service.bindings()[0])
+    # Reopening the service repeats only derived-cache preparation, not execution.
+    cold = HostedRoomService(server, db_path=db)
+    cold.local_profiles = lambda: PROFILES
+    cold.prepare_room(cold.bindings()[0])
     existing = driver.get_task_for_turn(db, old_plan.identity)
     assert existing["status"] == status
     assert existing["identity"] == admitted["identity"]

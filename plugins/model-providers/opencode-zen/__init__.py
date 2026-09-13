@@ -25,9 +25,15 @@ def _flat_model_name(model: str | None) -> str:
     return (model or "").strip().rsplit("/", 1)[-1].lower()
 
 
+# Version-less DeepSeek ids that still carry the thinking/effort knobs on this wire: the retired
+# ``deepseek-reasoner`` alias and the canonical ``deepseek-flash`` (2026-09 Flash refresh), for
+# which the Go relay honours the same top-level ``reasoning_effort``/``thinking`` contract.
+_THINKING_CAPABLE_IDS: frozenset[str] = frozenset({"deepseek-reasoner", "deepseek-flash"})
+
+
 def _is_deepseek_thinking_model(model: str | None) -> bool:
     m = _flat_model_name(model)
-    return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m == "deepseek-reasoner"
+    return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m in _THINKING_CAPABLE_IDS
 
 
 def _is_glm_5_2_model(model: str | None) -> bool:
@@ -115,6 +121,12 @@ opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
+    # The Go relay's upstream validates tool content as a strict string: list-type tool
+    # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
+    # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),
+    # and the rejected row stays in history so every later call dies too. Images in user
+    # messages are fine, so vision itself keeps working via the text-summary downgrade.
+    supports_vision_tool_messages=False,
 )
 
 register_provider(opencode_zen)

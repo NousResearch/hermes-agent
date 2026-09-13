@@ -221,6 +221,12 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     # too; runtime resolution (resolve_runtime_provider) validates, same as the top-level flag.
     inherited(chat_parser, "--provider", default=SUPPRESS,
               help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.")
+    # Explicit endpoint launches (custom provider, --safe-mode isolation) are frozen into the
+    # session policy by the gateway; the key lives only in the authority's memory, never on disk.
+    add("--base-url", dest="base_url", default=SUPPRESS, metavar="URL",
+        help="OpenAI-compatible endpoint for --provider custom (e.g. http://127.0.0.1:8000/v1).")
+    add("--api-key", dest="api_key", default=SUPPRESS, metavar="KEY",
+        help="API key for this launch only; not persisted.")
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")

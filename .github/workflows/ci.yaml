@@ -38,7 +38,7 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 3
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}
@@ -58,12 +58,15 @@ jobs:
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: |
+            .github/actions/detect-changes
+            scripts/ci/classify_changes.py
+          sparse-checkout-cone-mode: false
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          sparse-checkout: scripts/ci/classify_changes.py
-          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────

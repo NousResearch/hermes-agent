@@ -30,7 +30,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
-| **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay, or `ACTUAL_BASE_URL=http://127.0.0.1:8080` for the local daemon — no key needed on loopback (provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`) |
+| **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay; set `model.base_url` in `config.yaml` for a local daemon (no key needed on loopback). Provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`. |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -93,6 +93,21 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add openai-codex` (or `hermes model` → **ChatGPT or Codex Subscription**) to start a fresh device-code login; the quarantine clears on the next successful exchange.
+
+Device login can fail with `[SSL: UNEXPECTED_EOF_WHILE_READING]` or a TLS handshake timeout on Python/OpenSSL 3.5+ when a middlebox rejects post-quantum groups such as X25519MLKEM768 (curl may still work). Hermes does not change default TLS policy. Point `OPENSSL_CONF` at a config that restricts `Groups` to classic curves before running `hermes model`, or diagnose with TLS 1.2:
+
+```ini
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = x25519:secp256r1:secp384r1:x448
+```
 :::
 
 :::warning
@@ -355,7 +370,7 @@ No configuration is needed — caching activates automatically when an xAI endpo
 
 xAI also ships a dedicated TTS endpoint (`/v1/tts`). Select **xAI TTS** in `hermes tools` → Voice & TTS, or see the [Voice & TTS](../user-guide/features/tts.md#text-to-speech) page for config.
 
-**Retired xAI model migration (May 15, 2026):** xAI is retiring `grok-4*`, `grok-3`, `grok-code-fast-1`, and `grok-imagine-image-pro` on 2026-05-15. `hermes doctor` and `hermes chat` startup both detect any config still pointing at a retired ref and print the recommended replacement. Use `hermes migrate xai` for a one-shot config rewrite — dry-run by default, add `--apply` to write changes (a timestamped `config.yaml.bak-pre-migrate-xai-*` backup is created automatically).
+**Retired xAI model migration (May 15, 2026):** xAI is retiring `grok-4*`, `grok-3`, `grok-code-fast-1`, and `grok-imagine-image-pro` on 2026-05-15. `hermes doctor` and `hermes chat` startup both detect any config still pointing at a retired ref and print the recommended replacement. Use `hermes migrate xai` for a one-shot config rewrite — dry-run by default, add `--apply` to write changes (a timestamped copy of the previous config lands in `backups/config/` first).
 
 ```bash
 hermes migrate xai          # preview replacements
@@ -587,7 +602,7 @@ The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-se
 
 ### Actual Computer
 
-Your own hardware as a private inference cluster via [Actual Computer](https://actual.inc). Two serving modes, both OpenAI-compatible (Hermes uses the Responses API transport):
+Your own hardware as a private inference cluster via [Actual Computer](https://actual.inc). Two serving modes, both using Chat Completions so reasoning and final content are returned together:
 
 - **Hosted relay** — `https://api.actual.inc`, end-to-end encrypted, routes to *your* cluster. Authenticate with an `ac_` inference key from [actual.inc/user/keys](https://actual.inc/user/keys).
 - **Local daemon** — on-device at `http://127.0.0.1:8080`, fully offline. No API key needed: Hermes detects the loopback base URL and authenticates with an internal placeholder automatically.
@@ -596,20 +611,22 @@ Your own hardware as a private inference cluster via [Actual Computer](https://a
 # Hosted relay (ACTUAL_API_KEY in ~/.hermes/.env)
 hermes chat --provider actual --model <model-id-from-your-cluster>
 
-# Local daemon (ACTUAL_BASE_URL=http://127.0.0.1:8080 in ~/.hermes/.env, no key)
+# Local daemon (model.base_url in ~/.hermes/config.yaml, no key)
 hermes chat --provider actual --model <installed-model-name>
 ```
 
-Or set it permanently in `config.yaml`:
+Store provider settings in `~/.hermes/config.yaml`; only the hosted API key belongs in `.env`:
 ```yaml
 model:
   provider: "actual"
   default: "<model-id>"
+  base_url: "http://127.0.0.1:8080/v1" # Omit for the hosted relay.
 ```
 
 Notes:
 - Model IDs come from your cluster's `GET /v1/models` — discover with `hermes model` or `curl -s https://api.actual.inc/v1/models -H "Authorization: Bearer $ACTUAL_API_KEY"`.
-- Bare hosts are normalized: `ACTUAL_BASE_URL=http://127.0.0.1:8080` becomes `http://127.0.0.1:8080/v1` automatically.
+- Bare hosts in `model.base_url` are normalized: `http://127.0.0.1:8080` becomes `http://127.0.0.1:8080/v1` automatically. The legacy `ACTUAL_BASE_URL` environment variable is a fallback when no Actual URL is configured in YAML.
+- Actual uses `/v1/chat/completions` for chat, compaction, title generation, and every other auxiliary task. This also applies to custom providers targeting `api.actual.inc`, model switches, and fallbacks. Legacy Responses settings in the main model, custom provider, or auxiliary task configuration are overridden automatically.
 - Reasoning effort is clamped to Actual's supported range (`none/low/medium/high/max`) — a global `xhigh`/`ultra` setting will not 400 requests.
 - Small local models: Hermes' full default toolset plus the system prompt can exceed a 32k context window, producing an empty-stream error from llama.cpp-family servers. Restrict the toolset (`-t file,web`) or load the model with a larger context. The optional `actual-setup` skill (`hermes skills install official/devops/actual-setup`) covers setup and troubleshooting in detail.
 - Aliases: `actual-computer`, `actualcomputer`, `aci`.

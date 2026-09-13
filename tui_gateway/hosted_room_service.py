@@ -6,7 +6,6 @@ import contextlib
 import hashlib
 import logging
 from hashlib import sha256
-import hashlib
 import os
 import shutil
 import sqlite3
@@ -97,7 +96,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
         self._prepare_artifact_retry_store()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
-        self.rpc = HostedRoomServerRPC(server)
+        self.rpc = self._make_rpc(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self._peer_renewals: dict[tuple[str, str], tuple[str, float, float]] = {}
@@ -142,6 +141,9 @@ class HostedRoomService(HostedRoomArtifactMixin):
             self.replication = None
             self._replication_error = "publisher_initialization_failed"
 
+    def _make_rpc(self, server):
+        return HostedRoomServerRPC(server)
+
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""
         stored_links, load_errors = hosted_room_links.load_room_links_tolerant(self.db_path)
@@ -170,9 +172,15 @@ class HostedRoomService(HostedRoomArtifactMixin):
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
+        from hermes_constants import named_profile_is_deleted
+
         profiles, profiles_dir = {"default"}, self.root / "profiles"
         if profiles_dir.is_dir():
-            profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
+            # ``profiles/.deleted/`` is the tombstone dir `hermes profile delete` leaves behind, not a
+            # profile: feeding it to validate_roster failed plan_next_task on every cycle (#106847).
+            profiles.update(
+                path.name for path in profiles_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".") and not named_profile_is_deleted(path))
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
@@ -813,6 +821,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
 
+
     def _append_room_status(
         self, room: Mapping[str, Any], decision: discussion.DiscussionDecision) -> None:
         if decision.discussion_event_id is None:
@@ -837,7 +846,12 @@ class HostedRoomService(HostedRoomArtifactMixin):
         with self._policy_lock:
             room = self._room(binding.room_id)
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
-            if self._publish_terminal_tasks(room):
+            try:
+                changed = self._publish_terminal_tasks(room)
+            except hosted_rooms.EventCursorConflictError:
+                # Rebuild publication next poll; the settled task is never readmitted.
+                return
+            if changed:
                 room = self._room(binding.room_id)
                 snapshot = self._policy_snapshot(room)
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
@@ -908,6 +922,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
             payload=payload,
             actor={"kind": "user", "id": "desktop"},
         )
+
 
     def stop_room(
         self,

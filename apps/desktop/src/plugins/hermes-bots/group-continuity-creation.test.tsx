@@ -9,6 +9,8 @@ import { translateBots } from './i18n-test-helper'
 import type { BotMeta, RosterRow } from './types'
 
 const mocks = vi.hoisted(() => ({
+  source: { connectionId: 'host-a', profile: 'default', gateway: 'open', epoch: 1 },
+  requestProfile: vi.fn(),
   createAutonomousHostedGroupChat: vi.fn(),
   markHostedRoomLocallyDeleted: vi.fn(),
   notify: vi.fn(),
@@ -24,8 +26,16 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...original,
+    gatewayActivationEpoch: () => mocks.source.epoch,
     host: {
       ...original.host,
+      state: {
+        ...original.host.state,
+        connectionId: { get: () => mocks.source.connectionId },
+        profile: { get: () => mocks.source.profile },
+        gateway: { get: () => mocks.source.gateway }
+      },
+      requestProfile: mocks.requestProfile,
       notify: mocks.notify
     },
     usePluginI18n: () => translateBots
@@ -66,6 +76,16 @@ const roster: RosterRow[] = [
     targetProfile: 'builder'
   }
 ]
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
 
 const eligibleProbe: HostedRoomProbe = {
   attachmentParity: true,
@@ -119,6 +139,20 @@ beforeAll(() => {
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  mocks.source = { connectionId: 'host-a', profile: 'default', gateway: 'open', epoch: 1 }
+  // F9 requires positive legacy classification before entering a hosted probe.
+  // Never dispatch these UI fixtures to a real gateway or a default SDK method.
+  mocks.requestProfile.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.capabilities') {
+      return { driver: false, persistent_process: false }
+    }
+
+    if (method === 'groups.create') {
+      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
+    }
+
+    throw new Error(`Unexpected fixture RPC: ${method}`)
+  })
   mocks.probeHostedRoomMembers.mockResolvedValue(eligibleProbe)
   mocks.createAutonomousHostedGroupChat.mockResolvedValue({
     authorityId: 'install:studio',
@@ -129,9 +163,11 @@ beforeEach(async () => {
 
   const { $botMeta } = await import('./data')
   const { $groupChats } = await import('./group-chat')
+  const { $canonicalGroupBindings } = await import('./canonical-group-registry')
 
   $botMeta.set({})
   $groupChats.set({})
+  $canonicalGroupBindings.set({})
 })
 
 afterEach(() => {
@@ -154,7 +190,8 @@ async function renderSelectedGroup(rows: RosterRow[] = roster, onCreated?: (grou
   fireEvent.click(checkboxes[0])
   fireEvent.click(checkboxes[1])
 
-  await waitFor(() => expect(mocks.probeHostedRoomMembers).toHaveBeenCalledTimes(1))
+  expect(mocks.probeHostedRoomMembers).not.toHaveBeenCalled()
+  expect(mocks.requestProfile).not.toHaveBeenCalled()
 
   return screen.getByRole('button', {
     name: 'Create Group (2)'
@@ -162,6 +199,142 @@ async function renderSelectedGroup(rows: RosterRow[] = roster, onCreated?: (grou
 }
 
 describe('automatic Group Chat continuity', () => {
+  it('creates canonically without a legacy probe and freezes member identity before capability awaits', async () => {
+    const capability = deferred<unknown>()
+    mocks.requestProfile.mockImplementationOnce(() => capability.promise)
+    const rows = roster.map(row => ({ ...row, handle: `${row.name}-handle` }))
+    const { $botMeta } = await import('./data')
+    $botMeta.set({ 'host-a::research': { title: 'Original researcher' } })
+    const onCreated = vi.fn()
+    const create = await renderSelectedGroup(rows, onCreated)
+    await act(async () => {
+      fireEvent.click(create)
+    })
+    expect(create.disabled).toBe(true)
+    fireEvent.click(create)
+    expect(mocks.requestProfile).toHaveBeenCalledOnce()
+    // A real roster/metadata rename during the capability await must not
+    // rewrite the captured owner, handle, or display name of the create.
+    rows[0].name = 'renamed'
+    rows[0].handle = 'renamed-handle'
+    rows[0].targetProfile = 'renamed-target'
+    rows[0].connectionId = 'host-other'
+    await act(async () => {
+      $botMeta.set({ 'host-a::research': { title: 'New researcher title' } })
+      capability.resolve({ driver: true })
+    })
+    await waitFor(() => expect(onCreated).toHaveBeenCalledOnce())
+    expect(mocks.requestProfile.mock.calls.map(([, method]) => method)).toEqual([
+      'groups.capabilities',
+      'groups.create'
+    ])
+    expect(mocks.requestProfile.mock.calls[1]).toMatchObject([
+      { connectionId: 'host-a', profile: 'default', targetProfile: 'default' },
+      'groups.create',
+      {
+        members: [
+          {
+            member_id: 'research',
+            profile: 'research',
+            handle: 'research-handle',
+            display_name: 'Original researcher'
+          },
+          { member_id: 'builder', profile: 'builder', handle: 'builder-handle' }
+        ]
+      }
+    ])
+    expect(onCreated.mock.calls[0][0]).toMatch(/^canonical:host-a:default:/)
+    expect(mocks.probeHostedRoomMembers).not.toHaveBeenCalled()
+    expect(mocks.createAutonomousHostedGroupChat).not.toHaveBeenCalled()
+    expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+    const { $groupChats } = await import('./group-chat')
+    expect($groupChats.get()).toEqual({})
+  })
+
+  it.each(['capability-error', 'unavailable', 'canonical-create-error'] as const)(
+    'never falls back to legacy creation for %s',
+    async failure => {
+      if (failure === 'capability-error') {
+        mocks.requestProfile.mockRejectedValueOnce(new Error('capability unavailable'))
+      } else {
+        mocks.requestProfile.mockResolvedValueOnce(
+          failure === 'unavailable'
+            ? { driver: false, persistent_process: true, protocol_version: 1 }
+            : { driver: true }
+        )
+      }
+
+      if (failure === 'canonical-create-error') {
+        mocks.requestProfile.mockRejectedValueOnce(new Error('canonical create unavailable'))
+      }
+
+      const onCreated = vi.fn()
+      const create = await renderSelectedGroup(roster, onCreated)
+      await act(async () => {
+        fireEvent.click(create)
+      })
+      await waitFor(() => expect(create.disabled).toBe(false))
+      expect(screen.getByRole('dialog')).toBeTruthy()
+      expect(mocks.probeHostedRoomMembers).not.toHaveBeenCalled()
+      expect(mocks.createAutonomousHostedGroupChat).not.toHaveBeenCalled()
+      expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+      expect(onCreated).not.toHaveBeenCalled()
+      const { $groupChats } = await import('./group-chat')
+      expect($groupChats.get()).toEqual({})
+    }
+  )
+
+  it.each(['capability', 'legacy-probe', 'canonical-create'] as const)(
+    'does not publish into a changed source after the %s await',
+    async boundary => {
+      const pending = deferred<unknown>()
+
+      if (boundary === 'capability') {
+        mocks.requestProfile.mockImplementationOnce(() => pending.promise)
+      }
+
+      if (boundary === 'legacy-probe') {
+        mocks.probeHostedRoomMembers.mockImplementationOnce(() => pending.promise)
+      }
+
+      if (boundary === 'canonical-create') {
+        mocks.requestProfile.mockResolvedValueOnce({ driver: true }).mockImplementationOnce(() => pending.promise)
+      }
+
+      const onCreated = vi.fn()
+      const create = await renderSelectedGroup(roster, onCreated)
+      await act(async () => {
+        fireEvent.click(create)
+      })
+      expect(
+        boundary === 'legacy-probe'
+          ? mocks.probeHostedRoomMembers.mock.calls.length
+          : mocks.requestProfile.mock.calls.length
+      ).toBe(boundary === 'canonical-create' ? 2 : 1)
+      mocks.source.epoch += 1
+      mocks.source.connectionId = 'other-source'
+      await act(async () => {
+        pending.resolve(
+          boundary === 'capability'
+            ? { driver: false, persistent_process: false }
+            : boundary === 'legacy-probe'
+              ? eligibleProbe
+              : { room: { room_id: 'old-source-room', name: 'Old source room', members: [] } }
+        )
+      })
+      expect(onCreated).not.toHaveBeenCalled()
+      expect(mocks.createAutonomousHostedGroupChat).not.toHaveBeenCalled()
+      expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+      expect(mocks.notify).not.toHaveBeenCalled()
+      const { $groupChats } = await import('./group-chat')
+      const { $canonicalGroupBindings } = await import('./canonical-group-registry')
+      expect($groupChats.get()).toEqual({})
+      expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.roomId === 'old-source-room')).toBe(
+        false
+      )
+    }
+  )
+
   it('shows the required empty copy when no bots exist', async () => {
     const { CreateGroupChatDialog } = await import('./create-dialog')
 
@@ -307,7 +480,7 @@ describe('automatic Group Chat continuity', () => {
     ])
   })
 
-  it('keeps Create disabled until the probe settles', async () => {
+  it('starts the legacy probe only on Create and keeps creation single-flight until it settles', async () => {
     let settleProbe: (probe: HostedRoomProbe) => void = () => undefined
 
     mocks.probeHostedRoomMembers.mockImplementation(
@@ -319,9 +492,20 @@ describe('automatic Group Chat continuity', () => {
 
     const create = await renderSelectedGroup()
 
+    expect(create.disabled).toBe(false)
+    await act(async () => {
+      fireEvent.click(create)
+    })
+    expect(mocks.requestProfile).toHaveBeenCalledTimes(1)
+    expect(mocks.probeHostedRoomMembers).toHaveBeenCalledTimes(1)
     expect(create.disabled).toBe(true)
-    settleProbe(eligibleProbe)
-    await waitFor(() => expect(create.disabled).toBe(false))
+    fireEvent.click(create)
+    expect(mocks.probeHostedRoomMembers).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      settleProbe(eligibleProbe)
+    })
+    await waitFor(() => expect(mocks.createAutonomousHostedGroupChat).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('creates a classic Desktop Group Chat when the probe fails', async () => {

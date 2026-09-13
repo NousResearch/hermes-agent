@@ -720,6 +720,15 @@ def test_prompt_delta_is_bounded_to_24_message_lines(
     assert "Message 29." in task.payload["prompt"]
 
 
+def test_incomplete_attachment_metadata_is_rejected():
+    with pytest.raises(discussion.DiscussionValidationError, match="missing fields"):
+        discussion.validate_user_payload({
+            "text": "Review.",
+            "thread_id": "thread-1",
+            "attachments": [{"name": "notes.txt"}],
+        }, member_ids=MEMBER_IDS)
+
+
 @pytest.mark.parametrize(
     ("members", "match"),
     [
@@ -992,7 +1001,10 @@ def test_attachment_task_reconstructs_after_its_terminal_publication(
 
     second = _next_task(room, db)
     assert second.member.member_id != first.member.member_id
-    assert second.payload["attachments"] == _attachment_manifest()
+    assert second.payload["attachments"] == [
+        {**attachment, "event_id": "user-attachments-terminal"}
+        for attachment in _attachment_manifest()
+    ]
 
 
 def test_attachment_task_reconstructs_after_driver_reopen(
@@ -1015,7 +1027,15 @@ def test_attachment_task_reconstructs_after_driver_reopen(
         local_profiles=LOCAL_PROFILES,
     )
     assert reconstructed == task
-    assert reconstructed.payload["attachments"] == _attachment_manifest()
+    assert reconstructed.payload["attachments"] == [
+        {**attachment, "event_id": "user-attachments"}
+        for attachment in _attachment_manifest()
+    ]
+    assert reconstructed.payload["input_context"] == {
+        "watermark": 0,
+        "event_seqs": [task.payload["source_event_seq"]],
+    }
+    assert reconstructed.payload["recipient_member_ids"] == list(MEMBER_IDS)
     assert "att_11111111111111111111111111111111" not in reconstructed.payload["prompt"]
 
 
@@ -1166,7 +1186,10 @@ def test_prompts_include_safe_metadata_and_tasks_carry_attachment_ids(
     assert "User (user): Review the upload." in research_prompt
     assert "User (user): Review the upload. diagram.png" not in research_prompt
     assert "att_11111111111111111111111111111111" not in research_prompt
-    assert research.payload["attachments"] == _attachment_manifest()
+    assert research.payload["attachments"] == [
+        {**attachment, "event_id": "user-attachments"}
+        for attachment in _attachment_manifest()
+    ]
     assert "Queued image/PDF attachments are staged separately" in research_prompt
     assert 'Queued image "diagram.png"' in research_prompt
     assert 'Queued PDF "release.pdf"' in research_prompt
@@ -1185,7 +1208,10 @@ def test_prompts_include_safe_metadata_and_tasks_carry_attachment_ids(
     build_prompt = build.payload["prompt"]
     assert build.member.member_id == "member-build"
     assert "att_11111111111111111111111111111111" not in build_prompt
-    assert build.payload["attachments"] == _attachment_manifest()
+    assert build.payload["attachments"] == [
+        {**attachment, "event_id": "user-attachments"}
+        for attachment in _attachment_manifest()
+    ]
     assert build.identity.task_id != research.identity.task_id
 
 
@@ -1326,7 +1352,9 @@ def test_member_file_publication_reaches_the_next_bot(room_db: tuple[Path, dict]
 
     second = _next_task(room, db)
     assert second.member.member_id != first.member.member_id
-    assert second.payload["attachments"] == handoff
+    assert second.payload["attachments"] == [
+        {**attachment, "event_id": message.event_id} for attachment in handoff
+    ]
     assert 'Staged file "handoff.md"' in second.payload["prompt"]
     driver.admit_task(db, second.identity, payload=second.payload, clock=time.time)
     assert discussion.reconstruct_task_plan(

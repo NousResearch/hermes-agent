@@ -27,7 +27,7 @@ _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
+
+
+def _checkpoint_path() -> Path:
+    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
+    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
+    profile from one process, so the import-time constant would pin every profile's process
+    checkpoint to the launch home."""
+    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
@@ -207,7 +216,10 @@ def _systemd_run_user_scope_available() -> bool:
     """True if ``systemd-run --user --scope`` can create a cgroup.
     ``shutil.which`` alone is insufficient: system services and containers may lack
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
-    ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached."""
+    ``Failed to connect to user bus``), so a cheap probe is run and cached.
+
+    Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
+    (#105365), regardless of the gateway service's PATH."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
     verdict = _systemd_scope_cached()
     if verdict is not None:
@@ -228,7 +240,7 @@ def _systemd_run_user_scope_available() -> bool:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/true"),
+                        _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
                         capture_output=True,
                         timeout=3,
                         env=systemd_user_bus_env(),
@@ -279,36 +291,74 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
+_scope_degraded_warned = False
+
+
+def _warn_scope_degraded_once(detail: str) -> None:
+    """Warn once per process: the condition is host-level and the probe verdict
+    is cached, so this would otherwise fire on every cron dispatch."""
+    global _scope_degraded_warned
+    if _scope_degraded_warned:
+        return
+    _scope_degraded_warned = True
+    logger.warning(
+        "managed gateway: %s; cron children are dispatched as direct external subprocesses "
+        "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
+        "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
+        detail,
+    )
+
+
+class GatewayChildDispatch(NamedTuple):
+    """How a managed-gateway child is launched.
+
+    ``in_process``: not a managed systemd gateway, ``argv is command``, the caller
+    keeps its in-process path.  ``scoped``: ``argv`` is the systemd-run wrapper.
+    ``degraded``: no user scope could be created; ``argv`` is the direct command but
+    the caller MUST still launch it as an external subprocess — the distinct mode
+    exists so this case can never collapse into ``in_process`` and recreate the
+    restart interruption #101940 closed.
+    """
+
+    mode: Literal["in_process", "scoped", "degraded"]
+    argv: List[str]
+
+
 def restart_safe_gateway_child_argv(
-    command: List[str], *, unit_suffix: str
-) -> List[str]:
+    command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
+) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
-    Children that must survive an intentional gateway restart cannot rely on
-    ``start_new_session`` alone: systemd still kills every process in the
-    service cgroup.  In that topology, require a transient user scope and fail
-    closed if it cannot be established.  Standalone processes, non-systemd
-    supervisors, and non-Linux hosts retain the direct command.
+    A systemd-supervised gateway restart kills every process in the service
+    cgroup, so children that must survive it run in a transient user scope.
+    Hosts with no user systemd session (containers, LXCs without linger) cannot
+    create one; hard-failing there is a silent cron outage, so callers state the
+    policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
+    workers), ``False`` degrades to a direct external subprocess with a
+    once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
     """
     if not _IS_LINUX:
-        return command
+        return GatewayChildDispatch("in_process", command)
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
-        return command
+        return GatewayChildDispatch("in_process", command)
+
+    def _degrade(detail: str) -> GatewayChildDispatch:
+        if require_restart_safe_scope:
+            # Stored as the cron execution's error and shown on the job row: name the remedy.
+            raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
+        _warn_scope_degraded_once(detail)
+        return GatewayChildDispatch("degraded", command)
+
     if not _systemd_run_user_scope_available():
-        # Stored as the cron execution's error and shown on the job row: name the remedy.
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
+        return _degrade(
             "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
             f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
             "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run disappeared after the availability probe"
-        )
-    return scoped
+        return _degrade("systemd-run disappeared after the availability probe")
+    return GatewayChildDispatch("scoped", scoped)
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:
@@ -473,12 +523,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
-        # Rehydrate durable delegation completions once, at registry startup.
-        try:
-            from tools.async_delegation import restore_undelivered_completions
-            restore_undelivered_completions(self.completion_queue)
-        except Exception as exc:
-            logger.warning("Could not restore async delegation completions: %s", exc)
+        # Durable delegation completions are NOT rehydrated here: this constructor runs at
+        # import time in every process that touches the tools graph (cron clients, `hermes
+        # sessions list`, workers), and restoring means writing the canonical ledger. Only
+        # the runtime that owns delegation state calls restore_undelivered_completions,
+        # explicitly (GatewayRunner._start_recover_previous_run).
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -605,6 +654,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _watch_event_base(session: ProcessSession) -> dict:
         """Session identity + watcher routing fields shared by every watch event."""
         return {
+            "event_id": uuid.uuid4().hex,
+            "started_at": session.started_at,
+            "parent_session_id": session.parent_session_id,
             "session_id": session.id,
             "session_key": session.session_key,
             "task_id": session.task_id,

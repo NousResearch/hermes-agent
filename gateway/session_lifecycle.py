@@ -249,9 +249,13 @@ class SessionLifecycleMixin:
         to avoid touching long-idle sessions. Sets ``resume_pending=True`` so the next incoming message on
         the same session_key auto-resumes from the existing transcript.
         """
+        from gateway.config import Platform
         cutoff = _now() - timedelta(seconds=max_age_seconds)
 
         def _mark(entry: SessionEntry) -> bool:
+            # Canonical local routes recover through their durable FIFO, never a synthetic resume.
+            if entry.origin is not None and entry.origin.platform == Platform.LOCAL:
+                return False
             if entry.resume_pending or entry.suspended or entry.updated_at < cutoff:
                 return False
             entry.resume_pending = True

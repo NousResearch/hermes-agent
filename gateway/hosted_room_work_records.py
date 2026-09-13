@@ -10,7 +10,7 @@ from collections import Counter
 
 from gateway import hosted_rooms as rooms
 from gateway import hosted_room_work_storage as storage
-from gateway.hosted_room_replica_retirement import copy_retired_locked, roster_digest
+from gateway.hosted_room_replica_retirement import copy_retired_locked
 from gateway.hosted_rooms_common import identifier, table_exists
 
 VERSION = 1
@@ -272,6 +272,31 @@ def _capture_tasks(conn, room_id):
     return tasks, receipts, None
 
 
+def capture_transition_locked(conn, room_id):
+    """Observe committed driver facts, without making evidence an execution gate.
+
+    The caller's transaction owns both facts and evidence. A rejected evidence
+    write rolls back only its savepoint; malformed retained bytes are classified
+    in place, never replaced with a fabricated current snapshot.
+    """
+    import logging
+    owner = conn.execute(
+        "SELECT authority_gateway_id FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL",
+        (room_id,)).fetchone()
+    if owner is None:
+        return
+    conn.execute("SAVEPOINT work_transition_capture")
+    try:
+        capture_locked(conn, room_id=room_id, local_gateway_id=owner[0])
+    except InvalidStoredWorkRecord:
+        logging.getLogger(__name__).warning("Hosted work evidence invalid for room %s", room_id)
+    except (WorkRecordError, sqlite3.Error):
+        conn.execute("ROLLBACK TO work_transition_capture")
+        logging.getLogger(__name__).warning("Hosted work evidence unavailable for room %s", room_id, exc_info=True)
+    finally:
+        conn.execute("RELEASE work_transition_capture")
+
+
 def capture(db_path, *, room_id: str, local_gateway_id: str, through_seq: int | None = None) -> dict:
     """Commit a new revision only when one consistent source view changes."""
     with rooms._transaction(db_path, immediate=True) as conn:
@@ -286,13 +311,14 @@ def capture_locked(conn, *, room_id, local_gateway_id, through_seq=None):
     initialize(conn)
     room = conn.execute("SELECT * FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
     if (room is None or room["authority_gateway_id"] != local_gateway_id
+            or room["disbanded_at"] is not None
             or conn.execute("SELECT 1 FROM hosted_room_quarantine WHERE room_id=?", (room_id,)).fetchone()):
         raise WorkRecordError("work record source is unavailable")
     seq = room["next_seq"] - 1
     if through_seq is not None and seq > through_seq:
         raise WorkRecordPrefixError("history delivery must precede work records")
     tasks, receipts, reason = _capture_tasks(conn, room_id)
-    fence = conn.execute("SELECT revocation_complete_at FROM hosted_room_disband_fences WHERE room_id=?", (room_id,)).fetchone()
+    fence = None  # This runtime has no durable peer revocation completion proof.
     stop = conn.execute("""SELECT seq,payload_json FROM hosted_room_events
         WHERE room_id=? AND kind='room.stop_requested' ORDER BY seq DESC LIMIT 1""", (room_id,)).fetchone()
     content = {
@@ -574,3 +600,24 @@ def summary_locked(conn, room_id):
         scopes.append({"producer": None, "disposition": "invalid", "availability": "invalid",
                        "source_loss_safe": False, "incompleteness": ["invalid_work_evidence"]})
     return {"mode": "passive_work_records", **(selected or missing), "scopes": scopes}
+
+
+def roster_digest(members):
+    _, encoded = rooms._validate_members(members)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def acknowledgement(record):
+    """Exact passive ACK shape; never an admission or execution receipt."""
+    ack = {"room_id": record["room_id"], "revision": record["revision"],
+           "digest": record["digest"], "passive": True}
+    if record["version"] == 2:
+        ack.update(version=2, authority=record["authority"], lineage_sha256=record["lineage_sha256"])
+    return ack
+
+
+def acknowledge_locked(conn, *, room_id, target_install_id, route_generation, record, ack):
+    if encode(ack) != encode(acknowledgement(record)):
+        return False
+    return delivery_status_locked(conn, room_id=room_id, target_install_id=target_install_id,
+                                  route_generation=route_generation, record=record, status="acked")

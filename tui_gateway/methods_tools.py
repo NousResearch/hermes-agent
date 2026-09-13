@@ -6,6 +6,7 @@ Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / 
 """
 
 import sys
+from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -329,102 +330,11 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────
-class _Catalog:
-    """Accumulator for commands.catalog: ``pairs`` (every [key, desc]), ``canon`` (lowercase
-    key/alias → canonical key), ``commands`` (key → desktop meta) and ordered categories."""
-
-    def __init__(self) -> None:
-        self.pairs: list[list[str]] = []
-        self.canon: dict[str, str] = {}
-        self.commands: dict[str, dict[str, str | None]] = {}
-        self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
-
-    def add(self, key: str, desc: str, cat: str) -> None:
-        self.canon[key.lower()] = key
-        self.pairs.append([key, desc])
-        self.cat_map.setdefault(cat, []).append([key, desc])
-
-
-def _catalog_registry(cat: _Catalog) -> None:
-    commands = _tools_mod("hermes_cli.commands")
-    for cmd in commands.COMMAND_REGISTRY:
-        meta = commands.command_desktop_meta(cmd)
-        cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
-        if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
-            continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
-        for a in cmd.aliases:
-            cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
-    for name, desc, category in _TUI_EXTRA:
-        # Registry command/alias wins over a colliding TUI extra (e.g. /compact, /sessions).
-        if name.lower() not in cat.canon:
-            cat.add(name, desc, category)
-
-
-def _catalog_quick_commands(cat: _Catalog) -> None:
-    qcmds = _load_cfg().get("quick_commands", {}) or {}
-    if not (isinstance(qcmds, dict) and qcmds):
-        return
-    cat.cat_map.setdefault("User commands", [])  # category exists even when every entry is malformed
-    for qname, qc in sorted(qcmds.items()):
-        if not isinstance(qc, dict):
-            continue
-        qtype = qc.get("type", "")
-        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
-        desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
-        cat.add(f"/{qname}", desc, "User commands")
-
-
-def _catalog_plugin_commands(cat: _Catalog) -> None:
-    plugin_cmds = _tools_mod("hermes_cli.plugins").get_plugin_commands() or {}
-    if plugin_cmds:
-        cat.cat_map.setdefault("Plugin commands", [])
-    for pname, info in sorted(plugin_cmds.items()):
-        key = f"/{pname}"
-        if not isinstance(info, dict) or key.lower() in cat.canon:
-            continue
-        cat.add(key, str(info.get("description") or "Plugin command"), "Plugin commands")
-        mode = info.get("argument_mode")
-        if mode not in {"options", "text", "mixed"}:
-            mode = "text" if str(info.get("args_hint") or "").strip() else None
-        cat.commands[key] = {"argument_mode": mode, "desktop": None}
-
-
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
-    usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(_tools_mod("agent.skill_commands").scan_skill_commands().items()):
-        cat.pairs.append([k, str(info.get("description", "Skill"))])
-        name = str(info.get("name") or k.lstrip("/"))
-        skills[k] = {"usage": usage(name), "origin": origin_of(name)}
-
-
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
-    """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
-    cat = _Catalog()
-    _catalog_registry(cat)
-    warning = ""
-    try:
-        _catalog_quick_commands(cat)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
-    skills: dict[str, dict] = {}
-    try:
-        _catalog_skills(cat, skills)
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
-    return _ok(rid, {
-        "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
-        "canon": cat.canon,
-        "commands": cat.commands,
-        "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
-        "skills": skills, "skill_count": len(skills), "warning": warning})
+    """Registry-backed slash metadata, categorized, no aliases (shared builder in command_discovery)."""
+    from tui_gateway.command_discovery import command_catalog
+    return _ok(rid, command_catalog(load_cfg=_load_cfg, module_loader=_tools_mod))
 
 
 @method("cli.exec")
@@ -869,13 +779,16 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Insights / rollback / browser / config ──────────────────────────────────
-@_rpc("insights.get", 5017)
+@_scoped_rpc("insights.get", 5017)
 def _(rid, params: dict) -> dict:
     days = params.get("days", 30)
-    if (db := _get_db()) is None:
-        return _db_unavailable_error(rid, code=5017)
-    cutoff = time.time() - days * 86400
-    rows = [s for s in db.list_sessions_rich(limit=500, compact_rows=True) if (s.get("started_at") or 0) >= cutoff]
+    # ``profile`` selects that profile's store; the launch handle is never the fallback for a
+    # scoped call (a foreign first touch used to pin the process-wide handle, #102526).
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5017)
+        cutoff = time.time() - days * 86400
+        rows = [s for s in db.list_sessions_rich(limit=500, compact_rows=True) if (s.get("started_at") or 0) >= cutoff]
     return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})
 
 
@@ -1328,7 +1241,10 @@ def _(rid, params: dict) -> dict:
 # ─── Plugins ─────────────────────────────────────────────────────────────────
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
+    cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
+    pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
+    ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
         status = pc._plugin_status(name, enabled, disabled, key=key)
@@ -1337,9 +1253,16 @@ def _plugin_rows() -> list[dict]:
         if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
             status = "enabled"
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
+        # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
+        # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
+        _dir_path = Path(str(_dir)) if _dir else None
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir)})
+            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
+            "install_dir": str(_dir_path) if _dir_path else "",
+            "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
+            **cat.catalog_row_fields(_dir, pins),
+            **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 
 
@@ -1363,22 +1286,45 @@ def _plugins_toggle(rid, params):
 
 
 def _plugins_install(rid, params):
+    # ``catalog_name`` alone installs a curated entry at its pinned SHA (resolved server-side, kill list
+    # enforced, no bypass) — same contract as the dashboard endpoint.
     ident = (params.get("identifier") or params.get("repo") or "").strip()
-    if not ident:
-        return _err(rid, 4019, "plugins.install requires 'identifier' or 'repo'")
+    catalog_name = str(params.get("catalog_name") or "").strip()
+    if not ident and not catalog_name:
+        return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
-        ident, force=bool(params.get("force")), enable=params.get("enable", True))
+        ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
+        ref=str(params.get("ref") or "").strip() or None)
     return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install}
+def _plugins_update(rid, params):
+    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI)."""
+    name = (params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4019, "plugins.update requires a 'name'")
+    pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
+    target = pc._plugins_dir() / name
+    sidecar = cat.read_catalog_sidecar(target) if target.is_dir() else None
+    if not sidecar:
+        return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
+    try:
+        sha, changed = cat.repin_catalog_plugin(target, sidecar)
+    except pc.PluginOperationError as e:
+        return _err(rid, 4021, str(e))
+    return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
+                    "update": _plugins_update}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
 def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
-    ``install`` git-clones ``identifier``/``repo`` (``force``, ``enable`` default True)."""
+    ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
+    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

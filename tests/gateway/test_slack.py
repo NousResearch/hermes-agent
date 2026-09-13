@@ -3334,6 +3334,9 @@ class TestAssistantThreadLifecycle:
             # connector's chat.startStream recipient fields.
             "scope_id": "T_OTHER",
             "user_id": "U_USER",
+            # Triggering ts: lets the reply_in_thread=false path tell this synthetic
+            # thread key (thread_id == own ts) from a real thread.
+            "message_id": "171.111",
         }
 
     @pytest.mark.asyncio
@@ -3806,6 +3809,10 @@ class TestProgressMessageThread:
         assert msg_event.message_id == "1234567890.000001", (
             "message_id must equal the event ts so _run_agent can use it as "
             "the fallback thread anchor for progress messages"
+        )
+        assert source.message_id == "1234567890.000001", (
+            "source.message_id must carry the authenticated triggering Slack ts "
+            "into session-bound tools"
         )
 
         # Verify that the Slack send() method correctly threads a message

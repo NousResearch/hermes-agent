@@ -2,6 +2,7 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { sharedControlParams } from '../canonicalGateway.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
@@ -26,7 +27,7 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, capturePromptResponseGuard, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -143,7 +144,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo'>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
@@ -163,6 +164,15 @@ export function dismissSensitivePrompt(
     sys('secret entry cancelled')
 
     return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+  }
+
+  if (overlay.vaultUnlock) {
+    const requestId = overlay.vaultUnlock.requestId
+
+    patchOverlayState({ vaultUnlock: null })
+    sys(`${overlay.vaultUnlock.displayName} stays locked`)
+
+    return rpc<SecretRespondResponse>('vault.unlock.respond', { password: '', request_id: requestId })
   }
 }
 
@@ -219,12 +229,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.approval) {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+
+      if (!fresh()) {
+        return
+      }
+
       return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
-        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid, ...sharedControlParams(overlay.approval) })
+        .then(r => r && fresh() && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo || overlay.secret) {
+    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -270,7 +286,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   }
 
   const cycleQueue = (dir: 1 | -1) => {
-    const len = cRefs.queueRef.current.length
+    const len = cState.queuedDisplay.length
 
     if (!len) {
       return false
@@ -280,7 +296,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
+    cActions.setInput(cActions.queueDraft(index))
 
     return true
   }
@@ -481,7 +497,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
@@ -739,7 +755,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
-      const next = cActions.dequeue()
+      const next = cActions.dequeue(true)
 
       if (next) {
         cActions.setQueueEdit(null)

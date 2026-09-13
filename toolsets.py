@@ -18,6 +18,7 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_vault_list", "browser_vault_unlock", "browser_vault_fill", "browser_vault_save_login", "browser_vault_enter_code",  # ride with the browser
     "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
     "todo_list", "memory",
@@ -34,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     "computer_use",
+    # Service-gated connector account status and authorization links.
+    "manage_connections",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
@@ -124,6 +127,7 @@ TOOLSETS = {
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 
@@ -321,9 +325,11 @@ def bundle_non_core_tools(toolset_name: str) -> Set[str]:
     return to_remove - core
 
 
-# Memo keyed on (name, include_registry, id(registry), registry generation);
-# engages only at the public entry (visited is None).
-_resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
+# Memo keyed on (name, include_registry, id(registry), registry generation, profile scope);
+# engages only at the public entry (visited is None). The scope is part of the key because a
+# multiplexed process resolves ``mcp-<server>`` per profile overlay: without it profile B got
+# profile A's tool names for a server B never connected (#106005).
+_resolve_toolset_memo: Dict[Tuple[str, bool, int, int, str], List[str]] = {}
 
 
 def _plugin_platform_bundle(name: str) -> List[str]:
@@ -357,7 +363,7 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     """
     external_call = visited is None
     if external_call:
-        memo_key = (name, include_registry, *_registry_generation())
+        memo_key = (name, include_registry, *_registry_generation(), _registry_call("current_scope_key", ""))
         cached = _resolve_toolset_memo.get(memo_key)
         if cached is not None:
             return list(cached)

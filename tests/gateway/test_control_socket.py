@@ -183,7 +183,7 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
     # Plant the stale file at wherever the server will actually bind
     # (in-home OR the temp-dir fallback, depending on path length).
     bind, _ = resolve_server_socket_path(home)
-    bind.parent.mkdir(parents=True, exist_ok=True)
+    bind.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     bind.touch()  # crashed predecessor's leftover
 
     async def scenario():

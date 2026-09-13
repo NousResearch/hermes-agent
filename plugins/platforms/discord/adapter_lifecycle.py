@@ -22,7 +22,7 @@ class DiscordLifecycleMixin:
         extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
         value = extra.get(key)
         if value is None and env_key:
-            value = _adapter.os.getenv(env_key)
+            value = _adapter._scoped_gate_env(env_key) or None
         return default if value is None or value == "" else value
 
     def _finite_positive_config_float(
@@ -148,7 +148,7 @@ class DiscordLifecycleMixin:
             self._client = _adapter.commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
-                allowed_mentions=_adapter._build_allowed_mentions(),
+                allowed_mentions=_adapter._build_allowed_mentions(getattr(self.config, "extra", None)),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure
@@ -339,9 +339,7 @@ class DiscordLifecycleMixin:
             )
             if other_bots_mentioned and not raw_self_mention:
                 return False, False
-            ignore_no_mention = _adapter.os.getenv(
-                "DISCORD_IGNORE_NO_MENTION", "true"
-            ).lower() in {"true", "1", "yes"}
+            ignore_no_mention = _adapter._scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
                 parent_id = None
                 if hasattr(message.channel, "parent_id") and message.channel.parent_id:

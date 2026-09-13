@@ -37,10 +37,13 @@ class SlackContextMixin:
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (``SLACK_REACTIONS`` env)."""
+        """Whether message reactions are enabled (``extra.reactions`` / ``SLACK_REACTIONS``)."""
         from . import adapter as _adapter
 
-        return _adapter.os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            configured = _adapter._get_scoped_secret("SLACK_REACTIONS", "true")
+        return str(configured).lower() not in {"false", "0", "no"}
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""

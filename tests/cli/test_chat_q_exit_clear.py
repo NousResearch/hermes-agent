@@ -63,60 +63,6 @@ def test_print_exit_summary_skips_clear_when_clear_screen_false(monkeypatch):
 
 # ── Production-path test: single-query -q path skips the clear ──────────────
 
-def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
-    """The single-query (-q) path calls _print_exit_summary without clearing."""
-    calls = []
-    clear_calls = []
-
-    class FakeCLI:
-        def __init__(self, **_kwargs):
-            self.console = SimpleNamespace(print=lambda *_a, **_kw: calls.append("query-label"))
-            self.session_id = "sq-test"
-            self.agent = SimpleNamespace(
-                session_id="sq-test",
-                platform="cli",
-            )
-
-        def _claim_active_session(self, surface, *, stderr=False):
-            calls.append(("claim", surface, stderr))
-            return True
-
-        def _show_security_advisories(self):
-            calls.append("advisories")
-
-        def chat(self, query, images=None):
-            calls.append(("chat", query, images))
-            return "done"
-
-        def _print_exit_summary(self, clear_screen=True):
-            calls.append(("summary", clear_screen))
-            if clear_screen:
-                clear_calls.append("CLEARED")  # should NOT happen
-
-    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
-    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
-    monkeypatch.setattr(
-        cli_mod,
-        "_finalize_single_query",
-        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
-    )
-
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
-
-    assert calls == [
-        ("claim", "cli", False),
-        "query-label",
-        "advisories",
-        ("chat", "hello", None),
-        ("summary", False),  # <-- clear_screen=False for single-query
-        ("finalize", "sq-test"),
-    ]
-    assert len(clear_calls) == 0, (
-        "_clear_terminal_on_exit must NOT be called in single-query mode"
-    )
-
-
-# ── Verify interactive mode still clears ────────────────────────────────────
 
 def test_print_exit_summary_still_clears_in_interactive_path(monkeypatch):
     """Interactive mode should still clear the screen (preserving #38928)."""

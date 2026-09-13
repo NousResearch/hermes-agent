@@ -267,7 +267,8 @@ class MatrixPromptsMixin:
         """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
         from . import adapter as _adapter
 
-        return _adapter._env_truthy("GATEWAY_ALLOW_ALL_USERS") or bool(
+        # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
+        return _adapter._startup_env_secret("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(

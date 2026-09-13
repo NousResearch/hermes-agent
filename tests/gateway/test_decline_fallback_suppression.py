@@ -55,7 +55,6 @@ def _runner(adapter: _Adapter):
     """A TurnRunner driven through its real _approval_notify_sync."""
     from gateway.run_turn_runner import TurnRunner
 
-    runner = object.__new__(TurnRunner)
     ctx = SimpleNamespace(
         _status_adapter=adapter,
         _status_chat_id="C1",
@@ -64,7 +63,7 @@ def _runner(adapter: _Adapter):
         session_key="sk1",
         source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1"),
     )
-    runner._ctx = ctx
+    runner = TurnRunner(SimpleNamespace(), ctx)
 
     class _Fut:
         def __init__(self, result): self._r = result

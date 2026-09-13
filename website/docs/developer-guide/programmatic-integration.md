@@ -112,6 +112,7 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
+POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
 POST /v1/browser-control/register Register a browser controller
@@ -157,6 +158,27 @@ Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 `/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
 
 A `200` (and the `run.steered` event) means the text was **queued**, not that the agent consumed it. If a steer lands after the agent's final response — with no later tool boundary to deliver it at — the undelivered text is returned as `pending_steer` on the terminal `run.completed` event and run status, so the client can replay it as the next user turn instead of losing it.
+
+`POST /v1/runs/{id}/resolve-unknown` is a canonical-authority recovery
+operation, not a generic status mutation. Send exactly the `admission_id` and
+integer `execution_generation` projected by the run status. The server binds the
+authenticated owner, selected profile, path run, API principal, target session,
+admission, and generation before the authority performs its compare-and-set.
+Resolution settles the lost head as interrupted and releases the next FIFO item;
+it never requeues the head. Feature-detect
+`features.run_unknown_resolution` because legacy execution mode does not
+advertise this endpoint.
+
+New canonical API admissions retain an opaque owner scope in the admission row,
+so keyed and non-keyed runs can be authorized after an adapter restart for as
+long as that canonical admission remains available. This does not change
+non-keyed request semantics: identical submissions still create distinct runs.
+Pre-upgrade non-keyed admissions contain no owner scope and remain deliberately
+unresolvable after restart; there is no safe credential ownership to backfill.
+Existing keyed records retain their replay-ledger recovery path. Explicit
+session retirement removes the canonical payload and therefore ends this owner
+recovery path. Replay reservation and canonical admission still use separate
+databases, so this endpoint does not provide a global exactly-once guarantee.
 
 ---
 

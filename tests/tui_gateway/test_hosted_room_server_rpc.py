@@ -70,6 +70,9 @@ def test_routes_exact_hidden_session_and_internal_task_proof(monkeypatch):
         "tui_gateway.hosted_room_sessions.resume_hosted_session",
         lambda backend, rid, params: backend._methods["session.resume"](rid, params),
     )
+    monkeypatch.setattr(
+        "gateway.hosted_rooms.local_authority_gateway_id", lambda: "local-install"
+    )
     server, calls = _server()
     rpc = HostedRoomServerRPC(server)
     task = TaskIdentity("room", "task", "thread", "turn")
@@ -93,6 +96,7 @@ def test_routes_exact_hidden_session_and_internal_task_proof(monkeypatch):
         task=task,
         execution_generation=2,
         on_terminal=callback,
+        member_id="member-ops",
     )
 
     create = next(params for method, params in calls if method == "session.create")
@@ -109,8 +113,8 @@ def test_routes_exact_hidden_session_and_internal_task_proof(monkeypatch):
         "execution_generation": 2,
         "member_id": "member-ops",
         "target_profile": "ops",
-        "home_install_id": submit["_hosted_task"]["home_install_id"],
-        "target_install_id": submit["_hosted_task"]["target_install_id"],
+        "home_install_id": "local-install",
+        "target_install_id": "local-install",
         "authority_gateway_id": "gateway-a",
         "authority_epoch": 1,
     }
@@ -123,6 +127,42 @@ def test_routes_exact_hidden_session_and_internal_task_proof(monkeypatch):
     rpc.resume(profile="ops", session_id="stored", source="bot_room")
     resume = next(params for method, params in calls if method == "session.resume")
     assert resume["source"] == "bot_room"
+
+
+def test_submit_refuses_member_mismatch_before_prompt_admission(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.hosted_rooms.local_authority_gateway_id", lambda: "local-install"
+    )
+    server, calls = _server()
+    rpc = HostedRoomServerRPC(server)
+    task = TaskIdentity("room", "task", "thread", "turn")
+    receipts = []
+    rpc.bind_artifact_scope(
+        task=task,
+        execution_generation=2,
+        member_id="member-ops",
+        authority_gateway_id="gateway-a",
+        authority_epoch=1,
+        profile="ops",
+    )
+
+    with pytest.raises(HostedRoomSessionError) as exc:
+        rpc.submit(
+            profile="ops",
+            session_id="runtime",
+            prompt="Do the work",
+            source="bot_room",
+            task=task,
+            execution_generation=2,
+            on_terminal=receipts.append,
+            member_id="other-member",
+        )
+
+    assert exc.value.method == "prompt.submit"
+    assert exc.value.code == 4120
+    assert exc.value.not_admitted is True
+    assert calls == []
+    assert receipts == []
 
 
 def test_info_and_interrupt_are_exact_task_scoped():
@@ -222,6 +262,7 @@ def test_prompt_rejection_is_proven_not_admitted():
             task=task,
             execution_generation=1,
             on_terminal=lambda _receipt: None,
+            member_id="ops",
         )
 
     assert exc.value.code == 4121
@@ -439,6 +480,7 @@ def test_terminal_callback_publishes_task_scoped_artifacts(tmp_path: Path, monke
         task=task,
         execution_generation=2,
         on_terminal=captured.append,
+        member_id="member-ops",
     )
     submit = next(params for method, params in calls if method == "prompt.submit")
     scope = RoomArtifactScope.from_mapping({
@@ -498,6 +540,7 @@ def test_terminal_callback_fails_closed_when_manifest_cannot_finalize(
         task=task,
         execution_generation=1,
         on_terminal=captured.append,
+        member_id="member-ops",
     )
     submit = next(params for method, params in calls if method == "prompt.submit")
 

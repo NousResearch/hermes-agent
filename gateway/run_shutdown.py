@@ -877,7 +877,9 @@ class GatewayShutdownMixin:
         return len(notified)
 
     async def _shutdown_notification_target(self, session_key: str):
-        """``(source, platform_str, chat_id, thread_id)``: persisted origin > cached source > parsed key."""
+        """``(source, platform_str, chat_id, thread_id, profile)``: persisted origin > cached source >
+        parsed key. ``profile`` is the owning profile from the source or the ``agent:<profile>:`` key
+        namespace (``None`` = default) so the notice leaves through that profile's bot."""
         from gateway.run import _parse_session_key
         source = None
         try:
@@ -890,11 +892,11 @@ class GatewayShutdownMixin:
         if source is None:
             source = self._get_cached_session_source(session_key)
         if source is not None:
-            return source, source.platform.value, str(source.chat_id), source.thread_id
+            return source, source.platform.value, str(source.chat_id), source.thread_id, getattr(source, "profile", None)
         _parsed = _parse_session_key(session_key)
         if not _parsed:
             return None
-        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id")
+        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
@@ -946,13 +948,18 @@ class GatewayShutdownMixin:
             target = await self._shutdown_notification_target(session_key)
             if target is None:
                 continue
-            source, platform_str, chat_id, thread_id = target
+            source, platform_str, chat_id, thread_id, profile = target
             dedup_key = _notice_target_key(platform_str, chat_id, thread_id)
             if dedup_key in notified:
                 continue
             try:
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # The session's OWN profile's bot (transport ref → profile map), never a bare
+                # self.adapters hit: under multiplex that is the default bot, so a secondary session's
+                # "Gateway shutting down" would land in the user's chat with the wrong bot.
+                adapter = self._adapter_for_source(source) if source is not None else None
+                if adapter is None:
+                    adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     continue
                 if not self._notice_allowed(platform, "active session"):
@@ -1069,6 +1076,10 @@ class GatewayShutdownMixin:
         live agent (e.g. the user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
         """
         if agent is None or (executor_task is not None and executor_task.done()):
+            return False
+        # Drain/restart already told the chat the task will be interrupted; a "still working"
+        # heartbeat after that notice reads as a contradiction (#10990).
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
             return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)
@@ -1552,6 +1563,8 @@ class GatewayShutdownMixin:
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        from gateway.run_runtime import drain_gateway_runtime
+        await drain_gateway_runtime(self)
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):
@@ -1802,12 +1815,9 @@ class GatewayShutdownMixin:
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())
 
     def _stop_persist_exit_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
-        """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""
+        """Persist exit markers; process bootstrap releases ownership after writer drain."""
         from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
         from utils import atomic_json_write
-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
-        remove_pid_file()
-        release_gateway_runtime_lock()
         # Clean-shutdown marker skips suspend_recently_active() next boot; a timed-out drain left
         # half-finished sessions, so no marker — the next startup suspends them.
         if not ctx.timed_out:
@@ -1890,6 +1900,8 @@ class GatewayShutdownMixin:
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+            from gateway.run_runtime import settle_gateway_runtime
+            await settle_gateway_runtime(self)
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)

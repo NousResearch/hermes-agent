@@ -1001,9 +1001,9 @@ class CLIStatusBarMixin:
 
         if _ok("model"):
             if styled:
-                segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
+                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
-                segs.append([("", f"⚕ {model_short}")])
+                segs.append([("", f"☤ {model_short}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
@@ -1074,7 +1074,7 @@ class CLIStatusBarMixin:
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
-            parts = ["".join(t for _, t in seg) for seg in segs] or [f"⚕ {model_short}"]
+            parts = ["".join(t for _, t in seg) for seg in segs] or [f"☤ {model_short}"]
             # Narrow bars always join the battery with │; wider tiers use the tier separator.
             if battery_label:
                 parts.insert(0, battery_label)
@@ -1084,7 +1084,7 @@ class CLIStatusBarMixin:
                 text = (" · " if width < 76 else " │ ").join(parts)
             return self._right_align_status_title(text, session_title, width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if (
@@ -1107,7 +1107,7 @@ class CLIStatusBarMixin:
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=True)
             sep = " · " if width < 76 else " │ "
             frags: list = []
-            for seg in segs or [[(_SB, " ⚕ "), (_STRONG, snapshot["model_short"])]]:
+            for seg in segs or [[(_SB, " ☤ "), (_STRONG, snapshot["model_short"])]]:
                 if frags:
                     frags.append((_DIM, sep))
                 frags.extend(seg)
@@ -1120,7 +1120,7 @@ class CLIStatusBarMixin:
             if stash_indicator and _ok("stash"):
                 frags.extend([(_DIM, " · "), (_STRONG, stash_indicator)])
             frags.append((_SB, " "))  # one-cell right margin
-            # Battery is the first element when enabled: prepend ahead of the ⚕ marker.
+            # Battery is the first element when enabled: prepend ahead of the ☤ marker.
             battery_label = snapshot.get("battery_label") or ""
             if battery_label and _ok("battery"):
                 battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))

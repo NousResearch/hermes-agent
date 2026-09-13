@@ -390,10 +390,15 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             time.sleep(delay)
         return None
 
-    def enrich_owners(self, skills: List[SkillMeta], max_workers: int = 30) -> int:
+    def enrich_owners(self, skills: List[SkillMeta], max_workers: int = 30,
+                      budget_seconds: Optional[float] = None) -> int:
         """Batch-fetch owner handles for ClawHub skills missing ``extra["owner"]``
-        (in-place; returns the number enriched). For the offline index builder:
-        the full 50k catalog takes ~5–10 min at 30 workers.
+        (in-place; returns the number enriched).
+
+        ``budget_seconds`` makes this best-effort: the detail API answers in ~2s, so the
+        full catalog (78k+ skills) needs well over an hour at 30 workers — unbounded, it
+        was the phase that pushed the index build past its CI timeout for two months.
+        Skills left un-enriched simply ship without a "View source" owner link.
 
         Safety rails: aborts after 50 consecutive failures (systemic outage),
         per-request 429 backoff, progress log every 1000 skills.
@@ -403,6 +408,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             return 0
         enriched = consecutive_failures = processed = 0
         max_consecutive_failures = 50
+        deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -410,6 +416,13 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             for future in as_completed(futures):
                 meta = futures[future]
                 processed += 1
+                if deadline is not None and time.monotonic() > deadline:
+                    logger.warning("ClawHub owner enrichment: budget of %.0fs exhausted after %d/%d "
+                                   "(%d enriched) — shipping the rest without owner handles.",
+                                   budget_seconds, processed, len(needs_enrichment), enriched)
+                    for f in futures:
+                        f.cancel()
+                    break
                 try:
                     handle = future.result()
                 except Exception:

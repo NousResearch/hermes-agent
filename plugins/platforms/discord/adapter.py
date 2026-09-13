@@ -268,7 +268,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import profile_scoped as _profile_scoped_config_load
+from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
 
 
 async def _read_url_image_with_redirect_guard(
@@ -602,11 +602,12 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _build_allowed_mentions(extra: Optional[dict] = None):
     """Build Discord ``AllowedMentions`` denying @everyone/@here/roles by default (any LLM output
     with ``@everyone`` would otherwise ping the server); user / replied-user pings stay on.
 
-    Override via env (or ``discord.allow_mentions.*`` in config.yaml):
+    Override via ``discord.allow_mentions.*`` in config.yaml (``extra["allow_mentions"]``, per profile)
+    or env — a secondary multiplex profile never sees the default profile's env (#72348):
 
         DISCORD_ALLOW_MENTION_EVERYONE      default false  — @everyone + @here
         DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
@@ -615,12 +616,19 @@ def _build_allowed_mentions():
     """
     if not DISCORD_AVAILABLE:
         return None
-    _b = _env_bool
+    configured = (extra or {}).get("allow_mentions")
+    configured = configured if isinstance(configured, dict) else {}
+
+    def _b(name: str, key: str, default: bool) -> bool:
+        if (raw := configured.get(key)) is not None:
+            return str(raw).strip().lower() in {"true", "1", "yes", "on"}
+        return _env_bool(name, default)
+
     return discord.AllowedMentions(
-        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
-        roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
-        users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),
+        roles=_b("DISCORD_ALLOW_MENTION_ROLES", "roles", False),
+        users=_b("DISCORD_ALLOW_MENTION_USERS", "users", True),
+        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", "replied_user", True),
     )
 
 
@@ -953,7 +961,7 @@ _DISCORD_PROMPT_TIMEOUT_MAX = 900
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name, "").strip().lower()
+    raw = _scoped_gate_env(name).lower()
     if not raw:
         return default
     return raw in {"true", "1", "yes", "on"}
@@ -983,6 +991,7 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
+from .adapter_authorization import DiscordAuthorizationMixin
 from .adapter_lifecycle import DiscordLifecycleMixin
 from .adapter_recovery import DiscordRecoveryMixin
 from .adapter_commands import DiscordCommandsMixin
@@ -996,7 +1005,7 @@ from .adapter_inbound import DiscordInboundMixin
 
 class DiscordAdapter(
     DiscordLifecycleMixin, DiscordRecoveryMixin, DiscordCommandsMixin, DiscordMediaMixin, DiscordDeliveryMixin, DiscordVoiceMixin, DiscordRoutingMixin, DiscordPromptsMixin, DiscordInboundMixin,
-    BasePlatformAdapter,
+    DiscordAuthorizationMixin, BasePlatformAdapter,
 ):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -1641,16 +1650,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     Implements the ``apply_yaml_config_fn`` contract (#24836). Mirrors the legacy ``discord_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
     """
-    def _env_default(env_key: str, value) -> None:
-        # First-writer-wins: an explicit env var always beats the YAML value.
-        if not os.getenv(env_key):
-            os.environ[env_key] = value
+    # Every env write is first-writer-wins (an explicit env var beats YAML) and is skipped for a
+    # profile-scoped multiplex load: a secondary profile's settings must never land in process-global
+    # env where they'd become another profile's policy (#72348). Everything is seeded into extra too.
+    _env_default = _yaml_env_setter()
 
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
+    seeded_extra = {}
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
+            seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools
             _env_default(env_key, str(discord_cfg[key]).lower())
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
@@ -1660,13 +1671,6 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
-    seeded_extra = {}
-    # Gate keys are ALWAYS seeded into PlatformConfig.extra (per-profile lists); the os.environ writes
-    # below are first-writer-wins for legacy consumers and skipped for profile-scoped multiplex loads.
-    # The os.environ writes below remain first-writer-wins for legacy env-only consumers, but are skipped
-    # for profile-scoped loads under multiplex — a secondary profile's gates must never land in
-    # process-global env where they'd become another profile's policy. See #72348.
-    _skip_env_bridge = _profile_scoped_config_load()
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)
@@ -1674,21 +1678,23 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             return
         text = str(value).lower() if lower else _csv(value)
         seeded_extra[key] = text
-        if not _skip_env_bridge:
-            _env_default(env_key, text)
+        _env_default(env_key, text)
 
     _gate("allow_from", "DISCORD_ALLOWED_USERS", from_platform_extra=True)
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
+    _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")
     )
     if approval_mentions_cfg is not None:
+        seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
         if key in discord_cfg:
+            seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
@@ -1698,13 +1704,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
+        seeded_extra["history_backfill"] = discord_cfg["history_backfill"]
         _env_default("DISCORD_HISTORY_BACKFILL", str(discord_cfg["history_backfill"]).lower())
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None:
+        seeded_extra["history_backfill_limit"] = hbl
         _env_default("DISCORD_HISTORY_BACKFILL_LIMIT", str(hbl))
     # allow_mentions: safe defaults live in the adapter; these keys only override when set.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):
+        seeded_extra["allow_mentions"] = dict(allow_mentions_cfg)
         for yaml_key in ("everyone", "roles", "users", "replied_user"):
             if yaml_key in allow_mentions_cfg:
                 _env_default(f"DISCORD_ALLOW_MENTION_{yaml_key.upper()}", str(allow_mentions_cfg[yaml_key]).lower())
@@ -1722,8 +1731,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             value = _websocket_liveness_cfg.get(legacy_key)
         if value is not None:
             seeded_extra[primary_key] = value
-            if env_key and not os.getenv(env_key):
-                os.environ[env_key] = str(value)
+            if env_key:
+                _env_default(env_key, str(value))
     return seeded_extra or None
 
 

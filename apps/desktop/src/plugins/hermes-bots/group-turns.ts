@@ -740,6 +740,22 @@ export async function runGroupChatMemberTurn(
   }
 }
 
+function groupTurnAttachmentSuffix(fileRefs: string[], failed: string[]) {
+  const extras: string[] = []
+
+  if (fileRefs.length) {
+    extras.push(`Attached files staged in your session workspace:\n${fileRefs.join('\n')}`)
+  }
+
+  if (failed.length) {
+    extras.push(
+      `These attachments could not be staged into your session (filename only; the file is not available to your tools):\n${failed.join('\n')}`
+    )
+  }
+
+  return extras.join('\n\n')
+}
+
 async function stageGroupTurnAttachments(
   context: { group: string; leaseLive(): boolean },
   member: GroupMember,
@@ -750,13 +766,12 @@ async function stageGroupTurnAttachments(
   // Stage this delta's attachments into the member's session so the model
   // receives the actual payload with the prompt — the same attach RPCs the
   // 1:1 chat uses (they also work cross-connection, where the member's
-  // gateway can't see this machine's files). Images queue as vision tiles,
-  // PDFs render per-page via pdf.attach, and other files materialize in the
-  // session workspace (their @file: refs are appended to the prompt so the
-  // member's file tools can read them). A failed attach degrades that
-  // member to text-only; the transcript line still names the attachment so
-  // the member knows something was shared.
+  // gateway can't see this machine's files). Images queue as vision tiles.
+  // PDFs and other files materialize in the session workspace via file.attach
+  // so file tools can read them; pdf.attach only rasterizes pages and needs
+  // pdftoppm, so a swallowed miss left the member with a filename and no file.
   const fileRefs: string[] = []
+  const failed: string[] = []
 
   for (const original of Array.isArray(images) ? images : []) {
     if (!leaseLive()) {
@@ -777,26 +792,32 @@ async function stageGroupTurnAttachments(
       return null
     }
 
-    if (!img || typeof img.data !== 'string' || !img.data) {
+    if (!img) {
+      continue
+    }
+
+    const label =
+      img.name || (img.kind === 'pdf' ? 'attachment.pdf' : img.kind === 'file' ? 'attachment' : 'attachment.png')
+
+    if (typeof img.data !== 'string' || !img.data) {
+      if (img.kind === 'file' || img.kind === 'pdf' || original.classicExport) {
+        throw new GroupFileDeliveryError()
+      }
+      failed.push(label)
+
       continue
     }
 
     try {
-      if (img.kind === 'pdf') {
-        await requestForBot(member, 'pdf.attach', {
-          session_id: runtime,
-          content_base64: img.data,
-          filename: img.name || 'attachment.pdf'
-        })
-      } else if (img.kind === 'file') {
+      if (img.kind === 'pdf' || img.kind === 'file') {
         const res = (await requestForBot(member, 'file.attach', {
           session_id: runtime,
           data_url: img.data,
-          name: img.name || 'attachment'
+          name: label
         })) as { ref_text?: string }
 
         if (res?.ref_text) {
-          fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
+          fileRefs.push(`${label} → ${res.ref_text}`)
         } else {
           throw new GroupFileDeliveryError()
         }
@@ -804,18 +825,20 @@ async function stageGroupTurnAttachments(
         await requestForBot(member, 'image.attach_bytes', {
           session_id: runtime,
           content_base64: img.data,
-          filename: img.name || 'attachment.png'
+          filename: label
         })
       }
-    } catch {
+    } catch (error) {
+      host.notifyError?.(error, `Could not attach ${label} for ${member.title || member.name}`)
       if (img.kind === 'file' || img.kind === 'pdf' || original.classicExport) {
         throw new GroupFileDeliveryError()
       }
-      /* text-only fallback for this member */
+      // Only optional images may degrade; promised file bytes refuse the turn.
+      failed.push(label)
     }
   }
 
-  return fileRefs
+  return { failed, fileRefs }
 }
 
 interface GroupTurnPollContext {
@@ -1045,7 +1068,7 @@ async function runGroupChatMemberTurnLeased(
     })
 
     const { before, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
-    const fileRefs = await stageGroupTurnAttachments(
+    const attachments = await stageGroupTurnAttachments(
       {
         get group() {
           return group
@@ -1056,13 +1079,12 @@ async function runGroupChatMemberTurnLeased(
       runtime,
       images
     )
-    if (fileRefs === null || !leaseLive()) {
+    if (attachments === null || !leaseLive()) {
       return null
     }
 
-    let turnText = fileRefs.length
-      ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
-      : prompt
+    const staged = groupTurnAttachmentSuffix(attachments.fileRefs, attachments.failed)
+    let turnText = staged ? `${prompt}\n\n${staged}` : prompt
 
     if (!leaseLive()) {
       return null

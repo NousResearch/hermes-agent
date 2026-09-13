@@ -159,12 +159,12 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
     return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+def _get_named_custom_provider(requested_provider: str, *, config=None) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
         return None
     rp = _rp()
-    config = rp.load_config()
+    config = rp.load_config() if config is None else config
     providers = config.get("providers")
     found = _match_new_style_provider(requested_norm, providers) if isinstance(providers, dict) else None
     if found:
@@ -252,16 +252,21 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
-    """Recover a routable ``custom:<name>`` identity for a bare custom provider. Every path that
-    persists or restores a session's provider override must run the resolved provider through this
-    so a bare ``"custom"`` is upgraded back to its durable menu key. Sources in priority order:
-    (1) ``base_url`` reverse lookup — the one fact that always survives the round-trip when a URL
-    was recorded; (2) ``model`` reverse lookup (``model``/``default_model``/``models`` catalog);
-    (3) the configured provider (arg, ``model.provider``, ``HERMES_INFERENCE_PROVIDER``) when it
-    names a real entry."""
+    """Recover the durable menu identity for a bare custom provider. Match a configured
+    endpoint first, then the ownership-checked managed server, then a configured model or
+    provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = (find_custom_provider_identity(base_url) if base_url else None) or (
-        find_custom_provider_identity_by_model(model) if model else None)
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
+        # The managed server has no custom-provider config entry. Recover its menu key
+        # from the ownership-checked endpoint, never from a model name or a fixed port.
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+        endpoint = _state_endpoint()
+        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+            return "llamacpp"
+    identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
     candidate = str(config_provider or "").strip()
@@ -446,7 +451,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
 
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
-                                  target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                                  target_model: Optional[str] = None, config=None) -> Optional[Dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
     llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
@@ -464,7 +469,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = rp._get_named_custom_provider(requested_provider)
+    custom_provider = (rp._get_named_custom_provider(requested_provider) if config is None
+                       else _get_named_custom_provider(requested_provider, config=config))
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
@@ -473,7 +479,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     pool_result = rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
-    )
+    ) if config is None else None
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)

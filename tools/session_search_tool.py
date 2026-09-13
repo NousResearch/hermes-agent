@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _RESET_END_REASONS
+from hermes_state_common import _BOUNDARY_END_REASONS
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -36,8 +36,8 @@ _DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "mod
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
 # carrying its transcript forward — unlike compression continuations and live delegation
-# children. Derived from the gateway set so the two cannot drift.
-_FRESH_RESET_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
+# children. The store's boundary set, so the two cannot drift.
+_FRESH_RESET_END_REASONS = _BOUNDARY_END_REASONS
 
 
 def _quiet(fn, default, msg, *log_args, with_exc: bool = False):
@@ -339,32 +339,6 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
-def _locate_session_db(session_id: str):
-    """Scan every profile's ``state.db`` -> ``(db, profile_name)`` or ``(None, None)``.
-    Ids are globally unique, so the first hit is authoritative."""
-    from pathlib import Path
-    try:
-        from hermes_cli import profiles as profiles_mod
-        from hermes_state import SessionDB
-    except Exception:
-        return None, None
-    targets = [("default", profiles_mod.get_profile_dir("default"))] + _quiet(
-        lambda: [(info.name, info.path) for info in profiles_mod.list_profiles()], [],
-        "list_profiles failed during session locate")
-    seen: set = set()
-    for name, home in targets:
-        db_path = Path(home) / "state.db"
-        if str(db_path) in seen or not db_path.exists():
-            continue
-        seen.add(str(db_path))
-        pdb = _quiet(lambda: SessionDB(db_path=db_path, read_only=True), None, "open %s failed", db_path)
-        if pdb and _get_session_meta(pdb, session_id):
-            return pdb, name
-        if pdb:
-            pdb.close()
-    return None, None
-
-
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
     meta = _get_session_meta(db, session_id)
@@ -383,18 +357,19 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
                                "Pass around_message_id (any id above) to scroll the middle.")} if truncated else {}))
 
 
-def _read_with_profile_fallback(db, sid: str, profile: Optional[str]) -> str:
-    """Read shape; on a miss scan every profile (the model may have dropped the owning
-    profile from the link) and tag the result with where it was found."""
+def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
+    """Read shape scoped to ONE store: the caller's profile, or the profile it named.
+
+    A miss is a miss. Profiles are isolated islands, so a bare id never falls through to
+    a scan of every other profile's ``state.db`` — that returned another profile's full
+    transcript to any caller holding the id (#106761). The hint tells the model how to
+    ask properly: ``@session:<profile>/<id>`` or ``profile=``.
+    """
     result = _read_session(db, sid, link_profile=profile)
-    located, owner = (None, None) if json.loads(result).get("success") else _locate_session_db(sid)
-    if located is None:
+    if json.loads(result).get("success") is not False or profile:
         return result
-    try:
-        found = json.loads(_read_session(located, sid, link_profile=owner))
-    finally:
-        located.close()
-    return json.dumps({**found, "profile": owner}, ensure_ascii=False) if found.get("success") else result
+    return tool_error(f"session_id not found in this profile: {sid}. If it belongs to another "
+                      "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
@@ -495,9 +470,31 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-              around_message_id, window, sort, profile, detail, owned_dbs) -> str:
-    """Mode dispatch (see module docstring); scroll wins when an anchor is set.
-    Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
+              around_message_id, window, sort, profile, detail) -> str:
+    """Mode dispatch (see module docstring); scroll wins when an anchor is set."""
+    if isinstance(session_id, str) and session_id.strip():
+        if around_message_id is not None:
+            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
+        return _read_scoped(db, session_id.strip(), profile)
+    limit = _clamp_int(limit, 3, 1, 10)
+    if not query or not isinstance(query, str) or not query.strip():
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+    sort_norm = sort.strip().lower() if isinstance(sort, str) else None
+    return _discover(
+        db=db, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
+        role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
+        detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
+        current_session_id=current_session_id, link_profile=profile)
+
+
+def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
+                   current_session_id: str = None, session_id: str = None, around_message_id: int = None,
+                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
+    """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB, format_session_db_unavailable
+    from hermes_state_registry import release_or_close
+    owned_dbs: List[Any] = []
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
     # split on it and adopt the embedded profile only when none was passed.
     if isinstance(session_id, str) and "/" in session_id:
@@ -515,36 +512,17 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     if profile_db is not None:
         db, current_session_id = profile_db, None
         owned_dbs.append(profile_db)
-    if isinstance(session_id, str) and session_id.strip():
-        if around_message_id is not None:
-            return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
-        return _read_with_profile_fallback(db, session_id.strip(), profile)
-    limit = _clamp_int(limit, 3, 1, 10)
-    if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
-    sort_norm = sort.strip().lower() if isinstance(sort, str) else None
-    return _discover(
-        db=db, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
-        role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
-        detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
-        current_session_id=current_session_id, link_profile=profile)
-
-
-def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
-                   current_session_id: str = None, session_id: str = None, around_message_id: int = None,
-                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
-    """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
-    from hermes_state import format_session_db_unavailable
-    from hermes_state_registry import acquire, release_or_close
-    owned_dbs: List[Any] = []
     if db is None:
-        db = _quiet(acquire, None, "SessionDB unavailable for session_search")
+        db = _quiet(
+            lambda: SessionDB(db_path=get_hermes_home() / "state.db", read_only=True),
+            None, "SessionDB unavailable for session_search",
+        )
         if db is None:
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                         around_message_id, window, sort, profile, detail, owned_dbs)
+                         around_message_id, window, sort, profile, detail)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")

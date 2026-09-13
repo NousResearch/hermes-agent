@@ -44,9 +44,6 @@ class TestUserSystemdPrivateSocketPreflight:
 
 class TestSystemdServiceRefresh:
 
-
-
-
     def test_systemd_restart_timeout_prints_status_guidance(self, monkeypatch, capsys):
         """`hermes gateway restart` must not surface a raw TimeoutExpired traceback.
 
@@ -85,7 +82,6 @@ class TestSystemdServiceRefresh:
         output = capsys.readouterr().out
         assert "still restarting after 90s" in output
         assert "hermes gateway status" in output
-
 
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
@@ -142,7 +138,6 @@ class TestSystemdServiceRefresh:
         ), "daemon-reload must not run when write was refused"
 
 
-
 class TestTempHomeServiceDefinitionGuard:
     """_temp_home_in_service_definition() — structural temp-dir detection."""
 
@@ -153,16 +148,12 @@ class TestTempHomeServiceDefinitionGuard:
             == "/tmp/hermes-e2e-41264"
         )
 
-
     def test_detects_tempdir_env_home(self, monkeypatch, tmp_path):
         import tempfile as _tempfile
 
         monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(tmp_path))
         unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
         assert gateway_cli._temp_home_in_service_definition(unit) is not None
-
-
-
 
 
 class TestRequireServiceInstalled:
@@ -359,7 +350,6 @@ class TestGeneratedSystemdUnits:
         assert "SoftResourceLimits" not in plist
 
 
-
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
@@ -413,8 +403,6 @@ class TestLaunchdServiceRecovery:
 
     def test_wait_for_pid_exit_ignores_nonpositive_pid(self):
         assert gateway_cli._wait_for_pid_exit(0, timeout=30) is True
-
-
 
     def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
         """#43842: when the refresh runs inside the gateway's own process tree,
@@ -536,7 +524,6 @@ class TestLaunchdServiceRecovery:
         assert popen_calls[0][:2] == ["launchctl", "submit"]
         assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
 
-
     def test_deferred_reload_waits_for_old_gateway_pid_before_bootstrap(
         self, tmp_path, monkeypatch
     ):
@@ -589,7 +576,6 @@ class TestLaunchdServiceRecovery:
         )
         # The wait must be bounded, so a wedged gateway can't block the reload.
         assert "_wait_deadline" in script
-
 
     def test_refresh_falls_back_to_direct_reload_when_helper_cannot_spawn(
         self, tmp_path, monkeypatch
@@ -655,7 +641,6 @@ class TestLaunchdServiceRecovery:
         # Drained the old pid between bootout and bootstrap.
         assert waited and waited[0][0] == 4242
 
-
     def test_launchd_domain_uses_user_domain(self, monkeypatch):
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
         # non-Aqua/background sessions on macOS 26+ (issue #23387).
@@ -674,10 +659,7 @@ class TestLaunchdServiceRecovery:
         assert gateway_cli._launchd_domain() == "user/501"
 
 
-
     # ── PID parsing ──────────────────────────────────────────────────────
-
-
 
 
     # ── Probe requires PID ───────────────────────────────────────────────
@@ -686,9 +668,7 @@ class TestLaunchdServiceRecovery:
     # ── Unsupport marker lifecycle ───────────────────────────────────────
 
 
-
     # ── launchd_status with active supervision ───────────────────────────
-
 
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""
@@ -749,7 +729,6 @@ class TestLaunchdDomainDetection:
         assert domain == "gui/501"
         # Should have probed gui first
         assert run_calls[0] == ["launchctl", "print", f"gui/501/{label}"]
-
 
     def test_managername_background_selects_user_domain(self, monkeypatch):
         """When managername is Background (non-Aqua), use user/<uid>."""
@@ -813,7 +792,6 @@ class TestGatewayServiceDetection:
 class TestEnsureUserSystemdEnv:
     """Tests for _ensure_user_systemd_env() D-Bus session bus auto-detection."""
 
-
     def test_sets_dbus_address_when_bus_socket_exists(self, tmp_path, monkeypatch):
         runtime = tmp_path / "runtime"
         runtime.mkdir()
@@ -827,8 +805,6 @@ class TestEnsureUserSystemdEnv:
         gateway_cli._ensure_user_systemd_env()
 
         assert os.environ["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_socket}"
-
-
 
     def test_systemctl_cmd_calls_ensure_for_user_mode(self, monkeypatch):
         calls = []
@@ -846,7 +822,6 @@ class TestPreflightUserSystemd:
     gateway via ``systemctl --user start`` in a shell with no user D-Bus session,
     which previously failed with a raw ``CalledProcessError`` and no remediation.
     """
-
 
     def test_raises_when_linger_disabled_and_loginctl_denied(self, monkeypatch):
         """Rick's scenario: no D-Bus, no linger, non-root SSH → clear error."""
@@ -879,8 +854,6 @@ class TestPreflightUserSystemd:
         assert "sudo loginctl enable-linger" in msg
         assert "hermes gateway run" in msg  # foreground fallback mentioned
         assert "Interactive authentication required" in msg
-
-
 
     def test_enable_linger_succeeds_and_socket_appears(self, monkeypatch, capsys):
         """Happy remediation path: polkit allows enable-linger, socket spawns."""
@@ -918,12 +891,6 @@ class TestPreflightUserSystemd:
 
 class TestProfileArg:
     """Tests for _profile_arg — returns '--profile <name>' for named profiles."""
-
-
-
-
-
-
 
     def test_systemd_unit_for_target_user_includes_named_profile(self, tmp_path, monkeypatch):
         """sudo system install must keep the target user's named profile in ExecStart."""
@@ -1130,11 +1097,6 @@ class TestLegacyHermesUnitDetection:
         )
         return user_dir, system_dir
 
-
-
-
-
-
     def test_detects_both_scopes_simultaneously(self, tmp_path, monkeypatch):
         """When a user has BOTH user-scope and system-scope legacy units,
         both are reported so the migration step can remove them together."""
@@ -1173,7 +1135,6 @@ class TestLegacyHermesUnitDetection:
             results = gateway_cli._find_legacy_hermes_units()
             assert len(results) == 1, f"Variant {i} not detected: {execstart!r}"
 
-
     def test_print_legacy_unit_warning_shows_migration_hint(self, tmp_path, monkeypatch, capsys):
         user_dir, _ = self._setup_search_paths(tmp_path, monkeypatch)
         (user_dir / "hermes.service").write_text(self._OUR_UNIT_TEXT, encoding="utf-8")
@@ -1184,7 +1145,6 @@ class TestLegacyHermesUnitDetection:
         assert "Legacy" in out
         assert "hermes.service" in out
         assert "hermes gateway migrate-legacy" in out
-
 
 
 class TestRemoveLegacyHermesUnits:
@@ -1217,8 +1177,6 @@ class TestRemoveLegacyHermesUnits:
         monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 0 if as_root else 1000)
         return user_dir, system_dir, systemctl_calls
 
-
-
     def test_removes_user_scope_legacy_unit(self, tmp_path, monkeypatch, capsys):
         user_dir, _, calls = self._setup(tmp_path, monkeypatch)
         legacy = user_dir / "hermes.service"
@@ -1234,8 +1192,6 @@ class TestRemoveLegacyHermesUnits:
         assert any("--user stop hermes.service" in c for c in cmds_joined)
         assert any("--user disable hermes.service" in c for c in cmds_joined)
         assert any("--user daemon-reload" in c for c in cmds_joined)
-
-
 
     def test_does_not_touch_profile_units_during_migration(
         self, tmp_path, monkeypatch, capsys
@@ -1256,7 +1212,6 @@ class TestRemoveLegacyHermesUnits:
         # Both the profile unit and the current default unit must survive
         assert profile_unit.exists()
         assert default_unit.exists()
-
 
 
 class TestMigrateLegacyCommand:
@@ -1327,7 +1282,6 @@ class TestGatewayStatusParser:
 
         assert result.returncode == 0
         assert "unrecognized arguments" not in result.stderr
-
 
     def test_migrate_legacy_on_unsupported_platform_prints_message(
         self, monkeypatch, capsys
@@ -1495,7 +1449,6 @@ class TestSystemScopeRequiresRootError:
         assert str(excinfo.value) == "System gateway start requires root. Re-run with sudo."
         assert f"Failed: {excinfo.value}" == "Failed: System gateway start requires root. Re-run with sudo."
 
-
     def test_error_is_runtime_error_subclass(self):
         """Wizards use ``except Exception`` guards — the error must be a
         ``RuntimeError`` (catchable by ``Exception``), NOT a ``SystemExit``
@@ -1534,7 +1487,6 @@ class TestSystemScopeWizardPreCheck:
         monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
 
         assert gateway_cli._system_scope_wizard_would_need_root() is True
-
 
     def test_non_root_with_explicit_system_arg_returns_true(self, tmp_path, monkeypatch):
         # Caller passed system=True explicitly (e.g. ``hermes gateway start --system``).
@@ -1602,8 +1554,6 @@ class TestServiceWorkingDirIsStable:
     (HERMES_HOME), never the source checkout / worktree, so a relocated or
     deleted checkout can't crash-loop the unit on CHDIR (status=200).
     """
-
-
 
     def test_user_unit_workingdirectory_is_hermes_home_not_checkout(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
@@ -1683,7 +1633,6 @@ class TestLaunchctlBootstrapEioRetry:
     DOMAIN = "gui/501"
     LABEL = "ai.hermes.gateway"
 
-
     def test_eio_triggers_bootout_then_retry(self, monkeypatch):
         calls = []
 
@@ -1718,6 +1667,71 @@ class TestLaunchctlBootstrapEioRetry:
         with pytest.raises(subprocess.CalledProcessError) as excinfo:
             gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
         assert excinfo.value.returncode == 5
+
+
+class TestLaunchdUnloadedJobStderrStaysOffTerminal:
+    """#106273: against an UNLOADED job, ``launchctl bootout`` / ``kickstart -k`` exit 3 and print
+    ``Could not find service ...`` / ``Boot-out failed: 3`` on fd 2. Those exits are the *handled*
+    case, so a real launchctl child (fake binary on PATH, real fd inheritance) must leave the
+    terminal's stderr empty while the CLI's own status lines print. ``capfd`` reads fd 2, so an
+    inherited-stderr regression fires even though ``subprocess.run`` never touches ``sys.stderr``."""
+
+    @pytest.fixture
+    def fake_launchctl(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        script = bin_dir / "launchctl"
+        # bootout exits $FAKE_BOOTOUT_RC (default 3 = unloaded); `kickstart -k` is the unloaded 3;
+        # bootstrap / plain kickstart / print succeed. Every invocation is logged for the caller.
+        script.write_text(
+            "#!/bin/sh\n"
+            'echo "$@" >> "$FAKE_LAUNCHCTL_LOG"\n'
+            'case "$1" in\n'
+            '  bootout) echo "Boot-out failed: ${FAKE_BOOTOUT_RC:-3}: No such process" >&2; exit "${FAKE_BOOTOUT_RC:-3}" ;;\n'
+            '  kickstart) if [ "$2" = "-k" ]; then echo "Could not find service in domain for user gui: 501" >&2; exit 3; fi ;;\n'
+            "esac\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        log = tmp_path / "calls.log"
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("FAKE_LAUNCHCTL_LOG", str(log))
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: tmp_path / "ai.hermes.gateway.plist")
+        monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_mark_planned_stop", lambda *a, **k: None)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda *a, **k: True)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+        return log
+
+    def test_restart_of_unloaded_job_reloads_without_launchctl_noise(self, fake_launchctl, capfd):
+        gateway_cli.launchd_restart()
+
+        out, err = capfd.readouterr()
+        assert "↻ launchd job was unloaded; reloading" in out
+        assert "✓ Service restarted" in out
+        assert err == ""
+        verbs = [line.split()[0] for line in fake_launchctl.read_text(encoding="utf-8").splitlines()]
+        assert verbs == ["kickstart", "bootout", "bootstrap", "kickstart"]
+
+    def test_stop_of_unloaded_job_is_quiet_but_a_real_bootout_failure_keeps_stderr(
+        self, fake_launchctl, capfd, monkeypatch
+    ):
+        gateway_cli.launchd_stop()
+        out, err = capfd.readouterr()
+        assert "✓ Service stopped" in out
+        assert err == ""
+
+        # Unexpected exit code: not swallowed, and the captured stderr rides on the exception for
+        # the caller's diagnostic instead of having been printed raw by launchctl.
+        monkeypatch.setenv("FAKE_BOOTOUT_RC", "1")
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            gateway_cli.launchd_stop()
+        assert excinfo.value.returncode == 1
+        assert "Boot-out failed: 1" in excinfo.value.stderr
+        assert capfd.readouterr().err == ""
 
 
 class TestRetryLaunchctlBootstrapUntilRegistered:

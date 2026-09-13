@@ -31,7 +31,8 @@ export function FeaturedProviderRow({
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
-  const loggedIn = provider.status?.logged_in
+  const freeTier = provider.status?.free_tier === true
+  const loggedIn = provider.status?.logged_in && !freeTier
 
   return (
     <button
@@ -44,9 +45,11 @@ export function FeaturedProviderRow({
         <div className="flex items-center gap-2">
           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
           </span>
-          {loggedIn ? (
+          {freeTier ? (
+            <FreeTierTag />
+          ) : loggedIn ? (
             <ConnectedTag />
           ) : (
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
@@ -55,10 +58,23 @@ export function FeaturedProviderRow({
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.featuredPitch}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          {freeTier ? t.freeTier.providerRowPitch : t.onboarding.featuredPitch}
+        </p>
       </div>
       <ChevronRight className="size-4 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>
+  )
+}
+
+// The free tier is an identity without an account: never "Connected", never the account's name.
+function FreeTierTag() {
+  const { t } = useI18n()
+
+  return (
+    <span className="inline-flex items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+      {t.onboarding.freeTier}
+    </span>
   )
 }
 
@@ -119,7 +135,8 @@ export function ProviderRow({
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
-  const loggedIn = provider.status?.logged_in
+  const freeTier = provider.status?.free_tier === true
+  const loggedIn = provider.status?.logged_in && !freeTier
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
   return (
@@ -127,9 +144,9 @@ export function ProviderRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
-            {providerTitle(provider)}
+            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
           </span>
-          {loggedIn ? <ConnectedTag /> : null}
+          {freeTier ? <FreeTierTag /> : loggedIn ? <ConnectedTag /> : null}
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
       </div>

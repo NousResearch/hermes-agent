@@ -18,9 +18,12 @@ import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { FindBar } from '@/components/find-bar'
+import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
+import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
@@ -42,6 +45,7 @@ import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $previewTarget } from '@/store/preview'
@@ -78,6 +82,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -148,9 +153,11 @@ import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
+import { useOnboardingHandoff } from './onboarding-handoff'
+import { useOnboardingKickoff } from './onboarding-kickoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { createPostTurnHydrator } from './post-turn-hydration'
-import { createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 
@@ -169,6 +176,9 @@ const StarmapView = lazy(async () => ({ default: (await import('../starmap')).St
 // WiringActions/WiringApi contracts all live in sibling modules — this file is
 // the controller that assembles them.
 export { WiredPane } from './context'
+
+// Only the RPCs issued by session creation follow the handoff's profile pin.
+const HANDOFF_CREATE_LEG_METHODS = new Set(['config.set', 'session.close', 'session.create'])
 
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
@@ -295,12 +305,18 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
 
+  // The guide remains selected while handoff creates on another profile.
+  // Without this pin, the owner ladder sends session.create to hermes-setup
+  // despite the gateway switch (#89206). Scope it to the create leg so
+  // concurrent session traffic keeps its recorded owner.
+  const handoffCreateProfileRef = useRef<null | string>(null)
+
   // When chrome stays on the launch backend (Bot Mode / all-profiles
   // navigation), session-owned RPCs still have to hit the session's backend.
   // The routing itself lives in createSessionRpcDispatcher (routed by the
   // session the RPC targets, owner ladder in resolveSessionRpcOwner) so the
   // exact production dispatcher is what the integration tests drive.
-  const requestGateway = useMemo(
+  const dispatchSessionRpc = useMemo(
     () =>
       createSessionRpcDispatcher({
         ambientRequest: ambientRequestGateway,
@@ -309,6 +325,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         sessionStateByRuntimeIdRef
       }),
     [ambientRequestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef]
+  )
+
+  const requestGateway = useCallback<AmbientGatewayRequest>(
+    (method, params, timeoutMs, signal) => {
+      // The new build belongs to the handoff target; the selected guide's
+      // owner ladder would send its create to the wrong socket (#89206).
+      const handoffProfile = handoffCreateProfileRef.current
+
+      if (handoffProfile !== null && HANDOFF_CREATE_LEG_METHODS.has(method)) {
+        return requestGatewayForProfile(handoffProfile, method, params ?? {}, timeoutMs, signal)
+      }
+
+      return dispatchSessionRpc(method, params, timeoutMs, signal)
+    },
+    [dispatchSessionRpc]
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
@@ -565,6 +596,32 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [startSessionInWorkspace, startWorkSessionRequest])
 
+  const runCreatePinnedTo = useCallback(async <T,>(profile: string, create: () => Promise<T>): Promise<T> => {
+    handoffCreateProfileRef.current = profile
+
+    try {
+      return await create()
+    } finally {
+      handoffCreateProfileRef.current = null
+    }
+  }, [])
+
+  const kickoffFirstChat = useOnboardingKickoff({
+    createBackendSessionForSend,
+    requestGateway,
+    resumeSession,
+    runCreatePinnedTo
+  })
+
+  useOnboardingHandoff({
+    activeSessionIdRef,
+    ensureSessionState,
+    updateSessionState,
+    createBackendSessionForSend,
+    requestGateway,
+    runCreatePinnedTo
+  })
+
   // "New project" DRAG completion: the dialog created a project that was
   // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
   // its fresh session draft exactly there — the same `openNewSessionTile`
@@ -615,6 +672,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     reloadFromMessage,
     restoreToMessage,
     steerPrompt,
+    injectHiddenPrompt,
     submitText,
     transcribeVoiceAudio
   } = usePromptActions({
@@ -962,6 +1020,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPrCommentUrl: composer.attachPrCommentUrl,
+    onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
     onBranchSession: sessionId => void branchStoredSession(sessionId),
     onCancel: cancelRun,
@@ -1024,6 +1083,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
+    onSteerHidden: injectHiddenPrompt,
     onSubmit: submitText,
     onThreadMessagesChange: handleThreadMessagesChange,
     onToggleSelectedPin: toggleSelectedPin,
@@ -1109,20 +1169,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
-  // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
-  // against the static system cluster — in the tree layout the titlebar band
-  // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
-  // Count every button the static cluster actually renders: four systemTools
-  // (layout, haptics, keybinds, settings) PLUS the always-present
-  // right-sidebar toggle (see titlebar-controls.tsx). A shared width that
-  // under-counts leaves the find bar, the titlebar header padding, and the
-  // pane-cluster anchor overlapping the fifth button.
-  const SYSTEM_TOOL_COUNT = 5
+  const appActionsSide = useStore($titlebarAppActionsSide)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
+  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
+  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0)
+  const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =
     paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
+
+  const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1132,6 +1188,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           {
             '--titlebar-controls-left': `${controlsPos.left}px`,
             '--titlebar-controls-top': `${controlsPos.top}px`,
+            '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,
             '--titlebar-tools-width': titlebarToolsWidth,
@@ -1155,6 +1212,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
+      {!isAuxiliaryWindow() && <IntroRevealGate enabled={gatewayState === 'open'} />}
+      {!isAuxiliaryWindow() && (
+        <OnboardingChatGate
+          enabled={gatewayState === 'open'}
+          onKickoff={kickoffFirstChat}
+          requestGateway={ambientRequestGateway}
+        />
+      )}
       {!isAuxiliaryWindow() && (
         <DesktopOnboardingOverlay
           enabled={gatewayState === 'open'}
@@ -1167,6 +1232,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
+      {/* One host for every free-tier sign-in entry point (Settings › Billing,
+          the statusbar chip, the first-launch intro). It owns the flow; the
+          entry points only record the intent. */}
+      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

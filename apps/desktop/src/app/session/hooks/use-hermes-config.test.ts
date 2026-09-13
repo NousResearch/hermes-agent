@@ -24,6 +24,7 @@ import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
   getHermesConfig: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   getHermesConfigDefaults: vi.fn().mockResolvedValue({})
 }))
 

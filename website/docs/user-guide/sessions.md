@@ -26,6 +26,42 @@ The SQLite database stores:
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
 
+### Authenticated gateway session access and attribution
+
+The gateway owns execution; a client does not own the running agent. Verified
+operators of the same gateway profile can attach to canonical local CLI, TUI, or
+Desktop sessions created through another operator authentication method. For
+example, a native local operator and an authenticated dashboard operator can
+access the same conversation without creating another runtime. Closing a client
+connection detaches that client; accepted work remains with the gateway.
+
+This deliberately replaces creator-only access for verified operators, preserving
+the dashboard's existing operator permissions. Password and OAuth identities stay
+distinct but do not create separate access barriers to canonical local sessions
+when both connections have operator access to the profile. The trusted server
+paths include native interactive bootstrap, authenticated dashboard tickets,
+internal credentials used by server-spawned PTY clients, and the verified legacy
+dashboard token. HTTP session mutations also accept the verified native HTTP owner
+grant. This does not grant operator permissions to restricted worker, messaging,
+room, or service credentials, or remove profile and operation-specific checks.
+
+Attribution remains identity-specific. Dashboard identities include the provider,
+verified OAuth issuer (when present), and subject. Creation receipts retain the
+original identity; submissions and mutation retries retain the acting identity.
+An operator joining a session does not replace its recorded owner or merge retry
+identities. Native bootstrap owner keys and session IDs remain unchanged.
+
+Older remote sessions whose receipts contain only a bare subject cannot establish
+which provider owned them. They remain stored but are not automatically assigned
+to the first authenticated account requesting them. Operator access does not permit
+remote first-claim adoption of unowned historical transcripts.
+
+Cross-device attachment also requires a supported, authenticated route to the same
+gateway. Shared operator access does not itself expose a remote listener or add
+OpenAI-compatible API continuation of local sessions. A gateway crash is different
+from a client disconnect: interrupted work becomes `unknown` rather than being
+automatically replayed, and may need resolution before queued followers proceed.
+
 ### What Counts Toward Context
 
 Hermes stores session history so it can resume conversations, but it does not
@@ -799,6 +835,15 @@ Legacy `session_reset` settings, reset-policy overrides and reset-timer environm
 variables are ignored. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
+
+**`/new` moves only the view that ran it.** One session can be open in several
+places at once — a Desktop window, the TUI, a `hermes chat --resume` terminal, an
+ACP editor, a Telegram topic — all attached to the same live conversation on the
+gateway. Running `/new` (or `/reset`) in one of them creates a fresh session and
+rebinds *that* window or chat route to it. The other viewers stay on the original
+session, its history is untouched, and a turn already running there keeps running.
+Ending or clearing the shared conversation is a separate, explicit action (Stop, then
+`/new`; or a delete, which is refused while a turn is live).
 
 
 ### Continuity After Crashes and Restarts

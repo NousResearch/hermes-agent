@@ -35,6 +35,7 @@ def target_prefix_locked(conn, row, record):
         raise WorkRecordPrefixError(str(exc)) from exc
 
 
+
 def validate_provenance(record, spans):
     from gateway.hosted_room_work_records import WorkRecordError
     # Execution generation remains an independent per-task counter.

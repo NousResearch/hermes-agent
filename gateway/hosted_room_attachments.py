@@ -732,6 +732,8 @@ class HostedRoomAttachmentStore:
                     raise AttachmentConflictError(
                         "attachment manifest metadata does not match the uploaded bytes"
                     )
+                if row["expires_at"] is not None and float(row["expires_at"]) <= now:
+                    raise AttachmentNotFoundError("attachment has expired")
                 state = str(row["state"])
                 if state == "disbanded":
                     raise AttachmentNotFoundError("attachment belongs to a disbanded room")

@@ -109,12 +109,13 @@ class HostedRoomServerRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal: Callable[[Mapping[str, Any]], None],
+        member_id: str,
     ) -> Mapping[str, Any]:
         artifact_scope = self._artifact_scopes.pop(
             (task.task_id, execution_generation),
             None,
         )
-        if artifact_scope is None:
+        if artifact_scope is None or artifact_scope["member_id"] != member_id:
             exc = HostedRoomSessionError(
                 "prompt.submit", 4120, "hosted room artifact scope is missing"
             )
@@ -139,6 +140,7 @@ class HostedRoomServerRPC:
                     ),
                 },
             )
+
         except HostedRoomSessionError as exc:
             # In-process prompt.submit error envelopes are returned before the
             # background turn is admitted. Preserve that proof so the driver

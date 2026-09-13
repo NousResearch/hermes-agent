@@ -204,6 +204,25 @@ background FTS rebuild can proceed without double-indexing) and cover all three
 indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact SQL.
 
 
+## Dashboard browsing and owner maintenance
+
+Session browsing opens `state.db` read-only. GET listing, search, details,
+messages, statistics and export never create an absent database, quarantine a
+zero-byte file, reconcile a stale schema, or trigger auto-archive. Uninitialized
+or incompatible stores return HTTP 503 with owner-start/recovery guidance;
+profile aggregation reports schema failures in its per-profile `errors` list.
+
+The profile's gateway initializes and reconciles its store at startup. The
+standalone `serve` backend retains its existing startup reconciliation worker.
+Configured `sessions.auto_archive` remains active through gateway startup and
+housekeeping, or the standalone backend's maintenance ticker, independently of
+browsing. Explicit mutation endpoints retain their existing write behavior.
+
+SQLite WAL readers still participate in shared-memory coordination: `mode=ro`
+may create empty WAL/SHM sidecars or update SHM read marks. The read-only contract
+forbids canonical schema/data writes, repair and checkpointing; it does not make
+live SQLite coordination files immutable.
+
 ## Schema Version and Migrations
 
 Current schema version: **23**

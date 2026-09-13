@@ -20,15 +20,10 @@ and _save() semantics are correct without requiring a live gateway.
 from __future__ import annotations
 
 import ast
-import inspect
 import textwrap
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from gateway import run as gateway_run
-from gateway import run_turn as gateway_run_turn
-from gateway import run_turn_runner as gateway_run_turn_runner
-from gateway import run_turn as gateway_run_turn
-from gateway import run_turn_runner as gateway_run_turn_runner
 from gateway.session_context import set_current_session_id, get_session_env
 
 
@@ -112,9 +107,11 @@ def test_every_post_compression_session_id_assignment_persists():
     would compress correctly, the gateway would update its in-memory
     session_id, then drop it on next gateway restart.
     """
+    from pathlib import Path
+
     assignments = []
-    for mod in (gateway_run, gateway_run_turn, gateway_run_turn_runner):
-        assignments += _session_id_assignments_followed_by_save(inspect.getsource(mod))
+    for path in sorted(Path(gateway_run.__file__).parent.glob('*.py')):
+        assignments += _session_id_assignments_followed_by_save(path.read_text(encoding='utf-8'))
     assert assignments, (
         "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
         "either the structure changed or the AST walker is broken."

@@ -24,7 +24,7 @@ class DiscordRecoveryMixin:
             if isinstance(value, str):
                 return value.strip().lower() in ("true", "1", "yes", "on")
             return bool(value)
-        raw = _adapter.os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
+        raw = _adapter._scoped_gate_env("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
         return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
     def _missed_message_backfill_channels(self) -> set[str]:
@@ -51,7 +51,7 @@ class DiscordRecoveryMixin:
         from . import adapter as _adapter
 
         configured = self.config.extra.get("missed_message_backfill")
-        raw = configured.get(key, default) if isinstance(configured, dict) else _adapter.os.getenv(env_key, str(default))
+        raw = configured.get(key, default) if isinstance(configured, dict) else _adapter._scoped_gate_env(env_key, str(default))
         try:
             value = cast(raw)
         except (TypeError, ValueError):

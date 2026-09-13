@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import queue
 import re
 import threading
@@ -72,6 +71,10 @@ class WebhookTarget(_ToolMatcherMixin):
 def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     """Register every configured outbound webhook on the plugin manager.  Malformed ``hooks.outbound``
     means zero targets — never raises.  Returns the targets that ended up wired (deduplicated)."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     if not isinstance(cfg, dict):
         return []
     from utils import env_var_enabled
@@ -201,10 +204,14 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
         warn(".timeout must be an int (got %r); using default %ds", timeout_raw, DEFAULT_TIMEOUT_SECONDS)
         timeout = DEFAULT_TIMEOUT_SECONDS
     name = raw.get("name")
-    # ``secret_env`` (env var name, preferred) wins over inline ``secret``.
+    # ``secret_env`` (env var name, preferred) wins over inline ``secret``. Read through the profile
+    # secret scope: the gateway registers each multiplexed profile's targets inside that profile's
+    # scope, and a raw environ read would sign a secondary's deliveries with the DEFAULT profile's
+    # secret (or leave them unsigned when the var lives only in the secondary's .env).
     secret_env = raw.get("secret_env")
     if isinstance(secret_env, str) and secret_env.strip():
-        secret = os.environ.get(secret_env.strip(), "") or None
+        from agent.secret_scope import get_secret
+        secret = get_secret(secret_env.strip(), "") or None
         if secret is None:
             warn(".secret_env=%r is not set in the environment — deliveries will be UNSIGNED", secret_env.strip())
     else:
@@ -220,6 +227,10 @@ def _make_callback(event: str, target: WebhookTarget):
     """Build the notify-only closure ``invoke_hook()`` calls per firing."""
 
     def _callback(**kwargs: Any) -> None:
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return
         if event in _TOOL_SCOPED_EVENTS and not target.matches_tool(kwargs.get("tool_name")):
             return
         delivery_id = uuid.uuid4().hex

@@ -13,7 +13,7 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from hermes_constants import (
     get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
@@ -512,8 +512,20 @@ STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 
 
 def format_steer_marker(steer_text: str) -> str:
-    """Wrap a mid-turn steer for appending to a tool result (see note above)."""
+    """Wrap a mid-turn steer in the self-describing marker (see note above)."""
     return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
+
+
+STEER_DISPLAY_KIND = "steer"
+
+
+def steer_user_row(steer_text: str) -> Dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
+    result). Its own row — never smeared onto the already-persisted tool row, which append-only
+    persistence would leave divergent from the live request — and typed so the alternation repair
+    never merges the next real prompt into it and history renderers can label it."""
+    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
+            "display_kind": STEER_DISPLAY_KIND}
 
 
 STEER_CHANNEL_NOTE = (
@@ -786,8 +798,10 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
-# Per-process probe cache keyed by (env_type, cwd_hint) so a mid-process backend switch rebuilds.
-_BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
+# Per-process probe cache keyed by (home key, env_type, cwd_hint) so a mid-process backend switch
+# rebuilds; the home key because the probe runs against the profile's own terminal.* backend
+# (docker image / ssh host) and one multiplexed process serves several profiles.
+_BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 def _plugin_backend_attr(backend: str, attr: str, default=None):
@@ -906,7 +920,8 @@ def _format_backend_probe(output: str) -> str:
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
-    cache_key = (env_type, _tenv_read("TERMINAL_CWD", ""))
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
         formatted = ""
@@ -1200,6 +1215,10 @@ def build_skills_system_prompt(
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return ""
     _home_token = None
     if skills_dir_override is not None:
         skills_dir = Path(skills_dir_override)
@@ -1445,6 +1464,10 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
     ContextVar falls back to the launch home and reads the wrong profile's SOUL.md (#50233, same class as
     the skills-index leak fixed in #86313).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     try:
         from hermes_cli.config import ensure_hermes_home
         ensure_hermes_home()
@@ -1576,6 +1599,10 @@ def build_context_files_prompt(
     AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return ""
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     # A FALLBACK-picked cwd inside the Hermes install tree must not gain system-prompt authority (the desktop
     # default would load this repo's contributor AGENTS.md). An explicit cwd is honored verbatim.

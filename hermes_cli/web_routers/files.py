@@ -329,7 +329,8 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
         with _profile_scope(profile) as scoped_home:
-            img_dir = Path(scoped_home or get_hermes_home()) / "images"
+            from gateway.platforms.base import get_image_cache_dir
+            img_dir = get_image_cache_dir()
             with _io_errors("Image directory is not writable", "Could not create image directory"):
                 img_dir.mkdir(parents=True, exist_ok=True)
 

@@ -333,7 +333,7 @@ class DiscordInboundMixin:
         if not is_thread and not isinstance(message.channel, _adapter.discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
-            auto_thread = _adapter.os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == _adapter.discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)

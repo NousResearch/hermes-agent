@@ -21,7 +21,11 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { capabilityScoped } from '@/api/client'
+import { capabilityScoped, getApiRequestConnection } from '@/api/client'
+
+import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
+const mutatePersistedVisibility = createSessionMutationClient()
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -67,6 +71,7 @@ import {
   newSessionInAgent,
   newSessionInProfile,
   normalizeProfileKey,
+  prewarmProfileBackend,
   refreshProfiles,
   selectProfile,
   setActiveProfile,
@@ -331,6 +336,7 @@ export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
  *  and paint durable history. Bot Mode opts into one retry, so its effective
  *  ceiling is two bounded attempts rather than an unbounded wait. */
 export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
+
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
@@ -666,20 +672,25 @@ export const host = {
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change (openGatewayForProfile; it
-   *  already no-ops for shared-remote routes and the primary). Roster UIs
-   *  call this after mount so the FIRST click on an agent doesn't pay the
-   *  whole backend spawn + socket dial latency. Fire-and-forget: failures
-   *  are swallowed — the click path re-runs its own ensure and surfaces
-   *  errors properly. */
+   *  activation, no navigation, no scope change. Delegates to
+   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
+   *  guard, hover dwell, and per-profile throttle as the built-in rail
+   *  (#91545): a pointer sweep across a plugin roster (bot-row's
+   *  onPointerEnter fires with no dwell of its own) previously spawned at
+   *  pointer speed, filled the local backend pool past maxBackends, and left
+   *  the next profile's spawn queued until the 30s slot timeout — observed
+   *  as a profile surface that hangs forever while every other profile
+   *  renders. It already no-ops for shared-remote routes and the primary.
+   *  Fire-and-forget: failures are swallowed — the click path re-runs its
+   *  own ensure and surfaces errors properly. */
   warmProfile: (profile: string): void => {
     const name = (profile ?? '').trim()
 
-    if (!name || name === $activeGatewayProfile.get()) {
+    if (!name) {
       return
     }
 
-    void openGatewayForProfile(name).catch(() => undefined)
+    prewarmProfileBackend(name)
   },
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
@@ -815,11 +826,13 @@ export const host = {
   },
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
-   *  analogue of warmProfile. Fire-and-forget, same semantics.
+   *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
+   *  resolver (prewarmProfileBackend): a pointer sweep across a
+   *  multi-source roster must not spawn past the pool cap either.
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {
-    void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
+    prewarmProfileBackend((profile ?? '').trim() || 'default', connectionId ?? null)
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
@@ -934,14 +947,11 @@ export const host = {
       // not the registry-secondary path openGatewayForAgent takes for a 'local'
       // connection id. Behavior for a plain local open is unchanged.
       const dial = explicitRoute
-        ? () =>
-            openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
-              spawnPriority: 'foreground'
-            })
+        ? () => openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile)
         : plan.switchWorkspace
           ? () => ensureGatewayProfile(plan.switchWorkspace as string)
           : plan.dialWithoutSwitching
-            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string, { spawnPriority: 'foreground' })
+            ? () => openGatewayForProfile(plan.dialWithoutSwitching as string)
             : null
 
       if (dial) {
@@ -1261,6 +1271,17 @@ export const host = {
    *  (`typeof host.paneVisibility === 'function'`). */
   paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
 
+  /** Reveal a contributed pane and its zone from an explicit user action. */
+  revealPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    revealTreePane(id)
+  },
+
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.
    *  Listeners are isolated; a throw can't affect app dispatch. */
@@ -1394,12 +1415,15 @@ export const host = {
       throw new Error('Persisted session updates require a profile and session id')
     }
 
-    return hermesApi<{ ok: boolean; hidden: boolean }>({
-      ...(route ? { connectionId: route.connectionId } : {}),
-      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
-      method: 'PATCH',
-      body: { hidden: options.hidden, profile }
-    })
+    const scope = { connectionId: route?.connectionId || getApiRequestConnection() || 'local' }
+    const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
+    const payload = { hidden: options.hidden, profile }
+
+    return mutatePersistedVisibility(JSON.stringify([scope, options.sessionId, payload]),
+      () => hermesApi<SessionMutationSnapshot>({ ...scope,
+        path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}` }),
+      identity => hermesApi<{ ok: boolean; hidden: boolean }>({ ...scope, path,
+        method: 'PATCH', body: { ...payload, ...identity } }))
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
@@ -1717,6 +1741,7 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
  *  (a roster poll's activity watermark, say) writes HERE rather than keeping

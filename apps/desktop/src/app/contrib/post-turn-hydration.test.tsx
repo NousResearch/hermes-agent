@@ -19,7 +19,8 @@ import {
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
-  setMessages
+  setMessages,
+  setSessionsLoading
 } from '@/store/session'
 import { $sessionStates, $workingSessionIds, clearAllSessionStates } from '@/store/session-states'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
@@ -85,7 +86,15 @@ function mount() {
   })
 
   Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
-  const requestGateway = vi.fn(async () => ({ queued: true }))
+
+  // Inert F9-shaped receipt: this suite exercises transcript projection, not
+  // server admission. An identityless legacy ACK is no longer accepted by UI.
+  const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => ({
+    session_id: params?.session_id,
+    submission_id: params?.submission_id,
+    status: 'started'
+  }))
+
   setActiveSessionId(SID)
 
   const hook = renderHook(
@@ -193,6 +202,9 @@ beforeEach(() => {
   setBusy(false)
   setMessages([])
   $sessions.set([])
+  // The fixture has completed discovery; F9 deliberately will not auto-drain
+  // a renderer queue while the sessions list is still loading.
+  setSessionsLoading(false)
   clearSessionTodos(SID)
   setApiRequestConnection(null)
   setApiRequestProfile(null)

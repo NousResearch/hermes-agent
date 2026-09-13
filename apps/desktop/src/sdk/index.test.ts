@@ -1,9 +1,43 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
+// The warm path must route through the guarded prewarm resolver (hover dwell,
+// per-profile throttle), not dial the gateway directly: mocking the store's
+// dialers lets the tests observe the ONLY side effect that matters — whether
+// openGatewayForProfile was dialed.
+const warmMocks = vi.hoisted(() => ({
+  openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
+  openGatewayForProfile: vi.fn(async (_profile: string) => undefined)
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  openGatewayForAgent: warmMocks.openGatewayForAgent,
+  openGatewayForProfile: warmMocks.openGatewayForProfile
+}))
+
+describe('host.warmProfile routing contract', () => {
+  beforeEach(() => {
+    warmMocks.openGatewayForProfile.mockClear()
+    warmMocks.openGatewayForAgent.mockClear()
+  })
+
+  it('dials the profile through the guarded prewarm path', () => {
+    host.warmProfile('warm-free-slot')
+
+    expect(warmMocks.openGatewayForProfile).toHaveBeenCalledWith('warm-free-slot')
+  })
+
+  it('ignores an empty profile name', () => {
+    host.warmProfile('   ')
+
+    expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {

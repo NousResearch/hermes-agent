@@ -35,6 +35,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -725,7 +726,7 @@ def _slack_dedup_ttl_seconds() -> float:
 
     See #4777.
     """
-    raw = os.getenv("SLACK_DEDUP_TTL_SECONDS", "")
+    raw = _get_scoped_secret("SLACK_DEDUP_TTL_SECONDS", "")
     if raw:
         try:
             value = float(raw)
@@ -1507,22 +1508,27 @@ _YAML_LIST_KEYS = (
 
 
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (the adapter reads
-    ``os.getenv()``; explicit env wins). Returns None: nothing is seeded into ``extra``.
+    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (explicit env wins) and
+    ``PlatformConfig.extra`` (extra-first readers; the env write is skipped under a multiplexed
+    secondary profile's scope so its policy never becomes the default profile's).
 
     Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
     """
+    _set_env = _yaml_env_setter()
+    seeded: dict = {}
     for key, env in _YAML_BOOL_KEYS:
-        if key in slack_cfg and not os.getenv(env):
-            os.environ[env] = str(slack_cfg[key]).lower()
+        if key in slack_cfg:
+            seeded[key] = slack_cfg[key]  # original type: the shared-key loop already seeded bools as bools
+            _set_env(env, str(slack_cfg[key]).lower())
     for key, env, list_types in _YAML_LIST_KEYS:
         val = slack_cfg.get(key)
-        if val is not None and not os.getenv(env):
+        if val is not None:
+            seeded[key] = val
             if list_types and isinstance(val, list_types):
                 val = ",".join(str(v) for v in val)
-            os.environ[env] = str(val)
-    return None
+            _set_env(env, str(val))
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

@@ -73,7 +73,7 @@ describe('replay readiness belongs to the socket generation', () => {
     first.event(97, 'message.start')
     client.invalidate()
     const second = await connect()
-    expect(second.requests[0].params).toEqual({ session_id: 'running', last_seen: 97 })
+    expect(second.requests[0].params).toEqual({ session_id: 'running', last_seen: 97, replay_epoch: 'epoch-A' })
 
     const outcome = client.waitForReplay().then(
       () => 'ready',
@@ -118,7 +118,7 @@ describe('replay readiness belongs to the socket generation', () => {
     expect(client.getSeqWatermarks()).toEqual({ running: 1 })
     client.invalidate()
     const third = await connect()
-    expect(third.requests[0].params).toEqual({ session_id: 'running', last_seen: 1 })
+    expect(third.requests[0].params).toEqual({ session_id: 'running', last_seen: 1, replay_epoch: 'epoch-B' })
     third.reply({ events: [], epoch: 'epoch-B' })
     await expect(client.waitForReplay()).resolves.toBeUndefined()
   })
@@ -216,11 +216,86 @@ describe('replay readiness belongs to the socket generation', () => {
       }
 
       expect(await outcome).toBe('not-ready')
-      expect(onEvent).not.toHaveBeenCalled()
+
+      if (failure === 'truncated') {
+        expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual(['session.replay_gap'])
+        expect(client.getSeqWatermarks()).toEqual({})
+      } else {
+        expect(onEvent).not.toHaveBeenCalled()
+      }
+
       expect(client.connectionState).toBe('open')
       // A real event remains authoritative even when lossless catch-up failed.
+      onEvent.mockClear()
       second.event(2, 'session.info')
       expect(onEvent).toHaveBeenCalledOnce()
     }
   )
+
+  it.each(['truncated', 'snapshot_required', 'epoch-change'] as const)(
+    'hands a canonical %s gap to snapshot consumers without resetting another session',
+    async reason => {
+      const first = await connect()
+
+      for (const [session_id, replay_epoch, seq] of [
+        ['a', 'a-old', 41],
+        ['b', 'b-stable', 7]
+      ] as const) {
+        first.frame({ method: 'event', params: { type: 'message.delta', session_id, replay_epoch, seq } })
+      }
+
+      client.invalidate()
+      const second = await connect()
+      const onEvent = vi.fn()
+      client.onEvent(onEvent)
+      expect(second.requests.map(request => request.params)).toEqual([
+        { session_id: 'a', last_seen: 41, replay_epoch: 'a-old' },
+        { session_id: 'b', last_seen: 7, replay_epoch: 'b-stable' }
+      ])
+      second.frame({
+        id: second.requests[0].id,
+        result: {
+          events: [{ type: 'message.delta', session_id: 'a', seq: 42 }],
+          replay_epoch: 'a-new',
+          latest_seq: 1,
+          ...(reason === 'epoch-change' ? {} : { [reason]: true })
+        }
+      })
+      second.frame({
+        id: second.requests[1].id,
+        result: {
+          events: [{ type: 'message.delta', session_id: 'b', replay_epoch: 'b-stable', seq: 8 }],
+          replay_epoch: 'b-stable'
+        }
+      })
+      // This only proves dispatch. No snapshot consumer completed a resume,
+      // and no turn admission/settlement is asserted by this barrier.
+      await expect(client.waitForReplay()).resolves.toBeUndefined()
+      expect(onEvent.mock.calls.map(([event]) => [event.type, event.session_id])).toEqual([
+        ['session.replay_gap', 'a'],
+        ['message.delta', 'b']
+      ])
+      expect(client.getSeqWatermarks()).toEqual({ b: 8 })
+    }
+  )
+
+  it('keeps canonical per-session replay epochs across a legacy process epoch change', async () => {
+    const first = await connect()
+    first.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'process-old' } } })
+    first.frame({
+      method: 'event',
+      params: { type: 'message.delta', session_id: 'a', replay_epoch: 'session-stable', seq: 41 }
+    })
+    client.invalidate()
+    const second = await connect()
+    const onEvent = vi.fn()
+    client.onEvent(onEvent)
+    second.frame({ method: 'event', params: { type: 'gateway.ready', payload: { replay_epoch: 'process-new' } } })
+    expect(second.requests[0].params).toEqual({ session_id: 'a', last_seen: 41, replay_epoch: 'session-stable' })
+    expect(client.getSeqWatermarks()).toEqual({ a: 41 })
+    second.reply({ events: [], epoch: 'session-stable', replay_epoch: 'session-stable' })
+    await expect(client.waitForReplay()).resolves.toBeUndefined()
+    expect(client.getSeqWatermarks()).toEqual({ a: 41 })
+    expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual(['gateway.ready'])
+  })
 })

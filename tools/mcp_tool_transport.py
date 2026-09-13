@@ -449,10 +449,11 @@ class MCPServerTransportMixin:
         if self._registered_tool_names:
             return
         with _core._lock:
-            owned = _core._servers.get(self.name) is self
+            owned = [key for key, live in _core._servers.items() if live is self]
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)
         with _core._lock:  # a retained initial-failure server that just published tools has recovered
-            if _core._servers.get(self.name) is self:
-                _core._server_connect_errors.pop(self.name, None)
+            for key in owned:
+                if _core._servers.get(key) is self:
+                    _core._server_connect_errors.pop(key, None)

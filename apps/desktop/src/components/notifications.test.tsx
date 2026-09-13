@@ -47,4 +47,6 @@ describe('toast titles', () => {
     expect(title.className).toMatch(/\boverflow-y-auto\b/)
     expect(screen.getByText(DETAIL)).toBeTruthy()
   })
+
+
 })

@@ -398,12 +398,13 @@ class MattermostAdapter(BasePlatformAdapter):
         return file_data, _url_filename(image_url, f"image_{index}.png"), ct
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: _Metadata = None, human_delay: float = 0.0) -> None:
+                                   metadata: _Metadata = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images as one post; chunked at Mattermost's 5-``file_ids`` cap, each chunk
         falling back to the base per-image loop on failure."""
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         chunks = [images[i:i + 5] for i in range(0, len(images), 5)]  # Mattermost post file_ids cap
+        delivered = False
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -420,13 +421,18 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: sending %d image(s) as single post (chunk %d/%d)",
                             len(file_ids), chunk_idx + 1, len(chunks))
                 data = await self._post_message(chat_id, "\n".join(caption_parts), None, metadata, file_ids)
-                if not data or "id" not in data:
+                if data and "id" in data:
+                    delivered = True
+                else:
                     logger.warning("Mattermost: multi-image post failed, falling back")
-                    await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    delivered = delivered or fallback.success
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                                chunk_idx + 1, len(chunks), e, exc_info=True)
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     # --- WebSocket ---
 

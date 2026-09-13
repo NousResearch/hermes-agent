@@ -46,7 +46,8 @@ class SlackFormatMixin:
         """Return normalized Slack bot-message policy."""
         from . import adapter as _adapter
 
-        raw = self.config.extra.get("allow_bots", "") or _adapter.os.getenv("SLACK_ALLOW_BOTS", "none")
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
+        raw = self.config.extra.get("allow_bots", "") or _adapter._get_scoped_secret("SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             _adapter.logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -70,7 +71,7 @@ class SlackFormatMixin:
         if cached is None:
             raw = self.config.extra.get("api_human_users")
             if raw is None:
-                raw = _adapter.os.getenv("SLACK_API_HUMAN_USERS", "")
+                raw = _adapter._get_scoped_secret("SLACK_API_HUMAN_USERS", "")
             parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
             cached = self._api_human_users_cache = frozenset(
                 str(p).strip() for p in parts if str(p).strip())
@@ -243,7 +244,7 @@ class SlackFormatMixin:
 
         configured = self.config.extra.get("require_mention")
         if configured is None:
-            configured = _adapter.os.getenv("SLACK_REQUIRE_MENTION", "true")
+            configured = _adapter._get_scoped_secret("SLACK_REQUIRE_MENTION", "true")
         if isinstance(configured, str):
             return configured.lower() not in {"false", "0", "no", "off"}
         return bool(configured)
@@ -254,7 +255,7 @@ class SlackFormatMixin:
 
         configured = self.config.extra.get(key)
         if configured is None:
-            configured = _adapter.os.getenv(env_var, "false")
+            configured = _adapter._get_scoped_secret(env_var, "false")
         if isinstance(configured, str):
             if strip:
                 configured = configured.strip()
@@ -285,7 +286,7 @@ class SlackFormatMixin:
 
         raw = self.config.extra.get(key)
         if raw is None:
-            raw = _adapter.os.getenv(env_var, "")
+            raw = _adapter._get_scoped_secret(env_var, "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if coerce_scalar:
@@ -304,7 +305,7 @@ class SlackFormatMixin:
             return cached
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
         if patterns is None:
-            raw = _adapter.os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            raw = (_adapter._get_scoped_secret("SLACK_MENTION_PATTERNS", "") or "").strip()
             if raw:
                 try:
                     import json as _json

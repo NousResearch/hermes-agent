@@ -94,7 +94,12 @@ def _open_child_session_db(parent_agent) -> Any:
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
     # .db_path via __getattr__, so this works through them.
+    from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, is_worker_process
     parent_session_db = getattr(parent_agent, "_session_db", None)
+    if is_worker_process() or isinstance(parent_session_db, RuntimeSessionStore):
+        # Missing db_path on a scoped store is NOT permission to open the
+        # launch profile. Child identity must first be reserved by the owner.
+        raise WorkerPersistenceError('worker_child_registration_required')
     if parent_session_db is None:
         return None
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
@@ -529,8 +534,10 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and the call's results re-enter "
-    "the conversation as a new message when its subagents finish ({delivery}). Results are delivered only "
+    "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
+    "and return results in this tool call. "
+    "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
+    "as a new message when subagents finish ({delivery}). Background results are delivered only "
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "

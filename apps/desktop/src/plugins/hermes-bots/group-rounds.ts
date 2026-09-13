@@ -30,6 +30,7 @@ import type { GroupCommandFence } from './group-command-fence'
 import { desktopCommandResult, settleDesktopCommand } from './group-command-receipts'
 import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { rejectGroupSlashCommand } from './group-slash'
 import { harvestStrandedGroupReply } from './group-turns'
 import {
   beginHostedRoomMutation,
@@ -461,7 +462,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   }
 
   const roster = Array.isArray(members) && members.length ? members : room.members || []
-  const turnName = room.turn || null
+  const onTurn = room.turn || null
 
   const stamp: GroupHoldStamp = {
     at: Date.now(),
@@ -505,9 +506,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     thread: thread || null
   })
 
-  // Interrupt the member actually mid-turn. room.turn is runtime-only and
-  // names exactly one member (the loop is serial); a settled room has none.
-  const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
+  // The captured descriptor owns routing even if the roster has changed.
   const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
   if (onTurn && sessionId) {
@@ -524,7 +523,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
 /** Fence a classic turn after its mailbox lease is lost, without adding the
  * durable holds that belong only to an explicit user Stop. */
-export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMember[] | null, fence: GroupCommandFence) {
+export function cancelGroupThreadForLeaseLoss(group: string, _members: GroupMember[] | null, fence: GroupCommandFence) {
   cancelGroupCommandFence(fence)
   const room = $groupChats.get()[group] || {}
 
@@ -539,8 +538,8 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
     return
   }
 
-  const roster = Array.isArray(members) && members.length ? members : room.members || []
-  const turnName = room.turn || null
+  // The captured descriptor owns routing, including after a roster rename.
+  const onTurn = room.turn || null
 
   updateGroupChat(group, current => ({
     ...current,
@@ -549,7 +548,6 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
     turn: null
   }))
 
-  const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
   const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
   if (onTurn && sessionId) {
@@ -570,6 +568,8 @@ export async function runGroupChatRounds(
   thread: string,
   fence?: GroupCommandFence
 ) {
+  if (group.startsWith('canonical:')) {throw new Error('Canonical rooms are driven by the gateway')}
+
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -974,7 +974,13 @@ export function sendToGroupChat(
   images?: Attachment[],
   options: SendGroupChatOptions = {}
 ): null | string {
+  if (group.startsWith('canonical:')) {throw new Error('Canonical rooms are driven by the gateway')}
   const trimmed = String(text || '').trim()
+
+  if (rejectGroupSlashCommand(trimmed)) {
+    return null
+  }
+
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
   const roomBeforeSend = $groupChats.get()[group]
   const hosted = groupChatHostedGateway(roomBeforeSend)

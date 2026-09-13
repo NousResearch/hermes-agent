@@ -174,7 +174,7 @@ class SlackEventsMixin:
 
         raw = self.config.extra.get("reaction_triggers")
         if raw is None:
-            raw = _adapter.os.getenv("SLACK_REACTION_TRIGGERS") or None
+            raw = _adapter._get_scoped_secret("SLACK_REACTION_TRIGGERS") or None
         if raw is None:
             return None
         if isinstance(raw, bool):
@@ -195,7 +195,7 @@ class SlackEventsMixin:
 
         raw = self.config.extra.get("reaction_trigger_target")
         if raw is None:
-            raw = _adapter.os.getenv("SLACK_REACTION_TRIGGER_TARGET", "")
+            raw = _adapter._get_scoped_secret("SLACK_REACTION_TRIGGER_TARGET", "")
         channel, _, thread = str(raw or "").strip().partition(":")
         return channel.strip(), thread.strip()
 
@@ -926,6 +926,7 @@ class SlackEventsMixin:
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
+            message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))

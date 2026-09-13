@@ -38,7 +38,7 @@ class DiscordPromptsMixin:
         (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
         from . import adapter as _adapter
 
-        if not _adapter._env_bool("DISCORD_APPROVAL_MENTIONS", False):
+        if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
             return None
         user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
         if not user_ids:
@@ -208,13 +208,13 @@ class DiscordPromptsMixin:
         def _build(_channel):
             default_hint = f" (default: {default})" if default else ""
             embed = _adapter.discord.Embed(
-                title="⚕ Update Needs Your Input", description=f"{prompt}{default_hint}", color=_adapter.discord.Color.gold(),
+                title="☤ Update Needs Your Input", description=f"{prompt}{default_hint}", color=_adapter.discord.Color.gold(),
             )
             view = _adapter.UpdatePromptView(
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content("⚕ **Update Needs Your Input**", f"{prompt}{default_hint}")
+            content = self._self_contained_prompt_content("☤ **Update Needs Your Input**", f"{prompt}{default_hint}")
             return {"content": content, "embed": embed, "view": view}, view
         result = await self._send_prompt(chat_id, metadata, _build)
         if result.success and _adapter._metadata_marks_nonconversational(metadata):

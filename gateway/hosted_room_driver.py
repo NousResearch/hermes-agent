@@ -13,6 +13,7 @@ import json
 import math
 import sqlite3
 from contextlib import closing
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -146,6 +147,23 @@ def _lease_window(ttl_seconds: Any, clock: Clock) -> tuple[float, float]:
     return now, now + ttl
 
 
+def validate_bound_task_manifest(value: Any) -> list[dict[str, Any]]:
+    """Validate store metadata plus the exact source event for each task input."""
+    from gateway.hosted_room_attachments import validate_task_manifest
+
+    if not isinstance(value, list) or not value:
+        raise DriverValidationError("attachments must be a non-empty list")
+    if any(not isinstance(item, Mapping) or "event_id" not in item for item in value):
+        raise DriverValidationError("task attachment requires event_id")
+    event_ids = [_identifier(item["event_id"], label="attachment event_id") for item in value]
+    try:
+        manifest = validate_task_manifest([
+            {key: val for key, val in item.items() if key != "event_id"} for item in value])
+    except ValueError as exc:
+        raise DriverValidationError(str(exc)) from exc
+    return [{**item, "event_id": event_id} for item, event_id in zip(manifest, event_ids)]
+
+
 def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
     if not isinstance(value, dict):
         raise DriverValidationError("payload must be an object")
@@ -171,6 +189,7 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
         "prompt": prompt,
         "source_event_seq": source_event_seq,
     }
+
     if "input_context" in value:
         from gateway.hosted_room_task_input import validate_task_input
 
@@ -191,12 +210,7 @@ def _task_payload(value: Any) -> tuple[dict[str, Any], str, str]:
             raise DriverValidationError("recipient_member_ids must be unique")
         normalized["recipient_member_ids"] = recipients
     if "attachments" in value:
-        from gateway.hosted_room_attachments import validate_task_manifest
-
-        attachments = validate_task_manifest(value["attachments"])
-        if not attachments:
-            raise DriverValidationError("attachments must not be empty when present")
-        normalized["attachments"] = attachments
+        normalized["attachments"] = validate_bound_task_manifest(value["attachments"])
     encoded = compact_json(normalized)
     return normalized, encoded, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -579,6 +593,8 @@ def _transition(
         if new_work:
             require_room_work_open(conn, identity.room_id, error=RoomUnavailableError)
         fenced_update(conn, sql, params, StaleTaskError(stale))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
 
@@ -715,6 +731,8 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             (
                 *dataclasses.astuple(identity), normalized_payload["source_event_seq"], payload_json, payload_digest,
                 now, now))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
 
@@ -795,6 +813,8 @@ def start_task(
         )
         if updated.rowcount != 1:
             raise StaleTaskError("task changed during start")
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, identity.room_id)
         return TaskAttempt(
             identity=identity,
             lease=lease,
@@ -1191,6 +1211,8 @@ def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[s
             conn.execute(
                 f"""UPDATE hosted_room_driver_tasks SET status='indeterminate', indeterminate_at=?, updated_at=?
                     WHERE {foreign_running}""", (now, now, *fence))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, lease.room_id)
         return {
             status: [_task_identity_from_row(row) for row in _tasks_in_order(conn, lease.room_id, status)]
             for status in ("queued", "indeterminate")}
@@ -1268,6 +1290,23 @@ def prune_published_terminal_tasks(
             (room_id, *candidates))
         return max(0, int(deleted.rowcount))
 
+
+
+def get_task_for_turn(
+    db_path: DbPath,
+    identity: TaskIdentity,
+) -> dict[str, Any] | None:
+    """Read the immutable admission for a turn, including older payload versions."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """SELECT * FROM hosted_room_driver_tasks
+               WHERE room_id=? AND thread_id=? AND turn_id=?""",
+            (identity.room_id, identity.thread_id, identity.turn_id),
+        ).fetchone()
+        return _task_from_row(row) if row is not None else None
+    finally:
+        conn.close()
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
@@ -1474,20 +1513,3 @@ def defer_not_admitted_task(
         if updated.rowcount != 1:
             raise StaleTaskError("running task changed during deferral")
         return _task_from_row(_load_task(conn, attempt.identity))
-
-
-def get_task_for_turn(
-    db_path: DbPath,
-    identity: TaskIdentity,
-) -> dict[str, Any] | None:
-    """Read the immutable admission for a turn, including older payload versions."""
-    conn = _connect(db_path)
-    try:
-        row = conn.execute(
-            """SELECT * FROM hosted_room_driver_tasks
-               WHERE room_id=? AND thread_id=? AND turn_id=?""",
-            (identity.room_id, identity.thread_id, identity.turn_id),
-        ).fetchone()
-        return _task_from_row(row) if row is not None else None
-    finally:
-        conn.close()

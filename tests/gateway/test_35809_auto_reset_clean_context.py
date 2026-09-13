@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import textwrap
 
 from gateway import run as gateway_run
 from gateway import run_turn as gateway_run_turn
@@ -49,7 +50,8 @@ from hermes_state import SessionDB
 # ---------------------------------------------------------------------------
 def _find_compression_exhausted_reset_block() -> ast.If:
     """Return the ``if agent_result.get('compression_exhausted') ...`` block."""
-    tree = ast.parse(inspect.getsource(gateway_run_turn))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(
+        gateway_run_turn.GatewayTurnMixin._hmwa_compression_exhaustion_reset)))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):

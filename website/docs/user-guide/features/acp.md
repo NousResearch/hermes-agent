@@ -35,6 +35,26 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+## Editor-provided MCP servers
+
+On gateways advertising `acp-session-mcp-v1`, editor `mcpServers` belong to the
+canonical session, not the ACP viewer process. The gateway uses separate registry
+namespaces even when two editors supply the same server name. Closing an editor
+does not cancel another session's MCP execution.
+
+Discovery is eager and bounded before the first model turn. The selected tool
+schemas remain frozen for the conversation; server tool-list changes require a
+new session. MCP transports are released after each execution, without stopping
+sibling sessions or the shared MCP loop.
+
+The gateway keeps the editor transport specification (including command arguments,
+environment values and HTTP headers) only in memory. Durable session policy holds
+a fingerprint and the selected schemas, not a copy of those credentials. After a
+gateway restart, the editor must supply the same `mcpServers` on load/resume.
+Missing credentials refuse execution; a changed specification or secret refuses
+reattachment rather than silently changing the session. Start a new session when
+changing the server configuration. Commands and paths run on the gateway host.
+
 ## Installation
 
 Install Hermes normally, then add the ACP extra from the install checkout:

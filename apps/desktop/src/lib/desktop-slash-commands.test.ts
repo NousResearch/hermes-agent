@@ -171,6 +171,12 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
+  it('does not run /login on desktop before the catalog is loaded', () => {
+    rememberDesktopCommandsCatalog(undefined)
+    expect(isDesktopSlashCommand('/login')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/login')).toBe('/login is managed from the desktop sidebar.')
+  })
+
   it('routes /wake through the desktop wake action instead of the slash worker', () => {
     expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
     expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')

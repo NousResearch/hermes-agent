@@ -40,10 +40,8 @@ class DiscordDeliveryMixin:
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        from . import adapter as _adapter
-
-        return _adapter.os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
+        return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""

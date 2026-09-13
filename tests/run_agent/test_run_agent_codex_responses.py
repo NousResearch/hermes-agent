@@ -2624,3 +2624,73 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+def _xai_jwt(sub: str, jti: str) -> str:
+    import base64 as _b64mod
+    import json as _jsonmod
+
+    def _enc(obj) -> str:
+        return _b64mod.urlsafe_b64encode(_jsonmod.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{_enc({'alg': 'none'})}.{_enc({'sub': sub, 'jti': jti})}."
+
+
+def test_try_refresh_codex_client_credentials_adopts_same_account_singleton(monkeypatch):
+    """Same-account singleton adoption: when the xai-oauth singleton holds a NEWER token
+    for the SAME account (identical JWT ``sub``; a sibling gateway rotated the grant),
+    the refresh must adopt it instead of skipping. The old string-equality guard wedged
+    long-lived cached agents onto dead bearers while the store held a working grant."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+
+    old_token = _xai_jwt("user-a", "old")
+    new_token = _xai_jwt("user-a", "new")
+    agent.api_key = old_token
+    rebuilt = {"kwargs": None}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        return {"api_key": new_token, "base_url": "https://api.x.ai/v1"}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
+    monkeypatch.setattr(agent, "_retire_shared_openai_client", lambda client, *, reason: None)
+
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is True, "same-account singleton adoption must succeed, not skip"
+    assert agent.api_key == new_token
+    assert rebuilt["kwargs"]["api_key"] == new_token
+
+
+def test_try_refresh_codex_client_credentials_still_blocks_account_swap(monkeypatch):
+    """Different account (different ``sub``): the adoption path must NOT fire — this is
+    the original silent-account-swap guard and it stays conservative."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+
+    old_token = _xai_jwt("user-a", "old")
+    other_account = _xai_jwt("user-b", "new")
+    agent.api_key = old_token
+    forced = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            forced["count"] += 1
+        return {"api_key": other_account, "base_url": "https://api.x.ai/v1"}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is False, "different-account singleton must still be rejected"
+    assert forced["count"] == 0

@@ -1263,6 +1263,7 @@ class GatewayShutdownMixin:
         from tools.environments.local import build_subprocess_env
         watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
         watcher_env.pop("_HERMES_GATEWAY", None)
+        watcher_env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
         return watcher_env
 
     @staticmethod

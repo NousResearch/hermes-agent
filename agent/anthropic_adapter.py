@@ -17,7 +17,7 @@ from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint, _is_xkiro_endpoint, _model_name_is_kimi_family,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family,
     _normalize_base_url_text, _requires_bearer_auth,
 )
 from agent.anthropic_message_convert import (
@@ -535,6 +535,7 @@ def build_anthropic_kwargs(
     reasoning_config: Optional[Dict[str, Any]], tool_choice: Optional[str] = None,
     is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
+    preserve_anthropic_model_id: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
     response; ``context_length`` is the TOTAL window (input + output). ``max_tokens=None`` uses the
@@ -546,9 +547,10 @@ def build_anthropic_kwargs(
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
-    # Nous Portal and xKiro route on full catalog ids (``anthropic/claude-opus-4.8``);
-    # normalizing would make the model unresolvable there (prefix AND dots kept).
-    if not (_is_nous_portal_endpoint(base_url) or _is_xkiro_endpoint(base_url)):
+    # Nous Portal predates provider-declared request quirks. New relays that route
+    # on full catalog ids opt in through ProviderProfile instead of growing a
+    # hostname allowlist here.
+    if not (_is_nous_portal_endpoint(base_url) or preserve_anthropic_model_id):
         model = normalize_model_name(model, preserve_dots=preserve_dots)
     # Non-positive/non-finite values fail locally instead of 400-ing upstream.
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)

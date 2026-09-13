@@ -102,6 +102,10 @@ class ProviderProfile:
     default_headers: dict[str, str] = field(default_factory=dict)
 
     # ── Request-level quirks ─────────────────────────────────
+    # Keep the provider's catalog model id verbatim on the Anthropic Messages
+    # wire instead of reducing it to Anthropic's canonical ``claude-*`` form.
+    # Relays that route on namespaced ids (for example ``vendor/model``) opt in.
+    preserve_anthropic_model_id: bool = False
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None

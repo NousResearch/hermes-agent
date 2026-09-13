@@ -10,6 +10,7 @@ from neural.bus import NeuralBus
 from neural.events import NeuralEvent
 from neural.guardian import Guardian
 from neural.memory import Memory
+from neural.processing import NeuralProcessor
 from neural.self_model import SelfModel
 
 
@@ -27,6 +28,7 @@ class NeuralRuntime:
     memory: Memory = field(default_factory=Memory)
     guardian: Guardian = field(default_factory=Guardian)
     self_model: SelfModel = field(default_factory=SelfModel)
+    processor: NeuralProcessor = field(default_factory=NeuralProcessor)
 
     def observe(
         self,
@@ -48,6 +50,10 @@ class NeuralRuntime:
         )
         self.bus.publish(event)
         return event
+
+    def process(self, event: NeuralEvent, *, reinforce: bool = False, success: bool = True):
+        """Process an observation through advisory neurons only."""
+        return self.processor.process(event, reinforce=reinforce, success=success)
 
     def safe_observe(self, *args: Any, **kwargs: Any) -> NeuralEvent | None:
         """Best-effort observation boundary; never raises into the agent path."""

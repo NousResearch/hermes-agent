@@ -1,6 +1,6 @@
 name: hermes-newswire
 repo: https://github.com/tony-simons-aiowa/hermes-newswire
-sha: 10ea9ba71415baf12a4278b8d465effac87bbad8
+sha: deccdc4575ff45461fbf3f3c61e0945f188ef620
 description: 'Breaking-news ticker for Hermes Desktop: a scrolling RSS/Atom/JSON-Feed strip above the
   statusbar with per-source favicons, feed search + discovery, grouping modes, offline cache, and
   in-app reading. Zero API keys, zero model tokens.'

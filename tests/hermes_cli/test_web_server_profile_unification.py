@@ -229,6 +229,18 @@ class TestProfileScopedMcp:
 
 
 class TestProfileScopedModel:
+    @pytest.fixture(autouse=True)
+    def _accept_any_model(self, monkeypatch):
+        """These tests pin WHICH profile the write lands in, not catalog validation: the main
+        slot now routes through ``switch_model`` (needs credentials + a listed model), so echo the
+        request back as an accepted route."""
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        def _switch(*, raw_input, explicit_provider, **_kw):
+            return ModelSwitchResult(success=True, new_model=raw_input, target_provider=explicit_provider)
+
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+
     def test_model_set_main_scoped(self, client, isolated_profiles):
         resp = client.post(
             "/api/model/set",
@@ -248,6 +260,41 @@ class TestProfileScopedModel:
         default_model = _cfg(isolated_profiles["default"]).get("model", {})
         if isinstance(default_model, dict):
             assert default_model.get("default") != "test/model-1"
+
+    def test_profile_create_validates_against_the_dashboard_home_and_writes_the_new_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The create dialog's picker read THIS dashboard's catalog; the new profile is empty
+        (no providers:, no .env), so validating there rejected every non-env provider and
+        create silently returned model_set: false. Validation must see the dashboard home's
+        config; the write must still land in the new profile only."""
+        import hermes_cli.profiles as profiles_mod
+        from hermes_constants import get_hermes_home
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "providers:\n  mybox:\n    base_url: http://box:8000/v1\n    key_env: MYBOX_KEY\n", encoding="utf-8")
+        seen: dict = {}
+
+        def _switch(*, raw_input, explicit_provider, user_providers, **_kw):
+            from hermes_cli.model_switch import ModelSwitchResult
+            seen["user_providers"] = user_providers
+            seen["home"] = get_hermes_home()
+            if explicit_provider not in user_providers:
+                return ModelSwitchResult(success=False, error_message=f"Unknown provider '{explicit_provider}'.")
+            return ModelSwitchResult(success=True, new_model=raw_input, target_provider=explicit_provider)
+
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+        resp = client.post("/api/profiles", json={"name": "newbie", "provider": "mybox", "model": "qwen3"})
+        assert resp.status_code == 200 and resp.json()["model_set"] is True
+        assert "mybox" in seen["user_providers"] and seen["home"] == isolated_profiles["default"]
+        new_home = isolated_profiles["default"] / "profiles" / "newbie"
+        assert _cfg(new_home)["model"]["provider"] == "mybox" and _cfg(new_home)["model"]["default"] == "qwen3"
+        assert "model" not in _cfg(isolated_profiles["default"])
+        # A genuine rejection is reported with its reason, not a silent model_set: false.
+        resp = client.post("/api/profiles", json={"name": "newbie2", "provider": "nobox", "model": "qwen3"})
+        assert resp.status_code == 200 and resp.json()["model_set"] is False
+        assert "Unknown provider 'nobox'" in resp.json()["model_error"]
 
     def test_main_assignment_reports_only_target_profile_cron_impact(
         self, client, isolated_profiles

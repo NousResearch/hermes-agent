@@ -4,7 +4,7 @@
 import logging
 import os
 from fastapi import HTTPException
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.model_metadata import is_local_endpoint
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -16,6 +16,9 @@ from hermes_cli.config import (
     resolve_cron_model_drift_defaults,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
+
+if TYPE_CHECKING:
+    from hermes_cli.model_switch import ModelSwitchResult
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -442,43 +445,43 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     return prov_in, model_in
 
 
-def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
-) -> dict:
-    """Apply a main-slot model assignment to a ``model`` config dict in place.
+def _validated_main_model_selection(
+    cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = ""
+) -> "ModelSwitchResult":
+    """Route a dashboard main-slot pick through ``switch_model`` (catalog/alias/credential
+    validation) seeded with the configured route, exactly like a ``/model <model> --provider
+    <provider> --global``. A bare ``custom`` target carries the submitted endpoint as the current
+    one, which is how ``switch_model`` binds a custom base_url/key. Rejections become 400s."""
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.model_switch import switch_model
 
-    Sets ``provider``/``default``, then reconciles endpoint fields. ``base_url`` and the
-    endpoint key share one lifecycle: an explicit value is always persisted; an existing
-    value is cleared ONLY when switching to a *different* provider (it belonged to the old
-    endpoint); a same-provider re-pick preserves it — re-picking a model used to wipe a
-    user's custom host (e.g. a Xiaomi MiMo Token Plan URL) and break their keys. The
-    runtime resolver reads ``model.base_url`` from config and only honors it when the
-    configured provider matches, so preserving it here is what lets the override route.
-    A stale secret may live under the legacy ``api`` alias with no ``api_key``, so the
-    switch-clears-the-key path triggers on either field. ``context_length`` is always
-    dropped (the new model may have a different window).
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    is_bare_custom = provider.strip().lower() in {"custom", "local"}
+    result = switch_model(
+        raw_input=model, explicit_provider=provider, is_global=True,
+        current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
+        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
+        current_api_key=api_key if is_bare_custom else "",
+        user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
+        custom_providers=get_compatible_custom_providers(cfg))
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
+    return result
 
-    Returns the same dict (a fresh dict if the input wasn't one).
-    """
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-    prev_provider = str(model_cfg.get("provider") or "").strip().lower()
-    new_provider = provider.strip().lower()
-    switched = new_provider != prev_provider
-    model_cfg["provider"] = provider
-    model_cfg["default"] = model
-    if base_url.strip():
-        model_cfg["base_url"] = base_url.strip()
-    elif model_cfg.get("base_url") and switched:
-        model_cfg["base_url"] = ""
+
+def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", api_key: str = "") -> dict:
+    """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
+    (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
+    the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
+    dropped so a stale secret cannot shadow it.
+
+    Returns a new dict."""
+    from hermes_cli.model_switch import apply_model_selection
+
+    model_cfg = apply_model_selection(model_cfg, result)
     if api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         model_cfg.pop("api", None)
-    elif (model_cfg.get("api_key") or model_cfg.get("api")) and switched:
-        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
-    if switched:
-        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
-    model_cfg.pop("context_length", None)
     return model_cfg
 
 
@@ -656,7 +659,9 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
-    model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider, model, base_url, api_key)
+    result = _validated_main_model_selection(cfg, provider, model, base_url, api_key)
+    provider, model = result.target_provider, result.new_model
+    model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
     _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 
@@ -817,33 +822,38 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     if not (has_model or ctx_sent):
         return config
     try:
-        disk_model = load_config().get("model")
-        if isinstance(disk_model, dict):
-            if has_model:
-                prev_default = str(disk_model.get("default") or "").strip()
-                prev_provider = str(disk_model.get("provider") or "").strip()
-                if model_val != prev_default and prev_provider:
-                    new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
-                    if new_provider and new_provider.strip().lower() != prev_provider.lower():
-                        norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
-                        disk_model = _apply_main_model_assignment(disk_model, norm_provider, norm_model)
-                        model_val = norm_model
-                disk_model["default"] = model_val
-            if ctx_sent:
-                if ctx_override > 0:
-                    disk_model["context_length"] = ctx_override
-                else:
-                    disk_model.pop("context_length", None)
-            config["model"] = disk_model
-        elif ctx_sent and ctx_override > 0:
-            # Model was a bare string (or absent) — upgrade to a dict for the override.
-            if has_model:
-                default = model_val
-            elif isinstance(disk_model, str) and disk_model:
-                default = disk_model
-            else:
-                default = ""
-            config["model"] = {"default": default, "context_length": ctx_override}
+        disk_cfg = load_config()
     except Exception:
-        pass  # can't read disk config — just use the string form
+        return config  # can't read disk config — just use the string form
+    # Only the disk READ has a fallback. A validation rejection below must propagate as its
+    # HTTPException(400): swallowing it here left ``model`` a flat string, and the caller's
+    # deep-merge then overwrote the whole on-disk ``model:`` dict (provider, base_url, slots).
+    disk_model = disk_cfg.get("model")
+    if isinstance(disk_model, dict):
+        if has_model:
+            prev_default = str(disk_model.get("default") or "").strip()
+            prev_provider = str(disk_model.get("provider") or "").strip()
+            if model_val != prev_default and prev_provider:
+                new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
+                if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                    norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
+                    result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)
+                    disk_model = _apply_main_model_assignment(disk_model, result)
+                    model_val = result.new_model
+            disk_model["default"] = model_val
+        if ctx_sent:
+            if ctx_override > 0:
+                disk_model["context_length"] = ctx_override
+            else:
+                disk_model.pop("context_length", None)
+        config["model"] = disk_model
+    elif ctx_sent and ctx_override > 0:
+        # Model was a bare string (or absent) — upgrade to a dict for the override.
+        if has_model:
+            default = model_val
+        elif isinstance(disk_model, str) and disk_model:
+            default = disk_model
+        else:
+            default = ""
+        config["model"] = {"default": default, "context_length": ctx_override}
     return config

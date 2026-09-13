@@ -12,7 +12,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
-  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300); MATRIX_TOOLS_ALLOW_{REDACTION,INVITES,ROOM_CREATE}.
+  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 """
 
 from __future__ import annotations
@@ -37,8 +37,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from agent.secret_scope import UnscopedSecretError, get_secret
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from agent.secret_scope import get_secret
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 try:
     from mautrix.types import (
@@ -59,9 +61,10 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
+from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -111,29 +114,6 @@ def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
         except Exception:
             logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
     return metadata
-
-def _matrix_transcode_voice_to_ogg(path: str) -> Optional[str]:
-    """Transcode to a NEW temp .ogg (caller owns cleanup); None if ffmpeg is missing/fails.
-    Blocking subprocess work — call via ``asyncio.to_thread`` from async code."""
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        return None
-    import tempfile
-    fd, ogg_path = tempfile.mkstemp(prefix="matrix_voice_", suffix=".ogg")
-    os.close(fd)
-    try:
-        result = _run_media_tool(
-            [ffmpeg, "-v", "error", "-y", "-i", str(path), "-acodec", "libopus", "-ac", "1", "-b:a", "48k",
-             "-vbr", "on", "-application", "voip", "-compression_level", "10", ogg_path],
-            timeout=30)
-        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
-            return ogg_path
-    except Exception:
-        logger.debug("Matrix: voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
-    with suppress(OSError):
-        os.unlink(ogg_path)
-    return None
-
 
 _MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
 
@@ -501,7 +481,7 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     raw = config.extra.get(key)
     if raw is None:
         # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
-        raw = _startup_env_secret(env_name)
+        raw = _get_scoped_secret(env_name, "").strip()
     return _csv_set(raw)
 
 
@@ -572,15 +552,9 @@ def _handle_generated_matrix_recovery_key(mxid: str, recovery_key: str) -> None:
 
 
 def _scoped_recovery_key() -> str:
-    """MATRIX_RECOVERY_KEY via the profile-scoped secret store (see _startup_env_secret): a bare
-    os.getenv under multiplex resolves the default profile's key and verification fails with
-    "Key MAC does not match".
-
-    We read through :func:`get_secret`, which is scope-aware. An *unscoped* read under multiplex (e.g. the
-    default-profile startup loop) raises ``UnscopedSecretError``; in that context ``os.environ`` is that
-    profile's own value, so we fall back to it — mirroring the established Slack app-token pattern (#59739).
-    """
-    return _startup_env_secret("MATRIX_RECOVERY_KEY")
+    """MATRIX_RECOVERY_KEY via the profile-scoped reader: a bare os.getenv under multiplex resolves
+    the default profile's key and verification fails with "Key MAC does not match"."""
+    return _get_scoped_secret("MATRIX_RECOVERY_KEY", "").strip()
 
 
 # --- LaTeX math ($...$, $$...$$) -> Element data-mx-maths markup ---
@@ -665,18 +639,6 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
         "", result)
 
 
-def _startup_env_secret(name: str) -> str:
-    """Scope-aware credential read: a scoped miss is empty (never borrow the process env);
-    only an UNSCOPED read (default-profile startup loop) falls back to os.environ.
-
-    See #59739.
-    """
-    try:
-        return (get_secret(name) or "").strip()
-    except UnscopedSecretError:
-        return os.getenv(name, "").strip()
-
-
 def matrix_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; ``ensure_matrix_deps`` is the installer.
 
@@ -693,9 +655,9 @@ def matrix_deps_present() -> bool:
 
 def check_matrix_requirements() -> bool:
     """Credentials + deps answer for setup/status callers (credentials must NOT gate the installer)."""
-    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
-    password = _startup_env_secret("MATRIX_PASSWORD")
-    homeserver = _startup_env_secret("MATRIX_HOMESERVER")
+    token = _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
+    password = _get_scoped_secret("MATRIX_PASSWORD", "").strip()
+    homeserver = _get_scoped_secret("MATRIX_HOMESERVER", "").strip()
     if not token and not password:
         logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
         return False
@@ -799,7 +761,7 @@ class MatrixAdapter(BasePlatformAdapter):
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
-    _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -816,18 +778,18 @@ class MatrixAdapter(BasePlatformAdapter):
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
-        self._split_threshold = max(100, self.max_message_length - 100)
+        self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
         # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
         # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
         # secondary's credential sends that credential to the wrong homeserver (or reuses the
         # default's E2EE device id).
-        self._homeserver: str = (config.extra.get("homeserver", "") or _startup_env_secret("MATRIX_HOMESERVER")).rstrip("/")
-        self._access_token: str = config.token or _startup_env_secret("MATRIX_ACCESS_TOKEN")
-        self._user_id: str = config.extra.get("user_id", "") or _startup_env_secret("MATRIX_USER_ID")
-        self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
+        self._homeserver: str = (config.extra.get("homeserver", "") or _get_scoped_secret("MATRIX_HOMESERVER", "").strip()).rstrip("/")
+        self._access_token: str = config.token or _get_scoped_secret("MATRIX_ACCESS_TOKEN", "").strip()
+        self._user_id: str = config.extra.get("user_id", "") or _get_scoped_secret("MATRIX_USER_ID", "").strip()
+        self._password: str = config.extra.get("password", "") or _get_scoped_secret("MATRIX_PASSWORD", "").strip()
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
-        self._device_id: str = config.extra.get("device_id", "") or _startup_env_secret("MATRIX_DEVICE_ID")
+        self._device_id: str = config.extra.get("device_id", "") or _get_scoped_secret("MATRIX_DEVICE_ID", "").strip()
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -875,8 +837,6 @@ class MatrixAdapter(BasePlatformAdapter):
         # Text batching merges client-side splits (~4000 chars) of one long message.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._approval_reaction_map = {
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
@@ -888,10 +848,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
         # allowlist, which must not decide who approves tool calls on a secondary bot.
-        self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
+        self._allowed_user_ids: Set[str] = _csv_set(_get_scoped_secret("MATRIX_ALLOWED_USERS", "").strip())
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):
+        for pattern in (p.strip() for p in _get_scoped_secret("MATRIX_IGNORE_USER_PATTERNS", "").strip().split(",") if p.strip()):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -1580,7 +1540,8 @@ class MatrixAdapter(BasePlatformAdapter):
         format (e.g. TTS output), so transcode here — best-effort: without ffmpeg the original is sent."""
         converted_path: Optional[str] = None
         if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
-            converted_path = await asyncio.to_thread(_matrix_transcode_voice_to_ogg, audio_path)
+            # 48k (not the 32k default): Element renders voice bubbles at a higher quality tier.
+            converted_path = await asyncio.to_thread(transcode_to_ogg_opus, audio_path, bitrate="48k", timeout=30)
         try:
             return await self._send_local_file(
                 chat_id, converted_path or audio_path, "m.audio", caption, reply_to,
@@ -1623,32 +1584,24 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: failed to add %s reaction %s: %s", label, emoji, exc)
         return result
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+    _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
+    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
+                  "always": "♾️ = approve always", "deny": "❎ = deny"}
+    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
+                      "always": "`!approve always` to approve permanently, "}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if smart_denied:
-            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
-        else:
-            scope_choices = (
-                ("Reply `!approve session` to approve this pattern for the session, " if allow_session else "")
-                + ("`!approve always` to approve permanently, " if allow_permanent else ""))
-        legend = ["✅ = approve once"]
-        reactions = ["✅"]
-        if allow_session:
-            legend.append("🌀 = approve for this session")
-            reactions.append("🌀")
-            if allow_permanent:
-                legend.append("♾️ = approve always")
-                reactions.append("♾️")
-        legend.append("❎ = deny")
-        reactions.append("❌")
+        choices = prompt.choices
+        typed_hints = "" if prompt.smart_denied else "".join(self._EA_TYPED_HINT[c] for c in choices if c in self._EA_TYPED_HINT)
         text = (
-            f"{self._format_exec_approval(command, description)}\n\n"
-            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(legend))
+            f"{prompt.text}\n\n"
+            f"{typed_hints}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
+            "You can also click the reaction to approve:\n" + "\n".join(self._EA_LEGEND[c] for c in choices))
+        reactions = tuple(self._EA_REACTIONS[c] for c in choices)
+        session_key, chat_id = prompt.session_key, prompt.chat_id
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
@@ -1659,7 +1612,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at)
         return await self._send_reaction_prompt(
-            chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
+            chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2425,7 +2378,7 @@ class MatrixAdapter(BasePlatformAdapter):
     def _is_authorized_user(self, user_id: str) -> bool:
         """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
-        return _startup_env_secret("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes") or bool(
+        return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
@@ -2480,23 +2433,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            near_split = last_len >= self._split_threshold
-            await asyncio.sleep(self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[Matrix] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 
@@ -2929,14 +2865,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
         # homeserver too, so the scoped token is never sent to the default profile's server.
         homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
-            return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
+            return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
         url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
@@ -2955,28 +2891,26 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             async def _do_send():
                 async with session.put(url, headers=headers, json=payload) as resp:
                     if resp.status not in {200, 201}:
-                        return {"error": f"Matrix API error ({resp.status}): {await resp.text()}"}
+                        return send_error(f"Matrix API error ({resp.status}): {await resp.text()}")
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
             try:
                 return await asyncio.wait_for(_do_send(), timeout=30)
             except asyncio.TimeoutError:
-                return {"error": "Matrix API timeout (30s)"}
+                return send_error("Matrix API timeout (30s)")
     except Exception as e:
-        return {"error": f"Matrix send failed: {e}"}
+        return send_error(f"Matrix send failed: {e}")
 
 
 def interactive_setup() -> None:
     """Interactive credential setup (setup_fn); CLI helpers are lazy-imported."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("Matrix")
-    existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
-    if existing:
-        print_info("Matrix: already configured")
-        if not prompt_yes_no("Reconfigure Matrix?", False):
-            return
+    if declines_reconfigure("Matrix", "Reconfigure Matrix?", "MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"):
+        return
     for line in ("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).",
                  "   1. Create a bot user on your homeserver, or use your own account",
                  "   2. Get an access token from Element, or provide user ID + password"):
@@ -3034,38 +2968,21 @@ def interactive_setup() -> None:
             print_info("Home room cleared.")
 
 
-_YAML_LOWER_KEYS = (
-    ("require_mention", "MATRIX_REQUIRE_MENTION"), ("process_notices", "MATRIX_PROCESS_NOTICES"),
-    ("session_scope", "MATRIX_SESSION_SCOPE"), ("auto_thread", "MATRIX_AUTO_THREAD"),
-    ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS"))
-_YAML_LIST_KEYS = (
-    ("allowed_users", "MATRIX_ALLOWED_USERS"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS"),
-    ("allowed_rooms", "MATRIX_ALLOWED_ROOMS"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS"))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
+    ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
+    ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
+    ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
+    ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
+    ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
+)
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins) + ``PlatformConfig.extra``.
-    Lowercased flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
+    """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
+    multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy matrix_cfg block from
-    gateway/config.py::load_gateway_config(). The env write is skipped under a multiplexed secondary
-    profile's scope; the seeded ``extra`` is what its adapter reads (extra-first readers).
-    """
-    _set_env = _yaml_env_setter()
-    seeded: dict = {}
-    for key, env_name in _YAML_LOWER_KEYS:
-        if key in matrix_cfg:
-            seeded[key] = matrix_cfg[key]
-            _set_env(env_name, str(matrix_cfg[key]).lower())
-    for key, env_name in _YAML_LIST_KEYS:
-        value = matrix_cfg.get(key)
-        if value is not None:
-            seeded[key] = value
-            _set_env(env_name, value)
-    if "max_message_length" in matrix_cfg:
-        seeded["max_message_length"] = matrix_cfg["max_message_length"]
-        _set_env("MATRIX_MAX_MESSAGE_LENGTH", str(matrix_cfg["max_message_length"]))
-    return seeded or None
 
 
 def _is_connected(config) -> bool:
@@ -3079,14 +2996,10 @@ def _is_connected(config) -> bool:
     return bool(str(homeserver).strip() and str(token).strip())
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs MatrixAdapter from a PlatformConfig."""
-    return MatrixAdapter(config)
-
 
 def register(ctx) -> None:
     ctx.register_platform(
-        name="matrix", label="Matrix", adapter_factory=_build_adapter, check_fn=matrix_deps_present,
+        name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",

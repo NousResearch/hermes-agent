@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+from agent.secret_scope import get_secret_str
 from utils import base_url_hostname
 
 logger = logging.getLogger("hermes_cli.runtime_provider")
@@ -116,9 +117,9 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         if not isinstance(entry, dict) or not is_provider_enabled(entry):
             continue
         # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
-        # alias match (scope-aware ``_getenv`` fails closed identically for every entry).
+        # alias match (scope-aware ``get_secret_str`` fails closed identically for every entry).
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = rp._getenv(key_env, "").strip() if key_env else ""
+        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
@@ -487,7 +488,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
-        rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+        get_secret_str(_clean(custom_provider.get("key_env", "")), "").strip(),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")

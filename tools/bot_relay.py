@@ -21,13 +21,13 @@ import re
 import shlex
 import shutil
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +90,8 @@ def _ensure_dirs(root: Path | str) -> Path:
     return base
 
 
-def _atomic_write_json(target: Path, payload: Any, *, prefix: str, sort_keys: bool = False) -> None:
-    """tempfile + os.replace so readers never see a partial file; tempfile removed on failure."""
-    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, sort_keys=sort_keys)
-        os.replace(tmp, target)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+def _atomic_write_json(target: Path, payload: Any, *, sort_keys: bool = False) -> None:
+    atomic_json_write(target, payload, indent=None, sort_keys=sort_keys, mode=0o600)
 
 
 def _bot_mode_cfg(key: str, *, loader: str) -> Any:
@@ -145,8 +136,7 @@ def write_remote_roster(root: Path | str, rows: Any) -> int:
     for norm in filter(None, map(_normalize_roster_row, rows if isinstance(rows, list) else [])):
         by_key.setdefault((norm["connection_id"], norm["profile"]), norm)
     cleaned = [by_key[k] for k in sorted(by_key)]
-    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned},
-                       prefix=".roster-", sort_keys=True)
+    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned}, sort_keys=True)
     return len(cleaned)
 
 
@@ -229,7 +219,7 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
     }
-    _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope, prefix=".env-")
+    _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope)
     return envelope
 
 
@@ -289,8 +279,7 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
 
         code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
-    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code},
-                       prefix=".rep-")
+    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
     return path
 
 

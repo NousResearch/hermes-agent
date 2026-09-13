@@ -7,10 +7,15 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from plugins.memory.honcho import HonchoMemoryProvider
 
 
 class _FakeHonchoConfig(SimpleNamespace):
+    raw: dict = {}
+    host: str = "hermes"
+
     def resolve_session_name(self, **kwargs):
         return "test-session"
 
@@ -281,6 +286,60 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
     result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
     assert "could not be initialized" in result["error"]
     assert provider._manager is None
+
+
+def _init_with_unresolved_peer(monkeypatch, cfg, platform: str = "cli") -> tuple[HonchoMemoryProvider, list[int]]:
+    """Provider whose session init fails because no user peer can be named. Returns the attempt log."""
+    from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
+
+    provider = HonchoMemoryProvider()
+    monkeypatch.setattr("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", lambda: cfg)
+    attempts: list[int] = []
+
+    def no_peer(self, cfg, session_id, **kwargs):
+        attempts.append(1)
+        raise HonchoPeerUnresolvedError("Honcho has no user peer for session 'x': honcho.json declares no peerName.")
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", no_peer)
+    provider.initialize("session-1", platform=platform)
+    if provider._init_thread:
+        provider._init_thread.join(timeout=5)
+    return provider, attempts
+
+
+@pytest.mark.parametrize("platform, present, absent", [
+    ("cli", "hermes honcho peer --user", "Do not suggest peerName"),
+    ("telegram", "Do not suggest peerName", "hermes honcho peer --user"),
+])
+def test_honcho_unresolved_peer_notices_once_and_stops_retrying(monkeypatch, platform, present, absent):
+    """No runtime identity and no peerName: memory stays off for the session, the model hears it once, and
+    later turns do not re-run init for a config gap that cannot heal (#93326). The notice recommends peerName
+    only on a local platform: on a multi-user gateway a shared peerName would merge every human onto one peer."""
+    provider, attempts = _init_with_unresolved_peer(monkeypatch, _configured_hybrid_config(), platform=platform)
+
+    assert provider._manager is None
+    assert provider._can_start_init() is False
+
+    notice = provider.prefetch("what did we decide about the schema?")
+    assert "Honcho memory is off" in notice and "peerName" in notice
+    assert present in notice and absent not in notice
+    assert provider.prefetch("second question") == ""
+    provider.sync_turn("hello", "world")
+    assert attempts == [1]
+
+
+@pytest.mark.parametrize("platform, present, absent", [
+    ("cli", "hermes honcho peer --user", "could not be initialized"),
+    ("discord", "supplied no user id", "hermes honcho peer --user"),
+])
+def test_honcho_unresolved_peer_tool_error_names_the_fix_for_the_platform(monkeypatch, platform, present, absent):
+    cfg = _configured_tools_config(init_on_session_start=True)
+    provider, _ = _init_with_unresolved_peer(monkeypatch, cfg, platform=platform)
+
+    result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
+
+    assert "peerName" in result["error"]
+    assert present in result["error"] and absent not in result["error"]
 
 
 def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):

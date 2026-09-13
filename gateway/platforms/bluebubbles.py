@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
@@ -92,11 +92,6 @@ def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
                         fallback=fallback) or fallback
 
 
-def _setting(extra: Dict[str, Any], key: str, env: str, default: str = "") -> Any:
-    """Config ``extra[key]`` wins over env var ``env`` (falsy values fall through)."""
-    return extra.get(key) or _get_scoped_secret(env, default)
-
-
 def _temp_guid() -> str:
     return f"temp-{datetime.utcnow().timestamp()}"
 
@@ -118,11 +113,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
-        self.server_url = _normalize_server_url(_setting(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
+        self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
         self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
-        self.webhook_host = _setting(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-        self.webhook_port = int(_setting(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
-        path = str(_setting(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
+        self.webhook_host = _extra_or_secret(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+        self.webhook_port = int(_extra_or_secret(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
+        path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
         self.webhook_path = path if path.startswith("/") else f"/{path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
         _require_mention = extra.get("require_mention")

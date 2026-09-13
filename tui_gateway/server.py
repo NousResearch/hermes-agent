@@ -27,8 +27,9 @@ from hermes_constants import (
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
+from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
-from agent.replay_cleanup import sanitize_replay_history
+from agent.replay_cleanup import canonicalize_replay_history
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
@@ -541,7 +542,7 @@ def _configured_cwd_from_cfg(cfg: dict | None) -> str | None:
 def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     """A non-launch profile's ``terminal.cwd`` from ITS config.yaml (fail-open → None): the process-global
     ``TERMINAL_CWD`` belongs to the *launch* profile, and load_config() resolves the ACTIVE profile, so
-    read the file directly through the _load_cfg pipeline.
+    read that file through the same effective-config pipeline as ``_load_cfg``.
 
     A new session bound to another profile must take its workspace from THAT profile's config, not the stale
     env var (issue #40334). Returns an absolute, existing directory, or None for placeholders / missing /
@@ -550,9 +551,9 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     if profile_home is None:
         return None
     with contextlib.suppress(Exception):
-        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.config_effective import load_user_config_effective
         p = Path(profile_home) / "config.yaml"
-        return _configured_cwd_from_cfg(_expand_cfg(_apply_managed(read_user_config_raw(p)))) if p.exists() else None
+        return _configured_cwd_from_cfg(load_user_config_effective(p)) if p.exists() else None
     return None
 
 
@@ -1159,31 +1160,15 @@ def _load_cfg_raw() -> dict:
     return {}
 
 
-def _expand_cfg(cfg: dict) -> dict:
-    """``${ENV_VAR}`` expansion (same as ``load_config_readonly``); non-dict results keep the input."""
-    from hermes_cli.config import _expand_env_vars
-    expanded = _expand_env_vars(cfg)
-    return expanded if isinstance(expanded, dict) else cfg
-
-
 def _load_cfg() -> dict:
-    """Behavioral config read: raw user file + managed overlay + ${VAR} expansion — ``load_config_readonly``
-    minus the DEFAULT_CONFIG merge (callers treat a missing key as "unset"; merging would break
-    ``_load_cfg() == {}`` sentinels). Never pass the result to ``_save_cfg`` (use ``_load_cfg_raw()``)."""
-    cfg = _apply_managed(_load_cfg_raw())
+    """Behavioral config read: the effective USER config (managed overlay, ``${VAR}`` expansion, model-key
+    canon) minus the DEFAULT_CONFIG merge — callers treat a missing key as "unset", so merging would break
+    ``_load_cfg() == {}`` sentinels. Fail-open to ``{}``. Never pass the result to ``_save_cfg`` (use
+    ``_load_cfg_raw()``)."""
     with contextlib.suppress(Exception):
-        cfg = _expand_cfg(cfg)
-    return cfg
-
-
-def _apply_managed(cfg: dict) -> dict:
-    """Overlay administrator-pinned managed-scope values (read-side only, fail-open): this backend builds
-    config independently of load_config, so managed skin/reasoning_effort/service_tier/provider_routing
-    would otherwise be silently ignored."""
-    with contextlib.suppress(Exception):
-        from hermes_cli import managed_scope
-        return managed_scope.apply_managed_overlay(cfg if isinstance(cfg, dict) else {})
-    return cfg
+        from hermes_cli.config_effective import load_user_config_effective
+        return load_user_config_effective(_active_config_path())
+    return {}
 
 
 def _save_cfg(cfg: dict):
@@ -2270,11 +2255,32 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+def _transport_auth_user_id(transport) -> str | None:
+    """``<provider>:<user id>`` the WS-upgrade credential authenticated for ``transport``, or None for the legacy
+    token, stdio and the PTY child's server-internal credential. The prefix keeps a basic-auth ``alice`` and an
+    OIDC ``alice`` apart."""
+    identity = getattr(transport, "auth_identity", None)
+    if _methods_browser_control._is_authenticated_identity(identity):
+        return f"{str(identity['provider']).strip()}:{str(identity['user_id']).strip()}"
+    return None
+
+
+def _session_auth_user_id(session: dict | None) -> str | None:
+    """The login ``session`` was created under, stamped on the record as ``auth_user_id``. A second window turns
+    the transport slot into a FanoutTransport, which names no login, so only a record without the slot reads
+    its transport."""
+    session = session or {}
+    if "auth_user_id" in session:
+        return session["auth_user_id"]
+    return _transport_auth_user_id(session.get("transport"))
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    auth_user_id: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2295,6 +2301,8 @@ def _make_agent(
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    with _sessions_lock:
+        session = _sessions.get(sid)
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
@@ -2309,14 +2317,16 @@ def _make_agent(
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+        # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
+        # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
+        user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
-        with _sessions_lock:
-            context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(_sessions.get(sid))
+        context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
     return agent
 
@@ -2372,6 +2382,7 @@ def _init_session(
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
             "transport": current_transport() or _stdio_transport,
+            "auth_user_id": _transport_auth_user_id(current_transport()),
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
@@ -2383,7 +2394,7 @@ def _init_session(
 
 
 def _new_session_key() -> str:
-    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return new_session_id()
 
 
 def _with_checkpoints(session, fn):
@@ -2436,6 +2447,7 @@ def _deferred_session_record(
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,
+        "auth_user_id": _transport_auth_user_id(current_transport()),
     }
 
 
@@ -2546,10 +2558,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
             db.reopen_session(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(db, stored_id)
-            # Display keeps the full transcript; the model-fed history drops a dangling/interrupted
-            # tool-call tail so a session killed mid-loop does not replay the unanswered call forever
-            # (#29086).
-            history = sanitize_replay_history(raw_history)
+            # Display keeps the full transcript; the model-fed history uses the
+            # same canonicalization as gateway resume and the send path.
+            history = canonicalize_replay_history(raw_history)
             if _sessions.get(sid) is not session:
                 return
             with session["history_lock"]:

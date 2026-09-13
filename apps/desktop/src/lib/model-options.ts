@@ -1,5 +1,6 @@
-import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
-import type { ModelOptionProvider } from '@/types/hermes'
+import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared'
+
+import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
 type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
 
@@ -15,6 +16,17 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
     provider.name === currentProvider ||
     (provider.aliases?.includes(currentProvider) ?? false)
   )
+}
+
+/** The catalog's option support for the current pick, or undefined while the
+ *  catalog is loading / doesn't say. Callers treat undefined as "assume
+ *  reasoning" so controls never flicker away during the fetch. */
+export function currentModelCapabilities(
+  options: ModelOptionsResponse | null | undefined,
+  provider: string,
+  model: string
+): ModelCapabilities | undefined {
+  return options?.providers?.find(row => catalogProviderMatches(row, provider))?.capabilities?.[model]
 }
 
 // A picked (provider, model) pair is never retargeted from catalog membership.

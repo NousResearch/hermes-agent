@@ -27,12 +27,13 @@ AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -97,21 +98,10 @@ def _content_of(container: Dict[str, Any], key: str) -> str:
     return str(_dict_or_empty(container, key).get("content") or "").strip()
 
 
-def _bounded_put(store: Dict[str, str], key: str, value: str) -> bool:
-    """Insert into an insertion-ordered dict bounded at DEDUP_MAX_SIZE; False if key/value empty."""
-    key = str(key or "").strip()
-    value = str(value or "").strip()
-    if not key or not value:
-        return False
-    store[key] = value
-    while len(store) > DEDUP_MAX_SIZE:
-        store.pop(next(iter(store)))
-    return True
-
-
-class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePlatformAdapter):
+class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAccessPolicyMixin, BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
+    ALLOW_ALL_ENV_PREFIX = "WECOM"
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
     SUPPORTS_NATIVE_STREAMING = True  # msgtype "stream" via aibot_respond_msg, not edit-based
@@ -149,8 +139,6 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         self._text_batch_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._attachment_text_merge_delay_seconds = _extra_float("attachment_text_merge_delay_seconds", 0.8)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         # Stream keep-alive config (see streaming.py STREAM_* constants).
         self._stream_safe_duration_seconds = _extra_float("stream_safe_duration_seconds", STREAM_SAFE_DURATION_SECONDS)
         self._stream_keepalive_enabled = bool(extra.get("stream_keepalive_enabled", STREAM_KEEPALIVE_ENABLED_DEFAULT))
@@ -440,7 +428,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
             # INFO: a msgid redelivered after a processing exception is dropped for the TTL.
             logger.info("[%s] Duplicate message %s ignored (dedup drop) req_id=%s sender=%r chattype=%r", self.name, msg_id, req_id, sender.get("userid") if sender else None, body.get("chattype"))
             return
-        _bounded_put(self._reply_req_ids, msg_id, req_id)
+        if req_id:
+            bounded_put(self._reply_req_ids, msg_id, req_id, DEDUP_MAX_SIZE)
         chat_id = str(body.get("chatid") or sender_id).strip()
         logger.info("[%s] Inbound callback: chattype=%r chatid=%r sender=%r msgtype=%r has_chatid=%s", self.name, body.get("chattype"), body.get("chatid"), sender_id, body.get("msgtype"), bool(body.get("chatid")))
         if not chat_id:
@@ -503,29 +492,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
                 existing.reply_to_text = event.reply_to_text
                 existing.reply_to_message_id = event.reply_to_message_id
 
-    async def _flush_text_batch(self, key: str) -> None:
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            if pending and pending.media_urls and not (pending.text or "").strip():
-                delay = self._attachment_text_merge_delay_seconds  # attachment-only: wait for text
-            elif pending and getattr(pending, "_last_chunk_len", 0) >= self._SPLIT_THRESHOLD:
-                delay = self._text_batch_split_delay_seconds  # continuation almost certain
-            else:
-                delay = self._text_batch_delay_seconds
-            await asyncio.sleep(delay)
-            # Cancel-delivery race: CancelledError lands at the NEXT await, so this identity check
-            # must stay synchronous (no await between it and the pop).
-            if self._pending_text_batch_tasks.get(key) is not current_task:
-                return
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[WeCom] Flushing batch %s (%d chars, %d media)", key, len(event.text or ""), len(event.media_urls or []))
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        if pending is not None and pending.media_urls and not (pending.text or "").strip():
+            return self._attachment_text_merge_delay_seconds  # attachment-only: wait for the text frame
+        return super()._text_batch_delay_for(pending)
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
@@ -553,26 +523,12 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
             return MessageType.VOICE
         return MessageType.TEXT
 
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """WeCom gates DM/group access at intake via dm_policy/group_policy."""
-        return True
-
-    def _open_dm_opted_in(self) -> bool:
-        # Scoped reads: default profile's allow-all flag must not leak into a multiplexed profile.
-        return any((_get_scoped_secret(var, "") or "").lower() in {"true", "1", "yes"} for var in ("GATEWAY_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS"))
-
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return _entry_matches(self._allow_from, sender_id)
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        principal = str(sender_id or "").strip()
-        return bool(principal) and (self._dm_policy == "pairing" or self._is_dm_allowed(principal))
+    def _entry_matches(self, entries: List[str], target: str) -> bool:
+        return _entry_matches(entries, target)
 
     def _is_group_allowed(self, chat_id: str, sender_id: str) -> bool:
-        if self._group_policy in ("disabled", "pairing") or (self._group_policy == "allowlist" and not _entry_matches(self._group_allow_from, chat_id)):
+        """Per-group ``groups.<id>.allow_from`` restricts senders on top of the chat-level policy."""
+        if not super()._is_group_allowed(chat_id):
             return False
         group_cfg = self._resolve_group_cfg(chat_id)
         sender_allow = _coerce_list(group_cfg.get("allow_from") or group_cfg.get("allowFrom"))
@@ -588,8 +544,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
 
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
         """Cache the chat's latest inbound req_id; a fresh one also resurrects its stream channel."""
-        if _bounded_put(self._last_chat_req_ids, chat_id, req_id):
-            self._stream_expired_chats.discard(str(chat_id).strip())
+        chat_id, req_id = str(chat_id or "").strip(), str(req_id or "").strip()
+        if chat_id and req_id:
+            bounded_put(self._last_chat_req_ids, chat_id, req_id, DEDUP_MAX_SIZE)
+            self._stream_expired_chats.discard(chat_id)
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
@@ -747,10 +705,10 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     try:
         result = await adapter.send(chat_id, message)
     except Exception as e:
-        return {"error": f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}"}
+        return send_error(f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
-    return {"error": f"WeCom send failed: {result.error}"}
+    return send_error(f"WeCom send failed: {result.error}")
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
@@ -766,17 +724,17 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if adapter is not None:
         return await _send_via(adapter, chat_id, message, live=True)
     if not check_wecom_requirements():
-        return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
+        return send_error("WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET.")
     try:
         adapter = WeComAdapter(pconfig)
         if not await adapter.connect():
-            return {"error": f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}"}
+            return send_error(f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}")
         try:
             return await _send_via(adapter, chat_id, message, live=False)
         finally:
             await adapter.disconnect()
     except Exception as e:
-        return {"error": f"WeCom send failed: {e}"}
+        return send_error(f"WeCom send failed: {e}")
 
 
 _MANUAL_SETUP_STEPS = (
@@ -797,14 +755,13 @@ _ACCESS_CHOICES = (
 
 
 def interactive_setup() -> None:
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.config import remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("WeCom (Enterprise WeChat)")
-    if get_env_value("WECOM_BOT_ID") and get_env_value("WECOM_SECRET"):
-        print_success("WeCom is already configured.")
-        if not prompt_yes_no("Reconfigure WeCom?", False):
-            return
+    if declines_reconfigure("WeCom", "Reconfigure WeCom?", "WECOM_BOT_ID"):
+        return
     method_idx = prompt_choice("How would you like to set up WeCom?", ["Scan QR code to obtain Bot ID and Secret automatically (recommended)", "Enter existing Bot ID and Secret manually"], 0)
     bot_id = secret = None
     if method_idx == 0:
@@ -865,9 +822,6 @@ def _callback_is_connected(config) -> bool:
     return bool(extra.get("corp_id") or extra.get("apps"))
 
 
-def _build_adapter(config):
-    return WeComAdapter(config)
-
 
 def _build_callback_adapter(config):
     from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
@@ -877,7 +831,7 @@ def _build_callback_adapter(config):
 def register(ctx) -> None:
     common = dict(install_hint="Run `hermes setup` to install WeCom support.", emoji="💼", allow_update_command=True)
     ctx.register_platform(
-        name="wecom", label="WeCom (Enterprise WeChat)", adapter_factory=_build_adapter, check_fn=check_wecom_requirements,
+        name="wecom", label="WeCom (Enterprise WeChat)", adapter_factory=WeComAdapter, check_fn=check_wecom_requirements,
         is_connected=_is_connected, validate_config=_is_connected, required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
         setup_fn=interactive_setup, allowed_users_env="WECOM_ALLOWED_USERS", allow_all_env="WECOM_ALLOW_ALL_USERS",
         cron_deliver_env_var="WECOM_HOME_CHANNEL", standalone_sender_fn=_standalone_send, max_message_length=4000, **common,

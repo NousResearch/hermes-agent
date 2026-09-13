@@ -21,21 +21,22 @@ from agent.message_sanitization import (
 )
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, credential_pool_matches_provider, resolve_runtime_pool_key
 )
 from agent.error_classifier import FailoverReason
+from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
-_REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 _REASONING_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in _REASONING_TAG_NAMES
+    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in THINK_TAG_NAMES
 )
 _TOOL_CALL_BLOCK_PATTERNS = tuple(
     re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
@@ -49,10 +50,10 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?:(?!</function>).)*)</function>', re.DOTALL | re.IGNORECASE,
 )
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(_REASONING_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
-    rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*', re.IGNORECASE
+    rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     rf'</(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function)>\s*', re.IGNORECASE
@@ -1206,7 +1207,7 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
 })
 _INLINE_REASONING_PATTERNS = tuple(
     re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL | re.IGNORECASE)
-    for tag in ("think", "thinking", "thought", "reasoning", "REASONING_SCRATCHPAD")
+    for tag in THINK_TAG_NAMES
 )
 
 
@@ -3104,34 +3105,12 @@ def cleanup_dead_connections(agent) -> bool:
     return False
 
 
-_QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
-_RESETS_IN_RE = re.compile(
-    r"resets?\s+in\s+"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
-)
-_RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
-
-
-def _reset_delay_from_message(message: str) -> Optional[float]:
-    """Seconds-until-reset parsed from free-text provider messages, or None."""
-    m = _QUOTA_RESET_DELAY_RE.search(message)
-    if m:
-        value = float(m.group(1))
-        return value / 1000.0 if m.group(2).lower() == "ms" else value
-    m = _RESETS_IN_RE.search(message)
-    if m and any(m.groups()):
-        return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
-    m = _RETRY_AFTER_SECONDS_RE.search(message)
-    return float(m.group(1)) if m else None
-
-
 def _set_reset_from_retry_after(context: Dict[str, Any], retry_after: Any) -> None:
-    if retry_after in {None, ""} or "reset_at" in context:
+    if "reset_at" in context:
         return
-    with contextlib.suppress(TypeError, ValueError):
-        context["reset_at"] = time.time() + float(retry_after)
+    seconds = parse_retry_after_seconds(retry_after)
+    if seconds is not None:
+        context["reset_at"] = time.time() + seconds
 
 
 def extract_api_error_context(error: Exception) -> Dict[str, Any]:
@@ -3155,14 +3134,14 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         _set_reset_from_retry_after(context, payload.get("retry_after"))
     headers = getattr(getattr(error, "response", None), "headers", None)
     if headers:
-        _set_reset_from_retry_after(context, headers.get("retry-after") or headers.get("Retry-After") or None)
+        _set_reset_from_retry_after(context, headers)
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
     if "message" not in context and str(error).strip():
         context["message"] = str(error).strip()[:500]
     if "reset_at" not in context and isinstance(context.get("message") or "", str):
-        delay = _reset_delay_from_message(context.get("message") or "")
+        delay = reset_delay_from_message(context.get("message") or "")
         if delay is not None:
             context["reset_at"] = time.time() + delay
     return context

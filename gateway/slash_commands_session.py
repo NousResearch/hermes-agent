@@ -580,7 +580,7 @@ class GatewaySessionCommandsMixin:
             compressed, _ = await self._run_in_executor_with_context(
                 lambda: tmp_agent._compress_context(
                     head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True,
-                    defer_context_engine_notification=True))
+                    defer_context_engine_notification=True, partial_head=partial))
             # A held compression lock returns unchanged; say so instead of the misleading no-op text.
             _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
             if _lock_skipped is True or isinstance(_lock_skipped, str):

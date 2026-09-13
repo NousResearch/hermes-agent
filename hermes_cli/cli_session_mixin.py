@@ -1112,7 +1112,7 @@ class CLISessionMixin:
                 # identity block appearing twice (issue #15281).
                 compressed, _ = self.agent._compress_context(
                     head, None, approx_tokens=approx_tokens, focus_topic=focus_topic or None,
-                    force=True, defer_context_engine_notification=True)
+                    force=True, defer_context_engine_notification=True, partial_head=partial)
 
                 # Unchanged because a concurrent compression lock is held: say so instead of
                 # the misleading "No changes" no-op text. Type-pinned check (is True / str) —

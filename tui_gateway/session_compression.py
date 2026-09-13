@@ -229,6 +229,10 @@ def _compress_session_history(
     # split (empty tail) falls back to full compression so the user still gets an action.
     head, tail = split_history_for_partial_compress(history, keep_last) if partial else (history, [])
     if not tail:
+        # Degenerate split (nothing to summarize, or no user turn to keep): fall back to FULL compression
+        # like the CLI/gateway callers, and clear ``partial`` so the head handed to _compress_context is the
+        # whole transcript — otherwise partial_head would suppress adoption for a genuine full compress.
+        partial = False
         head = history
     if approx_tokens is None:
         # Include system prompt + tool schemas so the figure reflects real request pressure.
@@ -247,7 +251,7 @@ def _compress_session_history(
     try:
         compressed, _ = agent._compress_context(
             head, None, approx_tokens=approx_tokens, focus_topic=focus_topic or None, force=True,
-            defer_context_engine_notification=True,
+            defer_context_engine_notification=True, partial_head=partial,
         )
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)

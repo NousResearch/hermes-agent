@@ -4,10 +4,16 @@ import json
 import os
 import subprocess
 import sys
+import pytest
 from pathlib import Path
 
 
 RUNNER = Path(__file__).parents[2] / "scripts" / "compression_eval" / "run_context_compression_eval.py"
+
+
+@pytest.fixture(autouse=True)
+def battery(tmp_path):
+    (tmp_path / "battery.json").write_text('["accuracy"]', encoding="utf-8")
 
 
 def _git_root(path: Path) -> str:
@@ -44,7 +50,8 @@ def _report(source_sha: str) -> dict[str, object]:
     }
 
 
-def test_runner_resolves_root_strips_separator_and_rejects_stale_report(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mutation", ["", "omit_probe", "change_evaluator", "change_source"])
+def test_runner_resolves_root_strips_separator_and_rejects_stale_report(tmp_path: Path, mutation) -> None:
     root = tmp_path / "hermes"
     harness = tmp_path / "harness"
     harness.mkdir()
@@ -58,18 +65,29 @@ def test_runner_resolves_root_strips_separator_and_rejects_stale_report(tmp_path
         "import json, os\n"
         "from pathlib import Path\n"
         "report = json.loads(os.environ['REPORT'])\n"
+        "report.update(evaluator_digest=os.environ['HERMES_EVALUATOR_DIGEST'], battery_digest=os.environ['HERMES_BATTERY_DIGEST'])\n"
         "Path('results/latest/report.json').write_text(json.dumps(report), encoding='utf-8')\n",
         encoding="utf-8",
     )
+    if mutation == "omit_probe":
+        (tmp_path / "battery.json").write_text('["accuracy", "continuity"]', encoding="utf-8")
+    elif mutation == "change_evaluator":
+        writer.write_text(writer.read_text(encoding="utf-8") + "Path('new_scorer.py').write_text('changed', encoding='utf-8')\n", encoding="utf-8")
+    elif mutation == "change_source":
+        writer.write_text(writer.read_text(encoding="utf-8") + "(Path(os.environ['HERMES_AGENT_ROOT']) / 'README.md').write_text('changed', encoding='utf-8')\n", encoding="utf-8")
     output = tmp_path / "out" / "report.json"
     result = subprocess.run(
-        [sys.executable, str(RUNNER),
+        [sys.executable, str(RUNNER), "--battery-definition", str(tmp_path / "battery.json"),
          "--harness", "harness", "--hermes-root", "hermes", "--output", "out/report.json",
          "--", sys.executable, "write_report.py"],
         cwd=tmp_path, env={**os.environ, "REPORT": json.dumps(_report(source_sha))},
         capture_output=True, text=True,
     )
 
+    if mutation:
+        assert result.returncode != 0
+        assert not output.exists()
+        return
     assert result.returncode == 0, result.stderr
     assert json.loads(output.read_text(encoding="utf-8"))["source_sha"] == source_sha
     assert list(latest.glob("report.stale.*.json"))
@@ -82,7 +100,7 @@ def test_runner_rejects_dirty_evaluated_tree(tmp_path: Path) -> None:
     _git_root(root)
     (root / "dirty.py").write_text("dirty\n", encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", str(root),
+        [sys.executable, str(RUNNER), "--battery-definition", str(tmp_path / "battery.json"), "--harness", str(harness), "--hermes-root", str(root),
          "--output", str(tmp_path / "out.json"), "--", "true"],
         capture_output=True, text=True,
     )
@@ -108,7 +126,7 @@ def test_runner_bounds_harness_timeout(tmp_path: Path) -> None:
     _git_root(root)
     (tmp_path / "out.json").write_text('{"status":"pass"}')
     result = subprocess.run(
-        [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", str(root),
+        [sys.executable, str(RUNNER), "--battery-definition", str(tmp_path / "battery.json"), "--harness", str(harness), "--hermes-root", str(root),
          "--output", str(tmp_path / "out.json"), "--timeout-seconds", "0.1",
          sys.executable, "-c", "import time; time.sleep(2)"],
         capture_output=True, text=True,
@@ -128,7 +146,7 @@ def test_output_cannot_delete_source_file(tmp_path):
     output = root / "README.md"
     before = output.read_bytes()
     result = subprocess.run(
-        [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", str(root),
+        [sys.executable, str(RUNNER), "--battery-definition", str(tmp_path / "battery.json"), "--harness", str(harness), "--hermes-root", str(root),
          "--output", str(output), "--", sys.executable, "-c", "pass"],
         capture_output=True, text=True,
     )

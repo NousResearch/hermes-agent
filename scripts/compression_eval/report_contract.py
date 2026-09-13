@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import math
+import json
 import re
 
 REQUIRED_KEYS = {
     "schema_version", "source_sha", "fixture_digest", "compressed_tokens",
     "baseline_tokens", "probe_scores", "artifact_trail_preserved",
     "continuity_preserved", "probe_manifest", "model_provenance", "status",
+    "evaluator_digest", "battery_digest",
 }
 _FIXTURE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_HOME_PATH = re.compile(
@@ -40,6 +42,15 @@ def _credential_errors(value: object, path: str = "report") -> list[str]:
     if isinstance(value, (list, tuple)):
         return [error for index, child in enumerate(value)
                 for error in _credential_errors(child, f"{path}[{index}]")]
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (ValueError, TypeError):
+            decoded = None
+        if isinstance(decoded, (Mapping, list)):
+            return _credential_errors(decoded, path)
+        if _CREDENTIAL_ASSIGNMENT.search(value):
+            return ["forbidden_credential_assignment"]
     return []
 
 
@@ -68,6 +79,9 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
     fixture_digest = report.get("fixture_digest")
     if not isinstance(fixture_digest, str) or not _FIXTURE_DIGEST.fullmatch(fixture_digest):
         errors.append("fixture_digest_must_be_sha256")
+    for key in ("evaluator_digest", "battery_digest"):
+        if not isinstance(report.get(key), str) or not _FIXTURE_DIGEST.fullmatch(report[key]):
+            errors.append(f"{key}_must_be_sha256")
     for key in ("compressed_tokens", "baseline_tokens"):
         if not isinstance(report.get(key), int) or isinstance(report.get(key), bool):
             errors.append(f"{key}_must_be_integer")

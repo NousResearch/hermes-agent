@@ -168,12 +168,16 @@ def _safe_config(value: object) -> object:
 def _endpoint_environment_digest() -> str:
     # Read provider metadata in the evaluation home without changing this process.
     probe = """
-import hashlib, json, os
+import hashlib, json, os, re
+from pathlib import Path
 from dotenv import dotenv_values
 from hermes_cli.auth import PROVIDER_REGISTRY
 values = dotenv_values(os.path.join(os.environ["HERMES_HOME"], ".env"))
 keys = {p.base_url_env_var for p in PROVIDER_REGISTRY.values() if p.base_url_env_var}
 keys.update(k for k in set(os.environ) | set(values) if k.endswith(("_BASE_URL", "_ENDPOINT")))
+config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+if config_path.exists():
+    keys.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", config_path.read_text(encoding="utf-8")))
 effective = {k: str(values.get(k) or os.environ.get(k) or "").strip() for k in sorted(keys)}
 print(hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest())
 """
@@ -222,7 +226,8 @@ def _evaluator_provenance() -> dict[str, str]:
     battery_digest = hashlib.sha256(
         json.dumps(TASKS, separators=(",", ":"), sort_keys=True).encode("utf-8")
     ).hexdigest()
-    return {"evaluator_digest": evaluator_digest, "battery_digest": battery_digest}
+    return {"evaluator_digest": evaluator_digest, "battery_digest": battery_digest,
+            "interpreter": sys.version, "implementation": sys.implementation.name}
 
 
 def _resolve_clean_source(pythonpath: str) -> tuple[Path, str]:
@@ -326,6 +331,8 @@ mode = "overwrite"
                 "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
             q = TASKS[name].replace("{WORK}", str(work))
+            if _resolve_clean_source(str(source_root))[1] != source_sha:
+                raise SystemExit("evaluated source changed during battery")
             t0 = time.time()
             try:
                 p = subprocess.run(
@@ -337,6 +344,8 @@ mode = "overwrite"
                 rc = p.returncode
             except subprocess.TimeoutExpired:
                 out, rc = "", -9
+            if _resolve_clean_source(str(source_root))[1] != source_sha:
+                raise SystemExit("evaluated source changed during battery")
             dt = time.time() - t0
             if rc != 0 and not out.strip():
                 # Startup crash / infra flake — do NOT record it as a data

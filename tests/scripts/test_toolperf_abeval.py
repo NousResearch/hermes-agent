@@ -176,3 +176,48 @@ def test_run_validates_source_and_resume_before_execution(tmp_path: Path, monkey
                                "evaluator_provenance": harness["_evaluator_provenance"]()}) + "\n")
     with pytest.raises(SystemExit, match="resume provenance"):
         run("baseline", "test-model", 1, str(source))
+
+
+def test_interpolated_endpoint_and_interpreter_bind_provenance(tmp_path, monkeypatch):
+    import runpy
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        harness = runpy.run_path(str(SCRIPT))
+    finally:
+        sys.path.pop(0)
+    harness["_model_provenance"].__globals__["HOME"] = tmp_path
+    (tmp_path / "config.yaml").write_text("providers:\n  hyper:\n    base_url: ${MODEL_HOST}\n", encoding="utf-8")
+    monkeypatch.setenv("MODEL_HOST", "https://first.example")
+    before = harness["_model_provenance"]("model")
+    monkeypatch.setenv("MODEL_HOST", "https://second.example")
+    assert harness["_model_provenance"]("model") != before
+    assert harness["_evaluator_provenance"]()["interpreter"] == sys.version
+
+
+def test_run_rejects_checkout_drift_before_recording(tmp_path, monkeypatch):
+    import runpy
+    import pytest
+
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
+    monkeypatch.setenv("ABEVAL_ROOT", str(tmp_path / "workspace"))
+    harness = runpy.run_path(str(SCRIPT))
+    source = tmp_path / "source"
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "--allow-empty", "--quiet", "-m", "base"], check=True)
+    state = harness["run"].__globals__
+    state["TASKS"] = {"probe": "Inspect {WORK}"}
+    state["make_sandbox"] = lambda work: None
+    state["_model_provenance"] = lambda model: {}
+    real_run = subprocess.run
+
+    def execute(command, **kwargs):
+        if command[1:3] == ["-m", "hermes_cli.main"]:
+            (source / "changed.py").write_text("changed", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "done", "")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    with pytest.raises(SystemExit, match="must be clean"):
+        harness["run"]("baseline", "model", 1, str(source))
+    assert not list((tmp_path / "workspace").rglob("meta.jsonl"))

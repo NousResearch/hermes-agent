@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -51,11 +52,25 @@ def _resolve_clean_source(path: Path) -> tuple[Path, str]:
     return source_root, source_sha
 
 
+def _evaluator_digest(harness: Path, command: list[str]) -> str:
+    digest = hashlib.sha256(json.dumps([command, sys.version], sort_keys=True).encode())
+    for path in sorted(harness.rglob("*")):
+        relative = path.relative_to(harness)
+        if any(part in {".git", ".venv", "__pycache__", ".pytest_cache"} for part in relative.parts):
+            continue
+        if relative.parts[0] == "results" or not path.is_file():
+            continue
+        digest.update(str(relative).encode())
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--harness", type=Path, required=True)
     parser.add_argument("--hermes-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--battery-definition", type=Path, help="Reviewed JSON list of expected probe names")
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -72,6 +87,14 @@ def main() -> int:
     output = args.output.expanduser().resolve()
     if output == hermes_root or hermes_root in output.parents or output == harness or harness in output.parents:
         raise SystemExit("--output must be outside the source and harness trees")
+    if args.battery_definition is None:
+        raise SystemExit("--battery-definition is required")
+    battery_bytes = args.battery_definition.read_bytes()
+    expected = json.loads(battery_bytes)
+    if not isinstance(expected, list) or not expected or any(not isinstance(x, str) or not x.strip() for x in expected) or len(set(expected)) != len(expected):
+        raise SystemExit("battery definition must contain unique nonempty probe names")
+    battery_digest = hashlib.sha256(battery_bytes).hexdigest()
+    evaluator_digest = _evaluator_digest(harness, command)
     args.output = output
     args.output.unlink(missing_ok=True)
     report_path = harness / "results" / "latest" / "report.json"
@@ -81,7 +104,8 @@ def main() -> int:
     process: subprocess.Popen[str] = subprocess.Popen(
         command,
         cwd=harness,
-        env={**os.environ, "HERMES_AGENT_ROOT": str(hermes_root)},
+        env={**os.environ, "HERMES_AGENT_ROOT": str(hermes_root),
+             "HERMES_EVALUATOR_DIGEST": evaluator_digest, "HERMES_BATTERY_DIGEST": battery_digest},
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -100,7 +124,13 @@ def main() -> int:
         raise SystemExit(f"compression harness failed with exit {result.returncode}")
     if not report_path.exists():
         raise SystemExit(f"compression report missing: {report_path}")
+    if _resolve_clean_source(hermes_root)[1] != source_sha or _evaluator_digest(harness, command) != evaluator_digest:
+        raise SystemExit("source or evaluator changed during compression evaluation")
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("evaluator_digest") != evaluator_digest or report.get("battery_digest") != battery_digest:
+        raise SystemExit("invalid compression evaluator or battery provenance")
+    if report.get("probe_manifest") != expected or set(report.get("probe_scores", {})) != set(expected):
+        raise SystemExit("compression report does not match the independent battery definition")
     if report.get("source_sha") != source_sha:
         raise SystemExit("invalid compression report: source_sha does not match --hermes-root")
     errors = validate_report(report)

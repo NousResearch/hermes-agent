@@ -4,6 +4,8 @@ from scripts.compression_eval.report_contract import validate_report
 def report() -> dict[str, object]:
     return {
         "schema_version": 1,
+        "evaluator_digest": "c" * 64,
+        "battery_digest": "d" * 64,
         "source_sha": "a" * 40,
         "fixture_digest": "b" * 64,
         "compressed_tokens": 100,
@@ -93,3 +95,10 @@ def test_compound_secret_keys_and_nonnumeric_scores_are_rejected():
         value = report()
         value["probe_scores"]["accuracy"] = score
         assert "probe_scores.accuracy_must_be_numeric" in validate_report(value)
+
+
+def test_serialized_config_credentials_are_rejected():
+    import json
+    value = report()
+    value["model_provenance"]["model_config"] = json.dumps({"OPENAI_API_KEY": "fake-secret"})
+    assert any("forbidden_key" in error for error in validate_report(value))

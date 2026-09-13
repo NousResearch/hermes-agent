@@ -26,6 +26,24 @@ def test_no_running_screen_returns_none_without_grabbing(monkeypatch):
     assert thumbnail.thumbnail_data_url() is None
 
 
+def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
+    """launcher.pid names pid + create_time; a live pid born at another time is a stranger (recycled pid)
+    and must read as not running, or stop() would killpg an unrelated session. Legacy single-number
+    files and absurd digit strings are also not running."""
+    import os
+
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    pidfile = tmp_path / "launcher.pid"
+    pidfile.write_text(f"{os.getpid()} 12345.0", encoding="utf-8")  # alive, wrong birth
+    assert runtime._launcher_pid() is None
+    pidfile.write_text(str(os.getpid()), encoding="utf-8")  # pre-identity format
+    assert runtime._launcher_pid() is None
+    pidfile.write_text("9" * 40 + " 1.0", encoding="utf-8")
+    assert runtime._launcher_pid() is None
+    pidfile.write_text(f"{os.getpid()} {runtime._create_time(os.getpid())}", encoding="utf-8")
+    assert runtime._launcher_pid() == os.getpid()
+
+
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

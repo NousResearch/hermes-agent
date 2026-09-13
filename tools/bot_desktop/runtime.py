@@ -128,12 +128,28 @@ def _pid_alive(pid: int) -> bool:
     return psutil.pid_exists(pid)
 
 
-def _launcher_pid() -> Optional[int]:
-    raw = _read(state_dir() / "launcher.pid")
-    if not raw or not raw.isdigit():
+def _create_time(pid: int) -> Optional[float]:
+    import psutil
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.Error, OverflowError, ValueError):
         return None
-    pid = int(raw)
-    return pid if _pid_alive(pid) else None
+
+
+def _launcher_pid() -> Optional[int]:
+    """The live launcher's pid, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``: a recycled pid
+    with a different start time is somebody else's process and must never be reported as ours nor
+    killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
+    raw = _read(state_dir() / "launcher.pid")
+    pid_s, _, born_s = (raw or "").partition(" ")
+    if not pid_s.isdigit() or not born_s:
+        return None
+    try:
+        pid, born = int(pid_s), float(born_s)
+    except ValueError:
+        return None
+    actual = _create_time(pid)
+    return pid if actual is not None and abs(actual - born) < 0.01 else None
 
 
 def _display_in_use(num: int) -> bool:
@@ -295,7 +311,8 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
         ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, close_fds=True)
     log.close()
-    (sd / "launcher.pid").write_text(str(proc.pid), encoding="utf-8")
+    born = _create_time(proc.pid)
+    (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
 
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:

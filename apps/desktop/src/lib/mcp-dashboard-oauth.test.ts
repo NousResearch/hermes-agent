@@ -7,6 +7,44 @@ import { completeMcpDesktopOAuth, McpOAuthCancelled } from './mcp-dashboard-oaut
 
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent: vi.fn() }))
 
+const { ipcHandlers, exposed } = vi.hoisted(() => ({
+  ipcHandlers: new Map<string, (...args: unknown[]) => unknown>(),
+  exposed: {} as { desktop: Window['hermesDesktop'] }
+}))
+
+// Only Electron's transport is replaced: the listener, preload and renderer
+// relay are real, driven by HTTP callbacks on an ephemeral loopback port.
+vi.mock('electron', () => ({
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) => ipcHandlers.set(channel, handler)
+  },
+  ipcRenderer: {
+    sendSync: () => undefined,
+    invoke: async (channel: string, ...args: unknown[]) => {
+      const handler = ipcHandlers.get(channel)
+
+      if (!handler) {
+        throw new Error(`Unexpected IPC channel: ${channel}`)
+      }
+
+      return handler({}, ...args)
+    }
+  },
+  contextBridge: {
+    exposeInMainWorld: (_name: string, desktop: Window['hermesDesktop']) => {
+      exposed.desktop = desktop
+    }
+  },
+  webFrame: {},
+  webUtils: {}
+}))
+
+const { registerMcpOauthCallbackIpc } = await import('../../electron/mcp-oauth-callback-ipc')
+registerMcpOauthCallbackIpc()
+// Execute the real preload without pulling its separately typechecked Electron
+// sources into the renderer tsconfig.
+await vi.importActual('../../electron/preload')
+
 const redirectUri = 'http://127.0.0.1:49152/callback'
 const authUrl = `https://idp.example/authorize?state=expected&redirect_uri=${encodeURIComponent(redirectUri)}`
 const started = { ok: true, session_id: 'flow-1', auth_url: authUrl, flow: 'pkce' }
@@ -29,8 +67,8 @@ function harness() {
 
   const bridge = {
     listen: vi.fn().mockResolvedValue({ id: 'listener-1', redirectUri }),
-    wait: vi.fn(() => callback.promise),
-    cancel: vi.fn(async () => {
+    wait: vi.fn((_id: string) => callback.promise),
+    cancel: vi.fn(async (_id: string) => {
       callback.resolve({ code: null, state: null, error: 'cancelled' })
 
       return true
@@ -39,7 +77,7 @@ function harness() {
 
   const api = vi.fn().mockRejectedValue(new Error('Desktop OAuth must not use the remote REST callback'))
 
-  const openExternal = vi.fn(async () => {
+  const openExternal = vi.fn(async (_url: string) => {
     callback.resolve({ code: 'code-1', state: 'expected', error: null })
   })
 
@@ -74,17 +112,44 @@ afterEach(() => {
 })
 
 describe('Desktop MCP client callback lifecycle', () => {
-  it.each(['local', 'remote-gateway'])(
-    'relays through the native listener and keeps the %s owner after foreground changes',
-    async connectionId => {
+  it.each([
+    { connectionId: 'local', iss: 'https://issuer.example/tenant/%2F/' },
+    { connectionId: 'remote-gateway', iss: 'https://issuer.example/tenant/%2F/' },
+    { connectionId: 'remote-gateway', iss: '' },
+    { connectionId: 'remote-gateway', iss: null }
+  ])(
+    'relays issuer $iss through the native listener/preload to the $connectionId owner after foreground changes',
+    async ({ connectionId, iss }) => {
       const { bridge, api, openExternal, rpc } = harness()
       setApiRequestConnection(connectionId)
       setApiRequestProfile('origin-profile')
-      const callbackResult = { code: 'code-1', state: 'expected', error: null }
-      bridge.wait.mockResolvedValue(callbackResult)
-      openExternal.mockImplementation(async () => {
+      const callbackResult = { code: 'code-1', state: 'expected', error: null, iss }
+      const nativeBridge = exposed.desktop.mcpOauth!
+      bridge.listen.mockImplementation(nativeBridge.listen)
+      bridge.wait.mockImplementation(nativeBridge.wait)
+      bridge.cancel.mockImplementation(nativeBridge.cancel)
+      let clientRedirectUri: string | undefined
+      rpc.mockImplementationOnce(async (_connection, _profile, _method, params) => {
+        clientRedirectUri = (params as { client_redirect_uri: string }).client_redirect_uri
+        const url = new URL(authUrl)
+        url.searchParams.set('redirect_uri', clientRedirectUri)
+
+        return { ...started, auth_url: url.href }
+      })
+      openExternal.mockImplementation(async authorizationUrl => {
         setApiRequestConnection('other-gateway')
         setApiRequestProfile('other-profile')
+        const url = new URL(new URL(authorizationUrl).searchParams.get('redirect_uri')!)
+        url.searchParams.set('code', callbackResult.code)
+        url.searchParams.set('state', callbackResult.state)
+
+        if (iss !== null) {
+          url.searchParams.set('iss', iss)
+        }
+
+        const response = await fetch(url)
+        expect(response.status).toBe(200)
+        await response.text()
       })
       const result = await completeMcpDesktopOAuth({ serverName: 'reports', sleep: async () => {} })
       expect(result).toMatchObject({ status: 'approved', tools })
@@ -92,7 +157,7 @@ describe('Desktop MCP client callback lifecycle', () => {
         connectionId,
         'origin-profile',
         'mcp.servers.oauth.start',
-        { name: 'reports', client_redirect_uri: redirectUri },
+        { name: 'reports', client_redirect_uri: clientRedirectUri },
         60_000
       )
       expect(rpc).toHaveBeenCalledWith(
@@ -103,7 +168,9 @@ describe('Desktop MCP client callback lifecycle', () => {
         60_000
       )
       expect(rpc.mock.calls.every(call => call[0] === connectionId && call[1] === 'origin-profile')).toBe(true)
-      expect(bridge.cancel).toHaveBeenCalledWith('listener-1')
+      const listener = await bridge.listen.mock.results[0].value
+      expect(bridge.cancel).toHaveBeenCalledWith(listener.id)
+      await expect(fetch(`${clientRedirectUri}?code=again&state=expected`)).rejects.toThrow()
       expect(api).not.toHaveBeenCalled()
     }
   )

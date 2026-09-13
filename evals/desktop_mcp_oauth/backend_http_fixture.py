@@ -73,6 +73,7 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_methods_supported": ["none"],
                 "code_challenge_methods_supported": ["S256"],
+                "authorization_response_iss_parameter_supported": True,
                 "scopes_supported": ["tools:read"],
             })
         if path == "/authorize":
@@ -83,7 +84,8 @@ class ProviderHandler(BaseHTTPRequestHandler):
                 return self.reply(400, {"error": "invalid_request"})
             code = secrets.token_urlsafe(24)
             self.server.codes[code] = query
-            target = query["redirect_uri"] + "?" + urlencode({"code": code, "state": query["state"]})
+            target = query["redirect_uri"] + "?" + urlencode({
+                "code": code, "state": query["state"], "iss": self.server.origin})
             return self.reply(302, headers={"Location": target})
         self.reply(405 if path == "/mcp" else 404)
 
@@ -226,6 +228,7 @@ def run_probe(repo, receipt):
         response = browser.get(flow["auth_url"], follow_redirects=True)
         check("real_http_callback_received", response.status_code == 200 and bool(callback.callback.get("code")))
         captured = callback.callback
+        check("rfc9207_issuer_captured_exactly", captured.get("iss") == provider.origin)
         check("correct_callback_accepted", sessions.deliver_callback_flow(sid, "positive", **captured)["ok"])
         result = done(flow, "positive")
         receipt["positive_status"] = result["status"]

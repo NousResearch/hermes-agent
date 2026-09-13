@@ -284,6 +284,20 @@ DANGEROUS_PATTERNS = [
     # for "c" also matched --norc/--rcfile/--restricted.
     (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    # Global/system package-manager installs: pulls new, arbitrary code onto the machine from a
+    # registry -- the same risk class as a curl|bash installer above, just via pip/npm/pipx/uv
+    # instead of a raw pipe. Deliberately narrow: project-scoped installs (`npm install` with no
+    # -g, `pip install -r requirements.txt`, `pip install -e .`/`--editable .` of the local project,
+    # `pip install --target .`/`./<dir>` into a local directory, and self-upgrading pip itself) are
+    # routine dev work and stay unflagged; an editable/target install of a REMOTE source (a URL,
+    # VCS spec, or any path other than `.`/`./...`) still flags, since that pulls arbitrary code
+    # same as a plain install would.
+    (r'\b(pip3?|uv\s+pip)\s+install\b'
+     r'(?!.*(-r\s|--requirement\b|-e\s+\.(?:\s|$)|--editable\s+\.(?:\s|$)|--target\s+\.(?:/|\s|$)|(-U\s+|--upgrade\s+)pip\b))',
+     "pip install of an arbitrary package"),
+    (r'\bnpm\s+(install|i|add)\s+(-g|--global)\b', "global npm install"),
+    (r'\bpipx\s+install\b', "pipx install"),
+    (r'\buv\s+tool\s+install\b', "uv tool install"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the

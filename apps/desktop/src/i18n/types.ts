@@ -2958,6 +2958,10 @@ export interface Translations {
     paneControls: string
     appControls: string
     modelMenu: {
+      priceUnit: string
+      inputPrice: string
+      outputPrice: string
+      cachePrice: string
       search: string
       noModels: string
       editModels: string

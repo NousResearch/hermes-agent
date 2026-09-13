@@ -89,9 +89,17 @@ function SelectLabel({ className, ...props }: React.ComponentProps<typeof Select
   )
 }
 
-function SelectItem({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
+function SelectItem({
+  className,
+  children,
+  description,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Item> & { description?: React.ReactNode }) {
+  const descriptionId = React.useId()
+
   return (
     <SelectPrimitive.Item
+      aria-describedby={description ? descriptionId : undefined}
       className={cn(
         'relative flex w-full cursor-pointer items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-xs outline-none select-none focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
         className
@@ -104,7 +112,16 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
           <Codicon name="check" size="1rem" />
         </SelectPrimitive.ItemIndicator>
       </span>
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {description ? (
+        <div className="min-w-0 max-w-[min(24rem,calc(100vw-4rem))] flex-1">
+          <span className="block truncate">
+            <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          </span>
+          <div id={descriptionId}>{description}</div>
+        </div>
+      ) : (
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      )}
     </SelectPrimitive.Item>
   )
 }

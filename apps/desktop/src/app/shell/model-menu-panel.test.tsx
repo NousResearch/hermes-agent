@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
@@ -77,6 +77,72 @@ function renderPanel(onSelectModel = vi.fn()) {
 
   return { onSelectModel, content }
 }
+
+it('fills cold Nous pricing and refreshes prices/models without selecting or pricing another provider', async () => {
+  const model = 'vendor/priced-model'
+
+  const price = {
+    input: '$0.20',
+    output: '$0.80',
+    cache: '$0.002',
+    free: false,
+    discount_percent: 20,
+    was_input: '$0.25',
+    was_output: '$1.00'
+  }
+
+  const nous = {
+    slug: 'nous',
+    name: 'Nous',
+    models: [model, 'vendor/free-model', 'vendor/unknown-model'],
+    pricing: {
+      [model]: price,
+      'vendor/free-model': { input: 'free', output: 'free', cache: null, free: true, discount_percent: 100 }
+    }
+  }
+
+  const other = { slug: 'deepseek', name: 'DeepSeek', models: [model], pricing: { [model]: price } }
+
+  getGlobalModelOptions
+    .mockResolvedValueOnce({ providers: [{ ...nous, pricing: undefined, pricing_pending: true }, other] })
+    .mockResolvedValue({ providers: [nous, other] })
+
+  const { onSelectModel } = renderPanel()
+
+  // First open stays usable while the backend warms its catalog.
+  await screen.findByText('USD / 1M tokens')
+  const inputPrice = await screen.findByText('In $0.20', {}, { timeout: 5_000 })
+  const row = inputPrice.closest('[role="menuitem"]')!
+
+  expect(within(row as HTMLElement).getByText('Out $0.80')).toBeTruthy()
+  expect(within(row as HTMLElement).getByText('Cache $0.002')).toBeTruthy()
+  expect(screen.getAllByText('-20%')).toHaveLength(1)
+  expect(screen.getByText('was $0.25 / $1.00')).toBeTruthy()
+  expect(screen.getByText('Free')).toBeTruthy()
+  expect(screen.getByText('-100%')).toBeTruthy()
+  expect(screen.getAllByText('In $0.20')).toHaveLength(1)
+
+  // The server can change both prices and models; no built-in list/rates win.
+  getGlobalModelOptions.mockResolvedValue({
+    providers: [
+      {
+        ...nous,
+        models: [...nous.models, 'vendor/new-arrival'],
+        pricing: { [model]: { input: '$0.30', output: '$0.90', cache: null, free: false } }
+      },
+      other
+    ]
+  })
+  fireEvent.click(screen.getByText('Refresh models'))
+
+  await screen.findByText('In $0.30')
+  expect(screen.queryByText('In $0.20')).toBeNull()
+  expect(screen.queryByText('-20%')).toBeNull()
+  expect(screen.queryByText('was $0.25 / $1.00')).toBeNull()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'new-arrival' } })
+  expect(await screen.findByText('New Arrival', { exact: false })).toBeTruthy()
+  expect(onSelectModel).not.toHaveBeenCalled()
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {

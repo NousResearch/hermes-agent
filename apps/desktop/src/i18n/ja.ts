@@ -2911,6 +2911,10 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
+      priceUnit: 'USD / 100万トークン',
+      inputPrice: '入力',
+      outputPrice: '出力',
+      cachePrice: 'キャッシュ',
       fast: '高速'
     },
     modelOptions: {

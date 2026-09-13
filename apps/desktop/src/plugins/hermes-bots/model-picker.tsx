@@ -10,11 +10,14 @@ import {
   Button,
   GlyphSpinner,
   Input,
+  type ModelOptionProvider,
+  ModelSelectItem,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
+  useNousPricingRefresh,
   useQuery
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
@@ -60,7 +63,7 @@ function boundedModelOptionsFetch<T>(fetch: Promise<T>, settleMs = MODEL_OPTIONS
 
 /** One provider row of the gateway's `model.options` inventory. Entries in
  *  `models` are bare slugs on current gateways and objects on older ones. */
-interface ModelProviderOption {
+interface ModelProviderOption extends Omit<Partial<ModelOptionProvider>, 'models' | 'slug'> {
   models?: Array<string | { id?: string; name?: string }>
   name?: string
   slug: string
@@ -76,7 +79,7 @@ function useModelOptions(bot: null | RosterRow = null) {
   const route = resolved?.status === 'resolved' ? resolved.route : null
   const orphaned = resolved?.status === 'owner_removed'
 
-  return useQuery<ModelOptionsResponse>({
+  const options = useQuery<ModelOptionsResponse>({
     queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
     // No forced `refresh`: forcing a network read on EVERY mount bypassed the
     // staleTime cache, so each Bots view remount (tab re-front, dialog reopen,
@@ -94,6 +97,13 @@ function useModelOptions(bot: null | RosterRow = null) {
     staleTime: 120000,
     retry: false
   })
+
+  useNousPricingRefresh({
+    queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
+    enabled: !orphaned
+  })
+
+  return options
 }
 
 /**
@@ -269,9 +279,15 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
             </SelectTrigger>
             <SelectContent>
               {models.map(m => (
-                <SelectItem key={m} value={m}>
-                  {m}
-                </SelectItem>
+                <ModelSelectItem
+                  key={m}
+                  model={m}
+                  provider={
+                    activeProvider
+                      ? { ...activeProvider, name: activeProvider.name || activeProvider.slug, models }
+                      : undefined
+                  }
+                />
               ))}
             </SelectContent>
           </Select>

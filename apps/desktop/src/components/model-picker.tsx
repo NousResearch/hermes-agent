@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
+import { NousModelPrice } from '@/components/nous-model-price'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
@@ -68,6 +70,11 @@ export function ModelPickerDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
+    enabled: open
+  })
+
+  useNousPricingRefresh({
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     enabled: open
   })
 
@@ -333,9 +340,12 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">
-                    <HighlightMatches foldSeparators query={search} text={model} />
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate">
+                      <HighlightMatches foldSeparators query={search} text={model} />
+                    </span>
+                    {provider.slug === 'nous' && !provider.free_tier_row && <NousModelPrice price={price} selected={isCurrent} />}
+                  </div>
                   {loadProgress && (
                     <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
                       <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -350,7 +360,7 @@ function ModelResults({
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}
-                  <ModelPrice isCurrent={isCurrent} price={price} />
+                  {(provider.slug !== 'nous' || provider.free_tier_row) && <ModelPrice isCurrent={isCurrent} price={price} />}
                 </CommandItem>
               )
             })}
@@ -518,6 +528,9 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
       {tierBadge}
+      {provider.slug === 'nous' && !provider.free_tier_row && (
+        <span className="ml-auto font-normal normal-case tracking-normal">{t.shell.modelMenu.priceUnit}</span>
+      )}
     </span>
   )
 }

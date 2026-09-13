@@ -21,6 +21,7 @@ from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
 # (profile key, provider) → endpoint cache key last fetched, so cached_only reads find the right entry.
 _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
+_nous_pricing_auth_versions: dict[str, tuple] = {}
 
 # A failed fetch caches its empty result too, so an unreachable endpoint isn't re-dialed on every
 # call — but only until this deadline. Cached forever, one blip at startup would mean no live model
@@ -397,11 +398,39 @@ def _fetch_fireworks_pricing_for_provider(*, force_refresh: bool = False) -> dic
 
 
 def _fetch_nous_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    from hermes_cli.models import _pricing_profile_key
+    # Capture before resolution: resolution may rotate a token, and a change
+    # during that call or the catalog fetch must invalidate the remembered read.
+    auth_version = _nous_pricing_auth_version()
     api_key, base_url = _resolve_nous_pricing_credentials()
     if not base_url:
         return {}
-    _remember_provider_cache_key("nous", base_url.rstrip("/"))
+    _remember_provider_cache_key("nous", base_url.rstrip("/") + _pricing_auth_fingerprint(api_key))
+    _nous_pricing_auth_versions[_pricing_profile_key()] = auth_version
     return _fetch_nous_pricing(api_key, base_url, force_refresh=force_refresh)
+
+
+def _nous_pricing_auth_version() -> tuple:
+    """Local auth-store generations only; never resolve/refresh credentials.
+
+    Include the inherited and shared stores so a sibling profile's logout or
+    token rotation invalidates a warm catalog in this long-lived process too.
+    """
+    from hermes_cli.auth import _auth_file_path, _global_auth_file_path, _nous_inference_env_override
+    from hermes_cli.auth_nous import _nous_shared_auth_dir, NOUS_SHARED_STORE_FILENAME
+
+    versions = []
+    for path in (_auth_file_path(), _global_auth_file_path(),
+                 _nous_shared_auth_dir() / NOUS_SHARED_STORE_FILENAME):
+        if path is None:
+            continue
+        try:
+            stat = path.stat()
+            version = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+        except OSError:
+            version = None
+        versions.append((str(path), version))
+    return (_nous_inference_env_override(), tuple(versions))
 
 
 _OPENROUTER_PRICING_BASE = "https://openrouter.ai/api"
@@ -465,7 +494,8 @@ def pricing_cache_scope(provider: str, *, current_provider: str = "", current_ba
         persisted_base = get_cached_nous_inference_base_url()
         if persisted_base:
             return persisted_base
-        return _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE)
+        return cache_key.split(_PRICING_AUTH_KEY_PREFIX, 1)[0]
     return ""
 
 
@@ -475,6 +505,10 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
     if normalized == "deepinfra":
         cache_key, _url = _deepinfra_catalog_url()
         return _fetch_deepinfra_pricing() if cache_key in _deepinfra_catalog_cache else {}
+    if normalized == "nous" and (
+        _nous_pricing_auth_versions.get(_pricing_profile_key()) != _nous_pricing_auth_version()
+    ):
+        return {}
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
     if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()

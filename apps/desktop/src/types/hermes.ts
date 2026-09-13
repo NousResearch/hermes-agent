@@ -500,6 +500,9 @@ export interface ModelOptionProvider {
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>
+  /** Nous catalog/entitlement is warming in the backend; re-read while the picker is open. */
+  pricing_pending?: boolean
+  free_tier_pending?: boolean
   /** Nous only: whether the current account is on the free plan. Set by
    *  pricing for a signed-in account — NOT the same thing as `free_tier_row`,
    *  which marks the no-account route. */

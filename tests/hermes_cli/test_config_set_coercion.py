@@ -79,7 +79,9 @@ class TestStringTypedGuardPreserved:
         broker = PolicyMutationBroker()
         request = broker.request("local", "approvals.mode", "set")
         from hermes_cli.policy_mutation import _operator_settlement_scope
-        with _operator_settlement_scope():
+        confirmation_id = f"test-confirm-{request.request_id}"
+        broker.record_settlement(request.request_id, confirmation_id)
+        with _operator_settlement_scope(request.request_id, confirmation_id):
             proof = broker.operator_confirm(request.request_id)
         cfg.set_config_value("approvals.mode", "off", proof=proof)
         v = _read(tmp_path, "approvals", "mode")

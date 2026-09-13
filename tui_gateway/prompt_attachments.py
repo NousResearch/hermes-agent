@@ -27,6 +27,22 @@ _ATTACHMENT_REF_NEEDS_QUOTING_RE = _re.compile(r"""[\s()\[\]{}<>"'`]""")
 del _re  # bodies are rebound onto server globals: import inside functions only
 
 
+def _attach_caller_is_local() -> bool:
+    """Whether the current RPC arrived from a local (loopback/stdio) caller.
+
+    The TUI gateway is a local-IPC surface (SECURITY.md §2.6): resolving a HOST
+    filesystem path for an attachment is only meaningful for, and safe to hand
+    to, a *local* caller. When the dispatch surface is reached over the network
+    (the dashboard ``/api/ws`` bridge) from a non-loopback peer, host-path
+    resolution must be refused — remote clients upload bytes instead.
+    """
+    peer = getattr(current_transport(), "_peer", None)  # only WSTransport carries a peer label
+    if peer is None:
+        return True  # stdio / in-process transport -> local Ink CLI
+    host = str(peer).rsplit(":", 1)[0].strip().strip("[]").lower()
+    return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+
+
 def _b64_payload(raw: str, data_url_re: str, flags: int) -> bytes:
     """Strip an optional ``data:...;base64,`` wrapper and all whitespace, then strictly decode."""
     import base64 as _base64
@@ -140,6 +156,32 @@ def _stage_session_file_attachment(
     (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
     gateway -> ``data_url`` bytes decoded into ``attachments/``."""
     workspace = Path(_session_cwd(session)).resolve()
+    if not _attach_caller_is_local():
+        if not data_url:
+            raise ValueError(
+                "host-path attach is not available over a remote connection; "
+                "upload the file bytes via data_url instead"
+            )
+        import binascii as _binascii
+        import re as _re
+        try:
+            payload = _b64_payload(
+                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.I)
+        except (ValueError, _binascii.Error) as exc:
+            raise ValueError("invalid data_url payload") from exc
+        filename = _sanitize_attachment_name(name or "attachment")
+        root = _session_home_dir(session, "attachments")
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / filename
+        if target.exists():
+            stem = Path(filename).stem or "attachment"
+            suffix = Path(filename).suffix
+            counter = 2
+            while (target := root / f"{stem}-{counter}{suffix}").exists():
+                counter += 1
+        target.write_bytes(payload)
+        return target.resolve(), True
+
     resolved = None
     if raw_path:
         try:

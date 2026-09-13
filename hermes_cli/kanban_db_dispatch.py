@@ -121,7 +121,11 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment),
+    ``"prev_worker_alive"`` (previous worker pid still alive on this host),
+    ``"prev_worker_cross_host_unknown"`` (previous worker recorded on a
+    different host; liveness cannot be verified from here, so respawn is
+    held rather than risking a duplicate writer)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -482,7 +486,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
-                    error=error, metadata=_stamp_prev_worker_pid_metadata(payload, pid),
+                    error=error, metadata=_stamp_prev_worker_pid_metadata(conn, tid, payload, pid),
                 )
                 _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
                 timed_out.append(tid)
@@ -594,7 +598,7 @@ def detect_stale_running(
                     if hb_age is not None
                     else "no heartbeat ever"
                 ) + f" after {int(elapsed)}s running",
-                metadata=_stamp_prev_worker_pid_metadata(payload, pid),
+                metadata=_stamp_prev_worker_pid_metadata(conn, tid, payload, pid),
             )
             _kb._append_event(conn, tid, "stale", payload, run_id=run_id)
             reclaimed.append(tid)
@@ -651,7 +655,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
                 conn, tid,
                 outcome="reclaimed", status="reclaimed",
                 error="orphaned running card (broken claim bookkeeping)",
-                metadata=_stamp_prev_worker_pid_metadata(payload, pid),
+                metadata=_stamp_prev_worker_pid_metadata(conn, tid, payload, pid),
             )
             _kb._insert_comment(
                 conn, tid, "dispatcher",
@@ -841,7 +845,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 conn, row["id"],
                 outcome=dead.run_outcome, status=dead.run_outcome,
                 error=dead.error_text,
-                metadata=_stamp_prev_worker_pid_metadata(dict(dead.event_payload), pid),
+                metadata=_stamp_prev_worker_pid_metadata(conn, row["id"], dict(dead.event_payload), pid),
             )
             _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
             sweep.exited_hook_payloads.append({
@@ -1098,28 +1102,67 @@ def _record_task_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event carrying it."""
+    """Record the spawned child's pid + emit a ``spawned`` event carrying it.
+
+    The event payload also carries the pid's non-reusable identity —
+    ``start_ticks``/``boot_id`` from ``/proc`` — read HERE, while the
+    process is freshly spawned and definitely alive. Reading it later (at
+    run-close time) is too late for several close paths: a worker reclaimed
+    as dead has, by construction, an unreadable ``/proc/<pid>`` by the time
+    the run closes. Best-effort: both keys are simply absent when unreadable
+    or off Linux, and every downstream reader treats their absence as
+    "identity unknown", falling back to the pre-existing heuristics.
+    """
+    payload: dict = {"pid": int(pid)}
+    start_ticks = _proc_start_ticks(int(pid))
+    boot_id = _linux_boot_id()
+    if start_ticks is not None and boot_id is not None:
+        payload["start_ticks"] = start_ticks
+        payload["boot_id"] = boot_id
     with _kb.write_txn(conn):
         conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        _kb._append_event(conn, task_id, "spawned", payload, run_id=run_id)
 
 
-def _stamp_prev_worker_pid_metadata(metadata: Optional[dict], pid: Optional[int]) -> dict:
-    """Merge ``prev_worker_pid``/``prev_worker_host`` into a run-closing
-    ``metadata`` dict so the prev-worker-alive guard survives event-table
-    garbage collection deleting the ``spawned``/``claimed`` rows for
-    done/archived tasks: the run row's own ``metadata`` JSON becomes a
-    second, durable pid source that is never pruned. Merges rather than
-    replaces so callers keep their existing metadata fields. A falsy
-    ``pid`` leaves ``metadata`` unchanged.
+def _stamp_prev_worker_pid_metadata(
+    conn: sqlite3.Connection, task_id: str, metadata: Optional[dict], pid: Optional[int],
+) -> dict:
+    """Merge ``prev_worker_pid``/``prev_worker_host`` (+ non-reusable identity,
+    when available) into a run-closing ``metadata`` dict so the
+    prev-worker-alive guard survives event-table garbage collection deleting
+    the ``spawned``/``claimed`` rows for done/archived tasks: the run row's
+    own ``metadata`` JSON becomes a second, durable pid source that is never
+    pruned. Merges rather than replaces so callers keep their existing
+    metadata fields. A falsy ``pid`` leaves ``metadata`` unchanged.
+
+    ``prev_worker_start_ticks``/``prev_worker_boot_id`` are carried forward
+    from this run's ``spawned`` event (stamped there by :func:`_set_worker_pid`
+    while the pid was fresh) so the non-reusable-identity comparison in
+    :func:`_prev_worker_identity_plausible` has data to compare against even
+    after event-table GC deletes the ``spawned`` row itself.
     """
     merged = dict(metadata or {})
-    if pid:
-        merged["prev_worker_pid"] = int(pid)
-        merged["prev_worker_host"] = _kb._host_prefix().rstrip(":")
+    if not pid:
+        return merged
+    merged["prev_worker_pid"] = int(pid)
+    merged["prev_worker_host"] = _kb._host_prefix().rstrip(":")
+    run_id = _kb._current_run_id(conn, task_id)
+    if run_id is not None:
+        spawned = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? "
+            "AND kind = 'spawned' ORDER BY id DESC LIMIT 1",
+            (task_id, run_id),
+        ).fetchone()
+        if spawned is not None:
+            sp_payload = _kb._json_dict(spawned["payload"])
+            if sp_payload.get("pid") == int(pid) and (
+                "start_ticks" in sp_payload and "boot_id" in sp_payload
+            ):
+                merged["prev_worker_start_ticks"] = sp_payload["start_ticks"]
+                merged["prev_worker_boot_id"] = sp_payload["boot_id"]
     return merged
 
 
@@ -1129,9 +1172,18 @@ def _prev_worker_alive_probe(pid: Optional[int]) -> bool:
     Deliberately independent of the module-attribute ``_kb._pid_alive``
     (which in-process code, including test helpers, can monkeypatch to
     ``False`` and silently disable a liveness check). This reads
-    ``/proc/<pid>/status`` directly on Linux, falling back to a bare
-    ``os.kill(pid, 0)`` existence probe on other platforms, so patching
-    ``kb._pid_alive`` alone cannot silence this guard.
+    ``/proc/<pid>/status`` directly on Linux; on Windows it routes through
+    ``gateway.status._pid_exists`` (psutil, else the OpenProcess/
+    WaitForSingleObject ctypes path) rather than ``os.kill(pid, 0)`` —
+    ``sig=0`` on Windows is ``CTRL_C_EVENT`` broadcast to the whole console
+    group (bpo-14484), so calling it directly here could signal or kill an
+    unrelated process sharing the console, not merely probe existence. Both
+    ``gateway.status`` functions are imported fresh on every call (not bound
+    at module load), so patching ``kb._pid_alive``/``kbd._pid_alive``
+    elsewhere still cannot silence this guard; only a direct patch of
+    ``gateway.status._pid_exists`` itself would, and nothing here does that.
+    Falls back to a bare ``os.kill(pid, 0)`` existence probe on other
+    (POSIX, non-Linux) platforms.
     """
     if not pid or pid <= 0:
         return False
@@ -1145,6 +1197,9 @@ def _prev_worker_alive_probe(pid: Optional[int]) -> bool:
         except (FileNotFoundError, PermissionError, OSError):
             return False
         return True
+    if sys.platform == "win32":
+        from gateway.status import _pid_exists
+        return _pid_exists(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1174,38 +1229,88 @@ instead of silently for a process's entire (possibly unrelated,
 recycled-pid) lifetime."""
 
 
-def _proc_start_epoch(pid: int) -> Optional[float]:
-    """Wall-clock epoch time ``pid`` started, derived from ``/proc/<pid>/stat``
-    field 22 (``starttime``, clock ticks since boot) plus ``/proc/uptime``.
-    Linux-only; returns ``None`` on any other platform or read/parse failure
-    (process gone, permission denied, malformed ``/proc`` entry)."""
+def _proc_start_ticks(pid: int) -> Optional[int]:
+    """Raw ``starttime`` (``/proc/<pid>/stat`` field 22, clock ticks since
+    boot) for ``pid``. Linux-only; ``None`` on any other platform or
+    read/parse failure (process gone, permission denied, malformed ``/proc``
+    entry). Combined with :func:`_linux_boot_id`, this pair is a non-reusable
+    process identity: it changes across every reboot (the boot id) and is a
+    monotonic per-boot counter (the ticks), so an exact match on both proves
+    the SAME process incarnation, unlike a bare pid number, which the OS
+    freely recycles.
+    """
     if sys.platform != "linux":
         return None
     try:
-        with open("/proc/uptime", "r", encoding="utf-8") as f:
-            uptime_seconds = float(f.read().split()[0])
-        boot_epoch = time.time() - uptime_seconds
         with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as f:
             stat = f.read()
         # Fields after the last ')' start at field 3 (state); starttime is
         # field 22, i.e. index 22 - 3 = 19 in that tail split.
         after_comm = stat.rsplit(")", 1)[1].split()
-        starttime_ticks = int(after_comm[19])
-        clk_tck = os.sysconf("SC_CLK_TCK") or 100
-        return boot_epoch + (starttime_ticks / clk_tck)
+        return int(after_comm[19])
     except (FileNotFoundError, PermissionError, OSError, IndexError, ValueError):
+        return None
+
+
+def _linux_boot_id() -> Optional[str]:
+    """This boot's ``/proc/sys/kernel/random/boot_id`` (a UUID regenerated
+    every boot). ``None`` on any non-Linux platform or read failure — the
+    residual-imprecision case: without a boot id, ``_proc_start_ticks`` alone
+    cannot disambiguate two incarnations across a reboot (ticks reset to
+    small values each boot), so the non-reusable-identity comparison in
+    :func:`_prev_worker_identity_plausible` requires both.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+
+def _proc_start_epoch(pid: int) -> Optional[float]:
+    """Wall-clock epoch time ``pid`` started, derived from
+    :func:`_proc_start_ticks` plus ``/proc/uptime``. Linux-only; ``None`` on
+    any other platform or read/parse failure."""
+    if sys.platform != "linux":
+        return None
+    ticks = _proc_start_ticks(pid)
+    if ticks is None:
+        return None
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as f:
+            uptime_seconds = float(f.read().split()[0])
+        boot_epoch = time.time() - uptime_seconds
+        clk_tck = os.sysconf("SC_CLK_TCK") or 100
+        return boot_epoch + (ticks / clk_tck)
+    except (OSError, ValueError):
         return None
 
 
 def _prev_worker_identity_plausible(
     pid: int, *, workspace_path: Optional[str], started_at: Optional[int],
+    recorded_start_ticks: Optional[int] = None, recorded_boot_id: Optional[str] = None,
 ) -> bool:
     """Strong-signal check that an alive ``pid`` is plausibly OUR previous
     worker, not an unrelated process that now happens to hold a recycled pid
     number, or a bystander process an operator happens to be running.
 
-    Two independent STRONG signals, either is sufficient to confirm identity:
+    Three signals, most decisive first:
 
+    0. Non-reusable identity. ``recorded_start_ticks``/``recorded_boot_id``
+       (persisted at spawn time onto the run's durable metadata stamp — see
+       ``_stamp_prev_worker_pid_metadata``) compared EXACTLY against
+       ``pid``'s live ``/proc/<pid>/stat`` start ticks and the current boot
+       id. An exact match on both proves this is the same process
+       incarnation ever recorded; a mismatch proves the pid was reused by
+       something else since — decisive either way, so this signal short-
+       circuits the two below rather than falling through to them. Only
+       evaluated when BOTH the recorded values and the live current values
+       are readable (Linux, ``/proc`` accessible); this is tighter than the
+       broad 600s time-window tolerance below, which a pid reused faster
+       than that window (a real risk under process-table churn) could slip
+       through undetected.
     1. ``/proc/<pid>/cmdline`` contains the card's workspace path verbatim.
        A bare ``hermes`` substring, or ``hermes`` plus an unrelated word
        (``grep``, ``vim``, a log path), is deliberately NOT enough — that
@@ -1217,11 +1322,25 @@ def _prev_worker_identity_plausible(
        genuinely still-running worker started at or shortly after the run
        began; a pid reused long after the original process exited will not.
 
-    Non-Linux, or when NEITHER signal can be evaluated (unreadable ``/proc``
-    entries, no ``started_at``): falls back to ``True`` — err toward
-    blocking a real respawn over risking a duplicate writer (the
-    pre-existing liveness-only behaviour).
+    Residual imprecision: signal 0 needs Linux with a readable
+    ``/proc/sys/kernel/random/boot_id`` on both sides (recorded and live);
+    on any platform where that is unavailable — non-Linux entirely, or a
+    Linux host missing the boot-id file — identity falls back to the
+    weaker signals 1/2 exactly as before this change, including their
+    pid-reuse-under-churn exposure. Non-Linux, or when NEITHER signal 1 nor
+    2 can be evaluated (unreadable ``/proc`` entries, no ``started_at``):
+    falls back to ``True`` — err toward blocking a real respawn over
+    risking a duplicate writer (the pre-existing liveness-only behaviour).
     """
+    if recorded_start_ticks is not None and recorded_boot_id is not None:
+        current_ticks = _proc_start_ticks(pid)
+        current_boot_id = _linux_boot_id()
+        if current_ticks is not None and current_boot_id is not None:
+            return (
+                current_ticks == recorded_start_ticks
+                and current_boot_id == recorded_boot_id
+            )
+
     cmdline_match = False
     if sys.platform == "linux":
         try:
@@ -1242,16 +1361,43 @@ def _prev_worker_identity_plausible(
     return True
 
 
+_PREV_WORKER_ALIVE_REASON = "prev_worker_alive"
+_PREV_WORKER_CROSS_HOST_REASON = "prev_worker_cross_host_unknown"
+"""Fail-closed cross-host guard reason (Ask 2): the closing run's recorded
+worker host differs from this host, so its liveness cannot be verified from
+here (no ``/proc`` route to a remote pid). Originally this case fell through
+to ``None`` (fail-open — a legitimate host migration must not be blocked
+forever by a pid number meaningless on a NEW host), but that same fail-open
+path also covered the case where the recorded worker is the SAME process
+that simply hasn't been reassigned, still running on its original host,
+which dispatch could then duplicate. Conservative choice: hold the card
+(this reason) rather than silently spawn a second worker; a human takeover
+(unblocking the card, which clears ``worker_pid``/host bookkeeping on
+reclaim) is required when the operator has confirmed the remote worker is
+in fact gone."""
+
+_PREV_WORKER_GUARD_REASONS = (_PREV_WORKER_ALIVE_REASON, _PREV_WORKER_CROSS_HOST_REASON)
+"""Both reasons ``_dispatch_lane_task`` treats identically: never spawn,
+escalate to ``needs_input`` after ``_PREV_WORKER_ALIVE_ESCALATE_AFTER``
+consecutive ticks so a stuck card always surfaces to a human."""
+
+
 def _prev_worker_alive_guard_info(
     conn: sqlite3.Connection, task_id: str,
 ) -> Optional[dict]:
-    """``{"pid", "host", "run_id"}`` when the most recently CLOSED run's
-    worker pid is still alive on this host AND plausibly identifies as that
-    worker (see :func:`_prev_worker_identity_plausible`), else ``None``.
+    """``{"pid", "host", "run_id", "reason"}`` when the most recently
+    CLOSED run's worker pid either (a) is still alive on THIS host and
+    plausibly identifies as that worker (see
+    :func:`_prev_worker_identity_plausible`; ``reason="prev_worker_alive"``),
+    or (b) was recorded on a DIFFERENT host whose liveness this host cannot
+    verify (``reason="prev_worker_cross_host_unknown"`` — see
+    :data:`_PREV_WORKER_CROSS_HOST_REASON`). ``None`` when neither applies —
+    spawn proceeds.
 
     Pid source, in order:
     1. The closing run row's own ``metadata`` JSON (``prev_worker_pid`` /
-       ``prev_worker_host``), stamped by every ``_end_run`` call site that
+       ``prev_worker_host`` / ``prev_worker_start_ticks`` /
+       ``prev_worker_boot_id``), stamped by every ``_end_run`` call site that
        still knows the pid at close time (see ``_stamp_prev_worker_pid_metadata``).
        This is the durable source: it survives event-table garbage
        collection deleting the ``spawned``/``claimed`` event rows for
@@ -1268,11 +1414,8 @@ def _prev_worker_alive_guard_info(
 
     Only the latest ended ``task_runs`` row is consulted — an older run's pid
     must never block a task whose latest attempt already ended cleanly. A
-    claim lock (or stamped host) from another host is left alone (``host_prefix``
-    mismatch): a card legitimately resumed elsewhere must not be blocked
-    forever by a pid number that means nothing on this machine. A pid that
-    fails the identity check (recycled/unrelated process) does NOT block —
-    spawn proceeds exactly as if the pid were dead.
+    pid that fails the identity check on THIS host (recycled/unrelated
+    process) does NOT block — spawn proceeds exactly as if the pid were dead.
     """
     run_row = conn.execute(
         "SELECT id, metadata, started_at FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
@@ -1289,11 +1432,14 @@ def _prev_worker_alive_guard_info(
     ).fetchone()
     workspace_path = _kb._row_get(task_row, "workspace_path") if task_row is not None else None
 
-    def _alive_and_identified(pid: int) -> bool:
+    def _alive_and_identified(
+        pid: int, *, recorded_start_ticks: Optional[int] = None, recorded_boot_id: Optional[str] = None,
+    ) -> bool:
         if not _prev_worker_alive_probe(pid):
             return False
         return _prev_worker_identity_plausible(
             pid, workspace_path=workspace_path, started_at=run_started_at,
+            recorded_start_ticks=recorded_start_ticks, recorded_boot_id=recorded_boot_id,
         )
 
     def _append_no_evidence_marker_once() -> None:
@@ -1319,11 +1465,22 @@ def _prev_worker_alive_guard_info(
     if meta_pid:
         meta_host = run_metadata.get("prev_worker_host") or ""
         if meta_host and not f"{meta_host}:".startswith(host_prefix):
-            return None
+            # Cross-host fail-closed (Ask 2): see _PREV_WORKER_CROSS_HOST_REASON.
+            return {
+                "pid": int(meta_pid), "host": meta_host, "run_id": run_id,
+                "reason": _PREV_WORKER_CROSS_HOST_REASON,
+            }
         pid = int(meta_pid)
-        if not _alive_and_identified(pid):
+        if not _alive_and_identified(
+            pid,
+            recorded_start_ticks=run_metadata.get("prev_worker_start_ticks"),
+            recorded_boot_id=run_metadata.get("prev_worker_boot_id"),
+        ):
             return None
-        return {"pid": pid, "host": host_prefix.rstrip(":"), "run_id": run_id}
+        return {
+            "pid": pid, "host": host_prefix.rstrip(":"), "run_id": run_id,
+            "reason": _PREV_WORKER_ALIVE_REASON,
+        }
 
     spawned = conn.execute(
         "SELECT payload FROM task_events "
@@ -1334,7 +1491,8 @@ def _prev_worker_alive_guard_info(
     if spawned is None:
         _append_no_evidence_marker_once()
         return None
-    pid = _kb._json_dict(spawned["payload"]).get("pid")
+    spawned_payload = _kb._json_dict(spawned["payload"])
+    pid = spawned_payload.get("pid")
     if not pid:
         _append_no_evidence_marker_once()
         return None
@@ -1347,12 +1505,31 @@ def _prev_worker_alive_guard_info(
     ).fetchone()
     lock = _kb._json_dict(claimed["payload"]).get("lock", "") if claimed else ""
     if not lock.startswith(host_prefix):
+        # Cross-host fail-closed (Ask 2): a claim lock naming another host is
+        # the fallback-source equivalent of a stamped ``prev_worker_host``
+        # mismatch above. An empty/missing lock means no host evidence at
+        # all (older data, or a lock cleared on close) — that genuinely
+        # cannot distinguish "this host" from "some other host", so it
+        # keeps the pre-existing fail-open ``None`` rather than holding on
+        # no evidence whatsoever.
+        if lock:
+            return {
+                "pid": int(pid), "host": lock.split(":", 1)[0], "run_id": run_id,
+                "reason": _PREV_WORKER_CROSS_HOST_REASON,
+            }
         return None
 
     pid = int(pid)
-    if not _alive_and_identified(pid):
+    if not _alive_and_identified(
+        pid,
+        recorded_start_ticks=spawned_payload.get("start_ticks"),
+        recorded_boot_id=spawned_payload.get("boot_id"),
+    ):
         return None
-    return {"pid": pid, "host": host_prefix.rstrip(":"), "run_id": run_id}
+    return {
+        "pid": pid, "host": host_prefix.rstrip(":"), "run_id": run_id,
+        "reason": _PREV_WORKER_ALIVE_REASON,
+    }
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1376,21 +1553,24 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"prev_worker_alive"`` (defence in depth: the just-closed run's worker
-    pid is still alive on this host, regardless of why the run was closed;
-    applies to BOTH lanes, unlike the two duplicate-*work* guards below),
-    then ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the
-    cooldown; checked BEFORE ``blocker_auth`` because the requeue stamps a
-    quota-flavored ``last_failure_error`` that would otherwise park the task
-    forever — that path never increments ``consecutive_failures``),
-    ``"blocker_auth"`` (quota/auth pattern; the breaker still trips
-    eventually), then for the ready lane only ``"recent_success"`` (completed
-    run within the window, unless a re-queue event arrived after it — a
-    deliberate re-run) and ``"active_pr"`` (PR URL in a recent comment;
-    re-spawning risks a duplicate PR). The review lane skips the last two:
-    they are the *inputs* to a review handoff. Stale / dead claim locks are
-    NOT a guard reason — the reclaim passes own those; ``prev_worker_alive``
-    only fires while the pid is genuinely still running.
+    ``"prev_worker_alive"`` / ``"prev_worker_cross_host_unknown"`` (defence
+    in depth: the just-closed run's worker pid is either still alive on this
+    host, or was recorded on a different host whose liveness this host
+    cannot verify — see :func:`_prev_worker_alive_guard_info` — regardless of
+    why the run was closed; applies to BOTH lanes, unlike the two
+    duplicate-*work* guards below), then ``"rate_limit_cooldown"`` (latest
+    run ``rate_limited`` within the cooldown; checked BEFORE ``blocker_auth``
+    because the requeue stamps a quota-flavored ``last_failure_error`` that
+    would otherwise park the task forever — that path never increments
+    ``consecutive_failures``), ``"blocker_auth"`` (quota/auth pattern; the
+    breaker still trips eventually), then for the ready lane only
+    ``"recent_success"`` (completed run within the window, unless a re-queue
+    event arrived after it — a deliberate re-run) and ``"active_pr"`` (PR URL
+    in a recent comment; re-spawning risks a duplicate PR). The review lane
+    skips the last two: they are the *inputs* to a review handoff. Stale /
+    dead claim locks are NOT a guard reason — the reclaim passes own those;
+    the prev-worker reasons fire only while the pid is genuinely still
+    running (same host) or its host cannot be ruled out (cross-host).
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1402,8 +1582,11 @@ def check_respawn_guard(
     # 0. Defence in depth: a still-alive previous worker must never be joined
     #    by a second writer, independent of lane and independent of whether
     #    the prior run's classification (crashed/timed_out/etc.) was correct.
-    if _prev_worker_alive_guard_info(conn, task_id) is not None:
-        return "prev_worker_alive"
+    #    Cross-host: unverifiable liveness fails CLOSED (Ask 2) rather than
+    #    silently spawning beside a worker that may still be running elsewhere.
+    prev_worker_info = _prev_worker_alive_guard_info(conn, task_id)
+    if prev_worker_info is not None:
+        return prev_worker_info["reason"]
 
     now = int(time.time())
 
@@ -1747,14 +1930,16 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
 
 
 def _count_consecutive_prev_worker_alive_guards(
-    conn: sqlite3.Connection, task_id: str, pid: int,
+    conn: sqlite3.Connection, task_id: str, pid: int, reason: str = _PREV_WORKER_ALIVE_REASON,
 ) -> int:
     """Count consecutive trailing ``respawn_guarded`` events (most recent
-    first) whose ``reason`` is ``prev_worker_alive`` and whose ``pid``
-    matches the given pid, stopping at the first event of any other kind or
-    a differing pid (a released-then-reguarded pid, or an intervening event
-    of another kind, restarts the count — this bounds a single sustained
-    stall, not the task's lifetime total).
+    first) whose ``reason`` matches (``prev_worker_alive`` or
+    ``prev_worker_cross_host_unknown``) and whose ``pid`` matches the given
+    pid, stopping at the first event of any other kind, a differing reason,
+    or a differing pid (a released-then-reguarded pid, an intervening event
+    of another kind, or a same-pid reason FLIP — e.g. cross-host resolving
+    to same-host-alive on a later tick — restarts the count — this bounds a
+    single sustained stall, not the task's lifetime total).
     """
     count = 0
     for row in conn.execute(
@@ -1765,7 +1950,7 @@ def _count_consecutive_prev_worker_alive_guards(
         if row["kind"] != "respawn_guarded":
             break
         payload = _kb._json_dict(row["payload"])
-        if payload.get("reason") != "prev_worker_alive" or payload.get("pid") != pid:
+        if payload.get("reason") != reason or payload.get("pid") != pid:
             break
         count += 1
     return count
@@ -1841,34 +2026,36 @@ def _dispatch_lane_task(
         if not dry_run:
             event_payload: dict = {"reason": guard_reason}
             info = None
-            if guard_reason == "prev_worker_alive":
+            if guard_reason in _PREV_WORKER_GUARD_REASONS:
                 info = _prev_worker_alive_guard_info(conn, task_id)
                 if info is not None:
                     event_payload.update(info)
-            # Bound: even a genuinely alive previous worker must not park the
-            # card forever invisibly. Count consecutive prev_worker_alive
-            # respawn_guarded events for the same task+pid; at
-            # _PREV_WORKER_ALIVE_ESCALATE_AFTER, stop appending another
-            # per-tick respawn_guarded row and instead emit ONE
-            # respawn_guard_escalated event and block the card as
+            # Bound: even a genuinely alive (or unverifiable cross-host)
+            # previous worker must not park the card forever invisibly.
+            # Count consecutive respawn_guarded events for the same
+            # task+pid+reason; at _PREV_WORKER_ALIVE_ESCALATE_AFTER, stop
+            # appending another per-tick respawn_guarded row and instead
+            # emit ONE respawn_guard_escalated event and block the card as
             # needs_input naming the pid/run — a human decides whether the
-            # worker is truly stuck or the guard's window is too short.
-            if guard_reason == "prev_worker_alive" and info is not None:
+            # worker is truly stuck (or gone from the other host) or the
+            # guard's window is too short.
+            if guard_reason in _PREV_WORKER_GUARD_REASONS and info is not None:
                 if _prev_worker_alive_already_escalated(conn, task_id, info["pid"]):
                     # Already escalated for this pid: stop the per-tick spam
                     # entirely, in BOTH lanes.
                     return False
                 consecutive = _count_consecutive_prev_worker_alive_guards(
-                    conn, task_id, info["pid"],
+                    conn, task_id, info["pid"], reason=guard_reason,
                 ) + 1
                 if consecutive >= _PREV_WORKER_ALIVE_ESCALATE_AFTER:
                     escalate_payload = {**info, "consecutive": consecutive}
                     with _kb.write_txn(conn):
                         _kb._append_event(conn, task_id, "respawn_guard_escalated", escalate_payload)
                     reason_text = (
-                        f"prev_worker_alive guard held for {consecutive} consecutive ticks "
+                        f"{guard_reason} guard held for {consecutive} consecutive ticks "
                         f"(pid={info['pid']} host={info['host']} run_id={info['run_id']}); "
-                        "needs a human to confirm the worker is genuinely stuck."
+                        "needs a human to confirm the worker is genuinely stuck "
+                        "(or, for a cross-host hold, genuinely gone)."
                     )
                     blocked = _kb.block_task(
                         conn, task_id, reason=reason_text, kind="needs_input",

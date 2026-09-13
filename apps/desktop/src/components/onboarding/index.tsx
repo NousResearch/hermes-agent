@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
@@ -11,8 +12,14 @@ import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
+import { FREE_TIER_MODEL } from '@/store/free-tier'
+import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
+  ackFreeTierIntro,
+  clearFreeTierIntro,
   clearPendingProviderOAuth,
   closeManualOnboarding,
   confirmOnboardingModel,
@@ -24,14 +31,18 @@ import {
   refreshOnboarding,
   saveOnboardingApiKey,
   setOnboardingMode,
+  startManualOnboarding,
   startProviderOAuth
 } from '@/store/onboarding'
+import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
+import { DecodedLabel } from './glyph'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   sortProviders
@@ -41,11 +52,14 @@ export {
   FeaturedProviderRow,
   FireworksProviderRow,
   KeyProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
   sortProviders
 } from './providers'
+
+import { requestGatewayForProfile } from '@/store/gateway'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -188,18 +202,22 @@ export function DesktopOnboardingOverlay({
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted, profile })
-  ctxRef.current = { requestGateway, onCompleted, profile }
+  const introReveal = useStore($introReveal)
+  useStore($onboardingSurfaces)
+  const onCompletedRef = useRef(onCompleted)
+  onCompletedRef.current = onCompleted
+  const targetProfile = onboarding.targetProfile ?? profile
 
+  // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
-      requestGateway: (...args) => ctxRef.current.requestGateway(...args),
-      onCompleted: () => ctxRef.current.onCompleted?.(),
-      get profile() {
-        return ctxRef.current.profile
-      }
+      profile: targetProfile,
+      requestGateway: onboarding.targetProfile
+        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+        : requestGateway,
+      onCompleted: () => onCompletedRef.current?.()
     }),
-    []
+    [onboarding.targetProfile, targetProfile, requestGateway]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
@@ -222,6 +240,38 @@ export function DesktopOnboardingOverlay({
 
     setLeaving(true)
     window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
+  }
+
+  // The free-tier intro's three doors share one exit: consume the notice, play
+  // the same dissolve, then run whatever the door opens onto. `after` runs at
+  // the END so a sign-in dialog or provider picker never appears behind a
+  // still-fading overlay.
+  const dismissFreeTierIntro = async (after?: () => void) => {
+    if (leaving) {
+      return
+    }
+
+    // The screen is keyed on the backend's notice flag: only a recorded ack takes it down.
+    // A failed ack leaves it in place for another try rather than hiding the only notice.
+    if (!(await ackFreeTierIntro(ctx))) {
+      return
+    }
+
+    const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (reduce) {
+      clearFreeTierIntro()
+      after?.()
+
+      return
+    }
+
+    setLeaving(true)
+    window.setTimeout(() => {
+      setLeaving(false)
+      clearFreeTierIntro()
+      after?.()
+    }, ONBOARDING_EXIT_MS)
   }
 
   useEffect(() => {
@@ -260,19 +310,26 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
+  if (
+    !onboarding.manual &&
+    (introReveal.phase !== 'hidden' || onboardingSurfaceActive() || shouldPlayFirstRunIntro(onboarding.firstRunSkipped))
+  ) {
+    return null
+  }
+
   // Mount from frame 1 so we replace the boot overlay seamlessly. The
   // configured field stays null until the runtime check resolves; only then
   // do we know whether to dismiss (true) or surface the picker (false).
   // EXCEPTION: manual mode (user opened the selector from a working app to
   // add/switch a provider) shows the overlay regardless of configured state.
-  if (onboarding.configured === true && !onboarding.manual) {
+  if (onboarding.configured === true && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 
   // The user chose "I'll choose a provider later" on first run. Stay out of the
   // way on every subsequent launch — they re-enter via Settings → Providers
   // (manual mode), which sets manual=true and bypasses this gate.
-  if (onboarding.firstRunSkipped && !onboarding.manual) {
+  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 
@@ -293,11 +350,15 @@ export function DesktopOnboardingOverlay({
   // In manual mode the app is already configured, so the flow is "ready"
   // immediately — no runtime gate needed. Otherwise wait for the readiness
   // check (configured === false) before showing the picker.
-  const ready = onboarding.manual || (enabled && onboarding.configured === false)
-  const showPicker = flow.status === 'idle' || flow.status === 'success'
+  // The free-tier intro owns the overlay while it is up: the app is already
+  // configured, so there is no picker to show and no runtime gate to wait on.
+  // A manual open (the user asked for the picker) outranks it.
+  const freeTierIntro = onboarding.freeTierReady && !onboarding.manual && flow.status === 'idle'
+  const ready = freeTierIntro || onboarding.manual || (enabled && onboarding.configured === false)
+  const showPicker = !freeTierIntro && (flow.status === 'idle' || flow.status === 'success')
   // The final "you're in" screen drops the card chrome and floats centered on
   // the surface — same bare, cinematic treatment as the connecting overlay.
-  const bare = ready && !showPicker && flow.status === 'confirming_model'
+  const bare = ready && (freeTierIntro || (!showPicker && flow.status === 'confirming_model'))
 
   return (
     <div
@@ -308,6 +369,10 @@ export function DesktopOnboardingOverlay({
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app until onboarding finishes — must stay filled under
+      // window glass or the shell shows through. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
     >
       <div
         className={cn(
@@ -337,7 +402,9 @@ export function DesktopOnboardingOverlay({
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? (
-            showPicker ? (
+            freeTierIntro ? (
+              <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
+            ) : showPicker ? (
               <Picker ctx={ctx} />
             ) : (
               <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
@@ -346,6 +413,70 @@ export function DesktopOnboardingOverlay({
             <Preparing boot={boot} />
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The one-time free-tier welcome, shown when the free tier is what serves this
+ * user. Bare and centered like the model-confirm screen it stands in for: this
+ * IS their "you're in" moment, so it names the route, its model and its price,
+ * and offers the two ways out of it (a real account, or a provider of their
+ * own) without making either the default.
+ */
+function FreeTierReadyPanel({
+  leaving,
+  onDismiss
+}: {
+  leaving: boolean
+  onDismiss: (after?: () => void) => Promise<void>
+}) {
+  const { t } = useI18n()
+  const copy = t.freeTier
+
+  return (
+    <div className="grid place-items-center gap-7 py-6 text-center">
+      <DecodedLabel leaving={leaving} text={copy.readyTitle} />
+
+      <div
+        className={cn(
+          'grid justify-items-center gap-1.5 transition duration-[360ms] ease-out',
+          leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[0.625rem] uppercase tracking-[0.2em] text-muted-foreground">
+            {t.onboarding.defaultModel}
+          </span>
+          <Badge size="xs" variant="success">
+            {t.onboarding.freeTier}
+          </Badge>
+        </div>
+        <p className="font-mono text-base">{FREE_TIER_MODEL}</p>
+        <p className="font-mono text-xs text-muted-foreground">{copy.readyCaption}</p>
+      </div>
+
+      <div
+        className={cn(
+          'grid justify-items-center gap-2 transition duration-[360ms] ease-out',
+          leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+        )}
+      >
+        <Button onClick={() => void onDismiss()} type="button">
+          {copy.begin}
+        </Button>
+        <Button onClick={() => void onDismiss(() => openFreeTierSignIn())} size="xs" type="button" variant="text">
+          {copy.signInInstead}
+        </Button>
+        <Button
+          onClick={() => void onDismiss(() => startManualOnboarding(null))}
+          size="xs"
+          type="button"
+          variant="text"
+        >
+          {copy.otherProviders}
+        </Button>
       </div>
     </div>
   )
@@ -474,10 +605,29 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const collapsible = Boolean(featured)
   const showRest = !collapsible || showAll
 
+  // "Run models locally" leaves the picker for Settings -> Providers ->
+  // Local Models, where install/download live. First-run: persist the skip
+  // (same contract as ChooseLaterLink) so the blocking overlay never
+  // re-nags; manual mode just closes. window.location keeps this picker
+  // router-independent (it renders outside the route tree on first run).
+  const openLocalModels = () => {
+    if (manual) {
+      closeManualOnboarding()
+    } else {
+      dismissFirstRunOnboarding()
+    }
+
+    window.location.hash = '#/settings?tab=providers&pview=local'
+  }
+
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {/* The no-account path: everything runs on this machine. Shipped
+            behind the --local launch flag. (Fireworks moved into the
+            expanded list on main.) */}
+        {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
         {showRest ? (
           <>
             {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS

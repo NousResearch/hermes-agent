@@ -94,8 +94,8 @@ CLI 界面中使用的文字字符串。
 |----|------|--------|
 | `agent_name` | 横幅标题和状态显示中的名称 | `Hermes Agent` |
 | `welcome` | CLI 启动时显示的欢迎消息 | `Welcome to Hermes Agent! Type your message or /help for commands.` |
-| `goodbye` | 退出时显示的消息 | `Goodbye! ⚕` |
-| `response_label` | 响应框标题上的标签 | ` ⚕ Hermes ` |
+| `goodbye` | 退出时显示的消息 | `Goodbye! ☤` |
+| `response_label` | 响应框标题上的标签 | ` ☤ Hermes ` |
 | `prompt_symbol` | 用户输入 prompt 前的符号（裸 token，渲染器会在后面添加空格） | `❯` |
 | `help_header` | `/help` 命令输出的标题文字 | `(^_^)? Available Commands` |
 

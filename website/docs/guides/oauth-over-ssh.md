@@ -44,6 +44,14 @@ If your provider isn't in the table, you don't need a tunnel.
 
 ## MCP Servers
 
+**Desktop Skills → MCP:** the native app receives the callback on your computer
+and relays it to the selected connection and profile, so this flow does not need
+an SSH callback tunnel or `dashboard.public_url`. Tokens stay on the owning
+backend profile. Leaving the MCP tab or changing its scope cancels pending
+sign-in. If Desktop asks you to update the backend, update it before retrying;
+it does not fall back to a remote HTTP callback. The terminal workflows below
+are unchanged.
+
 Remote MCP servers (Linear, Sentry, Atlassian, Asana, Figma, etc.) use the same loopback redirect flow. Hermes auto-picks a free port per server and prints the authorize URL when the OAuth flow kicks off — either at startup (when a new server appears in `mcp_servers:`) or when you run `hermes mcp login <server>`.
 
 You have two ways to complete it from a remote host:

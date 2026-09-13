@@ -126,3 +126,35 @@ class TestGenericFailureRegression:
 
         assert "context window" in response
         assert "/compact" in response
+
+
+class TestNonempty400EnvelopeOverflowReply:
+    """Failed turns that already carry the HTTP 400 envelope as ``final_response`` must still get
+    the session-too-large rewrite (chat sanitizers would otherwise turn the envelope into a generic
+    'provider failed' reply); every other failure with text keeps that text."""
+
+    _ENVELOPE = 'HTTP 400: {"object":"error","model":"deepseek-v4-flash"}'
+
+    def _failed(self, text):
+        return {"final_response": text, "failed": True, "error": text, "api_calls": 1}
+
+    def test_long_history_rewrites_envelope_to_session_too_large(self):
+        response = _normalize_empty_agent_response(
+            self._failed(self._ENVELOPE), self._ENVELOPE, history_len=138,
+        )
+        assert "context window" in response.lower()
+        assert "/compact" in response
+        assert self._ENVELOPE not in response
+
+    @pytest.mark.parametrize("text", [
+        "Billing or credits exhausted: HTTP 429: You exceeded your current quota",
+        "API call failed after 3 retries: HTTP 429 rate limit exceeded",
+        "HTTP 401: invalid authentication token",
+    ])
+    def test_non_overflow_failure_keeps_its_own_text(self, text):
+        assert _normalize_empty_agent_response(self._failed(text), text, history_len=138) == text
+
+    def test_curated_overflow_text_from_the_agent_survives(self):
+        text = "Context compression timed out without reducing this conversation. No messages were dropped."
+        result = {**self._failed(text), "compression_exhausted": True}
+        assert _normalize_empty_agent_response(result, text, history_len=138) == text

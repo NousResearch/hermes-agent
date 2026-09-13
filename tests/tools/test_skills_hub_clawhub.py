@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
+import time
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub import ClawHubSource, SkillMeta
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_models import SkillMeta
 
 
 class _MockResponse:
@@ -378,6 +380,10 @@ class TestClawHubSource(unittest.TestCase):
             ("skillopt", "harrylabsj"),
         )
         self.assertEqual(
+            ClawHubSource._parse_identifier("clawhub/@harrylabsj/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+        self.assertEqual(
             ClawHubSource._parse_identifier("harrylabsj/skills/skillopt"),
             ("skillopt", "harrylabsj"),
         )
@@ -425,6 +431,7 @@ class TestClawHubSource(unittest.TestCase):
 
         self.assertIsNone(meta)
         mock_get.assert_called_once()
+
 
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):
@@ -674,6 +681,26 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         # 3 skills × 2 attempts each = 6 total HTTP calls (no abort)
         self.assertEqual(call_count["n"], 6)
         mock_sleep.assert_called()
+
+    @patch("tools.skills_hub_clawhub.httpx.get")
+    def test_enrich_owners_budget_stops_early_and_keeps_partial_results(self, mock_get):
+        """An exhausted budget ends enrichment early (the un-enriched rest ships without an
+        owner) instead of walking every remaining skill — the unbounded walk over 78k skills
+        at ~2s each is what timed out the CI index build for two months."""
+        def slow_owner(url, *args, **kwargs):
+            time.sleep(0.05)
+            return _MockResponse(status_code=200,
+                                 json_data={"skill": {"slug": "s"}, "owner": {"handle": "eve"}})
+        mock_get.side_effect = slow_owner
+        skills = [SkillMeta(name=f"s{i}", description="", source="clawhub",
+                            identifier=f"s{i}", trust_level="community") for i in range(200)]
+
+        enriched = self.src.enrich_owners(skills, max_workers=1, budget_seconds=0.3)
+
+        self.assertGreaterEqual(enriched, 1)
+        self.assertLess(enriched, 200)
+        self.assertEqual(enriched, sum(1 for s in skills if s.extra.get("owner") == "eve"))
+        self.assertLess(mock_get.call_count, 200)
 
 
 if __name__ == "__main__":

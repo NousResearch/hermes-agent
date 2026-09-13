@@ -9,10 +9,9 @@ import json
 import pytest
 
 from hermes_cli.foreign_sessions import (
+    _list_sessions,
     gather_foreign_sessions,
     import_foreign_session,
-    list_claude_sessions,
-    list_codex_sessions,
     parse_claude_session,
     parse_codex_session,
 )
@@ -171,8 +170,8 @@ def test_malformed_lines_are_skipped(tmp_path):
 def test_list_sessions(tmp_path):
     _write_claude_fixture(tmp_path)
     _write_codex_fixture(tmp_path)
-    claude = list_claude_sessions(tmp_path / ".claude" / "projects")
-    codex = list_codex_sessions(tmp_path / ".codex" / "sessions")
+    claude = _list_sessions("claude", tmp_path / ".claude" / "projects")
+    codex = _list_sessions("codex", tmp_path / ".codex" / "sessions")
     assert len(claude) == 1 and claude[0].source == "claude"
     assert claude[0].turn_count == 4
     assert len(codex) == 1 and codex[0].source == "codex"
@@ -186,8 +185,8 @@ def test_list_sessions(tmp_path):
 
 
 def test_list_sessions_missing_roots(tmp_path):
-    assert list_claude_sessions(tmp_path / "nope") == []
-    assert list_codex_sessions(tmp_path / "nope") == []
+    assert _list_sessions("claude", tmp_path / "nope") == []
+    assert _list_sessions("codex", tmp_path / "nope") == []
 
 
 # ── import into SessionDB ────────────────────────────────────────────────
@@ -259,3 +258,20 @@ def test_leading_assistant_gets_single_stub(tmp_path):
     _assert_alternating(parsed["turns"])
     assert len(parsed["turns"]) == 2
     assert parsed["turns"][0]["role"] == "user"
+
+
+def test_whitespace_only_user_turn_does_not_break_discovery(tmp_path):
+    """A blank user message (image-only / tool-only turn) must not crash listing; the title
+    comes from the first non-blank user line and the blank turn is dropped."""
+    project = tmp_path / ".claude" / "projects" / "p"
+    project.mkdir(parents=True)
+    f = project / "blank.jsonl"
+    lines = [
+        {"type": "user", "sessionId": "w", "message": {"role": "user", "content": "   \n  "}},
+        {"type": "assistant", "sessionId": "w", "message": {"role": "assistant", "content": "hi"}},
+        {"type": "user", "sessionId": "w", "message": {"role": "user", "content": "real question"}},
+    ]
+    f.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    listed = _list_sessions("claude", project.parent)
+    assert [s.title_guess for s in listed] == ["real question"]
+    assert listed[0].turn_count == 3  # leading assistant reply gets the user stub

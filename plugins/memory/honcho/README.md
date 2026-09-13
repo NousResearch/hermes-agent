@@ -54,6 +54,35 @@ Multi-pass `.chat()` reasoning about the user, appended after base context.
 
 Both layers are joined, then truncated to fit `contextTokens` budget via `_truncate_to_budget` (tokens × 4 chars, word-boundary safe).
 
+### Current-Query Recall (opt-in)
+
+Set `"recallSync": true` in `$HERMES_HOME/honcho.json` (at the root or under
+`hosts.hermes`), or enable **Current-query recall** in the memory settings or
+`hermes honcho setup`. An explicit host-level `false` overrides root-level `true`.
+
+In `context` and `hybrid` modes, due base and dialectic retrievals use the current
+user request before inference. The whole wait, including session initialization,
+optional query rewriting and dialectic passes, uses `timeout` / `requestTimeout`
+seconds, or 5 seconds when unset, zero, negative or nonfinite. The first-turn wait
+settings continue to apply only to the default asynchronous mode.
+
+Timeouts, errors, busy workers and cadence gaps omit recall instead of reusing
+another query's context. A timed-out worker keeps its slot until it exits; its
+late result is discarded. Base and dialectic retain independent cadences and
+reasoning/depth settings. A completed empty lookup consumes its cadence; failed,
+timed-out or superseded operations do not advance either cadence. Empty dialectic
+results also increase the existing backoff. No previous-query cache or generic
+user-representation/card fallback is substituted for an empty query-scoped lookup.
+Session changes, shutdown, and new turn generations discard in-flight results,
+even when turn numbers repeat. The wait deadline does not cancel an SDK HTTP call;
+the occupied worker slot bounds accumulation until that call returns.
+`injectionFrequency: "first-turn"` suppresses only later
+base retrievals. Every dialectic pass includes the current request, including when
+rewriting is disabled or empty. Generic prewarm and post-turn automatic retrieval
+are disabled; message writes continue normally. `tools` mode is unchanged.
+
+The default is `false`, preserving background recall and cache reuse across turns.
+
 ### Latest-Message Query Rewrite (opt-in)
 
 When `queryRewrite: true`, dialectic pass 0 first uses the shared
@@ -207,6 +236,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `recallMode` | string | `"hybrid"` | `"hybrid"` (auto-inject + tools), `"context"` (auto-inject only, tools hidden), `"tools"` (tools only, no injection). Legacy `"auto"` → `"hybrid"` |
+| `recallSync` | boolean | `false` | Wait for current-query automatic recall within `timeout` / `requestTimeout` (5s when unset or invalid); omit late/busy results. Context/hybrid only |
 | `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
@@ -223,6 +253,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 |-----|------|---------|-------------|
 | `sessionStrategy` | string | `"per-directory"` | `"per-directory"`, `"per-session"`, `"per-repo"` (git root), `"global"` |
 | `sessionPeerPrefix` | bool | `false` | Prepend peer name to session keys |
+| `a2aSessions` | bool | `true` | Write DMs from other bots into their own session per sender bot. `false` skips bot-authored turns |
 | `sessions` | object | `{}` | Manual directory-to-session-name mappings |
 
 #### Session Name Resolution
@@ -242,6 +273,10 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
 
 If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
+
+#### Bot DMs (`a2aSessions`)
+
+In bot mode another Hermes profile can DM this agent. The relay marks that turn with author `bot:<profile>`. A gateway platform marks a bot sender with its platform user id and a bot flag. Either way the turn never reaches the human's session. With `a2aSessions: true` (default) the turn is written into `<session>:a2a:<this agent's aiPeer>:<sanitized sender id>-<8-char digest>`: the sender's message under the sender's peer, the reply under this agent's `aiPeer`. The `aiPeer` segment keeps two profiles that share a `workspace` and a session key from writing one sender's DMs into one session. A `bot:` sender is identified by its full id, `bot:<profile>` for a profile on this machine or `bot:<connection>/<profile>` for one relayed through a Desktop connection. Its peer is the `userPeerAliases` entry for that full id if one exists, else the id after `bot:` sanitized, with no `runtimePeerPrefix`. When sanitizing changed the id, or the result equals `peerName` or an alias target, a digest suffix is added the same way `runtimePeerPrefix` users get one, so a bot never lands on the operator's peer and two connections' `coder` stay apart. A platform bot resolves like any other runtime user: alias, then prefix. `pinUserPeer` never collapses a bot onto `peerName`. A bot whose peer would equal this agent's `aiPeer` is skipped, and so is every bot turn when `a2aSessions: false`. During a bot-authored turn `honcho_conclude` and `honcho_profile` refuse writes, because conclusions and cards describe the human. Recall still reads the human's session only.
 
 #### What each strategy produces
 

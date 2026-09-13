@@ -174,6 +174,85 @@ def test_cold_profile_bitwarden_uses_profile_bootstrap_without_global_env(
     assert os.environ.get("ANTHROPIC_API_KEY") is None
 
 
+def test_single_profile_scoped_load_keeps_override_behavior(tmp_path, monkeypatch):
+    """Without multiplex, a scoped load keeps its historical override behaviour.
+
+    Ported from #77970 (@DonShelly): the guard must key on the multiplex flag,
+    not on the home override alone -- single-profile ``-p`` runs still load.
+    """
+    from agent import secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.delenv("HERMES_TEST_SHARED_ADAPTER_CONFIG", raising=False)
+    other_home = tmp_path / "other"
+    other_home.mkdir()
+    (other_home / ".env").write_text("HERMES_TEST_SHARED_ADAPTER_CONFIG=second\n")
+
+    was_active = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(False)
+    home_token = set_hermes_home_override(other_home)
+    try:
+        loaded = env_loader.load_hermes_dotenv(hermes_home=other_home)
+    finally:
+        secret_scope.set_multiplex_active(was_active)
+        reset_hermes_home_override(home_token)
+
+    try:
+        assert os.environ.get("HERMES_TEST_SHARED_ADAPTER_CONFIG") == "second"
+        assert (other_home / ".env") in loaded
+    finally:
+        os.environ.pop("HERMES_TEST_SHARED_ADAPTER_CONFIG", None)
+
+
+def test_multiplex_dotenv_load_hydrates_sources_without_global_env(
+    tmp_path, monkeypatch
+):
+    """The safe multiplex path must still refresh profile secret sources."""
+    from agent import secret_scope
+    import agent.secret_sources.bitwarden as bw_module
+    from agent.secret_sources import registry as reg_module
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "BWS_ACCESS_TOKEN=profile-bootstrap\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(
+        bw_module,
+        "fetch_bitwarden_secrets",
+        lambda **_kw: ({"ANTHROPIC_API_KEY": "profile-provider-key"}, []),
+    )
+    reg_module._reset_registry_for_tests()
+
+    was_active = secret_scope.is_multiplex_active()
+    home_token = set_hermes_home_override(tmp_path)
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert env_loader.load_hermes_dotenv(hermes_home=tmp_path) == []
+    finally:
+        secret_scope.set_multiplex_active(was_active)
+        reset_hermes_home_override(home_token)
+
+    assert env_loader.get_secret_source_values(tmp_path) == {
+        "ANTHROPIC_API_KEY": "profile-provider-key"
+    }
+    assert os.environ.get("BWS_ACCESS_TOKEN") is None
+    assert os.environ.get("ANTHROPIC_API_KEY") is None
+
+
 def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
     """The .op.env bootstrap file must feed cold-profile hydration.
 
@@ -521,3 +600,78 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
 
     # Coerced to the 300s default rather than raising ValueError.
     assert captured["cache_ttl_seconds"] == 300
+
+
+@pytest.fixture
+def _fresh_registry():
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    yield
+    reg_module._reset_registry_for_tests()
+
+
+def _register_fake_bulk_source(value_for_home):
+    """One bulk source supplying GLM_API_KEY, resolved per home."""
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import FetchResult, SecretSource
+
+    class _Fake(SecretSource):
+        name = "fakebulk"
+        label = "Fake"
+        shape = "bulk"
+
+        def fetch(self, cfg, home_path):
+            result = FetchResult()
+            result.secrets = {"GLM_API_KEY": value_for_home(Path(home_path))}
+            return result
+
+    reg_module.register_source(_Fake(), replace=True)
+
+
+def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_registry):
+    """#102041: a re-apply whose every key is ``skipped_existing`` (the previous apply's own write-back,
+    or a systemd ``EnvironmentFile=`` value) must still snapshot the home's effective values. Latching
+    an empty snapshot made ``build_profile_secret_scope`` drop every vault credential for the process
+    lifetime under multiplex."""
+    from agent.secret_scope import build_profile_secret_scope
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("secrets:\n  fakebulk:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    _register_fake_bulk_source(lambda _home: "vault-value")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.get_secret_source_values(home) == {"GLM_API_KEY": "vault-value"}
+
+    # cron per-fire / plugin-discovery re-pull: reset + reload with the key now shadowing itself.
+    env_loader.reset_secret_source_cache()
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert str(home.resolve()) in env_loader._APPLIED_HOMES
+    assert env_loader.hydrate_profile_secret_sources(home) == {"GLM_API_KEY": "vault-value"}
+    assert build_profile_secret_scope(home)["GLM_API_KEY"] == "vault-value"
+
+
+def test_home_scoped_reset_preserves_sibling_snapshot(tmp_path, monkeypatch, _fresh_registry):
+    """A cron fire / discovery refresh for one profile resets only THAT home: a multiplex sibling's
+    hydrated snapshot stays intact instead of running empty until it re-hydrates."""
+    home = tmp_path / ".hermes"
+    sibling = home / "profiles" / "b"
+    sibling.mkdir(parents=True)
+    for h in (home, sibling):
+        (h / "config.yaml").write_text("secrets:\n  fakebulk:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    _register_fake_bulk_source(lambda h: f"vault-{h.name}")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.hydrate_profile_secret_sources(sibling) == {"GLM_API_KEY": "vault-b"}
+
+    env_loader.reset_secret_source_cache(home)
+
+    assert env_loader.get_secret_source_values(home) == {}
+    assert env_loader.get_secret_source_values(sibling) == {"GLM_API_KEY": "vault-b"}
+    assert str(sibling.resolve()) in env_loader._APPLIED_HOMES

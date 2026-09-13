@@ -21,11 +21,13 @@
  * fenced out until a later page confirms the value we wrote.
  */
 
+import { atom } from 'nanostores'
+
 import { setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
@@ -39,13 +41,54 @@ const pending = new Set<string>()
 // with a cooldown so a row that never comes back can't fence itself forever.
 const unconfirmed = new Map<string, { at: number; value: boolean }>()
 
+/**
+ * The ids `unconfirmed` currently fences, for readers outside this module.
+ *
+ * The sidebar's Pinned section falls back to the server `pinned` flag for rows
+ * the local set doesn't know about, and that fallback needs the same fence the
+ * pull pass uses: a row whose flag our own in-flight write contradicts is not
+ * news, it's the past. Without it an unpin re-lists the session under Pinned
+ * until the next page lands.
+ *
+ * Re-published only when the key set actually changes, so a sidebar memo keyed
+ * on it survives an ordinary session refresh.
+ */
+export const $unconfirmedPinWrites = atom<ReadonlySet<string>>(new Set())
+
 // How long an unconfirmed write outranks a page that contradicts it. Long
 // enough to cover a list request issued just before the PATCH (those are the
 // slow ones), short enough that a genuine server-side change still wins.
 const WRITE_GUARD_MS = 10_000
 
+function publishUnconfirmed(): void {
+  const published = $unconfirmedPinWrites.get()
+
+  if (published.size === unconfirmed.size && [...unconfirmed.keys()].every(id => published.has(id))) {
+    return
+  }
+
+  $unconfirmedPinWrites.set(new Set(unconfirmed.keys()))
+}
+
 function profileFor(pinId: string): null | string | undefined {
-  return $sessions.get().find(row => sessionMatchesStoredId(row, pinId))?.profile
+  return loadedRowFor(pinId)?.profile
+}
+
+function loadedSessionRows(): SessionInfo[] {
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+}
+
+/**
+ * The row a stored pin id resolves to, across every slice. Same tie-break as
+ * `rowsByPinId`: when two profiles share the id, the write must target the
+ * row the pull adopted — the active gateway's — or an unpin PATCHes the other
+ * profile and the next page re-adopts the pin.
+ */
+function loadedRowFor(pinId: string): SessionInfo | undefined {
+  const rows = loadedSessionRows().filter(row => sessionMatchesStoredId(row, pinId))
+  const gateway = normalizeProfileKey($activeGatewayProfile.get())
+
+  return rows.find(row => normalizeProfileKey(row.profile) === gateway) ?? rows[0]
 }
 
 /**
@@ -96,6 +139,7 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
       // A failed write leaves the server on the old value, so the guard would
       // be fencing out the truth. Drop it and let the page win.
       unconfirmed.delete(id)
+      publishUnconfirmed()
       throw err
     }
   )
@@ -113,7 +157,7 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
 function pullRemotePins(): void {
   const local = new Set($pinnedSessionIds.get())
 
-  for (const row of rowsByPinId($sessions.get()).values()) {
+  for (const row of rowsByPinId(loadedSessionRows()).values()) {
     // A backend without the flag has no opinion; never act on `undefined`.
     if (typeof row.pinned !== 'boolean') {
       continue
@@ -163,8 +207,8 @@ function pullRemotePins(): void {
   }
 }
 
-// Re-entrancy guard: reconcile() is subscribed to BOTH $sessions and
-// $pinnedSessionIds, and pullRemotePins() mutates $pinnedSessionIds (via
+// Re-entrancy guard: reconcile() is subscribed to every loaded-session slice
+// and $pinnedSessionIds, and pullRemotePins() mutates $pinnedSessionIds (via
 // pinSession/unpinSession), which fires reconcile() again synchronously.
 // Without this guard, a session whose pin state oscillates — two rows with the
 // same durable id but conflicting `pinned` flags, possible when profile
@@ -184,6 +228,9 @@ function reconcile(): void {
     reconcileInner()
   } finally {
     reconciling = false
+    // One publish per top-level pass: writePin adds guards and pullRemotePins
+    // retires them, and re-entrant calls above returned without touching either.
+    publishUnconfirmed()
   }
 }
 
@@ -217,9 +264,9 @@ function reconcileInner(): void {
   }
 
   // Flush whatever we can resolve now; unresolved ids (row not loaded yet)
-  // retry on the next $sessions change.
+  // retry on the next loaded-session slice change.
   for (const id of [...pending]) {
-    const row = $sessions.get().find(entry => sessionMatchesStoredId(entry, id))
+    const row = loadedRowFor(id)
 
     if (!row) {
       continue
@@ -246,6 +293,8 @@ export function watchSessionPins(): void {
   reconcile()
   $pinnedSessionIds.listen(reconcile)
   $sessions.listen(reconcile)
+  $cronSessions.listen(reconcile)
+  $messagingSessions.listen(reconcile)
 }
 
 /**
@@ -263,4 +312,5 @@ export function resetSessionPinMirror(): void {
   mirrored.clear()
   pending.clear()
   unconfirmed.clear()
+  publishUnconfirmed()
 }

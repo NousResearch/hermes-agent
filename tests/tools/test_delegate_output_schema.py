@@ -133,10 +133,14 @@ class TestToolSchemaSurface:
             "properties"
         ]["tasks"]["items"]["required"]
 
-    def test_output_schema_on_top_level_goal_form(self):
+    def test_output_schema_advertised_per_task_only(self):
+        """output_schema is advertised inside tasks[] items (the only spawn
+        shape); the legacy top-level param stays handler-accepted but out
+        of the schema."""
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        assert "output_schema" in props
-        assert props["output_schema"]["type"] == "object"
+        assert "output_schema" not in props
+        task_props = props["tasks"]["items"]["properties"]
+        assert task_props["output_schema"]["type"] == "object"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +262,52 @@ class TestRunSingleChildSchemaValidation:
         assert entry["status"] == "failed"
         assert len(child.calls) == 1
         assert entry.get("schema_valid") is False
+
+    def test_schema_failure_reported_as_failed_not_completed(self):
+        """Regression: a final answer that still violates the declared
+        output contract after the bounded retry (here the classic empty
+        ``{}`` fallback) must be reported status="failed", not
+        "completed". Otherwise the batch report prints a ✓ and
+        orchestrators that read only status/icon accept an empty verdict
+        — schema_valid/schema_errors carry the detail, but status must
+        agree with them."""
+        child = _StubChild(["not json at all", "{}"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["schema_valid"] is False
+        assert entry["schema_errors"]
+        assert entry["status"] == "failed"
+        # the failed entry names the schema violation, not the generic
+        # "no response" error — the child DID respond, unusably
+        assert "output_schema" in entry.get("error", "")
+        # the invalid final text is still propagated for debugging
+        assert entry["summary"] == "{}"
+
+    def test_schema_failure_without_retry_reported_as_failed(self):
+        """Same class, first-try path: retry turn raises, leaving the
+        original non-JSON answer in place — status must still be failed."""
+        child = _StubChild(["nope"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        original = child.run_conversation
+
+        def flaky(user_message, task_id=None, **kw):
+            if child.calls:
+                raise RuntimeError("child died on retry")
+            return original(user_message, task_id=task_id, **kw)
+
+        child.run_conversation = flaky
+        entry = _run(child)
+        assert entry["schema_valid"] is False
+        assert entry["status"] == "failed"
+
+    def test_schema_valid_entry_still_completed(self):
+        """Guard: schema_valid=True keeps status="completed" untouched."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert "error" not in entry
 
 
 # ---------------------------------------------------------------------------

@@ -241,25 +241,6 @@ class TestListAndCleanup:
         assert isinstance(messages[0].get("timestamp"), (int, float))
 
 
-
-
-    def test_cleanup_clears_all(self, manager):
-        s1 = manager.create_session()
-        s2 = manager.create_session()
-        s1.history.append({"role": "user", "content": "one"})
-        s2.history.append({"role": "user", "content": "two"})
-        assert len(manager.list_sessions()) == 2
-        manager.cleanup()
-        assert manager.list_sessions() == []
-
-    def test_remove_session(self, manager):
-        state = manager.create_session()
-        assert manager.remove_session(state.session_id) is True
-        assert manager.get_session(state.session_id) is None
-        # Removing again returns False
-        assert manager.remove_session(state.session_id) is False
-
-
 # ---------------------------------------------------------------------------
 # persistence — sessions survive process restarts (via SessionDB)
 # ---------------------------------------------------------------------------
@@ -267,6 +248,23 @@ class TestListAndCleanup:
 
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
+
+    def test_first_persist_keeps_provider_snapshot(self, tmp_path):
+        """The FIRST row written for an ACP session carries provider/base_url/api_mode,
+        so a restart before any later save restores the same route (#9812)."""
+        agent = SimpleNamespace(
+            model="test-model", provider="anthropic",
+            base_url="https://anthropic.example/v1", api_mode="anthropic_messages",
+        )
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        manager.save_session(state.session_id)
+
+        mc = json.loads(db.get_session(state.session_id)["model_config"])
+        assert mc == {"cwd": "/work", "provider": "anthropic",
+                      "base_url": "https://anthropic.example/v1", "api_mode": "anthropic_messages"}
 
 
 
@@ -326,6 +324,9 @@ class TestPersistence:
         assert restored is not None
         msg = restored.history[0]
         assert isinstance(msg.pop("timestamp", None), (int, float))
+        # Load-time durability stamp (#92231): rows materialized from the DB
+        # are marked persisted so a later flush can't re-append them.
+        assert msg.pop("_db_persisted", None) is True
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

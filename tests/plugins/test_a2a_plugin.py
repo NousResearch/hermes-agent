@@ -192,12 +192,9 @@ class TestOutboundRedaction:
             token = next((prefix + body for body in bodies if re.fullmatch(pattern, prefix + body)), None)
             assert token, f"could not synthesize a token for {pattern!r}"
             tokens.append(token)
+        assert len(tokens) == len(R._PREFIX_PATTERNS) + len(R._plugin_patterns())
         for token in tokens:
-            leaked = R.redact_sensitive_text(f"peer, here: {token}", force=True)
-            if token in leaked:
-                continue  # the canonical redactor itself passes it (word-boundary/shape rule); not our contract
             assert token not in security.redact_outbound(f"peer, here: {token}"), token
-        assert len(tokens) >= 50
 
     def test_bearer_and_email_redacted(self):
         out = security.redact_outbound("Authorization: Bearer opaque0123456789abcdef; contact me at alice@example.com")

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Set, Tuple, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
@@ -303,6 +303,18 @@ def _bare_task_id_for_session_key(session_key: str) -> str:
     return session_key[: -len(_LOCAL_SUFFIX)] if _is_local_sidecar_key(session_key) else session_key
 
 
+def _home_scoped_key(task_id: str) -> Tuple[str, str]:
+    """Cache identity for one browser session: ``(hermes_home_key(), task_id)``.
+
+    The session maps are process-global, but a multiplexed process serves several
+    profiles and the janitor thread tears sessions down under the owning profile's
+    scope. The home must therefore be part of every cache key, so two profiles
+    sharing a task id (``"default"`` is common) can never receive each other's
+    session, flags, or teardown bookkeeping. See #110032.
+    """
+    return (hermes_home_key(), task_id)
+
+
 def _session_info_owned_by_task(session_info: Dict[str, Any], task_id: str, session_key: str) -> bool:
     """Ownership check; entries without metadata (older in-memory / hot-reload) pass,
     any explicit mismatch fails before a non-nav tool can act on the wrong session."""
@@ -317,14 +329,15 @@ def _last_session_key(task_id: str) -> str:
     binding rather than recreating or mutating the wrong browser."""
     if task_id is None:
         task_id = "default"
-    recorded_key = _last_active_session_key.get(task_id)
+    scoped_key = _home_scoped_key(task_id)
+    recorded_key = _last_active_session_key.get(scoped_key)
     if not recorded_key:
         return task_id
     with _cleanup_lock:
-        session_info = _active_sessions.get(recorded_key)
+        session_info = _active_sessions.get((scoped_key[0], recorded_key))
         if session_info and _session_info_owned_by_task(session_info, task_id, recorded_key):
             return recorded_key
-        _last_active_session_key.pop(task_id, None)
+        _last_active_session_key.pop(scoped_key, None)
     logger.debug("browser session ownership: dropping stale/mismatched last-active binding %s -> %s",
                  task_id, recorded_key)
     return task_id
@@ -336,14 +349,16 @@ def _socket_safe_tmpdir() -> str:
     return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
 
 
-# Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
-# for a hybrid-routing local sidecar (opaque to _run_browser_command / cleanup_browser).
-# Values: session_name (always), bb_session_id + cdp_url (cloud).
-_active_sessions: Dict[str, Dict[str, Any]] = {}
-_recording_sessions: set = set()  # session_keys with active recordings
-# Most recent session_key per task_id (set by browser_navigate, read by every non-nav
+# Active sessions keyed by (owning hermes home key, "session key"): the bare task_id, or
+# f"{task_id}::local" for a hybrid-routing local sidecar (opaque to _run_browser_command /
+# cleanup_browser). The home is part of the key so a multiplexed process never serves one
+# profile's session to another (#110032). Values: session_name (always),
+# bb_session_id + cdp_url (cloud).
+_active_sessions: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_recording_sessions: Set[Tuple[str, str]] = set()  # home-scoped session_keys with active recordings
+# Most recent session_key per (home, task_id) (set by browser_navigate, read by every non-nav
 # tool) so click/snapshot land in the session that served the last navigation.
-_last_active_session_key: Dict[str, str] = {}
+_last_active_session_key: Dict[Tuple[str, str], str] = {}
 _LOCAL_SUFFIX = "::local"
 _cleanup_done = False
 
@@ -370,21 +385,16 @@ BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
 # session is never touched.
 BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
 
-_session_last_activity: Dict[str, float] = {}
-# Owner Hermes home per session: the janitor is one process-global thread, so each
-# teardown must re-enter the OWNING profile's scope (copy_context at spawn would
-# pin the first profile's secrets onto every other profile's teardown).
-# See #86402.
-_session_owner_homes: Dict[str, str] = {}
+_session_last_activity: Dict[Tuple[str, str], float] = {}
 # Consecutive janitor failures per session; force-reaped after MAX_INACTIVITY_CLEANUP_FAILURES.
 # See #100738.
-_cleanup_failures: Dict[str, int] = {}
+_cleanup_failures: Dict[Tuple[str, str], int] = {}
 MAX_INACTIVITY_CLEANUP_FAILURES = 3
 
 # Session keys flagged suspect after a command timeout (written lock-free by
 # mark_suspect; consumed by ensure_healthy() at next use, which recycles).
 # See #72205.
-_suspect_browser_sessions: Dict[str, str] = {}
+_suspect_browser_sessions: Dict[Tuple[str, str], str] = {}
 
 
 class _BrowserSessionBackend:
@@ -392,20 +402,21 @@ class _BrowserSessionBackend:
     timeout path calls ``mark_suspect`` inline; ``ensure_healthy`` runs at the top of
     ``_get_session_info`` — the choke point every command passes through."""
 
-    __slots__ = ("_session_key",)
+    __slots__ = ("_session_key", "_scoped_key")
 
     def __init__(self, session_key: str) -> None:
         self._session_key = session_key
+        self._scoped_key = _home_scoped_key(session_key)
 
     def mark_suspect(self, reason: str) -> None:
         """MUST stay cheap and lock-free (runs inline on the timed-out caller's thread)."""
-        _suspect_browser_sessions[self._session_key] = reason
+        _suspect_browser_sessions[self._scoped_key] = reason
 
     def ensure_healthy(self) -> bool:
         """Recycle the session when a prior timeout marked it suspect; False after teardown.
         The flag is popped BEFORE teardown: ``close`` re-enters ``_get_session_info``
         and must not recurse into another recycle."""
-        reason = _suspect_browser_sessions.pop(self._session_key, None)
+        reason = _suspect_browser_sessions.pop(self._scoped_key, None)
         if reason is None:
             return True
         logger.info("Recycling suspect browser session %s before reuse (%s)", self._session_key, reason)
@@ -750,7 +761,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         response["used_real_profile"] = True
     # Only a successful, non-blocked navigation becomes the task owner: failed opens
     # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
-    _last_active_session_key[effective_task_id] = nav_session_key
+    _last_active_session_key[_home_scoped_key(effective_task_id)] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
     _attach_auto_snapshot(response, nav_session_key)
@@ -1098,8 +1109,9 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _maybe_start_recording(task_id: str):
     """Start recording if browser.record_sessions is enabled in config."""
+    scoped_key = _home_scoped_key(task_id)
     with _cleanup_lock:
-        if task_id in _recording_sessions:
+        if scoped_key in _recording_sessions:
             return
     try:
         from hermes_cli.config import read_raw_config
@@ -1113,7 +1125,7 @@ def _maybe_start_recording(task_id: str):
         result = _session._run_browser_command(task_id, "record", ["start", str(recording_path)])
         if result.get("success"):
             with _cleanup_lock:
-                _recording_sessions.add(task_id)
+                _recording_sessions.add(scoped_key)
             logger.info("Auto-recording browser session %s to %s", task_id, recording_path)
         else:
             logger.debug("Could not start auto-recording: %s", result.get("error"))
@@ -1123,8 +1135,9 @@ def _maybe_start_recording(task_id: str):
 
 def _maybe_stop_recording(task_id: str):
     """Stop recording if one is active for this session."""
+    scoped_key = _home_scoped_key(task_id)
     with _cleanup_lock:
-        if task_id not in _recording_sessions:
+        if scoped_key not in _recording_sessions:
             return
     try:
         result = _session._run_browser_command(task_id, "record", ["stop"])
@@ -1134,7 +1147,7 @@ def _maybe_stop_recording(task_id: str):
         logger.debug("Could not stop recording for %s: %s", task_id, e)
     finally:
         with _cleanup_lock:
-            _recording_sessions.discard(task_id)
+            _recording_sessions.discard(scoped_key)
 
 
 _GET_IMAGES_JS = """JSON.stringify(

@@ -101,16 +101,17 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
 def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
-    Idempotent (``get_or_start`` skips an existing ``(task_id, cdp_url)`` and restarts on URL change), so safe on
+    Idempotent (``get_or_start`` skips an existing ``(key, cdp_url)`` and restarts on URL change), so safe on
     every navigate / ``/browser connect``. URL precedence: the CDP override, then the session's own ``cdp_url``
     (cloud providers, e.g. Browserbase). Swallows all errors — a failed attach must not break the session;
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
     _bt = _origin()
+    scoped_key = _bt._home_scoped_key(task_id)
     cdp_url = _get_cdp_override()
     if not cdp_url:
         with _bt._cleanup_lock:
-            session_info = _bt._active_sessions.get(task_id, {})
+            session_info = _bt._active_sessions.get(scoped_key, {})
         maybe = str(session_info.get("cdp_url") or "")
         if maybe:
             cdp_url = _resolve_cdp_override(maybe)
@@ -119,7 +120,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s)
+        SUPERVISOR_REGISTRY.get_or_start(task_id=scoped_key, cdp_url=cdp_url, dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         _bt.logger.debug("CDP supervisor attach for task=%s failed (non-fatal): %s", task_id, exc)
 
@@ -128,6 +129,6 @@ def _stop_cdp_supervisor(task_id: str) -> None:
     """Stop the CDP supervisor for ``task_id`` if one exists. No-op otherwise."""
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
-        SUPERVISOR_REGISTRY.stop(task_id)
+        SUPERVISOR_REGISTRY.stop(_origin()._home_scoped_key(task_id))
     except Exception as exc:
         _origin().logger.debug("CDP supervisor stop for task=%s failed (non-fatal): %s", task_id, exc)

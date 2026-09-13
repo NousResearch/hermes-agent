@@ -78,9 +78,21 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
 _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
-_backends: Dict[str, ComputerUseBackend] = {}
-_backend_call_locks: Dict[str, threading.RLock] = {}
-_backend_permission_modes: Dict[str, str] = {}
+_backends: Dict[Tuple[str, str], ComputerUseBackend] = {}
+_backend_call_locks: Dict[Tuple[str, str], threading.RLock] = {}
+_backend_permission_modes: Dict[Tuple[str, str], str] = {}
+
+
+def _backend_key(session_id: str) -> Tuple[str, str]:
+    """Cache identity for one session's backend: ``(hermes_home_key(), session_id)``.
+
+    The backend maps are process-global, but a multiplexed process serves several
+    profiles; the owning home must be part of the key so one profile can never be
+    handed another profile's backend or driver state. See #110032.
+    """
+    from hermes_constants import hermes_home_key
+
+    return (hermes_home_key(), str(session_id or ""))
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -131,8 +143,9 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
     global _backend
-    _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
-    _backend_call_locks[sid] = threading.RLock()
+    key = _backend_key(sid)
+    _backends[key], _backend_permission_modes[key] = backend, permission_mode
+    _backend_call_locks[key] = threading.RLock()
     _backend = backend if sid == "" else _backend
     return backend
 
@@ -140,8 +153,9 @@ def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[thr
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
     global _backend
-    _backend_permission_modes.pop(sid, None)
-    backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
+    key = _backend_key(sid)
+    _backend_permission_modes.pop(key, None)
+    backend, call_lock = _backends.pop(key, None), _backend_call_locks.pop(key, None)
     if sid == "":
         backend = _backend if backend is None else backend
         _backend = None if _backend is backend else _backend
@@ -158,17 +172,18 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
     sid = str(session_id or "")
+    key = _backend_key(sid)
     while True:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
             permission_mode = _cua_permission_mode(sid)
-            if sid == "" and _backend is not None and sid not in _backends:
+            if sid == "" and _backend is not None and key not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
-            if (cached := _backends.get(sid)) is None:
+            if (cached := _backends.get(key)) is None:
                 backend = _new_backend(permission_mode)
                 backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
                 return _install_backend(sid, backend, permission_mode)
-            if _backend_permission_modes.get(sid, "standard") == permission_mode:
+            if _backend_permission_modes.get(key, "standard") == permission_mode:
                 return cached
             # Cua's mode is immutable after daemon startup: a /yolo toggle replaces only this session's backend.
             _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
@@ -199,9 +214,9 @@ def _shutdown_backend_atexit() -> None:
     """
     global _backend
     with _backend_lock:
-        unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
+        unique = {id(b): (b, _backend_call_locks.get(key)) for key, b in _backends.items()}
         if _backend is not None:
-            unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
+            unique.setdefault(id(_backend), (_backend, _backend_call_locks.get(_backend_key(""))))
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
     with _approval_lock:

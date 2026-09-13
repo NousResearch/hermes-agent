@@ -45,11 +45,12 @@ class TestBrowserCleanup:
 
     def test_cleanup_browser_clears_tracking_state(self):
         browser_tool = self.browser_tool
-        browser_tool._active_sessions["task-1"] = {
+        scoped_key = browser_tool._home_scoped_key("task-1")
+        browser_tool._active_sessions[scoped_key] = {
             "session_name": "sess-1",
             "bb_session_id": None,
         }
-        browser_tool._session_last_activity["task-1"] = 123.0
+        browser_tool._session_last_activity[scoped_key] = 123.0
 
         with (
             patch("tools.browser_tool._maybe_stop_recording") as mock_stop,
@@ -61,8 +62,8 @@ class TestBrowserCleanup:
         ):
             bt_lifecycle.cleanup_browser("task-1")
 
-        assert "task-1" not in browser_tool._active_sessions
-        assert "task-1" not in browser_tool._session_last_activity
+        assert scoped_key not in browser_tool._active_sessions
+        assert scoped_key not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
 
@@ -70,11 +71,12 @@ class TestBrowserCleanup:
     def test_emergency_cleanup_clears_all_tracking_state(self):
         browser_tool = self.browser_tool
         browser_tool._cleanup_done = False
-        browser_tool._active_sessions["task-1"] = {"session_name": "sess-1"}
-        browser_tool._active_sessions["task-2"] = {"session_name": "sess-2"}
-        browser_tool._session_last_activity["task-1"] = 1.0
-        browser_tool._session_last_activity["task-2"] = 2.0
-        browser_tool._recording_sessions.update({"task-1", "task-2"})
+        browser_tool._active_sessions[browser_tool._home_scoped_key("task-1")] = {"session_name": "sess-1"}
+        browser_tool._active_sessions[browser_tool._home_scoped_key("task-2")] = {"session_name": "sess-2"}
+        browser_tool._session_last_activity[browser_tool._home_scoped_key("task-1")] = 1.0
+        browser_tool._session_last_activity[browser_tool._home_scoped_key("task-2")] = 2.0
+        browser_tool._recording_sessions.update(
+            {browser_tool._home_scoped_key("task-1"), browser_tool._home_scoped_key("task-2")})
 
         with patch("tools.browser_tool_lifecycle.cleanup_all_browsers") as mock_cleanup_all:
             bt_lifecycle._emergency_cleanup_all_sessions()
@@ -98,7 +100,7 @@ class TestInactivityJanitorMultiplex:
             name: getattr(browser_tool, name).copy()
             for name in (
                 "_active_sessions", "_session_last_activity",
-                "_session_owner_homes", "_cleanup_failures", "_recording_sessions",
+                "_cleanup_failures", "_recording_sessions",
             )
         }
         self.orig_timeout = browser_tool.BROWSER_SESSION_INACTIVITY_TIMEOUT
@@ -135,11 +137,12 @@ class TestInactivityJanitorMultiplex:
         scope_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(p1))
         try:
             bt_lifecycle._update_session_activity("t1")
-            self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
+            scoped_key = self.bt._home_scoped_key("t1")
+            self.bt._active_sessions[scoped_key] = {"session_name": "s1", "bb_session_id": None}
         finally:
             secret_scope.reset_secret_scope(scope_tok)
             reset_hermes_home_override(home_tok)
-        self.bt._session_last_activity["t1"] -= 10
+        self.bt._session_last_activity[scoped_key] -= 10
 
         seen = {}
 
@@ -156,15 +159,15 @@ class TestInactivityJanitorMultiplex:
             bt_lifecycle._cleanup_inactive_browser_sessions()
 
         assert seen == {"home": str(p1), "url": "http://127.0.0.1:1"}
-        assert "t1" not in self.bt._session_last_activity
-        assert "t1" not in self.bt._active_sessions
-        assert "t1" not in self.bt._session_owner_homes
+        assert scoped_key not in self.bt._session_last_activity
+        assert scoped_key not in self.bt._active_sessions
 
     def test_repeated_failures_force_reap_and_close_cloud_session(self):
         from unittest.mock import MagicMock
 
-        self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": "bb-1"}
-        self.bt._session_last_activity["t1"] = 1.0
+        scoped_key = self.bt._home_scoped_key("t1")
+        self.bt._active_sessions[scoped_key] = {"session_name": "s1", "bb_session_id": "bb-1"}
+        self.bt._session_last_activity[scoped_key] = 1.0
         provider = MagicMock()
 
         with (
@@ -176,17 +179,17 @@ class TestInactivityJanitorMultiplex:
                 bt_lifecycle._cleanup_inactive_browser_sessions()
             # An activity touch must NOT reset the failure budget.
             bt_lifecycle._update_session_activity("t1")
-            self.bt._session_last_activity["t1"] = 1.0
-            assert self.bt._cleanup_failures["t1"] == self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1
-            assert "t1" in self.bt._active_sessions
+            self.bt._session_last_activity[scoped_key] = 1.0
+            assert self.bt._cleanup_failures[scoped_key] == self.bt.MAX_INACTIVITY_CLEANUP_FAILURES - 1
+            assert scoped_key in self.bt._active_sessions
             provider.close_session.assert_not_called()
 
             bt_lifecycle._cleanup_inactive_browser_sessions()
 
         provider.close_session.assert_called_once_with("bb-1")
-        assert "t1" not in self.bt._active_sessions
-        assert "t1" not in self.bt._session_last_activity
-        assert "t1" not in self.bt._cleanup_failures
+        assert scoped_key not in self.bt._active_sessions
+        assert scoped_key not in self.bt._session_last_activity
+        assert scoped_key not in self.bt._cleanup_failures
 
 
 class TestAtexitStopSwallowsInterrupt:

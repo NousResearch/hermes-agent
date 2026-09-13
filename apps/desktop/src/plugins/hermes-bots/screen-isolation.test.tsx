@@ -33,6 +33,7 @@ vi.mock('./i18n', () => ({
       heroOpenLive: 'Open live',
       heroStale: 'Last seen',
       heroSuppressed: 'Hidden while someone has control',
+      portalUnavailable: 'Update the bot',
       heroConnecting: 'Connecting'
     }
   })
@@ -180,5 +181,21 @@ it('captions a suppressed thumbnail as hidden-while-controlled and never ages it
   })
   expect(view.getByRole('button').getAttribute('aria-label')).toContain('Hidden while someone has control')
   expect(view.getByRole('button').getAttribute('aria-label')).not.toContain('Last seen')
+  view.unmount()
+})
+
+it('settles on an older backend without display.*: portal tone is unavailable and the hero renders nothing', async () => {
+  vi.mocked(host.requestProfile).mockRejectedValue(Object.assign(new Error('Method not found: display.status'), { code: -32601 }))
+  const hook = renderHook(() => useScreenPortalState(botA))
+  await act(async () => {})
+  expect(hook.result.current.tone).toBe('unavailable')
+  hook.rerender()
+  await act(async () => {})
+  expect(vi.mocked(host.requestProfile)).toHaveBeenCalledTimes(1)
+  hook.unmount()
+
+  const view = render(<ScreenHero bot={botA} />)
+  await act(async () => {})
+  expect(view.container.firstChild).toBeNull()
   view.unmount()
 })

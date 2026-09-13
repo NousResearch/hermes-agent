@@ -15,6 +15,8 @@ export interface BotScreenState {
   lease: DisplayLease | null
   /** This window's server-minted identity for the bot's current attach; null until the pane observes. */
   viewer: ScreenViewer | null
+  /** The bot's Hermes has no `display.*` methods (older backend): nothing to check, ever. */
+  unavailable?: boolean
 }
 
 export const $screenState = atom<Record<string, BotScreenState>>({})
@@ -28,6 +30,19 @@ export function setScreenStatus(bot: RosterRow, status: DisplayStatus): void {
   const current = $screenState.get()
   const prev = current[key]
   $screenState.set({ ...current, [key]: { status, lease: status.lease ?? prev?.lease ?? null, viewer: prev?.viewer ?? null } })
+}
+
+/** `display.status` answered method-not-found: remember it so no surface keeps "checking". */
+export function setScreenUnavailable(bot: RosterRow): void {
+  const key = botSelectionKey(bot)
+  const current = $screenState.get()
+  const prev = current[key]
+
+  if (prev?.unavailable) {
+    return
+  }
+
+  $screenState.set({ ...current, [key]: { status: null, lease: null, viewer: null, unavailable: true } })
 }
 
 export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {

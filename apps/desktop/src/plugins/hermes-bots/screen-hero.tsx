@@ -116,7 +116,7 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
   const running = tone === 'live' || tone === 'human' || tone === 'other'
   const { dataUrl, boxRef, stale, suppressed } = useLiveThumbnail(bot, running)
 
-  if (tone === 'unsupported') {
+  if (tone === 'unsupported' || tone === 'unavailable') {
     return null
   }
 
@@ -127,6 +127,7 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
     off: t.screen.heroStopped,
     missing: t.screen.heroNotInstalled,
     unsupported: t.screen.portalUnsupported,
+    unavailable: t.screen.portalUnavailable,
     unknown: t.screen.heroConnecting
   }[tone]
 

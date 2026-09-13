@@ -82,6 +82,19 @@ export function leaseHeldBy(lease: DisplayLease | null | undefined, viewer: Scre
   return lease.viewer_id != null ? lease.viewer_id === viewer.id : lease.viewer_hash === viewer.hash
 }
 
+/** JSON-RPC method-not-found: the bot's Hermes predates the `display.*` surface. */
+export function isDisplayUnavailable(error: unknown): boolean {
+  const record = typeof error === 'object' && error !== null ? (error as { code?: unknown; message?: unknown }) : null
+
+  if (record?.code === -32601) {
+    return true
+  }
+
+  const message = typeof record?.message === 'string' ? record.message.toLowerCase() : ''
+
+  return message.includes('method not found') || message.includes('method-not-found')
+}
+
 /** Bare-profile fallback so a v1 local bot (no registry route) still resolves. */
 export function botScreenRoute(bot: RosterRow): PluginProfileRoute | string {
   return botConnectionRoute(bot) ?? bot.name

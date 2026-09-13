@@ -60,6 +60,16 @@ agent-browser/
 # Private keys
 *.ppk
 *.pem
+# Google Workspace OAuth credentials and downloaded Desktop client exports.
+# These files contain reusable secrets and must remain profile-local.
+client_secret_*.apps.googleusercontent.com.json
+google_client_secret.json
+google_token.json
+google_oauth_pending.json
+google_oauth_last_url.txt
+youtube_client_secret.json
+youtube_token.json
+youtube_oauth_pending.json
 privvy*
 images/
 __pycache__/

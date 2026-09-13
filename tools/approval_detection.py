@@ -34,9 +34,31 @@ _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
 _SYSTEM_CONFIG_PATH = rf'(?:/etc/|{_MACOS_PRIVATE_SYSTEM_PATH})'
+# A raw block device: writing to one destroys a whole disk (or the volume/array behind it) with no
+# recovery path. Shared by every rule that gates such a write, because the spelling depends on the
+# platform and the storage stack — knowing only the Linux SCSI names left Mac disks unprotected:
+#   sd/hd/vd/xvd/nvme/mmcblk  SATA-SCSI-USB, IDE, virtio, Xen, NVMe, eMMC/SD cards (Linux)
+#   md / dm- / mapper/<name>  md RAID arrays and device-mapper/LVM volumes (Linux)
+#   loop / nbd                loopback and network block devices (Linux)
+#   [r]disk<N>[s<M>]          macOS whole disks, slices, and the raw character node
+#   disk/by-*/<name>          udev persistent-name symlinks — the same disks under stable names
+# The loose `[a-z0-9]*` tail of the original rules is kept so partition/namespace suffixes (sda1,
+# nvme0n1p2) come along; `disk` alone requires a digit because bare /dev/disk is the by-* symlink
+# DIRECTORY, not a device.
+_BLOCK_DEVICE_PATH = (
+    # The lookbehind is what makes this a PATH rather than a substring. Without it any
+    # directory called ``dev`` matched: ``~/dev/sdk/token.json`` carries ``/dev/sd`` + ``k``,
+    # so ``shred -u ~/dev/sdk/token.json`` and ``mkswap /home/user/dev/sdk/swapfile`` hit an
+    # unapprovable floor. A real device path is never preceded by a word character, a dot or
+    # a tilde; ``//dev/sda``, ``of=/dev/sda`` and a quoted operand all still match.
+    r'(?<![\w.~-])/dev/(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*'
+    r'|r?disk[0-9]+[a-z0-9]*'
+    r'|mapper/[^\s;&|<>()"\']+'
+    r'|disk/by-(?:id|uuid|path|label|partuuid|partlabel)/[^\s;&|<>()"\']+)'
+)
 _SENSITIVE_WRITE_TARGET = (
-    rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH}|'
-    rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+    rf'(?:{_SYSTEM_CONFIG_PATH}|{_BLOCK_DEVICE_PATH}|{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|'
+    rf'{_HERMES_CONFIG_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
@@ -64,6 +86,30 @@ _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+)
+
+
+# Executable position for the raw-device floor. _CMDPOS alone peels sudo/env/exec/nohup/setsid/
+# time, so a verb spelled as a path (`/usr/sbin/wipefs -a /dev/sda`), run behind a scheduling or
+# buffering wrapper (`nice blkdiscard`, `nice -n 10 sgdisk -Z`, `command mke2fs`, `stdbuf -oL dd`)
+# or dispatched by a multicall binary (`busybox dd if=/dev/zero of=/dev/sda`) reached the disk with
+# no floor at all — measured on clean main, all four are hardline=False AND dangerous=False.
+# Deliberately scoped to the device/format/wipe rules: the same gap on rm/shutdown belongs to the
+# executable-position lineage in #58643 (paths, wrappers) and #65393 (BusyBox/toybox), and widening
+# every hardline rule here would collide with that work rather than complement it.
+_CMDPOS_EXEC = (
+    _CMDPOS
+    # A wrapper's QUERY options do not run the verb, so they must not peel to it:
+    # ``command -v mkfs`` prints a path, and ``chrt -p``/``taskset -p``/``ionice -p``
+    # interrogate a pid. _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS below is the same list, and
+    # the argv walk already honours it -- peeling them here contradicted it and made the
+    # canonical ``if command -v mkfs >/dev/null; then`` probe unrunnable on a floor with no
+    # approval path. ``command``'s query flag also bundles (``-vp``), matching that walk.
+    + r'(?:(?:command|builtin)\s+(?:-(?![^\s]*[vV])[^\s]+\s+)*'
+    + r'|(?:chrt|taskset|ionice)\s+(?:-(?!p\b|-pid\b|-pgid\b|-uid\b)[^\s]+\s+|\d+\s+)*'
+    + r'|(?:nice|stdbuf)\s+(?:-[^\s]+\s+|\d+\s+)*)*'
+    + r'(?:(?:[\w.+-]*/)*(?:busybox|toybox)\s+)?'
+    + r'(?:[\w.+-]*/)*'
 )
 
 
@@ -96,11 +142,29 @@ HARDLINE_PATTERNS = [
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # mke2fs IS mkfs.ext2/3/4 (one binary, three names), so it is unconditional like mkfs. mkswap
+    # and the macOS newfs_<fs> family are gated on a raw block device operand instead, because
+    # `mkswap /swapfile` / `newfs_hfs disk.dmg` write a FILE and must keep working. diskutil is
+    # gated on its destructive verbs — `diskutil list|info|mount|unmount|apfs list` are read-only.
+    (_CMDPOS_EXEC + r'(?:(?:mkfs(?:\.[a-z0-9]+)?|mke2fs)(?=\s|$|[;|&)])'
+     rf'|(?:mkswap|newfs(?:_[a-z0-9]+)?)\b[^;|&\n#]*{_BLOCK_DEVICE_PATH}'
+     r'|diskutil\s+(?:[a-z]+\s+)?(?:erase(?:disk|volume)|zerodisk|randomdisk|secureerase|reformat|partitiondisk)\b)',
+     "format filesystem (mkfs)"),
+    # Whole-device wipes that are neither dd nor a redirect: each erases the partition table or the
+    # raw sectors of the device it is pointed at. Every branch needs BOTH its destructive flag and a
+    # raw block device operand on the same command, so `wipefs /dev/sda` (prints signatures),
+    # `sgdisk -p /dev/sda` (prints the table), `blkdiscard --help` and `shred secret.txt` still run.
+    # ``-n``/``--no-act`` is wipefs doing everything except the write, so it is a diagnostic
+    # and must stay runnable; the destructive-flag lookahead alone matched the ``a`` in
+    # ``-na`` and matched ``--all`` beside ``--no-act``.
+    (_CMDPOS_EXEC + r'(?:wipefs\b(?![^;|&\n]*\s(?:-[a-z]*n[a-z]*|--no-act)\b)(?=[^;|&\n]*\s(?:-[a-z]*a[a-z]*|--all)\b)'
+     r'|sgdisk\b(?=[^;|&\n]*\s(?:-z|--zap-all|-o|--clear)\b)'
+     r'|blkdiscard\b|shred\b)'
+     rf'(?=[^;|&\n#]*{_BLOCK_DEVICE_PATH})', "wipe raw block device"),
     # `dd` is a command-name token, so anchor it to command position like mkfs/rm/shutdown (#93392): quoted
     # prose such as `git commit -m "never dd of=/dev/sda"` is an argument, not a command. The argument tail
     # ([^\n]*of=/dev/...) is kept so flag order doesn't matter.
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS_EXEC + rf'dd\b[^\n]*\bof=["\']?{_BLOCK_DEVICE_PATH}', "dd to raw block device"),
     # Positionless rules (no command-name token: `>` sits mid-command, the fork bomb is a function
     # definition) are matched against a QUOTE-MASKED variant (_QUOTE_MASKED_HARDLINE_DESCRIPTIONS /
     # _mask_quoted_prose) so quoted prose cannot trip them; sh -c / bash -c / eval payloads still scan raw.
@@ -109,7 +173,7 @@ HARDLINE_PATTERNS = [
     # of the command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted prose (`echo "cat f >
     # /dev/sda"`) cannot trip it, while shell-carrying wrappers (sh -c / bash -c / eval) still surface their
     # payload as a raw detection variant — quoting is not a bypass (#93392).
-    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    (rf'>\s*["\']?{_BLOCK_DEVICE_PATH}\b', "redirect to raw block device"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
@@ -150,11 +214,43 @@ def _mask_quoted_prose(command: str) -> str:
     Detection-only rewrite used by the quote-masked hardline rules (redirect-to-block-device, fork bomb):
     text inside single or double quotes is data the shell passes as an argument, so `echo "cat f >
     /dev/sda"` must not trip the unconditional floor (#93392). Unquoted text is untouched.
+
+    One exception, and it is the whole difference between prose and a target: a quoted span opened
+    immediately after an UNQUOTED redirect operator is the redirection's operand, not prose. The
+    shell writes to it either way, so `cat x > "/dev/disk0"` must reach the floor exactly as the
+    bare spelling does. `echo "cat x > /dev/disk0"` keeps its quote opened after `echo`, with the
+    `>` inside the quoted run, so it stays masked and stays allowed.
     """
-    return "".join(
-        command[i:j] if quote is None or kind in ("quote", "subst") else " " * (j - i)
-        for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True)
-    )
+    out: list[str] = []
+    last_significant = ""
+    keep_operand = False
+    for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True):
+        piece = command[i:j]
+        if kind == "quote":
+            # `quote` is the state the step was READ in, so None marks the opening quote.
+            keep_operand = quote is None and last_significant == ">"
+            out.append(piece)
+            # The quote character itself is significant: without this the `>` stayed the last
+            # thing seen across the whole operand, so EVERY later quoted word was unmasked too and
+            # `cat x > "out.log" "cat y > /dev/sda"` read the prose as a redirect.
+            last_significant = piece[-1:] or last_significant
+            continue
+        if not (quote is None or kind == "subst" or keep_operand):
+            out.append(" " * (j - i))
+            continue  # masked text is prose; it cannot arm the exception either
+        # Inside a kept operand, a `>` is prose, not an operator: a redirect target is a PATH and
+        # paths do not contain one. Blanking it stops a span that normalization only LOOKED like an
+        # operand -- `cat x > '' 'note: cat y > /dev/sda'`, where the empty pair is dropped before
+        # this runs -- from carrying a second redirect. A real `"/dev/disk0"` is untouched.
+        out.append(piece.replace(">", " ") if keep_operand and quote is not None else piece)
+        stripped = piece.rstrip()
+        if stripped:
+            # An ESCAPED `>` is a literal argument, not a redirect operator -- real bash prints
+            # `hello > /dev/disk0` for `echo hello \> "/dev/disk0"` and writes nothing -- so it
+            # must not arm the exception. Recording the backslash keeps it distinct from an
+            # operator without needing a second flag.
+            last_significant = "\\" if kind == "esc" else stripped[-1]
+    return "".join(out)
 
 
 # ---- Sudo stdin guard: without SUDO_PASSWORD configured, an explicit "sudo -S" is the LLM piping
@@ -264,7 +360,7 @@ DANGEROUS_PATTERNS = [
     # See #93392.
     (_CMDPOS + r'mkfs\b', "format filesystem"),
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
-    (r'>\s*/dev/sd', "write to block device"),
+    (rf'>\s*{_BLOCK_DEVICE_PATH}', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
     # silently allow DELETE without WHERE.

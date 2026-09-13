@@ -134,9 +134,14 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 | `rm -rf /` and obvious variants | Wipes the filesystem root |
 | `rm -rf --no-preserve-root /` | The explicit "yes I mean root" variant |
 | `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
-| `mkfs.*` on a mounted root device | Formats the live system |
-| `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
+| `mkfs.*` / `mke2fs` on a mounted root device | Formats the live system |
+| `mkswap`, `newfs_hfs` / `newfs_apfs` / `newfs_msdos` aimed at a device | Same, for swap and the macOS filesystems (a file target such as `mkswap /swapfile` still runs) |
+| `diskutil eraseDisk` / `eraseVolume` / `zeroDisk` / `randomDisk` / `secureErase` / `reformat` / `partitionDisk` | The macOS spelling of the same disk wipe |
+| `dd of=<device>`, and `>` / `>>` redirects into one | Zeroes a physical disk |
+| `wipefs -a`, `blkdiscard`, `sgdisk -Z` / `-o`, `shred <device>` | Erases the partition table or the raw sectors of the disk |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
+
+`<device>` above means a raw block device under any of its names: Linux `/dev/sd*`, `hd*`, `vd*`, `xvd*`, `nvme*`, `mmcblk*`, `md*`, `dm-*`, `/dev/mapper/*`, `loop*`, `nbd*`; macOS `/dev/disk0`, `/dev/disk0s2`, `/dev/rdisk0`; and the persistent-name symlinks `/dev/disk/by-{id,uuid,path,label,partuuid,partlabel}/*`. Non-device `/dev` entries (`/dev/null`, `/dev/zero` as a source, `/dev/urandom`, `/dev/stdout`, `/dev/tty`, `/dev/shm/*`, ...) are untouched, and so are the read-only runs of these tools: `wipefs` without `-a`, `sgdisk -p`, `blkdiscard --help`, `diskutil list|info|mount|unmount`, `shred secret.txt`, and `dd if=/dev/sda of=backup.img` (reading a disk into a file).
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 

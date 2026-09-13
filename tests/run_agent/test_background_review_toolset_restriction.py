@@ -187,6 +187,45 @@ def test_read_file_registers_background_review_read_mark(tmp_path):
         reset_current_write_origin(token)
 
 
+def test_background_review_whitelist_includes_dynamic_memory_provider_tools():
+    """Dynamic memory-provider tools must be whitelisted alongside static toolsets."""
+    import run_agent
+    from hermes_cli import plugins as _plugins
+
+    captured = {}
+
+    def _capture_whitelist(whitelist, deny_msg_fmt=None):
+        captured["whitelist"] = set(whitelist)
+        captured["deny_msg_fmt"] = deny_msg_fmt
+        raise RuntimeError("stop after capturing whitelist")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    class _MemoryManagerStub:
+        def get_all_tool_names(self):
+            return {"honcho_profile", "honcho_search", "honcho_context"}
+
+    agent._memory_manager = _MemoryManagerStub()
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(_plugins, "set_thread_tool_whitelist", _capture_whitelist), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert "whitelist" in captured, "set_thread_tool_whitelist was not called"
+    whitelist = captured["whitelist"]
+    assert "honcho_profile" in whitelist
+    assert "honcho_search" in whitelist
+    assert "honcho_context" in whitelist
+
+
 def test_read_file_outside_review_does_not_mark(tmp_path):
     """Foreground reads must not populate the review-fork read set."""
     from tools.file_tools import read_file_tool

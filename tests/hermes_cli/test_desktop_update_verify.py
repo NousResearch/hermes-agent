@@ -1,5 +1,7 @@
 """Receipt validation uses packaged output, not just a source stamp."""
 import json
+import subprocess
+import sys
 import struct
 
 import pytest
@@ -63,3 +65,52 @@ def test_default_root_is_the_imported_checkout_not_cwd(tmp_path, monkeypatch):
     assert seen['desktop'] == verify.checkout_root() / 'apps' / 'desktop'
     assert (verify.checkout_root() / 'hermes_cli' / 'desktop_update_verify.py').is_file()
     assert verify.checkout_root() != tmp_path
+
+
+def test_failed_verification_rebuilds_once_then_reverifies(tmp_path, monkeypatch):
+    checks = []
+    rebuilds = []
+
+    def check(project_root=None):
+        checks.append(project_root)
+        if len(checks) == 1:
+            raise RuntimeError('The updated Desktop executable is missing')
+
+    def run(command, **kwargs):
+        rebuilds.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(verify, 'verify_windows_desktop_update', check)
+
+    verify.verify_or_rebuild_windows_desktop_update(tmp_path, run=run)
+
+    assert checks == [tmp_path, tmp_path]
+    assert len(rebuilds) == 1
+    command, kwargs = rebuilds[0]
+    assert command[0] == sys.executable
+    assert command[1:] == ['-m', 'hermes_cli.main', 'desktop', '--force-build', '--build-only']
+    assert kwargs == {'cwd': tmp_path, 'check': False}
+
+
+def test_failed_rebuild_preserves_the_verification_failure(tmp_path, monkeypatch):
+    def fails_to_start(command, **kwargs):
+        raise PermissionError('blocked')
+
+    def exits_nonzero(command, **kwargs):
+        return subprocess.CompletedProcess(command, 9)
+
+    for run, match in [(fails_to_start, 'could not start'), (exits_nonzero, 'exited 9')]:
+        initial_error = RuntimeError('The updated Desktop executable is missing')
+        checks = []
+
+        def check(project_root=None):
+            checks.append(project_root)
+            raise initial_error
+
+        monkeypatch.setattr(verify, 'verify_windows_desktop_update', check)
+
+        with pytest.raises(RuntimeError, match=match) as exc_info:
+            verify.verify_or_rebuild_windows_desktop_update(tmp_path, run=run)
+
+        assert checks == [tmp_path]
+        assert exc_info.value.__cause__ is initial_error

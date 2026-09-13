@@ -6,6 +6,7 @@ retained bytes are released per admission by ``release_admission_media`` once th
 row is terminal and no live (queued/started/unknown) row still references them.
 """
 import hashlib
+from contextlib import suppress
 import json
 import os
 from pathlib import Path
@@ -81,50 +82,66 @@ def capture_native_media(paths):
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
     # per-file caps alone ten attachments could commit ~1.25 GiB of retained bytes per turn.
     total = 0
-    for value in paths:
-        path = Path(value)
-        try:
-            source = _open_regular(path)
-        except (OSError, ValueError) as exc:
-            raise RuntimeStoreError('invalid_params') from exc
-        with source:
-            root = _media_root()
-            if root.resolve() != root:
-                raise RuntimeStoreError('invalid_params')
-            root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
-            temporary = Path(name)
-            try:
-                digest, size = hashlib.sha256(), 0
-                with os.fdopen(fd, 'wb') as output:
-                    while chunk := source.read(1024 * 1024):
-                        size += len(chunk)
-                        try:
-                            validate_inbound_media_size(total + size, max_bytes=limit)
-                        except ValueError as exc:
-                            raise RuntimeStoreError('invalid_params') from exc
-                        digest.update(chunk)
-                        output.write(chunk)
-                    output.flush()
-                    os.fsync(output.fileno())
-                target = root / digest.hexdigest() / path.name
-                if target.parent.resolve() != target.parent:
-                    raise RuntimeStoreError('invalid_params')
-                target.parent.mkdir(mode=0o700, exist_ok=True)
-                reference = {'path': str(target), 'sha256': digest.hexdigest(), 'size': size}
-                if target.exists():
-                    # An earlier admission can reference this file. Never repair it by
-                    # overwriting accepted bytes, even when a retry has the same digest.
-                    restore_native_media([reference])
-                else:
-                    os.replace(temporary, target)
-                for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
-                    _sync_directory(directory)
-                references.append(reference)
-                total += size
-            finally:
-                temporary.unlink(missing_ok=True)
+    # Files THIS batch published. No admission exists until every file is accepted, so a
+    # rejected batch rolls its own publications back; a target that already existed belongs
+    # to an earlier admission and is never touched.
+    published = []
+    try:
+        for value in paths:
+            _capture_file(Path(value), limit, total, references, published)
+            total = sum(reference['size'] for reference in references)
+    except BaseException:
+        for target in published:
+            target.unlink(missing_ok=True)
+            with suppress(OSError):
+                target.parent.rmdir()
+        raise
     return references
+
+
+def _capture_file(path, limit, total, references, published):
+    from gateway.platforms.base import validate_inbound_media_size
+    try:
+        source = _open_regular(path)
+    except (OSError, ValueError) as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+    with source:
+        root = _media_root()
+        if root.resolve() != root:
+            raise RuntimeStoreError('invalid_params')
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
+        temporary = Path(name)
+        try:
+            digest, size = hashlib.sha256(), 0
+            with os.fdopen(fd, 'wb') as output:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    try:
+                        validate_inbound_media_size(total + size, max_bytes=limit)
+                    except ValueError as exc:
+                        raise RuntimeStoreError('invalid_params') from exc
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            target = root / digest.hexdigest() / path.name
+            if target.parent.resolve() != target.parent:
+                raise RuntimeStoreError('invalid_params')
+            target.parent.mkdir(mode=0o700, exist_ok=True)
+            reference = {'path': str(target), 'sha256': digest.hexdigest(), 'size': size}
+            if target.exists():
+                # An earlier admission can reference this file. Never repair it by
+                # overwriting accepted bytes, even when a retry has the same digest.
+                restore_native_media([reference])
+            else:
+                os.replace(temporary, target)
+                published.append(target)
+            for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
+                _sync_directory(directory)
+            references.append(reference)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def admission_media_references(payload):
@@ -138,7 +155,10 @@ def release_admission_media(db, admission_id):
 
     Terminal rows are exact-retry evidence by digest only; their bytes are not
     replayed. Rows that are not terminal (queued, started, unknown) may still
-    execute, so any digest they reference stays on disk.
+    execute, so any path they reference stays on disk. Storage is per
+    ``<digest>/<basename>`` and a row replays exactly the path it references, so holding
+    is per path too: equal bytes admitted under another basename are a separate file
+    whose own row decides its release.
     """
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
@@ -150,12 +170,12 @@ def release_admission_media(db, admission_id):
     root = _media_root()
     with db._read_ctx() as conn:
         live = conn.execute("SELECT payload_json FROM session_admissions WHERE status!='terminal'").fetchall()
-    held = {reference['sha256'] for saved in live
+    held = {reference['path'] for saved in live
             for reference in admission_media_references(json.loads(saved[0]))}
     released = 0
     for reference in mine:
         path = Path(reference['path'])
-        if reference['sha256'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+        if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
             continue
         try:
             path.unlink()

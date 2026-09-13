@@ -34,6 +34,8 @@ from tools.environments.remote_common import (
 
 logger = logging.getLogger(__name__)
 
+_PROFILE_MOUNT_INDETERMINATE = object()
+
 # Docker Desktop install paths checked when 'docker' is not in PATH
 # (macOS Intel / Apple Silicon Homebrew / app bundle).
 _DOCKER_SEARCH_PATHS = [
@@ -109,6 +111,160 @@ def _get_active_profile_name() -> str:
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
+
+
+def _docker_volume_host_source(volume_spec: str) -> str:
+    """Return the HOST side of a ``-v`` spec, or ``""`` for a named volume.
+
+    Docker specs are ``source:destination[:options]``. A Windows source
+    carries its own colon (a drive-letter prefix), so the split has to skip
+    the drive letter before looking for the separator. Named volumes
+    (``cache:/x``) are not host paths and are returned as ``""`` — they
+    cannot cross a filesystem profile boundary.
+    """
+    if not isinstance(volume_spec, str):
+        return ""
+    spec = volume_spec.strip()
+    if not spec:
+        return ""
+    offset = 2 if len(spec) >= 3 and spec[1] == ":" and spec[2] in ("/", "\\") else 0
+    sep = spec.find(":", offset)
+    if sep <= 0:
+        return ""
+    source = spec[:sep]
+    if not source.startswith(("/", "~", "./", "../")) and offset == 0:
+        return ""  # named volume, not a bind mount
+    return source
+
+
+def _profile_home_map() -> Optional[tuple[Path, list[tuple[str, Path]]]]:
+    """Return ``(active_home, [(name, home), ...])`` for this installation.
+
+    ``None`` when the layout cannot be resolved. Callers at the isolation
+    boundary must treat that as indeterminate, not as proof of safety.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        active = get_hermes_home().expanduser().resolve(strict=False)
+        root = get_default_hermes_root().expanduser().resolve(strict=False)
+    except Exception:
+        logger.debug("cross-profile mount probe unavailable", exc_info=True)
+        return None
+
+    homes: list[tuple[str, Path]] = [("default", root)]
+    try:
+        for entry in (root / "profiles").iterdir():
+            if entry.is_dir() and not entry.name.startswith("."):
+                homes.append((entry.name, entry.resolve(strict=False)))
+    except OSError:
+        logger.debug("cross-profile profile directory unavailable", exc_info=True)
+        return None
+    return active, homes
+
+
+def _installation_has_sibling_profiles() -> bool:
+    """True when a profile boundary exists at all in this installation.
+
+    A single-profile install has nothing to cross, so the callers that would
+    otherwise pay for a ``docker inspect`` can skip it entirely.
+    """
+    resolved = _profile_home_map()
+    if resolved is None:
+        return _PROFILE_MOUNT_INDETERMINATE
+    active, homes = resolved
+    return any(home != active for _name, home in homes)
+
+
+def _foreign_profile_mount_owner(host_source: str) -> Optional[str] | object:
+    """Name the OTHER profile a bind-mount *source* would expose, else ``None``.
+
+    A container is labeled ``hermes-profile=<active>`` and every Hermes-managed
+    mount (skills, credentials, media caches) resolves through
+    ``get_hermes_home()``, so those follow the profile whose turn is running.
+    The two mounts derived from user config — ``terminal.docker_volumes`` and
+    the ``docker_mount_cwd_to_workspace`` workspace bind — reach the container
+    through process-global ``TERMINAL_*`` env vars instead, and those are
+    written once per process. Under ``gateway.multiplex_profiles`` one
+    interpreter serves every profile, so a container created for profile A can
+    receive profile B's directories — read-WRITE, since these are the only
+    writable user mounts (#101132).
+
+    This is the boundary check, not the resolution fix: whatever path produced
+    the source (a frozen env var, a stale label-reused container, a hand-edited
+    config), a container serving one profile must never be handed another
+    profile's Hermes home. Sources inside the ACTIVE home stay allowed, and a
+    source that *contains* a foreign home (e.g. the whole ``profiles/`` tree)
+    is a violation too — it exposes every profile at once.
+
+    Resolution failure returns an explicit indeterminate state. The caller
+    refuses the requested bind because inability to prove safety is not proof
+    that the bind is safe.
+    """
+    if not host_source:
+        return None
+    resolved = _profile_home_map()
+    if resolved is None:
+        return _PROFILE_MOUNT_INDETERMINATE
+    active, homes = resolved
+    try:
+        source = Path(os.path.expanduser(host_source)).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("cross-profile mount probe could not resolve %r", host_source)
+        return None
+
+    def _within(child: Path, parent: Path) -> bool:
+        try:
+            return child == parent or child.is_relative_to(parent)
+        except (OSError, ValueError):
+            return False
+
+    # Every profile home nests inside the default root, so "the home that owns
+    # this source" is the DEEPEST match — otherwise ``profiles/bob/cache`` would
+    # read as belonging to the default profile and every mount would be refused.
+    owner_name, owner_home = None, None
+    for name, home in homes:
+        if _within(source, home) and (
+            owner_home is None or _within(home, owner_home)
+        ):
+            owner_name, owner_home = name, home
+    if owner_home is not None and owner_home != active:
+        return owner_name
+
+    # The source may instead CONTAIN foreign homes — mounting the default root
+    # or the whole ``profiles/`` tree exposes every sibling profile at once.
+    for name, home in homes:
+        if home != active and home != source and _within(home, source):
+            return name
+    return None
+
+
+def _reject_foreign_profile_source(host_source: str, what: str) -> bool:
+    """True when *host_source* must not be mounted; logs why at ERROR level.
+
+    Loud on purpose: the operator who hit #101132 could only find the crossed
+    mount by diffing ``docker inspect`` output against container labels, and a
+    silent skip would leave that same forensic gap.
+    """
+    owner = _foreign_profile_mount_owner(host_source)
+    if owner is _PROFILE_MOUNT_INDETERMINATE:
+        raise EnvironmentConnectionError(
+            f"Cannot verify {what} {host_source!r} against the active profile; "
+            "refusing the Docker bind mount. Resolve the Hermes profile homes "
+            "and retry."
+        )
+    if owner is None:
+        return False
+    logger.error(
+        "Refusing %s %s: it belongs to profile %r but this container serves "
+        "profile %r. Cross-profile bind mounts are a data-isolation boundary; "
+        "set terminal.docker_shared_container_key on both profiles if the "
+        "sharing is intentional.",
+        what, host_source, owner, _get_active_profile_name(),
+    )
+    raise EnvironmentConnectionError(
+        f"Refusing {what} {host_source!r}: it belongs to another Hermes profile."
+    )
 
 
 def _container_identity(shared_key: str = "") -> str:
@@ -538,6 +694,7 @@ class DockerEnvironment(BaseEnvironment):
 
         _ensure_docker_available()
 
+        self._guard_profile_boundary = not shared_container_key
         resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
         volume_args.extend(_readonly_skill_mount_args())
@@ -679,10 +836,14 @@ class DockerEnvironment(BaseEnvironment):
             if ":" not in vol:
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
                 continue
+            if self._guard_profile_boundary:
+                _reject_foreign_profile_source(_docker_volume_host_source(vol), "docker_volumes mount")
             volume_args.extend(["-v", vol])
         workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        if host_cwd_abs and self._guard_profile_boundary:
+            _reject_foreign_profile_source(host_cwd_abs, "workspace cwd mount")
         bind_host_cwd = (
             auto_mount_cwd and bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
             and not workspace_explicitly_mounted)
@@ -714,6 +875,27 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 
+    def _container_foreign_profile_mount(self, container_id: str) -> Optional[str] | object:
+        """Inspect an existing container before reuse; unknown is unsafe."""
+        sibling_state = _installation_has_sibling_profiles()
+        if sibling_state is _PROFILE_MOUNT_INDETERMINATE:
+            return _PROFILE_MOUNT_INDETERMINATE
+        if not sibling_state:
+            return None
+        try:
+            result = run_capture(
+                [self._docker_exe, "inspect", container_id, "--format",
+                 "{{range .Mounts}}{{.Source}}\n{{end}}"], timeout=10)
+        except (subprocess.TimeoutExpired, OSError):
+            return _PROFILE_MOUNT_INDETERMINATE
+        for source in result.stdout.splitlines():
+            owner = _foreign_profile_mount_owner(source.strip())
+            if owner is _PROFILE_MOUNT_INDETERMINATE:
+                return owner
+            if owner is not None:
+                return owner
+        return None
+
     def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
@@ -724,6 +906,17 @@ class DockerEnvironment(BaseEnvironment):
         if existing is None:
             return False
         container_id, state = existing
+        foreign_mount_owner = (
+            self._container_foreign_profile_mount(container_id)
+            if self._guard_profile_boundary else None
+        )
+        if foreign_mount_owner is _PROFILE_MOUNT_INDETERMINATE or foreign_mount_owner is not None:
+            logger.error("Refusing reuse of container %s with unverifiable or foreign profile mounts", container_id[:12])
+            try:
+                run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("Failed to remove unsafe container %s: %s", container_id[:12], e)
+            return False
         if not network:
             actual_mode = self._container_network_mode(container_id)
             if actual_mode != "none":
@@ -962,6 +1155,62 @@ class DockerEnvironment(BaseEnvironment):
             [self._docker_exe, "inspect", "--format", "{{.HostConfig.NetworkMode}}", container_id], timeout=10,
             fail="docker inspect NetworkMode failed: %s", nonzero="docker inspect NetworkMode returned %d: %s")
         return (result.stdout.strip() or None) if result is not None else None
+
+    def _container_foreign_profile_mount(self, container_id: str) -> Optional[str]:
+        """Name a foreign profile an EXISTING container already bind-mounts.
+
+        Label-based reuse attaches to whatever container carries the right
+        ``(task, profile, egress)`` labels. It never looks at what that
+        container has mounted, so a container created while the process-global
+        ``TERMINAL_*`` mounts were pinned to another profile keeps serving that
+        profile's directories for its whole lifetime — the persistence half of
+        #101132, which no amount of correct per-turn resolution can undo.
+
+        Config-shape reuse fingerprints cannot catch this either: under a
+        multiplexed gateway every process computes the SAME leaked mount list,
+        so the fingerprints match and reuse proceeds. Only the container's
+        actual mounts, checked against the profile it now serves, expose it.
+
+        Best-effort: any inspect failure returns ``None`` and reuse proceeds
+        exactly as before. A single-profile installation has no boundary to
+        cross, so it never pays for the inspect at all.
+        """
+        sibling_state = _installation_has_sibling_profiles()
+        if sibling_state is _PROFILE_MOUNT_INDETERMINATE:
+            return _PROFILE_MOUNT_INDETERMINATE
+        if not sibling_state:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect", container_id,
+                    "--format", "{{range .Mounts}}{{.Source}}\n{{end}}",
+                ],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect Mounts failed: %s", e)
+            return _PROFILE_MOUNT_INDETERMINATE
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect Mounts returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
+            return _PROFILE_MOUNT_INDETERMINATE
+        for source in result.stdout.splitlines():
+            source = source.strip()
+            if not source:
+                continue
+            owner = _foreign_profile_mount_owner(source)
+            if owner is _PROFILE_MOUNT_INDETERMINATE:
+                return _PROFILE_MOUNT_INDETERMINATE
+            if owner is not None:
+                return owner
+        return None
 
     def _find_reusable_container(
         self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:

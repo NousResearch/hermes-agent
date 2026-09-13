@@ -185,6 +185,23 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if target_error is not None:
         return json.dumps(target_error)
     if operations:
+        if isinstance(operations, str):
+            # Observed traffic (state.db, 48h): callers send a JSON-encoded list
+            # in the string slot. Unwrap instead of rejecting — the model can't
+            # see the difference and just resubmits the same shape.
+            try:
+                operations = json.loads(operations)
+            except (ValueError, TypeError):
+                # Observed shape: '[{"replace", "content": ...' — action VALUE
+                # present, action KEY missing. Repairable, so repair; a valid
+                # ops string can never contain this (it'd be invalid JSON).
+                import re
+                repaired = re.sub(r'\{\s*"(replace|remove|add)"\s*,',
+                                  r'{"action": "\1",', operations)
+                try:
+                    operations = json.loads(repaired)
+                except (ValueError, TypeError):
+                    pass
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         denied = _background_delete_gate(action, operations, target)
@@ -265,11 +282,13 @@ MEMORY_SCHEMA = {
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array. The batch applies "
-        "atomically and the char limit is checked only on the FINAL result — so a single call "
-        "can remove/replace stale entries to free room AND add new ones, even when an add alone "
-        "would overflow. The response reports current/limit chars and confirms completion; one "
-        "batch call finishes the update, so don't repeat it. Use the bare action/content/old_text "
-        "fields only for a single lone change.\n\n"
+        "atomically against the final char budget — the limit is checked only on the FINAL result — "
+        "so a single call can remove/replace stale entries to free room AND add new ones, even when "
+        "an add alone would overflow. Ops that cannot apply are SKIPPED and reported (an unmatched "
+        "remove = the entry is already gone — treat as done; an unmatched replace comes back with "
+        "'retry_old_text' — reissue that one op with it verbatim). The response reports current/limit "
+        "chars and confirms completion; one batch call finishes the update, so don't repeat it. Use "
+        "the bare action/content/old_text fields only for a single lone change.\n\n"
         "OPERATIONS FORMAT — each item MUST be an object with an explicit 'action' field:\n"
         "[{\"action\": \"add\", \"content\": \"new entry text\"},\n"
         " {\"action\": \"replace\", \"old_text\": \"unique substring of existing entry\", \"content\": \"replacement text\"},\n"

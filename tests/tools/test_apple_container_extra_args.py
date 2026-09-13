@@ -95,7 +95,7 @@ def test_prompt_probe_container_carries_extra_args(monkeypatch):
         captured.update(kwargs)
         return FakeEnv()
 
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     prompt_builder._probe_remote_backend("apple_container")
     assert captured["container_config"]["apple_container_extra_args"] == [
         "--network", "none",

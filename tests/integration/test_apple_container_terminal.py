@@ -11,10 +11,10 @@ import subprocess
 import pytest
 
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.macos_only, pytest.mark.skipif(
     os.getenv("HERMES_RUN_APPLE_CONTAINER_INTEGRATION") != "1",
     reason="set HERMES_RUN_APPLE_CONTAINER_INTEGRATION=1 on macOS 26 ARM64",
-)
+)]
 
 
 def _sha256(path) -> str:
@@ -92,6 +92,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_ENV", "apple_container")
     monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_IMAGE", "python:3.11-slim-bookworm")
     monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_VOLUMES", "[]")
+    monkeypatch.setenv("TERMINAL_APPLE_CONTAINER_EXTRA_ARGS", '["--network", "none"]')
     monkeypatch.setenv("TERMINAL_CONTAINER_CPU", "1")
     monkeypatch.setenv("TERMINAL_CONTAINER_MEMORY", "1024")
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
@@ -132,14 +133,19 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         )
         assert not write_result.get("error"), write_result
 
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         execute_result = json.loads(
             execute_code(
+                "import sys, subprocess; print(sys.platform); "
+                "print(subprocess.check_output(['uname', '-s'], text=True)); "
                 "print(open('/workspace/shared.txt', encoding='utf-8').read())",
                 task_id=task_id,
             )
         )
         assert execute_result["status"] == "success", execute_result
         assert "from-file-tool" in execute_result["output"]
+        assert "linux" in execute_result["output"]
+        assert "Linux" in execute_result["output"]
 
         readonly_result = json.loads(
             terminal.terminal_tool(

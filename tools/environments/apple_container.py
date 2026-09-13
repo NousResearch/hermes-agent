@@ -24,7 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, _popen_bash, get_sandbox_dir
+from tools.environments.base import BaseEnvironment, get_sandbox_dir
+from tools.environments.base_output import _popen_bash
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,31 @@ def _warn_sensitive_volumes(volumes: list[str]) -> None:
                     vol,
                 )
                 break
+
+
+def _extra_args_mount_sources(extra_args: list) -> list[str]:
+    """Extract host source paths from ``--mount`` entries in extra_args.
+
+    Operator-supplied ``apple_container_extra_args`` can bind-mount a host
+    path the same way the structured ``volumes`` list does (``--mount
+    type=bind,source=<host>,...``), so those sources need the same
+    sensitive-path warning ``_warn_sensitive_volumes`` gives structured
+    volumes.
+    """
+    sources: list[str] = []
+    tokens = [arg for arg in extra_args if isinstance(arg, str)]
+    for index, token in enumerate(tokens):
+        flag, has_inline, inline_value = token.partition("=")
+        if flag != "--mount":
+            continue
+        value = inline_value if has_inline else (
+            tokens[index + 1] if index + 1 < len(tokens) else ""
+        )
+        for part in value.split(","):
+            key, _, val = part.partition("=")
+            if key == "source":
+                sources.append(val)
+    return sources
 
 
 def _bind_mount_args(source: str, target: str, *, readonly: bool) -> list[str]:
@@ -416,6 +442,7 @@ class AppleContainerEnvironment(BaseEnvironment):
         # config / TERMINAL_APPLE_CONTAINER_EXTRA_ARGS env), e.g.
         # ["--network", "none"] or extra --tmpfs shadows. Same trust model as
         # docker_extra_args: host config, validated in _validate_extra_args.
+        _warn_sensitive_volumes(_extra_args_mount_sources(self._extra_args))
         run_cmd.extend(self._extra_args)
 
         run_cmd.append(image)

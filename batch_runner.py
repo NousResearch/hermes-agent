@@ -214,6 +214,7 @@ def _prepare_container_image(
         "modal_image": container_image,
         "singularity_image": f"docker://{container_image}",
         "daytona_image": container_image,
+        "apple_container_image": container_image,
     }
     if prompt_data.get("cwd"):
         overrides["cwd"] = prompt_data["cwd"]

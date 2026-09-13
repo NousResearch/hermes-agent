@@ -18,6 +18,7 @@ import re
 import time
 from contextlib import suppress
 from gateway.config import Platform
+from gateway.pending_audio import PendingAudioClip, pending_audio_clips
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
@@ -2008,33 +2009,57 @@ class GatewayInboundMixin:
     async def _transcribe_pending_audio_event_once(
         self, event, user_text: Optional[str] = None
     ) -> tuple[str | None, List[str]]:
-        """Transcribe a pending audio event once and cache the result on the event: the interrupt
-        monitor and the pending-drain path both need it — one STT call and one echo per message."""
-        if hasattr(event, "_gateway_pending_stt_text"):
-            return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
+        """Cache pending audio per clip; merges may extend the event while STT is running.
+        The interrupt monitor and pending drain share results without freezing the caption."""
+        if not self._pending_event_audio_paths(event):
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
-        text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
-        event._gateway_pending_stt_text = enriched_text
-        event._gateway_pending_stt_transcripts = list(successful_transcripts)
-        return enriched_text, successful_transcripts
+        if not hasattr(event, "_gateway_pending_stt_lock"):
+            event._gateway_pending_stt_lock = asyncio.Lock()
+        async with event._gateway_pending_stt_lock:
+            clips = pending_audio_clips(event)
+            results = {}
+            while True:
+                audio_paths = list(dict.fromkeys(self._pending_event_audio_paths(event)))
+                missing = next((path for path in audio_paths if path not in results), None)
+                if missing is None:
+                    break
+                clip = clips.setdefault(missing, PendingAudioClip())
+                results[missing] = await clip.transcribe(
+                    lambda: self._enrich_message_with_transcription("", [missing])
+                )
+                # A merge can append media/text during STT. Re-read the event before publishing;
+                # keep completed clips so a caption merge cannot retranscribe or change an echo.
+            prefix = "\n\n".join(results[path][0] for path in audio_paths)
+            successful_transcripts = [
+                transcript for path in audio_paths for transcript in results[path][1]
+            ]
+            current_text = getattr(event, "text", "") or ""
+            event._gateway_pending_stt_text = (
+                self._prepend_media_prefix(prefix, current_text) if prefix else current_text
+            )
+            event._gateway_pending_stt_transcripts = list(successful_transcripts)
+            # Explicit overrides (including clarify's "") belong to this caller, never the cache.
+            text = current_text if user_text is None else user_text
+            return (
+                self._prepend_media_prefix(prefix, text) if prefix else text,
+                successful_transcripts,
+            )
 
     async def _echo_pending_stt_transcripts_once(
         self, event, adapter, source, transcripts: List[str], *, metadata=None,
         log_context: str = "Transcript",
     ) -> None:
-        """Echo pending-event STT transcripts to the chat at most once. Tracked as a COUNT (not a
-        set — identical transcripts are distinct deliveries): ``merge_pending_message_event`` can
-        append a second voice note and invalidate the cache; the re-run returns earlier transcripts
-        as a prefix, so only the unsent tail is echoed."""
+        """Claim echoes by clip identity, including transcripts already echoed by an absorbed event."""
         if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
             return
-        already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
+        clips = pending_audio_clips(event)
+        unsent = [
+            transcript
+            for path in dict.fromkeys(self._pending_event_audio_paths(event))
+            for transcript in clips[path].claim_echo()
+        ]
         await self._echo_stt_transcripts(
-            adapter, source, transcripts[already_echoed:], metadata=metadata, log_context=log_context,
+            adapter, source, unsent, metadata=metadata, log_context=log_context,
         )
 
     async def _transcribe_and_echo_pending_voice(
@@ -2046,13 +2071,18 @@ class GatewayInboundMixin:
         if not self._pending_event_audio_paths(event):
             return text, []
         try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
             if metadata is _UNSET:
                 metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-            await self._echo_pending_stt_transcripts_once(
-                event, adapter, source, transcripts, metadata=metadata, log_context=log_context
-            )
-            return enriched_text or text, transcripts
+            while True:
+                if not self._pending_event_audio_paths(event):
+                    return getattr(event, "text", "") or "", []
+                enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event)
+                await self._echo_pending_stt_transcripts_once(
+                    event, adapter, source, transcripts, metadata=metadata, log_context=log_context
+                )
+                # Sending an echo also yields to incoming merges. Refresh before interrupt/drain.
+                if getattr(event, "_gateway_pending_stt_text", None) == enriched_text:
+                    return enriched_text or text, transcripts
         except Exception as trans_exc:
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
             return text, []

@@ -467,3 +467,22 @@ def test_a_routed_profile_script_never_receives_a_launch_external_source_value(h
     assert ok, output
     assert output.strip() == "<unset>|routed-vault-value"
     assert os.environ["LAUNCH_VAULT_ONLY"] == "launch-vault-value"  # parent untouched
+
+
+def test_single_profile_child_keeps_its_own_external_source_value(hermes_env, monkeypatch):
+    """No multiplexing: os.environ IS this profile's environment, so the source-name strip must not
+    run at all — the child keeps its own vault value even if the per-home snapshot were missing."""
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+
+    monkeypatch.setenv("OWN_VAULT_KEY", "own-vault-value")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "OWN_VAULT_KEY", "vault")
+    script = hermes_env / "scripts" / "probe_own_vault.sh"
+    script.write_text('#!/bin/bash\necho "${OWN_VAULT_KEY:-<unset>}"\n')
+
+    assert secret_scope.is_multiplex_active() is False
+    ok, output = _run_job_script("probe_own_vault.sh")
+
+    assert ok, output
+    assert output.strip() == "own-vault-value"

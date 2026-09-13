@@ -2037,6 +2037,10 @@ async def get_model_context_length_async(model: str, base_url: str = "", api_key
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul
 # Jamo (+Ext-A), CJK radicals/ideographs (+compat), Hangul syllables, fullwidth/halfwidth.
+# Rough chars-per-token ratio for ASCII text; the single source for every "N tokens ≈ N*4 chars"
+# budget conversion (context files, tool-output budgets, whisper prompt cap, compressor metadata).
+CHARS_PER_TOKEN = 4
+
 _CJK_DENSE_RE = re.compile("[\u1100-\u11ff\u2e80-\u9fff\ua960-\ua97f\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
 
@@ -2058,10 +2062,10 @@ def estimate_tokens_rough(text: str) -> int:
         return 0
     text = str(text)
     if text.isascii():  # flag check on CPython; ASCII cannot contain token-dense CJK
-        return (len(text) + 3) // 4
+        return (len(text) + 3) // CHARS_PER_TOKEN
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:

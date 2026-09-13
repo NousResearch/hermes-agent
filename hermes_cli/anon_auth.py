@@ -31,6 +31,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
+from agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_WELCOME_URL, _decode_jwt_claims, httpx)
 
@@ -661,11 +662,8 @@ def register_promotion_intent(
 
 
 def _retry_after_seconds(response: httpx.Response, default: float) -> float:
-    raw = (response.headers.get("retry-after") or "").strip()
-    try:
-        return max(0.0, float(raw)) if raw else default
-    except ValueError:
-        return default
+    seconds = parse_retry_after_seconds(response.headers)
+    return default if seconds is None else seconds
 
 
 def _sleep_until(wake: float, cancelled: Optional[Callable[[], bool]]) -> bool:

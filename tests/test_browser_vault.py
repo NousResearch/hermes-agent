@@ -19,7 +19,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -379,6 +379,50 @@ class TestBrowserVaultTools:
             "task-bound", existing_session=local_session, session_key="task-bound"
         )
         focus.assert_called_once_with("task-bound", "", "export_password", supervisor=supervisor)
+
+    def test_existing_session_never_reuses_unqualified_supervisor(self):
+        from tools import browser_tool, browser_vault_tool
+
+        session_key = "task-bound::local"
+        local_session = {"session_name": "h_existing", "features": {"local": True}}
+        exact_supervisor = object()
+        browser_tool._active_sessions[session_key] = local_session
+        try:
+            with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
+                 patch("tools.browser_tool_session._run_browser_command",
+                       return_value={"success": True, "data": {"cdpUrl": "http://local:9222"}}) as run_command, \
+                 patch("tools.browser_tool_cdp._resolve_cdp_override",
+                       return_value="ws://local/devtools/browser/exact"):
+                registry.get.return_value = object()
+                registry.get_or_start.return_value = exact_supervisor
+                result = browser_vault_tool._ensure_supervisor(
+                    "task-bound", existing_session=local_session, session_key=session_key
+                )
+
+            assert result is exact_supervisor
+            registry.get.assert_not_called()
+            run_command.assert_called_once_with(
+                session_key, "get", ["cdp-url"], _existing_session=local_session
+            )
+            registry.get_or_start.assert_called_once_with(
+                task_id="task-bound",
+                cdp_url="ws://local/devtools/browser/exact",
+                dialog_policy=ANY,
+                dialog_timeout_s=ANY,
+            )
+
+            def drop_binding(*args, **kwargs):
+                browser_tool._active_sessions.pop(session_key)
+                return {"success": True, "data": {"cdpUrl": "http://local:9222"}}
+
+            with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
+                 patch("tools.browser_tool_session._run_browser_command", side_effect=drop_binding):
+                registry.get_or_start.return_value = exact_supervisor
+                assert browser_vault_tool._ensure_supervisor(
+                    "task-bound", existing_session=local_session, session_key=session_key
+                ) is None
+        finally:
+            browser_tool._active_sessions.pop(session_key, None)
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool

@@ -113,9 +113,12 @@ def _ensure_supervisor(task_id: str, *, existing_session=None, session_key: Opti
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
-    if supervisor is not None:
-        return supervisor
+    if existing_session is None:
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is not None:
+            return supervisor
+    else:
+        from tools import browser_tool
     from tools.browser_tool import _last_session_key
     from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
     from tools.browser_tool_session import _run_browser_command
@@ -132,8 +135,17 @@ def _ensure_supervisor(task_id: str, *, existing_session=None, session_key: Opti
         return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
-                                                dialog_policy=policy, dialog_timeout_s=timeout_s)
+        supervisor = SUPERVISOR_REGISTRY.get_or_start(
+            task_id=task_id,
+            cdp_url=_resolve_cdp_override(cdp_url),
+            dialog_policy=policy,
+            dialog_timeout_s=timeout_s,
+        )
+        if existing_session is not None:
+            with browser_tool._cleanup_lock:
+                if browser_tool._active_sessions.get(effective_session_key) is not existing_session:
+                    return None
+        return supervisor
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)
         return None
@@ -431,26 +443,26 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
     effective_task_id = task_id or "default"
     # This capability check must not attach to or create a Hermes browser for
     # an independent external-browser task that cannot securely redeem secrets.
-    supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+    existing = _existing_owned_session(effective_task_id)
+    if existing is not None:
+        session_key, session_info = existing
+        supervisor = _ensure_supervisor(
+            effective_task_id,
+            existing_session=session_info,
+            session_key=session_key,
+        )
+    else:
+        supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
     if supervisor is None:
-        existing = _existing_owned_session(effective_task_id)
-        if existing is not None:
-            session_key, session_info = existing
-            supervisor = _ensure_supervisor(
-                effective_task_id,
-                existing_session=session_info,
-                session_key=session_key,
-            )
-        if supervisor is None:
-            return json.dumps({
-                "success": False,
-                "error_type": "secure_fill_unsupported",
-                "error": (
-                    "The active browser control path does not expose Hermes secure fill. Hermes will not switch "
-                    "to a different browser or pass a password through chat, shell arguments, or an MCP tool. "
-                    "Ego/Aside sessions require a trusted adapter with supervised target-bound secret fill."
-                ),
-            })
+        return json.dumps({
+            "success": False,
+            "error_type": "secure_fill_unsupported",
+            "error": (
+                "The active browser control path does not expose Hermes secure fill. Hermes will not switch "
+                "to a different browser or pass a password through chat, shell arguments, or an MCP tool. "
+                "Ego/Aside sessions require a trusted adapter with supervised target-bound secret fill."
+            ),
+        })
 
     if not _focus_bound_origin(effective_task_id, "", "export_password", supervisor=supervisor):
         return json.dumps({

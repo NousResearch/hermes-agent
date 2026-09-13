@@ -1,3 +1,4 @@
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
@@ -9,7 +10,7 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $defaultReasoningEffort } from '@/store/session'
 

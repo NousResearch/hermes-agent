@@ -171,6 +171,12 @@ def assemble_api_request(
         api_messages, drop_codex_reasoning_items=agent.api_mode != "codex_responses"
     )
 
+    # Request-build projection: providers that reject media inside tool
+    # messages get tool-result images relocated into a following user
+    # message. Deterministic and request-only — persisted history is never
+    # mutated, and the produced sequence keeps strict role alternation.
+    api_messages = agent._relocate_tool_result_images_for_api(api_messages)
+
     # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
     # (KV-cache reuse on local servers, better cloud cache hits); API copy only.
     for am in api_messages:

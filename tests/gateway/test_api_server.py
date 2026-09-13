@@ -351,13 +351,17 @@ class TestConcurrencyCap:
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
+def _make_adapter(
+    api_key: str = "", cors_origins=None, *, openwebui_compact_event: bool = False,
+) -> APIServerAdapter:
     """Create an adapter with optional API key."""
     extra = {}
     if api_key:
         extra["key"] = api_key
     if cors_origins is not None:
         extra["cors_origins"] = cors_origins
+    if openwebui_compact_event:
+        extra["openwebui_compact_event"] = True
     config = PlatformConfig(enabled=True, extra=extra)
     return APIServerAdapter(config)
 
@@ -1710,6 +1714,105 @@ class TestResponsesEndpoint:
 
 
 class TestResponsesStreaming:
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_configured_openwebui_compaction_status(self):
+        from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
+
+        adapter = _make_adapter(openwebui_compact_event=True)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                compaction_cb = kwargs.get("compaction_callback")
+                delta_cb = kwargs.get("stream_delta_callback")
+                assert compaction_cb is not None
+                compaction_cb("started", {"message": COMPACTION_STATUS, "error": False})
+                compaction_cb("completed", {"message": COMPACTION_DONE_STATUS, "error": False})
+                if delta_cb:
+                    delta_cb("done")
+                await asyncio.sleep(0)
+                return (
+                    {"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                response = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert response.status == 200
+                body = await response.text()
+
+        payloads = [
+            json.loads(line[len("data: "):])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+            and json.loads(line[len("data: "):]).get("type") == "hermes.context_compaction"
+        ]
+        assert [payload["event"]["data"]["done"] for payload in payloads] == [False, True]
+        assert all(payload["event"]["type"] == "context_compaction" for payload in payloads)
+        assert all(
+            payload["event"]["data"]["action"] == "context_compaction"
+            for payload in payloads
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_register_compaction_callback_by_default(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                assert kwargs.get("compaction_callback") is None
+                await asyncio.sleep(0)
+                return (
+                    {"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                response = await cli.post(
+                    "/v1/responses",
+                    headers={"X-Hermes-Events": "compaction"},
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert response.status == 200
+                body = await response.text()
+
+        assert "hermes.context_compaction" not in body
+
+    @pytest.mark.asyncio
+    async def test_stream_marks_failed_compaction_as_error(self):
+        from agent.conversation_compression import COMPACTION_FAILED_STATUS, COMPACTION_STATUS
+
+        adapter = _make_adapter(openwebui_compact_event=True)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                compaction_cb = kwargs["compaction_callback"]
+                compaction_cb("started", {"message": COMPACTION_STATUS, "error": False})
+                compaction_cb("failed", {"message": COMPACTION_FAILED_STATUS, "error": True})
+                await asyncio.sleep(0)
+                return (
+                    {"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                response = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert response.status == 200
+                body = await response.text()
+
+        payloads = [
+            json.loads(line[len("data: "):])
+            for line in body.splitlines()
+            if line.startswith("data: ")
+            and json.loads(line[len("data: "):]).get("type") == "hermes.context_compaction"
+        ]
+        assert [payload["event"]["data"]["done"] for payload in payloads] == [False, True]
+        assert payloads[-1]["event"]["data"]["error"] is True
 
 
     @pytest.mark.asyncio

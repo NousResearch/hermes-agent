@@ -265,6 +265,20 @@ class _ResponsesStream:
         for event in ("response.output_item.added", "response.output_item.done"):
             await self.write_event(event, {"type": event, "output_index": idx, "item": output_item})
 
+    async def emit_compaction_status(self, payload: Dict[str, Any]) -> None:
+        """Emit a transient status event using Open WebUI's event contract."""
+        event_data = {
+            "action": "context_compaction",
+            "description": payload.get("message", ""),
+            "done": bool(payload.get("done")),
+        }
+        if payload.get("error"):
+            event_data["error"] = True
+        await self.write_event("hermes.context_compaction", {
+            "type": "hermes.context_compaction",
+            "event": {"type": "context_compaction", "data": event_data},
+        })
+
     async def dispatch(self, item: Any) -> None:
         """Route one queue item: tool tuples emit immediately, strings are batched, others dropped."""
         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
@@ -274,6 +288,8 @@ class _ResponsesStream:
                 await self.emit_tool_started(payload)
             elif tag == "__tool_completed__":
                 await self.emit_tool_completed(payload)
+            elif tag == "__compaction_status__":
+                await self.emit_compaction_status(payload)
         elif isinstance(item, str):
             self._batch_buf.append(item)
             if self._batch_timer is None:
@@ -864,6 +880,7 @@ class OpenAICompatRoutesMixin:
             **agent_overrides, route=route, relay_metadata=relay_metadata)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
+            compaction_status_active = False
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 return  # structured start/complete callbacks carry the call id; progress ignored
@@ -877,8 +894,31 @@ class OpenAICompatRoutesMixin:
                 _stream_q.put_threadsafe(("__tool_completed__", {
                     "tool_call_id": tool_call_id, "name": function_name,
                     "arguments": function_args or {}, "result": function_result}))
+
+            def _on_compaction(phase, payload):
+                """Bridge compaction lifecycle into Open WebUI status events."""
+                nonlocal compaction_status_active
+                data = payload if isinstance(payload, dict) else {}
+                message = str(data.get("message") or "").strip()
+                if phase in {"completed", "failed"}:
+                    if not compaction_status_active:
+                        return
+                    compaction_status_active = False
+                    _stream_q.put_threadsafe(("__compaction_status__", {
+                        "message": message,
+                        "done": True,
+                        "error": phase == "failed" or bool(data.get("error")),
+                    }))
+                elif phase == "started" and not compaction_status_active:
+                    compaction_status_active = True
+                    _stream_q.put_threadsafe(("__compaction_status__", {
+                        "message": message, "done": False, "error": False,
+                    }))
             agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_progress_callback=_on_tool_progress,
+                _stream_q,
+                compaction_callback=(
+                    _on_compaction if self._openwebui_compact_event else None),
+                tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
                 **run_kwargs)
             return await self._write_sse_responses(

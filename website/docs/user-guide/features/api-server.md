@@ -696,10 +696,25 @@ gateway:
     key: your-secret-key
     cors_origins: http://localhost:3000
     model_name: my-hermes
+    openwebui_compact_event: false
     max_concurrent_runs: 10   # concurrent-run cap; 0 disables the limit
 ```
 
-`port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
+`port`, `key`, `host`, `cors_origins`, `model_name`, and `openwebui_compact_event` are automatically bridged into the platform's `extra` settings. Environment variables take precedence over `config.yaml` values where an environment-variable counterpart exists. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
+
+### Open WebUI compaction status
+
+Set `gateway.api_server.openwebui_compact_event: true` to expose context
+compaction progress to Open WebUI during streaming `/v1/responses` requests.
+Hermes emits a `hermes.context_compaction` SSE event when compaction starts and
+a second event with `done: true` when it completes or fails. A failed event
+also contains `error: true`.
+
+This option defaults to `false`. The event is a Hermes extension rather than
+part of the OpenAI Responses specification, so it is not emitted for generic
+clients unless explicitly enabled. It does not affect non-streaming requests,
+and compaction statuses are not stored in response output or conversation
+history. Changing the option requires restarting the gateway.
 
 ### Concurrent-run cap
 

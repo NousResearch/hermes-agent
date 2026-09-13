@@ -1026,6 +1026,18 @@ group_sessions_per_user: true
 # unchanged: every request still authenticates with the global API server
 # key (``extra.key`` / API_SERVER_KEY).
 
+# API Server - Open WebUI compaction status
+#
+# Emit transient Open WebUI status events while Hermes compacts context during
+# a streaming /v1/responses request. Disabled by default because the
+# hermes.context_compaction event is a Hermes extension, not part of the
+# OpenAI Responses specification. The status is not added to assistant output
+# or conversation history.
+#
+# gateway:
+#   api_server:
+#     openwebui_compact_event: false
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────

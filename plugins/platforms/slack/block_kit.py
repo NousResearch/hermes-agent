@@ -75,8 +75,12 @@ def _indent_level(spaces: str) -> int:
 # Order matters: code first (opaque), then links, then emphasis.
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
-_BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
-_ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
+_BOLD_STAR_RE = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)")
+_BOLD_UNDERSCORE_RE = re.compile(
+    r"(?<![\w_])__(?!\s)(.+?)(?<!\s)__(?![\w_])"
+)
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?![\*\s])(.+?)(?<![\*\s])\*(?!\*)")
+_ITALIC_UNDERSCORE_RE = re.compile(r"(?<![\w_])_(?![_\s])(.+?)(?<![_\s])_(?![\w_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
 
@@ -119,7 +123,13 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         if not s:
             return
         # Try bold, then strike, then italic, recursing into the inner span.
-        for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
+        for rx, key in (
+            (_BOLD_STAR_RE, "bold"),
+            (_BOLD_UNDERSCORE_RE, "bold"),
+            (_STRIKE_RE, "strike"),
+            (_ITALIC_STAR_RE, "italic"),
+            (_ITALIC_UNDERSCORE_RE, "italic"),
+        ):
             m = rx.search(s)
             if m:
                 _walk_emphasis(s[: m.start()], style)
@@ -152,9 +162,13 @@ def _nonempty_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _header_block(text: str) -> Optional[Block]:
-    # header blocks are plain_text only, 150 char cap.
-    clean = re.sub(r"[*_~`]", "", text).strip()
-    if not clean:
+    # Header blocks accept plain_text only. Reuse the inline parser so paired
+    # Markdown delimiters are removed without deleting literal identifier
+    # characters such as the underscore in ``SERVICE_US``.
+    clean = "".join(
+        str(element.get("text", "")) for element in _inline_elements(text)
+    ).strip()
+    if not clean or not re.sub(r"[*_~`]", "", clean).strip():
         # Emphasis-/whitespace-only header (e.g. "# ***" or "#   ") reduces to
         # empty; Slack rejects an empty plain_text with invalid_blocks. Skip it
         # (caller drops None) rather than poison the whole payload.

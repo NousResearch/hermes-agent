@@ -59,23 +59,90 @@ def test_install_script_supports_skip_browser_flag() -> None:
 
 
 
-def test_browser_install_timeout_stays_interruptible() -> None:
-    """The Playwright download must stay Ctrl+C-able and force-kill if wedged.
+def test_browser_install_timeout_force_kills_wedged_download() -> None:
+    """A wedged Playwright download must be force-killed after the deadline.
 
-    GNU `timeout` runs the child in its own process group, so a terminal Ctrl+C
-    reaches `timeout` but never the download — it looks frozen and ignores
-    Ctrl+C (#35166). `--foreground` keeps it in the shell's foreground group;
-    `-k 10` guarantees a SIGKILL after the deadline. Both are GNU-only, so the
+    `-k 10` guarantees a SIGKILL 10s after the deadline. GNU-only, so the
     installer probes support once and falls back to plain `timeout`.
+
+    Deliberately NOT `--foreground`: per GNU timeout's own docs, "children of
+    COMMAND will not be timed out" in that mode. `npx playwright install`'s
+    actual download runs in a child node process spawned by npx (COMMAND),
+    not in npx itself, so `--foreground` let that child survive the deadline
+    and keep downloading in the background forever — the installer logged a
+    timeout warning and moved on, but the orphaned download kept the terminal
+    from ever returning (#87320). See test_run_with_timeout_kills_descendant_
+    process below for a behavioral proof.
     """
     text = INSTALL_SH.read_text()
 
     # GNU-flag probe + the guarded invocation must both be present. The timeout
     # binary is parameterized ($timeout_bin) so macOS gtimeout works too (#39219).
-    assert '"$timeout_bin" --foreground -k 10 1 true' in text
-    assert '"$timeout_bin" --foreground -k 10 "$timeout_seconds" "$@"' in text
+    assert '"$timeout_bin" -k 10 1 true' in text
+    assert '"$timeout_bin" -k 10 "$timeout_seconds" "$@"' in text
     # Plain-timeout fallback preserved for BusyBox/non-GNU.
     assert '"$timeout_bin" "$timeout_seconds" "$@"' in text
+    # The interruptibility tradeoff that caused #87320 must not come back: no
+    # actual invocation of $timeout_bin may pass --foreground (comments in the
+    # function may still mention the flag by name to explain why it's gone).
+    assert '"$timeout_bin" --foreground' not in text
+
+
+def test_run_with_timeout_kills_descendant_process() -> None:
+    """The deadline must reach grandchildren, not just the direct command.
+
+    `npx playwright install` is COMMAND from run_with_timeout's point of view,
+    but the actual download runs in a *child* node process npx spawns. Model
+    that shape with a script that backgrounds a further child (like npx ->
+    node) and confirm the grandchild is dead once run_with_timeout returns —
+    this is the exact defect `--foreground` caused in #87320 (checked out on
+    HEAD~1, this test fails: the grandchild is still alive after the "timeout"
+    fires).
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    if shutil.which("timeout") is None:
+        pytest.skip("GNU coreutils `timeout` not available")
+
+    body = _extract_function_body(INSTALL_SH.read_text(), "run_with_timeout")
+
+    with tempfile.TemporaryDirectory() as td:
+        pidfile = Path(td) / "child.pid"
+        outer_cmd = Path(td) / "outer_cmd.sh"
+        outer_cmd.write_text(
+            "#!/bin/bash\n"
+            "(sleep 20) &\n"
+            'echo $! > "$1"\n'
+            "wait\n"
+        )
+        outer_cmd.chmod(0o755)
+
+        harness = f"""
+set -u
+{body}
+
+run_with_timeout 1 {outer_cmd} {pidfile}
+echo "FINAL_RC=$?"
+"""
+        proc = subprocess.run(
+            ["bash", "-c", harness], capture_output=True, text=True, timeout=30
+        )
+        final_rc = None
+        for line in proc.stdout.splitlines():
+            if line.startswith("FINAL_RC="):
+                final_rc = int(line.split("=", 1)[1])
+        assert final_rc == 124, proc.stdout + proc.stderr
+
+        child_pid = int(pidfile.read_text().strip())
+        # run_with_timeout has already returned; the grandchild must be gone,
+        # not merely orphaned-but-running.
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
 
 
 # ---------------------------------------------------------------------------

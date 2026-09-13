@@ -444,6 +444,48 @@ class TestPostSetup:
 
 
 class TestToolHandlers:
+    def test_recall_scope_and_sources_do_not_change_auto_recall(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(
+                text="Recorded maintenance window", id="observation-1", type="observation",
+                mentioned_at="2026-01-01T12:00:00Z", source_fact_ids=["fact-1"],
+            )],
+            source_facts={"fact-1": SimpleNamespace(
+                type="world", document_id="maintenance-note", tags=["source:note"],
+            )},
+        )
+        args = {"query": "maintenance", "types": ["world"], "budget": "high",
+                "max_tokens": 800, "tags": ["source:note"], "tags_match": "all_strict"}
+        result = json.loads(provider.handle_tool_call("hindsight_recall", args))["result"]
+        kwargs = provider._client.arecall.call_args.kwargs
+        assert kwargs["types"] == ["world"] and kwargs["budget"] == "high"
+        assert kwargs["tags"] == args["tags"] and kwargs["tags_match"] == "all_strict"
+        assert kwargs["include_source_facts"] is True and kwargs["max_source_facts_tokens"] == 800
+        assert "source_fact_ids=fact-1" in result and "document_id=maintenance-note" in result
+        assert "mentioned_at=2026-01-01T12:00:00Z" in result
+        provider._do_recall("maintenance")
+        automatic = provider._client.arecall.call_args.kwargs
+        assert automatic["types"] == provider._recall_types
+        assert automatic["budget"] == provider._budget
+        assert "include_source_facts" not in automatic
+        provider._recall_tags = ["default-tag"]
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "maintenance", "tags": [], "include_source_facts": False},
+        ))["result"]
+        assert provider._client.arecall.call_args.kwargs["tags"] == []
+        assert "Source facts:" not in result
+        assert provider._recall_tags == ["default-tag"]
+
+    @pytest.mark.parametrize("override", [
+        {"budget": "maximum"}, {"max_tokens": True}, {"max_tokens": 64},
+        {"types": ["unknown"]}, {"types": "world"}, {"types": []},
+        {"tags": [12]}, {"tags_match": "unknown"}, {"include_source_facts": "yes"},
+    ])
+    def test_recall_invalid_overrides_do_not_reach_the_client(self, provider, override):
+        result = json.loads(provider.handle_tool_call("hindsight_recall", {"query": "test", **override}))
+        assert "error" in result
+        provider._client.arecall.assert_not_called()
+
     def test_retain_success(self, provider):
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "user likes dark mode"}

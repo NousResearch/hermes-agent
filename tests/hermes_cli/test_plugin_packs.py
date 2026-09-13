@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 from types import SimpleNamespace
 from unittest import mock
 
@@ -167,6 +168,71 @@ def test_load_pack_rejects_insecure_url_schemes(tmp_path):
     with pytest.raises(PackError) as exc:
         load_pack("http://example.com/pack.yaml")
     assert "https" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "location, expected_urls",
+    [
+        ("https://127.0.0.1/private", ["https://public.example/pack.yaml"]),
+        ("https://10.0.0.1/private", ["https://public.example/pack.yaml"]),
+        ("https://169.254.1.1/metadata", ["https://public.example/pack.yaml"]),
+        ("http://public.example/insecure", ["https://public.example/pack.yaml"]),
+        (
+            "/redirected-pack.yaml",
+            [
+                "https://public.example/pack.yaml",
+                "https://public.example/redirected-pack.yaml",
+            ],
+        ),
+        (
+            "https://public.example/redirected-pack.yaml",
+            [
+                "https://public.example/pack.yaml",
+                "https://public.example/redirected-pack.yaml",
+            ],
+        ),
+    ],
+)
+def test_load_pack_redirects_only_to_safe_https_targets(
+    location, expected_urls, monkeypatch
+):
+    """Redirects are checked before a follow-up request is sent."""
+    import httpx
+
+    source_url = expected_urls[0]
+    requested_urls = []
+    payload = _pack_yaml()
+
+    def handler(request):
+        requested_urls.append(str(request.url))
+        if request.url.path == "/pack.yaml":
+            return httpx.Response(
+                302,
+                headers={"location": location},
+                request=request,
+            )
+        return httpx.Response(200, text=payload, request=request)
+
+    def fake_client(**kwargs):
+        return httpx.Client(transport=httpx.MockTransport(handler), **kwargs)
+
+    def fake_getaddrinfo(host, _port, *_args):
+        host = str(host).strip("[]")
+        address = host if host in {"127.0.0.1", "10.0.0.1", "169.254.1.1"} else "93.184.216.34"
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        sockaddr = (address, 0, 0, 0) if family == socket.AF_INET6 else (address, 0)
+        return [(family, socket.SOCK_STREAM, 6, "", sockaddr)]
+
+    monkeypatch.setattr("tools.url_safety.create_ssrf_safe_client", fake_client)
+    monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+
+    if expected_urls[-1] == source_url:
+        with pytest.raises(PackError):
+            load_pack(source_url)
+    else:
+        assert load_pack(source_url).name == "voice-pack"
+
+    assert requested_urls == expected_urls
 
 
 def test_load_pack_reads_local_file(tmp_path):

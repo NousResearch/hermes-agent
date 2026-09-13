@@ -650,10 +650,44 @@ class TestE2EMessagesRead:
     def test_read_messages_have_ids(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
+                           {"session_key": "agent:main:telegram:dm:123456"})
         for msg in result["messages"]:
-            assert "id" in msg
-            assert msg["id"]  # non-empty
+            assert msg["id"].startswith("msg_")
+            assert len(msg["id"]) == 68
+            assert msg["row_id"].isdigit()
+
+    def test_compaction_clones_keep_one_stable_id(self, mcp_server_e2e, _event_loop, monkeypatch):
+        import mcp_serve
+
+        row = {
+            "id": 297874,
+            "role": "user",
+            "content": "evidence MEDIA: /tmp/evidence.png",
+            "timestamp": 1789324928.558534,
+            "tool_call_id": None,
+            "tool_calls": None,
+            "tool_name": None,
+        }
+        clone = {**row, "id": 298338}
+        monkeypatch.setattr(mcp_serve, "_load_session_messages", lambda _session_id: ([row, clone], None))
+
+        first = _run_tool(server=mcp_server_e2e[0], name="messages_read",
+                          args={"session_key": "agent:main:telegram:dm:123456"})
+        assert first["count"] == first["total_in_session"] == 1
+        assert first["messages"][0]["row_id"] == "298338"
+        stable_id = first["messages"][0]["id"]
+
+        newer_clone = {**row, "id": 298830}
+        monkeypatch.setattr(mcp_serve, "_load_session_messages", lambda _session_id: ([newer_clone], None))
+        second = _run_tool(server=mcp_server_e2e[0], name="messages_read",
+                           args={"session_key": "agent:main:telegram:dm:123456"})
+        assert second["messages"][0]["id"] == stable_id
+        assert second["messages"][0]["row_id"] == "298830"
+
+        attachments = _run_tool(server=mcp_server_e2e[0], name="attachments_fetch", args={
+            "session_key": "agent:main:telegram:dm:123456", "message_id": stable_id,
+        })
+        assert attachments["attachments"] == [{"type": "media", "path": "/tmp/evidence.png"}]
 
     def test_read_with_limit(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e

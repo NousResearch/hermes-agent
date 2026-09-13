@@ -93,6 +93,7 @@ import {
   ALL_PROJECTS,
   enterProject,
   exitProjectScope,
+  openFolderAsProject,
   openProjectCreate,
   refreshProjects,
   refreshProjectTree,
@@ -1790,6 +1791,27 @@ export function ChatSidebar({
                       </div>
                     ) : (
                       <>
+                        <Tip
+                          label={
+                            <TipKeybindLabel
+                              actionId="workspace.openFolder"
+                              text={t.keybinds.actions['workspace.openFolder']}
+                            />
+                          }
+                        >
+                          <Button
+                            aria-label={t.keybinds.actions['workspace.openFolder']}
+                            className={HEADER_ACTION_BTN}
+                            onClick={event => {
+                              event.stopPropagation()
+                              void openFolderAsProject()
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="folder-opened" size="0.75rem" />
+                          </Button>
+                        </Tip>
                         {/* The flat-list header "+" is a drag source too — the
                             same gesture as the nav's "New session" row: drag
                             it onto a chat zone's tab strip / edge / center to

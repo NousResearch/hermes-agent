@@ -169,6 +169,37 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
     assert long_waits == [30.0, 60.0, 90.0, 120.0]
 
 
+def test_zai_overload_policy_covers_glm5_family():
+    """The overload schedule keys on the GLM-5 family prefix, not one pinned
+    slug: a new coding-plan release (glm-5.3 and later) must keep reaching the
+    long-backoff tier while ordinary quota 429s still fail fast."""
+    err = _zai_overload_error()
+    # Attempt 4 sits in the long-backoff tier (short tier covers the first
+    # attempts; proven by test_zai_overload_ceiling_makes_long_tier_reachable).
+    for model in ("glm-5.2", "glm-5.3-flash", "GLM-5.6"):
+        _wait, policy = adaptive_rate_limit_backoff(
+            4,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            model=model,
+            error=err,
+            default_wait=1.0,
+        )
+        assert policy == "zai_coding_overload_long", model
+    # A quota/billing 429 without the overload body is NOT the overload shape.
+    quota = SimpleNamespace(
+        status_code=429,
+        body={"error": {"code": "1113", "message": "free quota exceeded"}},
+    )
+    _wait, policy = adaptive_rate_limit_backoff(
+        4,
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.3-flash",
+        error=quota,
+        default_wait=1.0,
+    )
+    assert policy != "zai_coding_overload_long"
+
+
 # ---------------------------------------------------------------------------
 # parse_retry_after_seconds — shared Retry-After parser
 # ---------------------------------------------------------------------------

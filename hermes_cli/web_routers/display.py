@@ -62,6 +62,25 @@ def _should_evict(lease, viewer_id: str) -> bool:
     return lease.holder == _lease.HUMAN and lease.viewer_id != viewer_id
 
 
+async def _admit_active_viewer(
+    profile_key: str,
+    profile_home: str,
+    viewer_id: str,
+    evict: Callable[[], None],
+) -> Optional[tuple[object, object]]:
+    """Atomically validate the lease and bind its epoch to the profile's one viewer slot."""
+    from tools.bot_desktop import lease as _lease
+
+    # acquire/release use this same file lock. A takeover that wins first is therefore observed
+    # before the slot changes; a viewer that wins first is authorized to begin its pumps at that
+    # lease epoch and subsequent transitions reach the subscribed eviction callback below.
+    with _lease.locked_snapshot(profile_key=profile_home) as current_lease:
+        if _should_evict(current_lease, viewer_id):
+            return None
+        slot = _claim_active_viewer(profile_key, evict)
+        return slot, current_lease
+
+
 def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
     from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
 
@@ -119,11 +138,10 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     await ws.accept()
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
-    initially_allowed = _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)
     # Input gate cache: reading lease.json per client message (a stat + read on the event loop for
     # every pointer move) is replaced by a decision refreshed on this process's on_change callback
     # and by a file re-read at most every _LEASE_REFRESH_S, so another process's takeover still lands.
-    allowed = {"input": initially_allowed, "at": loop.time()}
+    allowed = {"input": False, "at": loop.time()}
 
     def _refresh_allowed(lease=None) -> None:
         if lease is None:
@@ -145,15 +163,19 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
 
     unsubscribe = _lease.on_change(_on_lease)
 
-    # Close the admission/listener race: takeover may have happened after the first lease read but
-    # before this connection subscribed. This also refreshes the input decision from the same read.
-    current_lease = _lease.get(profile_key=profile_home)
-    _refresh_allowed(current_lease)
-    if _should_evict(current_lease, viewer_id):
+    admission = await _admit_active_viewer(
+        profile_key,
+        profile_home,
+        viewer_id,
+        lambda: loop.call_soon_threadsafe(evicted.set),
+    )
+    if admission is None:
         unsubscribe()
         writer.close()
         await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
         return
+    viewer_slot, admitted_lease = admission
+    _refresh_allowed(admitted_lease)
 
     rfb_filter = RfbClientFilter(_may_send_input)
 
@@ -200,7 +222,6 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
                 pass
         await ws.close(code=_CLOSE_CONTROL_TAKEN, reason="control-taken")
 
-    viewer_slot = _claim_active_viewer(profile_key, lambda: loop.call_soon_threadsafe(evicted.set))
     tasks = [
         asyncio.create_task(rfb_to_ws()),
         asyncio.create_task(ws_to_rfb()),

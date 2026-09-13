@@ -19,9 +19,10 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
 
@@ -123,6 +124,18 @@ class _locked:
 
 def get(profile_key: Optional[str] = None) -> Lease:
     return _read(_path(profile_key))
+
+
+@contextmanager
+def locked_snapshot(profile_key: Optional[str] = None) -> Iterator[Lease]:
+    """Yield one read-only lease snapshot while excluding cross-process transitions.
+
+    Admission code may bind other process-local state to this snapshot before releasing the lock;
+    callers must not mutate it because this context deliberately performs no write.
+    """
+    path = _path(profile_key)
+    with _locked(path):
+        yield _read(path)
 
 
 def on_change(listener: Callable[[str, Lease], None]) -> Callable[[], None]:

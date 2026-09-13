@@ -115,6 +115,15 @@ class _OpenWs(_Ws):
         return {"type": "websocket.disconnect", "code": self._code}
 
 
+class _RecordingWs(_OpenWs):
+    def __init__(self):
+        super().__init__()
+        self.frames = []
+
+    async def send_bytes(self, data):
+        self.frames.append(data)
+
+
 def test_new_viewer_replaces_the_existing_stream_for_one_profile():
     async def _run(home: str) -> tuple[_OpenWs, _OpenWs]:
         sock_dir = os.path.join(home, "bot-desktop")
@@ -149,6 +158,69 @@ def test_new_viewer_replaces_the_existing_stream_for_one_profile():
         first, second = asyncio.run(_run(home))
     lease._reset_for_tests()
     assert first.closed and second.accepted
+
+
+def test_takeover_before_atomic_admission_cannot_evict_holder_or_send_framebuffer(monkeypatch):
+    """A stale reconnect paused at final admission must lose to a takeover that linearizes first."""
+
+    async def _run(home: str) -> tuple[_RecordingWs, _RecordingWs]:
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+
+        async def _xvnc(reader, writer):
+            writer.write(b"frame")
+            await writer.drain()
+            await asyncio.sleep(2)
+            writer.close()
+
+        server = await asyncio.start_unix_server(_xvnc, path=os.path.join(sock_dir, "rfb.sock"))
+        holder, stale = _RecordingWs(), _RecordingWs()
+        holder_task = asyncio.create_task(
+            display._bridge(holder, {"hermes_home": home, "viewer_id": "desk-holder"})
+        )
+        stale_task = None
+        try:
+            while not holder.frames:
+                await asyncio.sleep(0.01)
+
+            real_admit = display._admit_active_viewer
+            admission_reached = asyncio.Event()
+            continue_admission = asyncio.Event()
+
+            async def _paused_admit(*args, **kwargs):
+                admission_reached.set()
+                await continue_admission.wait()
+                return await real_admit(*args, **kwargs)
+
+            monkeypatch.setattr(display, "_admit_active_viewer", _paused_admit)
+            stale_task = asyncio.create_task(
+                display._bridge(stale, {"hermes_home": home, "viewer_id": "desk-stale"})
+            )
+            await asyncio.wait_for(admission_reached.wait(), timeout=1.0)
+
+            lease.acquire("desk-holder", profile_key=home)
+            continue_admission.set()
+            await asyncio.wait_for(stale_task, timeout=1.0)
+
+            assert stale.frames == []
+            assert stale.closed_code == display._CLOSE_CONTROL_TAKEN
+            assert not holder_task.done(), "the rejected stale viewer must not evict the valid holder"
+            return holder, stale
+        finally:
+            holder.finish.set()
+            stale.finish.set()
+            if not holder_task.done():
+                await holder_task
+            if stale_task is not None and not stale_task.done():
+                await stale_task
+            server.close()
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        holder, stale = asyncio.run(_run(home))
+    lease._reset_for_tests()
+    assert holder.frames
+    assert stale.frames == []
 
 
 def test_a_takeover_made_by_another_process_evicts_within_the_refresh_interval(

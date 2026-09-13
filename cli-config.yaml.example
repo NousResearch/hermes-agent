@@ -911,8 +911,10 @@ memory:
 
   # Reversible mutations: remove/replace/apply_batch (and `/journey delete|edit`
   # on memory nodes) archive the evicted entry to
-  # ~/.hermes/memories/ARCHIVE.jsonl before the file rewrite, so consolidation
-  # can never destroy distilled content irreversibly.
+  # ~/.hermes/memories/ARCHIVE.jsonl before the file rewrite when archiving succeeds.
+  # Batches are locked with best-effort rollback, not crash-atomic transactions.
+  # Failed rollback can leave partial records; retries reuse IDs for deduplication.
+  # /journey always proceeds with a warning on failure, even when abort is set.
   archive_user: false        # true = also archive USER.md evictions (default: MEMORY.md only)
   archive_on_failure: warn   # warn (default, mutation proceeds) | abort (mutation refused)
 

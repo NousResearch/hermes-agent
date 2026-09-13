@@ -1049,7 +1049,7 @@ class TestMemoryArchive:
                 raise OSError("disk full mid-write")
 
         def _fake_open(file, mode="r", *args, **kwargs):
-            if Path(file) == archive_path and mode == "a":
+            if Path(file) == archive_path and mode == "ab":
                 return _FailingWriteFile(real_open(file, mode, *args, **kwargs))
             return real_open(file, mode, *args, **kwargs)
 

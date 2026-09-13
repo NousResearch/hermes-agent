@@ -1206,8 +1206,8 @@ DEFAULT_CONFIG = {
         "provider": "",
         # Reversible memory mutations (#76883): evicted entries (remove/replace,
         # apply_batch, and `/journey delete|edit` on memory nodes) are appended to
-        # ~/.hermes/memories/ARCHIVE.jsonl before the main file rewrite, so
-        # consolidation can never destroy distilled content irreversibly.
+        # ~/.hermes/memories/ARCHIVE.jsonl before the main file rewrite when
+        # archiving succeeds; rollback is best-effort, not crash-atomic.
         #   archive_user: false (default) -- USER.md evictions are NOT archived
         #                 (data minimization for profile data). MEMORY.md is
         #                 always archived. Set true to archive both stores.
@@ -1216,7 +1216,7 @@ DEFAULT_CONFIG = {
         #                 "archive_status": "degraded". "abort" restores strict
         #                 behavior (mutation refused, file untouched) but can
         #                 deadlock the memory-full consolidation path, hence the
-        #                 default.
+        #                 default. /journey always degrades, even with "abort".
         "archive_user": False,
         "archive_on_failure": "warn",
     },

@@ -47,17 +47,17 @@ def get_memory_dir() -> Path:
 #
 # remove/replace/apply_batch (and `/journey delete`|`edit` on memory nodes, see
 # agent/learning_mutations.py) append the evicted entry to
-# ~/.hermes/memories/ARCHIVE.jsonl BEFORE the main file rewrite, so
-# consolidation can never destroy distilled content irreversibly (issue #76883).
+# ~/.hermes/memories/ARCHIVE.jsonl BEFORE the main file rewrite to preserve
+# evicted content when archiving succeeds (issue #76883).
 # Zero-dependency, provider-independent, per-profile (the file lives under
 # get_memory_dir(), which is already profile-scoped).
 #
 # Semantics:
-#   - At-least-once: a crash between the archive append and the main rewrite
-#     leaves a ghost record (reconcilable by `id`) but never loses content.
-#   - A batch of evicted entries is archived as ONE write (see
-#     `_archive_append_lines`), so a failure can never leave part of a single
-#     call's records archived while the rest are refused.
+#   - Best-effort recovery: append precedes rewrite, but the two files are
+#     not a crash-atomic transaction and no power-loss durability is promised.
+#   - Batches are serialized by a per-profile archive lock with best-effort
+#     rollback. A crash or rollback failure can leave partial records. Retries
+#     reuse record IDs so complete duplicates can be reconciled by `id`.
 #   - Failure degradation: an archive write failure is retried once; if it
 #     still fails, the mutation proceeds by default and the tool result
 #     carries `"archive_status": "degraded"`. `memory.archive_on_failure:
@@ -90,41 +90,50 @@ def _archive_abort_on_failure() -> bool:
 
 
 def _archive_append_lines(lines: List[str]) -> None:
-    """Append prebuilt JSONL *lines* to ARCHIVE.jsonl in a single write.
+    """Append a batch under the shared cross-process archive lock.
 
-    Raises OSError on failure. Writing the whole batch as one ``write()`` call,
-    with a best-effort truncate rollback on failure, keeps THIS call's records
-    caller-visible atomic: either every evicted entry in the call lands, or
-    none does — a failure partway through a multi-entry batch can never leave
-    some of that batch's entries archived while the rest are refused.
+    Rollback is best-effort, not a crash-atomic transaction. Hold the lock
+    from before opening the archive through close/rollback so a failed writer
+    cannot truncate another writer's committed records. Unbuffered bytes avoid
+    a close-time flush re-appending failed data after rollback.
     """
+    if not lines:
+        return
+    if fcntl is None and msvcrt is None:
+        raise OSError("archive requires cross-process file locking")
     path = get_memory_archive_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        start = f.tell()
-        try:
-            f.write("".join(lines))
-            f.flush()
-        except OSError:
+    data = "".join(lines).encode("utf-8")
+    with MemoryStore._file_lock(path):
+        with open(path, "ab", buffering=0) as f:
+            start = f.tell()
             try:
-                f.truncate(start)
+                remaining = memoryview(data)
+                while remaining:
+                    written = f.write(remaining)
+                    if not written:
+                        raise OSError("short archive write")
+                    remaining = remaining[written:]
             except OSError:
-                pass
-            raise
+                try:
+                    f.truncate(start)
+                except OSError:
+                    pass  # Retry may duplicate records; IDs are stable across attempts.
+                raise
 
 
 def archive_entries(target: str, actions_entries: List[Tuple[str, str]]
                     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Append evicted entries to ARCHIVE.jsonl as one atomic batch, before the
-    caller's memory-file rewrite.
+    """Append one serialized batch before the caller's memory-file rewrite.
 
     Returns ``(records, None)`` on success — each record carries ``id``/``ts``/
-    ``store``/``action``/``entry`` — or ``([], error)`` after one retry when
-    the write keeps failing, in which case NOTHING in *actions_entries* was
-    appended (see ``_archive_append_lines``). Never raises; callers decide
-    whether a failure degrades the mutation (default) or aborts it
-    (``memory.archive_on_failure: "abort"``).
+    ``store``/``action``/``entry`` — or ``([], error)`` after one retry on I/O
+    failure. Rollback is best-effort: partial data may remain if it also fails,
+    and retries reuse IDs for deduplication of complete records. Callers choose
+    degradation (default) or abort via ``memory.archive_on_failure``; journey
+    always degrades. Empty batches do not touch disk.
     """
+    if not actions_entries:
+        return [], None
     records = [{
         "id": uuid.uuid4().hex,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -383,8 +392,9 @@ MEMORY_SCHEMA = {
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change. A 'replace'/'remove' is recoverable: the evicted entry is archived "
-        "to ARCHIVE.jsonl (not destroyed) and the response's 'archived' field confirms it.\n\n"
+        "single lone change. When archiving is enabled and succeeds, 'replace'/'remove' saves "
+        "evicted entries to ARCHIVE.jsonl; the response's 'archived' field confirms it. "
+        "USER.md archiving is opt-in, and archive failures may degrade.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "

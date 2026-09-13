@@ -443,6 +443,20 @@ def _log_only_write(text: str) -> None:
             log_file.flush()
 
 
+def _resume_windows_gateways_at_exit(token) -> None:
+    """atexit wrapper for the Windows gateway resume.
+
+    The resume stays retryable on purpose (a failed service start / launcher refresh leaves
+    ``resume_needed`` True), so this hook re-runs it after the main path already recorded the outcome.
+    An exception raised *here* has no caller: CPython prints "Exception ignored in atexit callback"
+    plus a traceback into update.log, which reads as a second, unrelated failure and buries the
+    outcome the main path already set. Log it and let the process exit on that outcome."""
+    try:
+        _m()._resume_windows_gateways_after_update(token)
+    except Exception as exc:
+        _log_only_write(f"Windows gateway resume at exit failed: {exc}\n")
+
+
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     """Stream combined build output to update.log, retaining it for failure reporting."""
     import codecs
@@ -1297,7 +1311,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
         import atexit as _atexit
-        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
+        _atexit.register(_resume_windows_gateways_at_exit, _windows_gateway_resume)
 
     # Any venv python still running (typically the Desktop `hermes serve` backend) keeps .pyd
     # locked and would corrupt the sync; refuse rather than race (the app respawns a killed

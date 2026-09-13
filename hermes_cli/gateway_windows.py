@@ -525,6 +525,54 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
+def _install_venv_spec() -> tuple[Path, Path] | None:
+    """(console ``python.exe``, venv root) for the install venv, or None when it isn't installed."""
+    from hermes_cli.gateway import PROJECT_ROOT
+    from hermes_constants import project_venv_dir, venv_python_path
+
+    root = project_venv_dir(PROJECT_ROOT)
+    if root is None:
+        return None
+    console = venv_python_path(root, windows=True)
+    return (console, root) if console.exists() else None
+
+
+def _venv_root_for_interpreter(python_exe: Path) -> Path | None:
+    """Venv root when *python_exe* sits in a venv's ``Scripts`` dir (``pyvenv.cfg`` one level up)."""
+    root = python_exe.parent.parent
+    return root if (root / "pyvenv.cfg").exists() else None
+
+
+def _pyvenv_home(venv_root: Path) -> Path | None:
+    """``home =`` directory from a venv's ``pyvenv.cfg`` (the base install), or None."""
+    try:
+        for line in (venv_root / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip().lower() == "home" and value.strip():
+                return Path(value.strip())
+    except OSError:
+        return None
+    return None
+
+
+def _is_install_venv_base_interpreter(python_exe: Path) -> bool:
+    """True when *python_exe* is the base interpreter the install venv was built from.
+
+    A uv venv's ``Scripts\\python.exe`` is a trampoline: it re-execs the base interpreter with
+    ``__PYVENV_LAUNCHER__`` set, so the running gateway — and the argv snapshot the updater replays
+    — is the base-interpreter *child*. That child has no ``pyvenv.cfg`` above it, so a verbatim
+    replay loses the venv (see ``_resolve_detached_python``)."""
+    spec = _install_venv_spec()
+    if spec is None:
+        return False
+    base_home = _pyvenv_home(spec[1])
+    if base_home is None:
+        return False
+    return os.path.normcase(os.path.normpath(str(python_exe))) == os.path.normcase(
+        os.path.normpath(str(base_home / python_exe.name))
+    )
+
+
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     """Return (hidden_console_python, venv_dir, extra_pythonpath) for detached runs. ``extra_pythonpath``
     is always empty now; the tuple shape is kept so every call site stays unchanged.
@@ -547,19 +595,34 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     ``pythonw.exe``. When the sibling console ``python.exe`` exists, swap to it so respawns and regenerated
     launchers get the hidden-console design instead of resurrecting the console-less daemon (the
     #54220/#56747 flash class, plus the ``sys.stderr is None`` startup-crash class from #71671).
+
+    Base-interpreter rebind: a captured argv can lead with the venv's *base* interpreter instead — the
+    uv trampoline's child, which is what the process table and ``_capture_gateway_argv`` see for a running
+    gateway. Replayed verbatim it has no ``pyvenv.cfg`` above it, so it loses the venv and dies on the
+    first third-party import (``ModuleNotFoundError: No module named 'yaml'``) — a completed update then
+    reported a failed gateway restart. Rebinding to the install venv's console ``python.exe`` is what a
+    clean gateway start does, and it covers both call paths (``_build_gateway_argv`` cold start and
+    ``windowless_gateway_restart_spec`` respawn).
     """
     p = Path(python_exe)
+    resolved = python_exe
     if p.name.lower() in ("pythonw.exe", "pythonw"):
         sibling = p.with_name("python.exe" if p.suffix else "python")
         try:
             if sibling.exists():
                 p = sibling
-                python_exe = str(sibling)
+                resolved = str(sibling)
         except OSError:
             # Can't stat the sibling — keep the original interpreter: a console-less gateway is
             # worse than a hidden-console one, but a failed respawn is worse still.
             pass
-    return (python_exe, p.parent.parent, [])
+    venv_root = _venv_root_for_interpreter(p)
+    if venv_root is None and _is_install_venv_base_interpreter(p):
+        rebound = _install_venv_spec()
+        if rebound is not None:
+            p, venv_root = rebound
+            resolved = str(p)
+    return (resolved, venv_root if venv_root is not None else p.parent.parent, [])
 
 
 def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None:

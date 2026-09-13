@@ -109,8 +109,12 @@ def _bare_agent() -> AIAgent:
     the agent pitfalls list.
     """
     agent = object.__new__(AIAgent)
+    # The three per-turn attributes below must mirror _reset_per_turn_agent_state
+    # (agent/turn_context.py); without the baselines dict the reconciler silently
+    # no-ops and new tests turn green for the wrong reason.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+    agent._turn_file_mutation_baselines = {}
     return agent
 
 
@@ -227,6 +231,76 @@ class TestRecordFileMutationResult:
         # the initial root cause.
         assert "first error" in agent._turn_failed_file_mutations["/tmp/a.md"]["error_preview"]
 
+    def test_failure_snapshots_baseline_first_write_wins(self, tmp_path):
+        """The failure-time fingerprint anchors the earliest failure, not a retry.
+
+        patch #1 fails at T1; an out-of-band (untracked) write lands at T2; a retried
+        patch #2 fails at T3 against the now-changed file. If the baseline re-anchored to
+        T3, the footer-time comparison would see no change and the false "NOT modified"
+        warning would survive — the original bug. First-write-wins keeps the T1 anchor, so
+        the reconciler marks the entry external_change.
+        """
+        f = tmp_path / "a.md"
+        f.write_text("v1")
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(f), "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "first error"}), is_error=True,
+        )
+        # Untracked writer (terminal fallback) rewrites the file with different-length content.
+        f.write_text("v2 changed by terminal fallback")
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(f), "old_string": "stale", "new_string": "y"},
+            json.dumps({"error": "second error"}), is_error=True,
+        )
+        reconciled = agent._reconcile_file_mutation_failures(agent._turn_failed_file_mutations)
+        assert reconciled[str(f)]["external_change"] is True
+        # First error still kept; the dict was not mutated in place.
+        assert "first error" in agent._turn_failed_file_mutations[str(f)]["error_preview"]
+        assert "external_change" not in agent._turn_failed_file_mutations[str(f)]
+
+    def test_missing_path_records_absent_sentinel_and_creation_marks_external(self, tmp_path):
+        """Absent at failure time is a sentinel, not an absence: creation later rewords.
+
+        A failed patch targeting a path that does not exist records the explicit "did not
+        exist" sentinel. If an untracked writer creates the file before turn end, the
+        footer must not claim it was NOT modified. A missing baseline (never snapshotted)
+        is a different state — unknown — and keeps the unmarked, full-strength warning.
+        """
+        f = tmp_path / "new.md"
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(f), "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "no such file"}), is_error=True,
+        )
+        assert agent._turn_file_mutation_baselines[str(f)] is None
+        # Untracked writer creates the file.
+        f.write_text("created by terminal")
+        reconciled = agent._reconcile_file_mutation_failures(agent._turn_failed_file_mutations)
+        assert reconciled[str(f)]["external_change"] is True
+
+        # Unknown baseline (no key at all) stays unmarked.
+        agent2 = _bare_agent()
+        failed2 = {str(tmp_path / "ghost.md"): {"tool": "patch", "error_preview": "boom"}}
+        assert "external_change" not in agent2._reconcile_file_mutation_failures(failed2)[str(tmp_path / "ghost.md")]
+
+    def test_success_drops_baseline(self, tmp_path):
+        """A landed write pops the path's baseline alongside the failure entry."""
+        f = tmp_path / "a.md"
+        f.write_text("v1")
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(f), "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "not found"}), is_error=True,
+        )
+        assert str(f) in agent._turn_file_mutation_baselines
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(f), "old_string": "v1", "new_string": "v2"},
+            json.dumps({"success": True, "files_modified": [str(f)]}), is_error=False,
+        )
+        assert agent._turn_failed_file_mutations == {}
+        assert str(f) not in agent._turn_file_mutation_baselines
+
 
 
 
@@ -248,6 +322,67 @@ class TestFormatFooter:
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+
+    def test_external_write_after_failure_rewords_footer(self, tmp_path):
+        """Reproduction of the 2026-09-08 false positive, end to end.
+
+        A tracked patch fails; an untracked writer (terminal fallback) rewrites the file
+        out of band; at turn end the footer must NOT claim the file was "NOT modified".
+        The entry survives (reword, never drop — dropping would also suppress the genuine
+        over-claim case) and the advisory stays actionable. The out-of-band write changes
+        content length so st_size differs regardless of filesystem timestamp granularity.
+        The untouched sibling path in the same dict keeps its full-strength wording, which
+        pins the false-negative guard in the same render.
+        """
+        changed = tmp_path / "changed.md"
+        changed.write_text("v1")
+        untouched = tmp_path / "untouched.md"
+        untouched.write_text("v1")
+        agent = _bare_agent()
+        for f in (changed, untouched):
+            agent._record_file_mutation_result(
+                "patch", {"mode": "replace", "path": str(f), "old_string": "x", "new_string": "y"},
+                json.dumps({"error": "Could not find old_string"}), is_error=True,
+            )
+        # Untracked writer rewrites one of the two paths with different-length content.
+        changed.write_text("v2 rewritten out of band, different length")
+
+        reconciled = agent._reconcile_file_mutation_failures(agent._turn_failed_file_mutations)
+        # 1. The path is still present — reword, not drop.
+        assert str(changed) in reconciled
+        assert reconciled[str(changed)]["external_change"] is True
+        assert "external_change" not in reconciled[str(untouched)]
+
+        out = AIAgent._format_file_mutation_failure_footer(reconciled)
+        # 2. The bare "were NOT modified this turn" claim must not cover the changed path —
+        #    red on base, where the footer renders "2 file(s) were NOT modified".
+        assert "1 file(s) were NOT modified this turn" in out
+        assert "2 file(s) were NOT modified this turn" not in out
+        assert "changed on disk" in out
+        # 3. The path and the user-actionable hint survive the rewording.
+        assert str(changed) in out
+        assert str(untouched) in out
+        assert "git status" in out
+
+    def test_untouched_file_keeps_full_strength_warning(self, tmp_path):
+        """Pin: a failure whose file never changed keeps today's exact warning.
+
+        Guards against a future "simplification" of reconciliation into unconditional
+        suppression, or a fingerprint comparison so loose (float mtime, exists-check)
+        that it fires on every entry.
+        """
+        f = tmp_path / "a.md"
+        f.write_text("v1")
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(f), "old_string": "x", "new_string": "y"},
+            json.dumps({"error": "Could not find old_string"}), is_error=True,
+        )
+        reconciled = agent._reconcile_file_mutation_failures(agent._turn_failed_file_mutations)
+        assert "external_change" not in reconciled[str(f)]
+        out = AIAgent._format_file_mutation_failure_footer(reconciled)
+        assert "1 file(s) were NOT modified this turn" in out
+        assert "git status" in out
 
     def test_truncation_at_10_entries(self):
         failed = {

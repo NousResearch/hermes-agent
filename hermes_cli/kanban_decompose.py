@@ -195,7 +195,10 @@ class _Routing:
 
 def _load_routing() -> _Routing:
     from hermes_cli.config import load_config_readonly
-    cfg = load_config_readonly()
+    try:
+        cfg = load_config_readonly()
+    except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
+        cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
     return _Routing(

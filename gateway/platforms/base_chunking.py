@@ -122,10 +122,15 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
             split_at = table_rollback_point(
                 remaining, split_at, lambda t: _len(t) <= max_length - INDICATOR_RESERVE)
         chunk_body = remaining[:split_at]
-        remaining = remaining[split_at:].lstrip()
-        full_chunk = prefix + chunk_body
-        # Walk only chunk_body (not the prepended prefix) for the fence state.
+        rest = remaining[split_at:]
+        # Walk only chunk_body (not the prepended prefix) for the fence state BEFORE trimming:
+        # inside a code fence the leading whitespace of ``rest`` is literal code content
+        # (blank lines, indentation), so only strip it for prose splits.
         in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
+        if not in_code:
+            rest = rest.lstrip()
+        remaining = rest
+        full_chunk = prefix + chunk_body
         carry_lang = lang if in_code else None
         carry_header = None if in_code else table_header_to_repeat(full_chunk, remaining, max_length // 4, _len)
         # Close the orphaned fence so the chunk stands alone.

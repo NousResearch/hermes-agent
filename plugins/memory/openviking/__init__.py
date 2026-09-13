@@ -22,6 +22,7 @@ import socket
 import stat
 import subprocess
 import tempfile
+import contextvars
 import threading
 import time
 import uuid
@@ -1316,9 +1317,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Caller holds _runtime_start_lock and reserved ownership via _runtime_start_pending.
         if self._runtime_start_thread and self._runtime_start_thread.is_alive():
             return
+        from functools import partial
         self._runtime_start_thread = threading.Thread(
-            target=self._finish_runtime_openviking_start, daemon=True, name="openviking-runtime-start",
-            kwargs={"endpoint": endpoint, "status_callback": status_callback, "warning_callback": warning_callback})
+            target=contextvars.copy_context().run,
+            args=(partial(self._finish_runtime_openviking_start, endpoint=endpoint,
+                          status_callback=status_callback, warning_callback=warning_callback),),
+            daemon=True, name="openviking-runtime-start")
         self._runtime_start_thread.start()
 
     def _settings_tuple(self, endpoint: Optional[str] = None) -> tuple:
@@ -2078,7 +2082,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     if after_discard is not None:
                         after_discard()
 
-        thread = threading.Thread(target=_run, daemon=True, name=name)
+        # Threads start with an EMPTY Context, but profile isolation IS contextvars: the
+        # HERMES_HOME override and the per-turn secret scope. Unbound, a worker that resolves
+        # anything through get_secret hits the fail-closed path (UnscopedSecretError) under
+        # gateway.multiplex_profiles and the turn is lost to a logger.warning. Same rule as
+        # hindsight's _context_thread (#93028) and MemoryManager._ctx_bound.
+        thread = threading.Thread(target=contextvars.copy_context().run, args=(_run,),
+                                  daemon=True, name=name)
         with lock:
             if skip_if is not None and skip_if():
                 return

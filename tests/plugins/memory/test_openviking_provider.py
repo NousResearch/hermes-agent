@@ -1905,3 +1905,89 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+class TestWorkerThreadProfileContext:
+    """Background workers must run in a snapshot of the spawner's contextvars.
+
+    Profile isolation IS contextvars — the HERMES_HOME override and the per-turn secret scope.
+    A thread started bare begins with an EMPTY Context, so anything the worker resolves through
+    ``get_secret`` takes the fail-closed path under ``gateway.multiplex_profiles`` and the turn's
+    memory is lost to a ``logger.warning``. Same rule as hindsight's ``_context_thread`` (#93028)
+    and ``MemoryManager._ctx_bound``.
+    """
+
+    @staticmethod
+    def _run_worker(provider_cls, body):
+        import threading
+
+        lock, workers = threading.Lock(), set()
+        provider = provider_cls.__new__(provider_cls)
+        provider_cls._spawn_tracked(provider, "openviking-sync", body, lock, lambda: workers)
+        for thread in list(workers):
+            thread.join(5)
+
+    def test_a_worker_resolves_identity_under_a_multiplexed_secondary_profile(self, monkeypatch, tmp_path):
+        import plugins.memory.openviking as ov
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENVIKING_ACCOUNT", "acct-default")  # the DEFAULT profile's value
+        monkeypatch.setenv("OPENVIKING_USER", "user-default")
+
+        box = {}
+
+        def body():
+            try:
+                client = ov._VikingClient("http://ov.local", "key", account="", user="", agent=None)
+                box["account"], box["user"] = client._account, client._user
+            except BaseException as exc:  # noqa: BLE001 - the failure under test
+                box["error"] = f"{type(exc).__name__}"
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"OPENVIKING_API_KEY": "key-b"})  # no ACCOUNT/USER/AGENT
+        try:
+            self._run_worker(ov.OpenVikingMemoryProvider, body)
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert "error" not in box, f"worker raised {box.get('error')} — it ran with an empty Context"
+        # The scope defines neither, so the provider's own defaults apply — never the default
+        # profile's os.environ values.
+        assert (box["account"], box["user"]) == ("default", "default")
+
+    def test_a_worker_sees_the_spawner_secret_scope(self, monkeypatch, tmp_path):
+        import plugins.memory.openviking as ov
+        from agent import secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENVIKING_ACCOUNT", "acct-default")
+        box = {}
+
+        def body():
+            box["value"] = ov.get_secret("OPENVIKING_ACCOUNT", "")
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"OPENVIKING_ACCOUNT": "acct-b"})
+        try:
+            self._run_worker(ov.OpenVikingMemoryProvider, body)
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+        assert box.get("value") == "acct-b"
+
+    def test_single_profile_workers_are_unaffected(self, monkeypatch, tmp_path):
+        """No multiplexing: os.environ IS this profile's own env and must still be read."""
+        import plugins.memory.openviking as ov
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OPENVIKING_ACCOUNT", "solo-account")
+        box = {}
+
+        def body():
+            box["value"] = ov.get_secret("OPENVIKING_ACCOUNT", "")
+
+        self._run_worker(ov.OpenVikingMemoryProvider, body)
+        assert box.get("value") == "solo-account"

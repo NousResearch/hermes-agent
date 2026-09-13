@@ -401,6 +401,8 @@ const BRAND_ICONS: Record<string, BrandIcon> = {
   'yelp.com': SiYelp
 }
 
+export const BRAND_ICON_HOSTNAMES = Object.keys(BRAND_ICONS)
+
 // Resolve a hostname to its brand glyph, walking suffixes so subdomains inherit
 // their parent's mark (`api.github.com` → `github.com`). Longest match wins, so
 // a subdomain entry like `docs.google.com` beats the `google.com` fallback. The

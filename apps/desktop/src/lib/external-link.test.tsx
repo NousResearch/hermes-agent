@@ -333,7 +333,7 @@ describe('external link helpers', () => {
     expect(link.getAttribute('href')).toBe('https://agent.log')
   })
 
-  it('prefixes a pretty link to a known host with its brand glyph', () => {
+  it('prefixes a pretty link to a known host with its brand glyph', async () => {
     installDesktopBridge()
 
     const url = 'https://github.com/NousResearch/hermes-agent/pull/123'
@@ -342,7 +342,7 @@ describe('external link helpers', () => {
 
     const link = screen.getByTitle(url)
 
-    expect(link.querySelector('svg')).toBeTruthy()
+    await waitFor(() => expect(link.querySelector('svg')).toBeTruthy())
     // The glyph is decorative — it must not pollute the link's accessible name.
     expect(link.textContent).toBe('#123')
   })

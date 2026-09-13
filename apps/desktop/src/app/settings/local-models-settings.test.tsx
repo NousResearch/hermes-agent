@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $connection } from '@/store/session'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -134,9 +135,24 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  $connection.set(null)
 })
 
 describe('LocalModelsSettings', () => {
+  it('labels hardware as the backend host on a remote gateway', async () => {
+    $connection.set({ baseUrl: 'https://gw', mode: 'remote', token: 't' } as never)
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    await renderFullPane()
+    expect(await screen.findByText('Backend server')).toBeTruthy()
+  })
+
+  it('labels hardware as this machine on a local gateway', async () => {
+    $connection.set({ mode: 'local' } as never)
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    await renderFullPane()
+    expect(await screen.findByText('This machine', { exact: true })).toBeTruthy()
+  })
+
   it('offers the runtime install with a plain-language explanation', async () => {
     await renderFullPane()
 

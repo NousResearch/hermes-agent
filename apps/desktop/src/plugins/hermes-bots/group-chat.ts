@@ -80,6 +80,24 @@ interface GroupChatSyncJob {
   connectionId: string
   deletedRooms?: string[]
 }
+
+/** A disband remembered durably: the room key it must keep dead and the
+ *  tombstone revision that outranks a mirror projection (the room's last
+ *  known sync revision + 1 — at or below the room's own revision a
+ *  tombstone is stale, per the merge rules). */
+interface GroupChatDisbandRecord {
+  name: string
+  rev: number
+}
+
+// Durable disband memory, keyed by room key ('id:<roomId>' / 'name:<name>').
+// The pending job's deletedRooms only lives until the sync retry ladder
+// gives up or the window closes; after that, a gateway mirror whose
+// tombstone push failed legally re-merges the room on every pull because
+// "missing remote rooms are not deletions" (#105275).
+const groupChatDisbandedRooms = new Map<string, GroupChatDisbandRecord>()
+const GROUP_CHAT_DISBAND_MEMORY = 64
+
 // Fan-out scheduler state, keyed by gateway connectionId ('' = active/local).
 // Every connected gateway carries the full projection so a room survives any
 // single gateway being removed and surfaces on every remote backend.
@@ -543,14 +561,36 @@ function groupChatSyncEnvelope(
   return envelope
 }
 
+/** One ordering rule for the durable disband memory, shared by the merge
+ *  guard and the mirror-repair sweep: an id-keyed disband is final (room
+ *  ids are never reused — the same contract the id tombstone merge below
+ *  applies), while a name-keyed disband only outranks a projection at or
+ *  below the remembered revision. A same-name legacy recreation with a
+ *  higher revision must survive BOTH the guard and the repair, or the
+ *  repair would tombstone the very room the guard just accepted. */
+function groupChatDisbandOutranks(key: string, record: GroupChatDisbandRecord, roomRevision: number) {
+  return key.startsWith('id:') || record.rev >= Math.max(0, Number(roomRevision || 0))
+}
+
 /** Merge the gateway's bounded display projection into Desktop's richer room
  *  state without discarding local session/watermark/runtime fields. Missing
  *  remote rooms/messages are not deletions; only explicit tombstones remove a
- *  room, and a genuinely newer local message wins over a stale tombstone. */
+ *  room, and a genuinely newer local message wins over a stale tombstone.
+ *  `disbandedRooms` adds the durable disband memory: a remembered disband
+ *  outranks a mirror projection at or below the disbanded revision, so a
+ *  gateway whose tombstone push failed cannot resurrect the room (#105275). */
 export function mergeRemoteGroupChatSnapshotIntoRooms(
   remote: GroupChatSyncSnapshot | null | undefined,
   current: Record<string, GroupChat> = $groupChats.get(),
-  { preserveRooms = [], deletedRooms = [] }: { deletedRooms?: string[]; preserveRooms?: string[] } = {}
+  {
+    disbandedRooms = {},
+    preserveRooms = [],
+    deletedRooms = []
+  }: {
+    deletedRooms?: string[]
+    disbandedRooms?: Record<string, GroupChatDisbandRecord>
+    preserveRooms?: string[]
+  } = {}
 ) {
   const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
 
@@ -608,6 +648,27 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     const existing = (localName ? rooms[localName] : rooms[displayName]) || {}
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
+
+    // Durable disband guard: a gateway whose tombstone push failed still
+    // projects the room, and the merge rule above ("missing rooms are not
+    // deletions") would resurrect it on every pull. Room ids are never
+    // reused, so an id-keyed disband is final regardless of the mirror's
+    // CAS revision (independent revision streams make a stale secondary
+    // mirror look "newer"); a name-keyed disband only outranks a
+    // projection at or below the remembered revision, so a same-name
+    // legacy recreation with a higher revision still merges.
+    const disbandKey = projectedRoomId ? `id:${projectedRoomId}` : `name:${displayName}`
+    const disband = disbandedRooms[disbandKey]
+
+    if (disband && groupChatDisbandOutranks(disbandKey, disband, remoteRevision)) {
+      delete rooms[displayName]
+
+      if (localName) {
+        delete rooms[localName]
+      }
+
+      continue
+    }
 
     const entries = new Map<string, GroupMessage>(
       (Array.isArray(existing.log) ? existing.log : []).map(entry => [groupChatSyncEntryKey(entry), entry])
@@ -718,6 +779,91 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   }
 
   return rooms
+}
+
+/** Remember a disband durably (memory + plugin storage), keyed by room key so
+ *  a later same-name recreate with a fresh roomId is never blocked by it.
+ *  Capped like the projection's own tombstone bound; disbands are rare, the
+ *  cap only bounds storage. */
+export function rememberGroupChatDisbands(
+  disbanded: Array<{ name: string; roomId?: null | string; syncRevision?: number }> = []
+) {
+  for (const { name, roomId, syncRevision } of disbanded) {
+    const key = typeof roomId === 'string' && roomId ? `id:${roomId}` : `name:${name}`
+
+    groupChatDisbandedRooms.delete(key)
+    groupChatDisbandedRooms.set(key, {
+      name: String(name),
+      // +1 so the record outranks the room's own last projected revision —
+      // the same ordering the live tombstone merge applies.
+      rev: Math.max(0, Number(syncRevision || 0)) + 1
+    })
+  }
+
+  while (groupChatDisbandedRooms.size > GROUP_CHAT_DISBAND_MEMORY) {
+    const oldest = groupChatDisbandedRooms.keys().next().value
+
+    if (oldest === undefined) {
+      break
+    }
+
+    groupChatDisbandedRooms.delete(oldest)
+  }
+
+  try {
+    return Promise.resolve(
+      getPluginCtx()?.storage?.set?.('group-chat-disbanded', Object.fromEntries(groupChatDisbandedRooms))
+    ).catch(() => undefined)
+  } catch {
+    return Promise.resolve()
+  }
+}
+
+/** Hydrate the durable disband memory from plugin storage at window start. */
+export function hydrateGroupChatDisbands(entries: unknown) {
+  groupChatDisbandedRooms.clear()
+
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+    return
+  }
+
+  for (const [key, record] of Object.entries(entries as Record<string, unknown>)) {
+    if (record && typeof record === 'object' && typeof (record as GroupChatDisbandRecord).name === 'string') {
+      groupChatDisbandedRooms.set(key, {
+        name: String((record as GroupChatDisbandRecord).name),
+        rev: Math.max(0, Number((record as GroupChatDisbandRecord).rev || 0))
+      })
+    }
+  }
+}
+
+/** Snapshot of the durable disband memory for merge guards. */
+export function groupChatDisbandMemory(): Record<string, GroupChatDisbandRecord> {
+  return Object.fromEntries(groupChatDisbandedRooms)
+}
+
+/** Repair sweep over one mirror's normalized snapshot: remembered disbands
+ *  whose room that mirror still projects (guard rule says the room must stay
+ *  dead) and whose tombstone there is missing or below the remembered
+ *  revision. Those mirrors need a re-push through the normal flush so they
+ *  converge instead of resurrecting the room on every later pull. */
+function groupChatDisbandRepairKeys(
+  norm: GroupChatSyncSnapshot,
+  disbanded: Record<string, GroupChatDisbandRecord>
+): string[] {
+  const repairing: string[] = []
+
+  for (const [key, record] of Object.entries(disbanded)) {
+    const bare = key.startsWith('name:') ? key.slice(5) : key
+    const room = norm.rooms?.[key] || norm.rooms?.[bare]
+    const tombstone = Math.max(0, Number(norm.deleted?.[key] ?? norm.deleted?.[bare] ?? 0))
+
+    if (room && tombstone < Math.max(1, record.rev) && groupChatDisbandOutranks(key, record, Number(room.revision || 0))) {
+      repairing.push(key)
+    }
+  }
+
+  return repairing
 }
 
 export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
@@ -864,14 +1010,59 @@ export async function pullGroupChatServerState(connectionId: string = groupChatS
   }
 
   const pending = groupChatSyncPendingByConnection.get(String(connectionId || ''))
+  const disbanded = groupChatDisbandMemory()
 
   const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get(), {
     preserveRooms: pending?.changedRooms || [],
-    deletedRooms: pending?.deletedRooms || []
+    deletedRooms: pending?.deletedRooms || [],
+    disbandedRooms: disbanded
   })
 
   $groupChats.set(merged)
   await persistGroupChatRooms(merged)
+
+  // Repair check: a remembered disband whose tombstone is missing (or too
+  // low) on THIS gateway's mirror means the original push failed or raced.
+  // Re-queue it through the normal flush (CAS, fan-out, retry ladder) so the
+  // mirror converges instead of resurrecting the room on every later pull
+  // (#105275). Key match only — a same-name recreate with a fresh roomId
+  // must not be tombstoned by the old disband.
+  const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
+  let repairing = groupChatDisbandRepairKeys(remoteNorm, disbanded)
+
+  // The pull above only inspected THIS gateway's mirror. A disband whose
+  // push failed on a secondary gateway (offline at the time, retry ladder
+  // exhausted) would leave that mirror stale forever once the active mirror
+  // already carries the tombstone — sweep every other default-profile route
+  // and repair those mirrors too.
+  if (Object.keys(disbanded).length) {
+    for (const target of await groupChatSyncTargetConnections()) {
+      if (String(target || '') === String(connectionId || '')) {
+        continue
+      }
+
+      try {
+        const { snapshot } = await groupChatRemoteSnapshot({ connectionId: target })
+        const targetNorm = snapshot ? normalizeGroupChatSyncSnapshot(snapshot) : null
+
+        if (targetNorm) {
+          repairing = [...repairing, ...groupChatDisbandRepairKeys(targetNorm, disbanded)]
+        }
+      } catch {
+        // An unreachable secondary gateway retries on its own reconnect;
+        // the active pull must not fail because of it.
+      }
+    }
+  }
+
+  repairing = [...new Set(repairing)]
+
+  if (repairing.length) {
+    scheduleGroupChatServerSync(merged, {
+      allowEmpty: true,
+      deletedRooms: repairing
+    })
+  }
 
   return true
 }
@@ -980,7 +1171,8 @@ async function flushGroupChatServerSync(connectionId?: string) {
 
         const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(remoteState.snapshot, $groupChats.get(), {
           preserveRooms: pending?.changedRooms || [],
-          deletedRooms: pending?.deletedRooms || []
+          deletedRooms: pending?.deletedRooms || [],
+          disbandedRooms: groupChatDisbandMemory()
         })
 
         $groupChats.set(mergedRooms)
@@ -1035,7 +1227,8 @@ async function flushGroupChatServerSync(connectionId?: string) {
 
       const mergedRooms = mergeRemoteGroupChatSnapshotIntoRooms(confirmedState.snapshot, $groupChats.get(), {
         preserveRooms: pending?.changedRooms || [],
-        deletedRooms: pending?.deletedRooms || []
+        deletedRooms: pending?.deletedRooms || [],
+        disbandedRooms: groupChatDisbandMemory()
       })
 
       $groupChats.set(mergedRooms)
@@ -1133,7 +1326,7 @@ export function scheduleGroupChatServerSync(
   // debounce fires.
   const activeId = String(groupChatSyncConnectionId() || '')
 
-  const queueFor = (connectionId: string) => {
+  const queueFor = (connectionId: string, coalesced?: GroupChatSyncJob) => {
     const id = String(connectionId || '')
     const retryTimer = groupChatSyncRetryTimers.get(id)
 
@@ -1146,9 +1339,9 @@ export function scheduleGroupChatServerSync(
       id,
       mergeGroupChatSyncJobs(groupChatSyncPendingByConnection.get(id), {
         connectionId: id,
-        allowEmpty,
-        changedRooms,
-        deletedRooms
+        allowEmpty: Boolean(allowEmpty || coalesced?.allowEmpty),
+        changedRooms: [...new Set([...(coalesced?.changedRooms || []), ...changedRooms])],
+        deletedRooms: [...new Set([...(coalesced?.deletedRooms || []), ...deletedRooms])]
       })
     )
   }
@@ -1158,9 +1351,18 @@ export function scheduleGroupChatServerSync(
     groupChatSyncTimer = null
     void groupChatSyncTargetConnections()
       .then(targets => {
+        // This timer may be the replacement for an earlier call's timer (an
+        // ordinary update that arrived inside the debounce window cleared
+        // it). The active job holds the union of every coalesced intent —
+        // including a disband's deletions — so secondary targets must
+        // inherit it; otherwise the disband would land on the active
+        // gateway only and a stale secondary mirror could resurrect the
+        // room after a restart.
+        const coalesced = groupChatSyncPendingByConnection.get(activeId)
+
         for (const target of targets) {
           if (String(target || '') !== activeId) {
-            queueFor(target)
+            queueFor(target, coalesced)
           }
         }
       })

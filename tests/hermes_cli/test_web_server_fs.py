@@ -89,3 +89,105 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_create_file_and_directory(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+
+    file_response = client.post("/api/fs/create", json={"path": str(parent / "notes.md"), "directory": False})
+    dir_response = client.post("/api/fs/create", json={"path": str(parent / "subdir"), "directory": True})
+
+    assert file_response.status_code == 200
+    assert (parent / "notes.md").is_file()
+    assert file_response.json()["isDirectory"] is False
+    assert dir_response.status_code == 200
+    assert (parent / "subdir").is_dir()
+    assert dir_response.json()["isDirectory"] is True
+
+
+def test_fs_create_refuses_existing_and_missing_parent(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    (parent / "taken.txt").write_text("x")
+
+    existing = client.post("/api/fs/create", json={"path": str(parent / "taken.txt")})
+    missing_parent = client.post("/api/fs/create", json={"path": str(parent / "no" / "such" / "file")})
+
+    assert existing.status_code == 409
+    assert missing_parent.status_code == 400
+    assert not (parent / "no").exists()
+
+
+def test_fs_rename_same_parent_collision_guard(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("a")
+    (root / "b.txt").write_text("b")
+
+    moved = client.post("/api/fs/rename", json={"path": str(root / "a.txt"), "name": "c.txt"})
+    collision = client.post("/api/fs/rename", json={"path": str(root / "b.txt"), "name": "c.txt"})
+    escape = client.post("/api/fs/rename", json={"path": str(root / "b.txt"), "name": "../escape.txt"})
+    missing = client.post("/api/fs/rename", json={"path": str(root / "ghost.txt"), "name": "x.txt"})
+
+    assert moved.status_code == 200
+    assert moved.json()["path"] == str(root / "c.txt")
+    assert (root / "c.txt").read_text() == "a"
+    assert collision.status_code == 409
+    assert escape.status_code == 400
+    assert not (tmp_path / "escape.txt").exists()
+    assert missing.status_code == 404
+
+
+def test_fs_rename_accepts_directory(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "olddir").mkdir(parents=True)
+
+    response = client.post("/api/fs/rename", json={"path": str(root / "olddir"), "name": "newdir"})
+
+    assert response.status_code == 200
+    assert (root / "newdir").is_dir()
+    assert not (root / "olddir").exists()
+
+
+def test_fs_delete_file_dir_and_recursive_guard(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "deep.txt").write_text("d")
+    (root / "leaf.txt").write_text("l")
+
+    dir_without_recursive = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub"), "recursive": False}
+    )
+    file_delete = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "leaf.txt")})
+    dir_recursive = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub"), "recursive": True}
+    )
+    missing = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "ghost.txt")})
+
+    assert dir_without_recursive.status_code == 409
+    assert file_delete.status_code == 200
+    assert not (root / "leaf.txt").exists()
+    assert dir_recursive.status_code == 200
+    assert not (root / "sub").exists()
+    assert missing.status_code == 404
+
+
+def test_fs_delete_never_removes_filesystem_root(client, tmp_path):
+    response = client.request("DELETE", "/api/fs/delete", json={"path": "/", "recursive": True})
+
+    assert response.status_code == 400
+
+
+def test_fs_mutations_require_auth(client, tmp_path):
+    unauthenticated = TestClient(web_server.app)
+    parent = tmp_path / "project"
+    parent.mkdir()
+
+    create_response = unauthenticated.post("/api/fs/create", json={"path": str(parent / "x.txt")})
+    rename_response = unauthenticated.post("/api/fs/rename", json={"path": str(parent / "x.txt"), "name": "y.txt"})
+    delete_response = unauthenticated.request("DELETE", "/api/fs/delete", json={"path": str(parent / "x.txt")})
+
+    assert create_response.status_code == 401
+    assert rename_response.status_code == 401
+    assert delete_response.status_code == 401

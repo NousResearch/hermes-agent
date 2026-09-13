@@ -163,8 +163,16 @@ export async function revealDesktopPath(path: string): Promise<void> {
   await bridge().revealPath?.(path)
 }
 
-// Rename a file/folder in place; returns the new absolute path. Local only.
+// Rename a file/folder in place; returns the new absolute path. Local renames
+// go through the Electron IPC handler; remote renames hit the dashboard's
+// POST /api/fs/rename (same-parent resolution + collision refusal there).
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
+  if (isDesktopFsRemoteMode()) {
+    const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/rename', { name: newName, path })
+
+    return result.path || path
+  }
+
   const desktop = bridge()
 
   if (!desktop.renamePath) {
@@ -176,8 +184,44 @@ export async function renameDesktopPath(path: string, newName: string): Promise<
   return result.path
 }
 
-// Move a file/folder to the OS trash (recoverable). Local only.
+// Create an empty file or a folder. Local file creation reuses the hardened
+// Electron write-text IPC (parent must exist, never builds trees); remote
+// creation hits the dashboard's POST /api/fs/create (same hardening, handles
+// both files and folders, never clobbers). Local folder creation has no
+// Electron capability yet, so it errors clearly until one ships.
+export async function createDesktopEntry(parentDir: string, name: string, directory: boolean): Promise<string> {
+  const joined = `${parentDir.replace(/[/\\]+$/, '')}/${name}`
+
+  if (!isDesktopFsRemoteMode()) {
+    const desktop = bridge()
+
+    if (directory || !desktop.writeTextFile) {
+      throw new Error(directory ? 'Folder creation is not available' : 'Creating files is not available')
+    }
+
+    await desktop.writeTextFile(joined, '')
+
+    return joined
+  }
+
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/create', {
+    directory,
+    path: joined
+  })
+
+  return result.path || joined
+}
+
+// Move a file/folder to the OS trash (recoverable). Local only by nature (the
+// OS trash lives on this machine); the remote tree deletes through the
+// dashboard's DELETE /api/fs/delete, which is permanent.
 export async function trashDesktopPath(path: string): Promise<void> {
+  if (isDesktopFsRemoteMode()) {
+    await remoteFsApi('/api/fs/delete', { path, recursive: false })
+
+    return
+  }
+
   const desktop = bridge()
 
   if (!desktop.trashPath) {

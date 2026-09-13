@@ -9,7 +9,7 @@ import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
-import { $renamingPath, beginInlineRename } from '@/store/file-actions'
+import { $creatingEntry, $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
@@ -275,6 +275,7 @@ function ProjectTreeRow({
   relativeTo?: null | string
 }) {
   const renamingPath = useStore($renamingPath)
+  const creatingEntry = useStore($creatingEntry)
   const path = node.data?.id ?? ''
   const changeStore = useMemo(() => repoChangeKindForPath(path), [path])
   const changeKind: RepoChangeKind | undefined = useStore(changeStore)
@@ -289,6 +290,10 @@ function ProjectTreeRow({
   const isPlaceholder = Boolean(node.data.placeholder)
   const isErrorPlaceholder = node.data.placeholder === 'error'
   const editing = !isPlaceholder && renamingPath === node.data.id
+  // New-file/new-folder flow: the folder row receiving the entry renders an
+  // inline input underneath it (VS Code style) instead of a ghost tree row —
+  // no optimistic tree mutation, and Esc/blur cancel is just clearing the atom.
+  const creatingHere = !isPlaceholder && isFolder && creatingEntry?.parentDir === node.data.id
 
   const row = (
     <div
@@ -374,6 +379,20 @@ function ProjectTreeRow({
 
   if (isPlaceholder) {
     return row
+  }
+
+  if (creatingHere) {
+    return (
+      <div style={{ ...style, paddingLeft: withTreeInset(style.paddingLeft) }}>
+        {row}
+        <div className="flex h-(--file-tree-row-height) items-center gap-1 px-3 text-xs text-(--ui-text-secondary)">
+          <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
+            <Codicon name={creatingEntry?.directory ? 'folder' : 'file'} size="0.875rem" />
+          </span>
+          <InlineRenameInput name="" path={node.data.id} />
+        </div>
+      </div>
+    )
   }
 
   return (

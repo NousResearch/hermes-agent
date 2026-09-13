@@ -14,16 +14,19 @@ import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import {
+  $creatingEntry,
   $fileActionDialog,
   beginInlineRename,
   cancelInlineRename,
   closeFileActionDialog,
   copyFilePath,
   downloadRemoteFile,
+  executeEntryCreate,
   executeFileDelete,
   executeFileRename,
   type FileActionTarget,
   requestFileDelete,
+  requestNewEntry,
   revealFile,
   shouldOfferRemoteFileDownload,
   toRelativePath
@@ -58,9 +61,11 @@ interface FileEntryContextMenuProps {
 export function FileEntryContextMenu({ children, isDirectory, name, path, relativeTo }: FileEntryContextMenuProps) {
   const { t } = useI18n()
   const m = t.fileMenu
-  // Reveal / rename / delete need the local filesystem; hide them on a remote
-  // backend (copy-path still works everywhere). Download uses the existing
-  // gateway save bridge so a remote file can land on this machine.
+  // Reveal needs the local OS file manager; hide it on a remote backend.
+  // Rename/Delete work in BOTH modes now (remote goes through the gateway FS
+  // API); remote delete is permanent rather than trash-recoverable, which the
+  // confirm dialog's body copy reflects. Download uses the existing gateway
+  // save bridge so a remote file can land on this machine.
   const localFs = !isDesktopFsRemoteMode()
   const remoteDownload = shouldOfferRemoteFileDownload(isDirectory)
   const target: FileActionTarget = { isDirectory, name, path }
@@ -78,6 +83,21 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             <ContextMenuSeparator />
           </>
         )}
+        {isDirectory && (
+          <>
+            <ContextMenuItem
+              onSelect={() => void requestNewEntry({ directory: true, parentDir: path })}
+            >
+              {m.newFolder}
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => void requestNewEntry({ directory: false, parentDir: path })}
+            >
+              {m.newFile}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         <ContextMenuItem onSelect={() => void copyFilePath(path)}>{m.copyPath}</ContextMenuItem>
         {relativeTo && (
           <ContextMenuItem onSelect={() => void copyFilePath(toRelativePath(path, relativeTo))}>
@@ -90,15 +110,11 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             <ContextMenuItem onSelect={() => void downloadRemoteFile(path)}>{m.download}</ContextMenuItem>
           </>
         )}
-        {localFs && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => beginInlineRename(path)}>{m.rename}</ContextMenuItem>
-            <ContextMenuItem onSelect={() => requestFileDelete(target)} variant="destructive">
-              {m.delete}
-            </ContextMenuItem>
-          </>
-        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => beginInlineRename(path)}>{m.rename}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => requestFileDelete(target)} variant="destructive">
+          {m.delete}
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -110,11 +126,14 @@ export function FileActionDialogs() {
   const { t } = useI18n()
   const dialog = useStore($fileActionDialog)
   const deleting = dialog?.kind === 'delete'
+  // Local delete goes to the OS trash (recoverable); remote delete through the
+  // gateway FS API is permanent — say so in the confirm copy.
+  const remoteDelete = isDesktopFsRemoteMode()
 
   return (
     <ConfirmDialog
       confirmLabel={t.fileMenu.delete}
-      description={t.fileMenu.deleteBody}
+      description={remoteDelete ? t.fileMenu.deleteRemoteBody : t.fileMenu.deleteBody}
       destructive
       onClose={closeFileActionDialog}
       onConfirm={() => {
@@ -138,9 +157,13 @@ interface InlineRenameInputProps {
 
 /** The in-row rename editor (VS Code style): seeded with the name (stem
  *  pre-selected), commits on Enter/blur, cancels on Esc. Render it in place of a
- *  row's label when `$renamingPath === path`. */
+ *  row's label when `$renamingPath === path`, or — for the new-file/new-folder
+ *  flow — when `$creatingEntry` targets this folder row (empty seed, no stem
+ *  pre-select, and a first-tab-all select). */
 export function InlineRenameInput({ className, name, path }: InlineRenameInputProps) {
-  const [value, setValue] = useState(name)
+  const creating = useStore($creatingEntry)
+  const seedName = creating && creating.parentDir === path ? '' : name
+  const [value, setValue] = useState(seedName)
   // Enter then the resulting blur must not both commit; latch on first finish.
   const done = useRef(false)
   // Focus churn right after mount (context-menu close, arborist refocus, the
@@ -156,9 +179,13 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
     done.current = true
     const next = value.trim()
 
-    if (commit && next && next !== name) {
+    if (commit && next) {
       try {
-        await executeFileRename(path, next)
+        if (creating && creating.parentDir === path) {
+          await executeEntryCreate(creating.directory, creating.parentDir, next)
+        } else if (next !== name) {
+          await executeFileRename(path, next)
+        }
       } catch (error) {
         notifyError(error, translateNow('errors.genericFailure'))
       }
@@ -191,6 +218,12 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
       onClick={event => event.stopPropagation()}
       onDoubleClick={event => event.stopPropagation()}
       onFocus={event => {
+        if (creating && creating.parentDir === path) {
+          event.currentTarget.select()
+
+          return
+        }
+
         const dot = event.currentTarget.value.lastIndexOf('.')
         event.currentTarget.setSelectionRange(0, dot > 0 ? dot : event.currentTarget.value.length)
       }}

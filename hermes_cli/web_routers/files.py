@@ -30,7 +30,8 @@ from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
-    ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
+    ChatImageUpload, FsCreate, FsDelete, FsRename, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
+    ManagedFileUpload,
 )
 
 router = APIRouter()
@@ -686,6 +687,90 @@ async def fs_write_text(payload: FsWriteText):
         tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
+
+
+def _fs_write_target_parent(target: Path) -> None:
+    """Shared pre-flight for the /api/fs mutation endpoints: the parent must
+    already exist (never build trees) and the destination must be free."""
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=400, detail="Parent directory does not exist")
+    if target.exists() or target.is_symlink():
+        raise HTTPException(status_code=409, detail="Path already exists")
+
+
+def _fs_valid_new_name(name: str) -> str:
+    name = str(name or "").strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or "\0" in name:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    return name
+
+
+@router.post("/api/fs/create")
+async def fs_create(payload: FsCreate):
+    """Create an empty regular file or a directory (``directory: true``).
+
+    Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
+    ``_fs_path``, the parent must already exist (never build trees), refuses to
+    replace an existing entry so a create can never clobber.
+    """
+    target = _fs_path(payload.path)
+    _fs_write_target_parent(target)
+
+    with _io_errors("Parent directory is not writable", "Could not create"):
+        if payload.directory:
+            target.mkdir()
+        else:
+            target.touch()
+    return {"ok": True, "path": str(target), "isDirectory": bool(payload.directory)}
+
+
+@router.post("/api/fs/rename")
+async def fs_rename(payload: FsRename):
+    """Rename a file/folder in place; the destination is resolved in the SAME
+    parent dir so a rename can never move the item elsewhere or traverse out.
+    Mirrors the Electron ``hermes:fs:rename`` handler (same-name guard, refuses
+    a name collision)."""
+    target = _fs_path(payload.path)
+    name = _fs_valid_new_name(payload.name)
+    destination = target.parent / name
+
+    if destination == target:
+        return {"ok": True, "path": str(target)}
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=400, detail="Parent directory does not exist")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if destination.exists() or destination.is_symlink():
+        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+
+    with _io_errors("Path is not writable", "Could not rename"):
+        target.rename(destination)
+    return {"ok": True, "path": str(destination)}
+
+
+@router.delete("/api/fs/delete")
+async def fs_delete(payload: FsDelete):
+    """Delete a file, or a directory with ``recursive: true``.
+
+    Mirrors the managed-files delete route's guards: the managed root itself
+    and the filesystem root can never be deleted. Unlike the OS-trash path the
+    local Electron tree uses, this is permanent — the desktop confirm dialog
+    says so in remote mode.
+    """
+    target = _fs_path(payload.path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if target.parent == target:
+        raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
+    if target.is_dir() and not payload.recursive:
+        raise HTTPException(status_code=409, detail="Directory is not empty (enable recursive delete)")
+
+    with _io_errors("Path is not writable", "Could not delete path"):
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    return {"ok": True, "path": str(target)}
 
 
 async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:

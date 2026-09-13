@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { translateNow } from '@/i18n'
 import {
   copyTextToClipboard,
+  createDesktopEntry,
   isDesktopFsRemoteMode,
   renameDesktopPath,
   revealDesktopPath,
@@ -52,6 +53,44 @@ export function beginInlineRename(path: string): void {
 
 export function cancelInlineRename(): void {
   $renamingPath.set(null)
+}
+
+// Pending new-file/new-folder creation, if any: `{ parentDir, directory }`.
+// The folder row whose id matches `parentDir` renders an inline input for the
+// new entry's name (empty seed, select-all on focus) — the same VS Code flow
+// as rename, reusing the InlineRenameInput.
+export interface CreatingEntry {
+  directory: boolean
+  parentDir: string
+}
+
+export const $creatingEntry = atom<CreatingEntry | null>(null)
+
+export async function requestNewEntry(creating: CreatingEntry): Promise<void> {
+  // Creating inside a collapsed folder is invisible — expand it first via the
+  // tree's open-state store, then let the row render the input.
+  $creatingEntry.set(creating)
+}
+
+export function cancelNewEntry(): void {
+  $creatingEntry.set(null)
+}
+
+/** Create the entry after the inline input commits. Throws on failure so the
+ *  caller can toast; bumps the workspace tick on success. */
+export async function executeEntryCreate(directory: boolean, parentDir: string, name: string): Promise<string> {
+  try {
+    const created = await createDesktopEntry(parentDir, name, directory)
+    notifyWorkspaceChanged()
+
+    return created
+  } catch (error) {
+    notifyError(error, translateNow('fileMenu.createFailed'))
+
+    throw error
+  } finally {
+    cancelNewEntry()
+  }
 }
 
 // ── Direct (no-dialog) actions ───────────────────────────────────────────────
@@ -108,11 +147,23 @@ export function toRelativePath(path: string, relativeTo: string): string {
 // ── Dialog-confirmed mutations (called by FileActionDialogs) ──────────────────
 
 export async function executeFileRename(path: string, newName: string): Promise<void> {
-  await renameDesktopPath(path, newName)
-  notifyWorkspaceChanged()
+  try {
+    await renameDesktopPath(path, newName)
+    notifyWorkspaceChanged()
+  } catch (error) {
+    notifyError(error, translateNow('errors.genericFailure'))
+
+    throw error
+  }
 }
 
 export async function executeFileDelete(path: string): Promise<void> {
-  await trashDesktopPath(path)
-  notifyWorkspaceChanged()
+  try {
+    await trashDesktopPath(path)
+    notifyWorkspaceChanged()
+  } catch (error) {
+    notifyError(error, translateNow('errors.genericFailure'))
+
+    throw error
+  }
 }

@@ -4,6 +4,7 @@ import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
+  createDesktopEntry,
   desktopDefaultCwd,
   desktopFileDiff,
   desktopFsCacheKey,
@@ -12,8 +13,10 @@ import {
   readDesktopFileDataUrl,
   readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
+  renameDesktopPath,
   selectDesktopPaths,
-  setDesktopFsRemotePicker
+  setDesktopFsRemotePicker,
+  trashDesktopPath
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
@@ -21,6 +24,7 @@ const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local'
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
+const writeTextFile = vi.fn(async (path: string) => ({ path }))
 
 const api = vi.fn(async ({ path }: { path: string }) => {
   if (path.startsWith('/api/fs/list?')) {
@@ -47,6 +51,18 @@ const api = vi.fn(async ({ path }: { path: string }) => {
     return { diff: 'remote diff' }
   }
 
+  if (path === '/api/fs/rename') {
+    return { ok: true, path: '/remote/renamed.txt' }
+  }
+
+  if (path === '/api/fs/create') {
+    return { ok: true, path: '/remote/new-entry' }
+  }
+
+  if (path === '/api/fs/delete') {
+    return { ok: true, path: '/remote/gone.txt' }
+  }
+
   throw new Error(`unexpected path ${path}`)
 })
 
@@ -58,7 +74,8 @@ function stubBridge() {
       readDir,
       readFileDataUrl,
       readFileText,
-      selectPaths
+      selectPaths,
+      writeTextFile
     }
   })
 }
@@ -317,5 +334,62 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('routes mutations through the gateway FS API in remote mode', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(renameDesktopPath('/remote/old.txt', 'new.txt')).resolves.toBe('/remote/renamed.txt')
+    await expect(createDesktopEntry('/remote/project', 'notes.md', false)).resolves.toBe('/remote/new-entry')
+    await expect(createDesktopEntry('/remote/project', 'subdir', true)).resolves.toBe('/remote/new-entry')
+    await expect(trashDesktopPath('/remote/gone.txt')).resolves.toBeUndefined()
+
+    expect(api).toHaveBeenCalledWith({
+      body: { name: 'new.txt', path: '/remote/old.txt' },
+      method: 'POST',
+      path: '/api/fs/rename'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { directory: false, path: '/remote/project/notes.md' },
+      method: 'POST',
+      path: '/api/fs/create'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { directory: true, path: '/remote/project/subdir' },
+      method: 'POST',
+      path: '/api/fs/create'
+    })
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/remote/gone.txt', recursive: false },
+      method: 'POST',
+      path: '/api/fs/delete'
+    })
+    expect(writeTextFile).not.toHaveBeenCalled()
+  })
+
+  it('creates local files through the Electron bridge and refuses local folders', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await expect(createDesktopEntry('/work', 'notes.md', false)).resolves.toBe('/work/notes.md')
+    await expect(createDesktopEntry('/work', 'subdir', true)).rejects.toThrow('Folder creation is not available')
+
+    expect(writeTextFile).toHaveBeenCalledWith('/work/notes.md', '')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('keeps local rename/delete on the Electron bridge', async () => {
+    $connection.set({ mode: 'local' } as never)
+    vi.stubGlobal('window', {
+      hermesDesktop: {
+        renamePath: vi.fn(async (path: string) => ({ path })),
+        trashPath: vi.fn(async () => true),
+        writeTextFile
+      }
+    })
+
+    await renameDesktopPath('/work/a.txt', 'b.txt')
+    await trashDesktopPath('/work/a.txt')
+
+    expect(api).not.toHaveBeenCalled()
   })
 })

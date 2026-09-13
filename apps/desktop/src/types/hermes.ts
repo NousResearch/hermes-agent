@@ -1458,6 +1458,8 @@ export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean
   model: string
   provider: string
+  /** Explicit target profile for shared remote backends. */
+  profile?: string
   scope: 'main' | 'auxiliary'
   task?: string
 }

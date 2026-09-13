@@ -18,6 +18,7 @@ import {
   Info,
   Keyboard,
   KeyRound,
+  Package,
   RefreshCw,
   Search,
   Settings2,
@@ -41,6 +42,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
@@ -73,7 +75,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ onClose, onConfigSaved, onMainModelChanged, onOpenCapabilities }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
@@ -298,6 +300,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('keys')
       },
       {
+        active: false,
+        icon: Package,
+        id: 'plugins',
+        label: `${t.skills.tabPlugins} (${t.sidebar.nav.skills})`,
+        onSelect: onOpenCapabilities ?? (() => navigate(`${SKILLS_ROUTE}?tab=plugins`, { replace: true }))
+      },
+      {
         active: activeView === 'sessions',
         icon: Archive,
         id: 'sessions',
@@ -313,7 +322,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('about')
       }
     ],
-    [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView]
+    [activeView, keysView, navigate, onOpenCapabilities, providerView, t, setActiveView, openProviderView, openKeysView]
   )
 
   // Type-to-search: printable keystrokes on the Settings surface (outside any

@@ -296,6 +296,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     cronOpen,
     currentView,
     openAgents,
+    openCapabilitiesFromOverlay,
     openCommandCenterSection,
     openStarmap,
     profilesOpen,
@@ -1332,6 +1333,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
+            onOpenCapabilities={openCapabilitiesFromOverlay}
           />
         </Suspense>
       )}

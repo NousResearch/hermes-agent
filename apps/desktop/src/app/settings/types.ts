@@ -21,6 +21,8 @@ export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
 export interface SettingsPageProps {
   gateway?: HermesGateway | null
   onClose: () => void
+  /** The overlay owner carries its underlying route into the Capabilities page. */
+  onOpenCapabilities?: () => void
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
 }

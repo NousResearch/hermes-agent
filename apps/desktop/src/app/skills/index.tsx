@@ -30,7 +30,7 @@ import {
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
-import { Loader2 } from '@/lib/icons'
+import { Loader2, X } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
@@ -209,6 +209,8 @@ function filteredToolsets(
 const visibleToolsetCount = (toolsets: ToolsetInfo[]) => toolsets.filter(ts => isDesktopToolsetVisible(ts.name)).length
 
 interface SkillsViewProps extends React.ComponentProps<'section'> {
+  /** The routed page returns to chat; tiles and dialogs own their own close action. */
+  onClose?: () => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
   /** Embedded mode (plugin dialogs — e.g. Bot Mode's Advanced section): tab
    *  state lives in local React state instead of the route's `?tab=` param,
@@ -230,6 +232,7 @@ export function SkillsView({
   embedded = false,
   fixedConnection,
   fixedProfile,
+  onClose,
   setStatusbarItemGroup: _setStatusbarItemGroup,
   ...props
 }: SkillsViewProps) {
@@ -865,6 +868,13 @@ export function SkillsView({
       searchHidden={mode === 'mcp' || mode === 'plugins'}
       searchHints={searchHints}
       searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
+      searchTrailingAction={
+        onClose && (
+          <Button aria-label={t.common.close} onClick={onClose} size="icon-sm" variant="ghost">
+            <X aria-hidden="true" />
+          </Button>
+        )
+      }
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },

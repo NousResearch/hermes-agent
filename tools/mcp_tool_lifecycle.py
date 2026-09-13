@@ -161,6 +161,12 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
             _core._server_scope_keys.pop(key, None)
             _core._server_tool_scopes.pop(key, None)
 
+    # Single budget common to the whole teardown funnel. Segment 1 (the server drain below) keeps
+    # _MCP_SHUTDOWN_DRAIN_SECONDS as its ceiling but must not exceed it; the leftover is handed to
+    # _stop_mcp_loop() for the loop-drain and thread-join segments that follow, so no sub-wait can
+    # push the TOTAL past _MCP_TEARDOWN_BUDGET_SECONDS (#82874 round-2).
+    teardown_budget = _core._MCP_TEARDOWN_BUDGET_SECONDS
+
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),
     # so "no live servers" is the MOST likely state in which stale backoff entries exist. Clear them so a
@@ -184,10 +190,15 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
             from agent.async_utils import safe_schedule_threadsafe
             future = safe_schedule_threadsafe(_shutdown(), loop, logger=logger, log_message="MCP shutdown: failed to schedule")
             if future is not None:
+                # Segment 1: the server-shutdown drain. Derives its wait from the shared teardown
+                # budget, not a bare fixed timeout, so a wedged server cannot push the total funnel
+                # past the supervisor kill grace (#82874 round-2).
+                drain_wait = _core._teardown_clamp(_core._MCP_SHUTDOWN_DRAIN_SECONDS, teardown_budget)
                 try:
-                    future.result(timeout=15)
+                    future.result(timeout=drain_wait)
                 except BaseException as exc:
                     logger.debug("Error during MCP shutdown: %s", exc)
+                teardown_budget = max(0.0, teardown_budget - drain_wait)
 
     # Unconditional final sweep: whether ``_shutdown`` ran, timed out, or was never scheduled
     # (a server that failed to connect is never in ``_servers`` — the most likely state for
@@ -196,7 +207,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
         if not servers_snapshot:
             clear_selected_status()
         _clear_connect_cooldowns(None if scope is None else selected_status)
-    _loop._stop_mcp_loop(only_if_idle=scope is not None)
+    _loop._stop_mcp_loop(only_if_idle=scope is not None, teardown_budget=teardown_budget)
 
 
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int]]:

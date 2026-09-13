@@ -17,8 +17,7 @@ export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke
 const TAB =
   'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag]'
 
-// Full height: with the strip's rule removed there is no last-pixel row to
-// leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
+// Fill the strip's content height; titlebar strips reserve their own drag edge.
 const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
 
 // A closeable tab's floor keeps short labels left of the close button.
@@ -264,7 +263,9 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       // active tab's primary underline is the only seam.
       className={cn(
         'group/pane-header relative flex min-w-0 shrink-0 select-none bg-(--ui-sidebar-surface-background) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
-        titlebar ? 'h-full flex-1 [-webkit-app-region:drag]' : 'h-7 [-webkit-app-region:no-drag]',
+        // A full-height no-drag tab used to consume the window's top edge.
+        // Keep a grip even when the tab list fills or overflows the titlebar.
+        titlebar ? 'h-full flex-1 pt-1.5 [-webkit-app-region:drag]' : 'h-7 [-webkit-app-region:no-drag]',
         className
       )}
       ref={ref}

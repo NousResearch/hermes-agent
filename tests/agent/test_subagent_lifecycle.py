@@ -43,6 +43,8 @@ class FakeChild:
 
 @pytest.fixture
 def lifecycle(monkeypatch):
+    import agent.subagent_lifecycle as lifecycle_module
+    monkeypatch.setattr(lifecycle_module, "_REGISTRY", lifecycle_module._Registry())
     parent = SimpleNamespace(session_id="parent-1", enabled_toolsets=["file"])
     counter = iter(range(1000))
 
@@ -71,88 +73,129 @@ def lifecycle(monkeypatch):
     return SubagentLifecycleService(lambda: parent)
 
 
+@pytest.mark.parametrize("other_parent,other_correlation", [
+    (False, "same-concurrent"), (True, "same-concurrent"), (False, "different"), (False, None),
+])
 def test_duplicate_correlation_is_reserved_during_child_construction(
-    lifecycle, monkeypatch
+    lifecycle, monkeypatch, other_parent, other_correlation,
 ):
     first_build_started = threading.Event()
     release_first_build = threading.Event()
-    build_count = iter(range(2))
+    built = []
 
     def slow_build(**_kwargs):
-        ident = next(build_count)
-        if ident == 0:
+        child = FakeChild(f"sa-race-{len(built)}")
+        built.append(child)
+        if len(built) == 1:
             first_build_started.set()
-            assert release_first_build.wait(timeout=5)
-        return FakeChild(f"sa-race-{ident}")
+            assert release_first_build.wait(timeout=10)
+        return child
 
-    monkeypatch.setattr(
-        "tools.delegate_tool._build_child_preserving_parent_tools", slow_build
-    )
-    request = SubagentLaunchRequest(goal="x", correlation_id="same-concurrent")
-
+    monkeypatch.setattr("tools.delegate_tool._build_child_preserving_parent_tools", slow_build)
+    request = SubagentLaunchRequest(goal="x", correlation_id="same-concurrent" if other_correlation else None)
+    second_service = (SubagentLifecycleService(lambda: SimpleNamespace(session_id="other-parent"))
+                      if other_parent else lifecycle)
+    duplicate = bool(request.correlation_id) and not other_parent and other_correlation == request.correlation_id
+    handles = []
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(lifecycle.launch, request)
-        assert first_build_started.wait(timeout=5)
-        second = executor.submit(lifecycle.launch, request)
         try:
-            with pytest.raises(SubagentLifecycleError, match="Duplicate"):
-                second.result(timeout=5)
+            assert first_build_started.wait(timeout=5)
+            second = executor.submit(second_service.launch,
+                                     SubagentLaunchRequest(goal="y", correlation_id=other_correlation))
+            if duplicate:
+                with pytest.raises(SubagentLifecycleError, match="Duplicate"):
+                    second.result(timeout=5)
+            else:
+                handles.append((second_service, second.result(timeout=5)))
         finally:
             release_first_build.set()
-        handle = first.result(timeout=5)
+            handles.append((lifecycle, first.result(timeout=5)))
+            for service, handle in handles:
+                assert service.wait(handle, timeout_seconds=5).state is SubagentState.SUCCEEDED
 
-    assert handle.correlation_id == "same-concurrent"
-    lifecycle.wait(handle, timeout_seconds=5)
+    assert len(built) == (1 if duplicate else 2)
+    # A completed child remains correlated during terminal-result retention.
+    if request.correlation_id:
+        with pytest.raises(SubagentLifecycleError, match="Duplicate"):
+            lifecycle.launch(request)
 
 
-@pytest.mark.parametrize("failure", ["build", "identity"])
-def test_failed_child_construction_releases_correlation_reservation(
-    lifecycle, monkeypatch, failure
-):
+@pytest.mark.parametrize("failure", ["build", "interrupt", "identity", "handle", "submit", "queued-submit"])
+def test_failed_launch_releases_resources_and_allows_retry(lifecycle, monkeypatch, tmp_path, failure):
+    import sqlite3
+    import agent.subagent_lifecycle as lifecycle_module
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from tools.delegate_tool_child_run import _attach_child, _detach_child
+
+    parent = lifecycle._parent_agent_resolver()
+    parent._active_children, parent._active_children_lock = [], threading.RLock()
+    built, executed = [], []
     attempts = iter(range(2))
 
     def build(**_kwargs):
-        if next(attempts) == 0:
-            if failure == "build":
-                raise RuntimeError("build failed")
-            return SimpleNamespace(_subagent_id="")
-        return FakeChild(f"sa-retry-{failure}")
+        attempt = next(attempts)
+        if attempt == 0 and failure in {"build", "interrupt"}:
+            raise (KeyboardInterrupt("build interrupted") if failure == "interrupt" else RuntimeError("build failed"))
+        # Real close()/SessionDB ownership, without opening a model client.
+        child = AIAgent.__new__(AIAgent)
+        child._active_children, child._active_children_lock = [], threading.RLock()
+        child.session_id = f"child-{attempt}"
+        child._subagent_id = "" if attempt == 0 and failure == "identity" else child.session_id
+        child._delegate_depth = "invalid" if attempt == 0 and failure == "handle" else 1
+        child._session_db = SessionDB(db_path=tmp_path / f"child-{attempt}.db")
+        child._owns_session_db = True
+        child.close = Mock(wraps=child.close)
+        built.append((child, child._session_db._conn))
+        _attach_child(parent, child)
+        return child
 
-    monkeypatch.setattr(
-        "tools.delegate_tool._build_child_preserving_parent_tools", build
-    )
-    request = SubagentLaunchRequest(goal="x", correlation_id=f"retry-{failure}")
+    def run(_index, _goal, child, _parent):
+        executed.append(child.session_id)
+        _detach_child(parent, child)
+        child.close()
+        return {"status": "completed", "summary": "done"}
 
-    expected = RuntimeError if failure == "build" else SubagentLifecycleError
-    with pytest.raises(expected):
-        lifecycle.launch(request)
-    handle = lifecycle.launch(request)
+    monkeypatch.setattr("tools.delegate_tool._build_child_preserving_parent_tools", build)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    request = SubagentLaunchRequest(goal="x", correlation_id="retry-failed-launch")
+    with DaemonThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(lifecycle_module, "_EXECUTOR", executor)
+        real_submit, real_adjust = executor.submit, executor._adjust_thread_count
 
-    assert handle.subagent_id == f"sa-retry-{failure}"
-    lifecycle.wait(handle, timeout_seconds=5)
+        def reject(*_args, **_kwargs):
+            raise RuntimeError("executor rejected")
 
+        if failure == "submit":
+            monkeypatch.setattr(executor, "submit", reject)
+        elif failure == "queued-submit":
+            # The real submit enqueues its WorkItem before attempting worker startup.
+            monkeypatch.setattr(executor, "_adjust_thread_count", reject)
+        expected = {"interrupt": KeyboardInterrupt, "identity": SubagentLifecycleError,
+                    "handle": ValueError}.get(failure, RuntimeError)
+        try:
+            with pytest.raises(expected):
+                lifecycle.launch(request)
+            assert parent._active_children == []
+            assert not lifecycle_module._REGISTRY.records
+            assert not lifecycle_module._REGISTRY.correlations
+            if built:
+                child, connection = built[0]
+                child.close.assert_called_once()
+                with pytest.raises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
 
-def test_failed_executor_submission_rolls_back_record_and_correlation(
-    lifecycle, monkeypatch
-):
-    import agent.subagent_lifecycle as lifecycle_module
-
-    executor = lifecycle_module._EXECUTOR
-    real_submit = executor.submit
-
-    def reject_submission(*_args, **_kwargs):
-        raise RuntimeError("executor rejected")
-
-    monkeypatch.setattr(executor, "submit", reject_submission)
-    request = SubagentLaunchRequest(goal="x", correlation_id="retry-after-reject")
-
-    with pytest.raises(RuntimeError, match="executor rejected"):
-        lifecycle.launch(request)
-    monkeypatch.setattr(executor, "submit", real_submit)
-    handle = lifecycle.launch(request)
-
-    assert handle.correlation_id == "retry-after-reject"
-    lifecycle.wait(handle, timeout_seconds=5)
+            monkeypatch.setattr(executor, "submit", real_submit)
+            monkeypatch.setattr(executor, "_adjust_thread_count", real_adjust)
+            handle = lifecycle.launch(request)
+            assert lifecycle.wait(handle, timeout_seconds=5).state is SubagentState.SUCCEEDED
+            assert executed == [handle.subagent_id]
+        finally:
+            for child, _connection in built:
+                _detach_child(parent, child)
+                child.close()
 
 
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):

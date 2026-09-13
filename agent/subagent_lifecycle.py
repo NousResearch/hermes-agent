@@ -255,72 +255,51 @@ class SubagentLifecycleService:
         correlation_reserved = bool(request.correlation_id)
         with _REGISTRY.lock:
             self._cleanup_locked()
-            if request.correlation_id and correlation_key in _REGISTRY.correlations:
-                raise SubagentLifecycleError(
-                    "Duplicate correlation_id for this parent session."
-                )
+            if correlation_reserved and correlation_key in _REGISTRY.correlations:
+                raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
             if correlation_reserved:
                 _REGISTRY.correlations[correlation_key] = None
 
+        child = None
         try:
-            # Delegate construction remains internal so plugin code never imports
-            # private delegation helpers or manipulates the active-child registry.
-            from tools.delegate_tool import (
-                _build_child_preserving_parent_tools,
-                DEFAULT_MAX_ITERATIONS,
-            )
-
+            # Lazy: delegate construction stays internal and outside the registry lock.
+            from tools.delegate_tool import _build_child_preserving_parent_tools, DEFAULT_MAX_ITERATIONS
             child = _build_child_preserving_parent_tools(
-                task_index=0,
-                goal=request.goal,
-                context=request.context,
-                toolsets=list(request.allowed_toolsets)
-                if request.allowed_toolsets
-                else None,
-                model=request.model,
-                max_iterations=DEFAULT_MAX_ITERATIONS,
-                task_count=1,
-                parent_agent=parent,
-                role=request.role,
+                task_index=0, goal=request.goal, context=request.context,
+                toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
+                model=request.model, max_iterations=DEFAULT_MAX_ITERATIONS, task_count=1,
+                parent_agent=parent, role=request.role,
             )
             subagent_id = str(getattr(child, "_subagent_id", "") or "")
             if not subagent_id:
                 raise SubagentLifecycleError("Hermes failed to assign a child identity.")
             created = time.time()
             handle = SubagentHandle(
-                PUBLIC_CONTRACT_VERSION,
-                subagent_id,
-                parent_session_id,
-                request.correlation_id,
-                created,
-                getattr(child, "provider", None),
-                getattr(child, "model", None),
-                getattr(child, "_delegate_role", request.role),
-                int(getattr(child, "_delegate_depth", 1) or 1),
-                self._capability(subagent_id, parent_session_id, created),
+                PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,
+                getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
+                int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
             )
             record = _Record(handle, SubagentState.PENDING, created, agent=child)
-        except BaseException:
-            if correlation_reserved:
-                with _REGISTRY.lock:
-                    if _REGISTRY.correlations.get(correlation_key) is None:
-                        _REGISTRY.correlations.pop(correlation_key, None)
-            raise
-        with _REGISTRY.lock:
-            _REGISTRY.records[subagent_id] = record
-            if correlation_reserved:
-                _REGISTRY.correlations[correlation_key] = subagent_id
-        try:
-            record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
+            with _REGISTRY.lock:
+                _REGISTRY.records[subagent_id] = record
+                try:
+                    # submit() can enqueue work before failing to start a worker. Keep
+                    # _run behind this lock until its record is accepted or rolled back.
+                    record.future = _EXECUTOR.submit(self._run, record, request.goal, parent)
+                except BaseException:
+                    if _REGISTRY.records.get(subagent_id) is record:
+                        _REGISTRY.records.pop(subagent_id)
+                    raise
+                if correlation_reserved:
+                    _REGISTRY.correlations[correlation_key] = subagent_id
         except BaseException:
             with _REGISTRY.lock:
-                if _REGISTRY.records.get(subagent_id) is record:
-                    _REGISTRY.records.pop(subagent_id, None)
-                if (
-                    correlation_reserved
-                    and _REGISTRY.correlations.get(correlation_key) == subagent_id
-                ):
+                if correlation_reserved and _REGISTRY.correlations.get(correlation_key) is None:
                     _REGISTRY.correlations.pop(correlation_key, None)
+            if child is not None:
+                from tools.delegate_tool_child_run import _close_child, _detach_child
+                _detach_child(parent, child)
+                _close_child(child, "subagent: failed to close child after rejected lifecycle launch")
             raise
         return handle
 
@@ -404,6 +383,8 @@ class SubagentLifecycleService:
 
     def _run(self, record: _Record, goal: str, parent: Any) -> None:
         with _REGISTRY.lock:
+            if _REGISTRY.records.get(record.handle.subagent_id) is not record:
+                return  # A failed submit left this work item queued; its child was closed.
             if record.state is not SubagentState.CANCEL_REQUESTED:
                 record.state = SubagentState.RUNNING
             record.started_at = record.updated_at = time.time()

@@ -61,6 +61,30 @@ def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
     return normalized
 
 
+def _selinux_label_user_volume(vol: str) -> str:
+    """Append the SELinux ``z`` relabel option to a user-configured
+    ``docker_volumes`` entry, iff it's a host-directory bind mount.
+
+    ``-v`` entries come in two shapes: ``host_path:container_path[:opts]``
+    (a bind mount — needs the label, same as every other internal mount
+    site) and ``volume_name:container_path[:opts]`` (a named Docker/podman
+    volume, which is unaffected by the host's SELinux context and whose
+    user-provided opts — e.g. ``:ro``, ``:nocopy`` — should pass through
+    untouched). Host paths are distinguished by a leading ``/``, ``~``, or
+    ``.`` per the documented ``docker_volumes`` format; anything else is
+    treated as a named volume and left alone.
+    """
+    parts = vol.split(":")
+    if len(parts) not in (2, 3) or not parts[0].startswith(("/", "~", ".")):
+        return vol
+
+    host_path, container_path = parts[0], parts[1]
+    opts = [o for o in parts[2].split(",") if o] if len(parts) == 3 else []
+    if "z" not in opts and "Z" not in opts:
+        opts.append("z")
+    return f"{host_path}:{container_path}:{','.join(opts)}"
+
+
 def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     """Validate a docker_env dict to {str: str}; scalars are coerced, other values dropped."""
     if not env:
@@ -459,7 +483,7 @@ def _readonly_skill_mount_args() -> list[str]:
                 if problem:
                     logger.warning("Docker: skipping %s mount — %s: %s", noun.split()[0], problem, src)
                     continue
-                args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
+                args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro,z"])
                 logger.info("Docker: mounting %s %s -> %s", noun, entry["host_path"], entry["container_path"])
     except Exception as e:
         logger.debug("Docker: could not load credential file mounts: %s", e)
@@ -679,7 +703,7 @@ class DockerEnvironment(BaseEnvironment):
             if ":" not in vol:
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
                 continue
-            volume_args.extend(["-v", vol])
+            volume_args.extend(["-v", _selinux_label_user_volume(vol)])
         workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
@@ -698,18 +722,18 @@ class DockerEnvironment(BaseEnvironment):
             sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
-            writable_args += ["-v", f"{self._home_dir}:/root"]
+            writable_args += ["-v", f"{self._home_dir}:/root:z"]
             if mount_workspace:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
-                writable_args += ["-v", f"{self._workspace_dir}:/workspace"]
+                writable_args += ["-v", f"{self._workspace_dir}:/workspace:z"]
         else:
             writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
             writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
 
         if bind_host_cwd:
             logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+            volume_args = ["-v", f"{host_cwd_abs}:/workspace:z", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args

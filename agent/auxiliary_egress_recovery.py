@@ -20,6 +20,7 @@ def local_fallback_steps(route, step_factory):
         # fallback_providers policy has been exhausted.
         sources.append(auxiliary._try_main_fallback_chain)
     sources.append(auxiliary._try_main_agent_model_fallback)
+    visited: set[tuple[str, str, str, str]] = set()
 
     for source in sources:
         while True:
@@ -56,13 +57,25 @@ def local_fallback_steps(route, step_factory):
             provider = destination.provider or auxiliary._fallback_provider_from_label(label)
             base_url = destination.base_url or str(getattr(client, "base_url", "") or "")
             api_mode = destination.api_mode or getattr(client, "api_mode", None)
+            identity = (provider, model or destination.model or "", base_url, api_mode or "")
+            if identity in visited:
+                # A selector that ignores the failed identity made no
+                # progress. Stop this layer instead of cycling forever.
+                break
+            visited.add(identity)
             classification = classify_destination(provider, base_url, api_mode)
             if classification in {DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK}:
                 auxiliary._record_route_info(route.route_info, provider, model)
                 response = yield step_factory("fallback", (client, model, label))
                 if response is not None:
                     return response
-                break
+                # A local candidate may have been quarantined by the call
+                # step. Feed its complete identity back so the selector can
+                # continue to the next healthy local candidate.
+                failed_provider = provider
+                failed_model = model or destination.model
+                failed_base_url = base_url
+                continue
 
             # _try_* returns the first usable candidate. Feed its complete
             # identity back as the failed route so the next call scans past

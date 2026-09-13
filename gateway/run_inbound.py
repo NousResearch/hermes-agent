@@ -529,9 +529,25 @@ class GatewayInboundMixin:
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
+        #
+        # A photo follow-up arriving mid-run is a complete user turn: album/burst grouping
+        # already collapsed multi-photo messages into ONE event upstream
+        # (adapter._media_group_events / _pending_photo_batches), so each event here is a
+        # distinct user intent. In queue mode, enqueue it as its own FIFO turn so several
+        # photos sent one after another each get their own turn instead of collapsing into a
+        # single pending slot (the slot is a single "next-up" cell — a second photo would
+        # merge into / overwrite the first, silently losing it). In non-queue
+        # (interrupt/steer) mode, keep the legacy single-slot merge so rapid photo bursts
+        # still coalesce as before.
         if event.message_type == MessageType.PHOTO:
-            logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-            self._hm_merge_pending_for_source(source, _quick_key, event)
+            if self._effective_busy_input_mode(source) == "queue":
+                logger.debug("PHOTO follow-up for session %s — FIFO-queued (queue mode)", _quick_key)
+                adapter = self._adapter_for_source(source)
+                if adapter:
+                    self._enqueue_fifo(_quick_key, event, adapter)
+            else:
+                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+                self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
         return False, None
 

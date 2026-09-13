@@ -3205,12 +3205,12 @@ describe('usePromptActions file attachment sync', () => {
     expect($composerAttachments.get()).toEqual([])
   })
 
-  it('uploads file bytes when the terminal backend is a container (docker)', async () => {
+  it.each(['docker', 'apple_container'])('uploads file bytes when the terminal backend is %s', async backend => {
     // Container backends have their own filesystem: the host drop path would
     // dangle inside the sandbox, so the bytes must cross via file.attach's
     // data_url pipeline and be staged into a bind-mounted cache dir (#76577).
     $connection.set({ mode: 'local' } as never)
-    $terminalBackend.set('docker')
+    $terminalBackend.set(backend)
     const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,

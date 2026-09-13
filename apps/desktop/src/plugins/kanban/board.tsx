@@ -74,6 +74,7 @@ import {
   fetchBoard,
   fetchBoards,
   fetchProfiles,
+  fetchProfileSkills,
   patchTask,
   PROFILES_KEY
 } from './api'
@@ -566,7 +567,9 @@ function NewTaskDialog({
   const [bodyText, setBodyText] = useState('')
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
-  const [skills, setSkills] = useState('')
+  // One skill picked from the assignee's installed set (empty = none). The
+  // dropdown options re-query per assignee below; a change resets the pick.
+  const [skill, setSkill] = useState('')
   const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
   // Empty = inherit the board's default project dir (backend resolves it);
   // a path here overrides just this task. Only meaningful for dir/worktree.
@@ -592,6 +595,27 @@ function NewTaskDialog({
     }
   })
 
+  // The skills dropdown's options: the chosen assignee's installed skills
+  // (empty assignee = the resolved default). Re-queries on every assignee
+  // change, so options track the selection immediately.
+  const skillsProfile = assignee && assignee !== PARKED ? assignee : resolvedDefault
+
+  const {
+    data: skillsData,
+    isError: skillsFailed,
+    isFetching: skillsLoading,
+    refetch: refetchSkills
+  } = useQuery({
+    queryKey: ['kanban', 'profile-skills', skillsProfile],
+    queryFn: () => fetchProfileSkills(skillsProfile),
+    staleTime: 60_000,
+    retry: false
+  })
+
+  const profileSkills = skillsData?.skills ?? []
+  // A stale pick (from a previous assignee) must never ride along silently.
+  const selectedSkill = profileSkills.includes(skill) ? skill : ''
+
   // Reset per open — the dialog is externally controlled (open = target set),
   // so onOpenChange(true) never fires; key the reset off `target` (and the
   // resolved board default, which may arrive after the first open).
@@ -601,7 +625,7 @@ function NewTaskDialog({
       setBodyText('')
       setAssignee('')
       setPriority('0')
-      setSkills('')
+      setSkill('')
       setWorkspaceKind(boardDefaultKind)
       setWorkspacePath('')
       setParent('')
@@ -624,11 +648,6 @@ function NewTaskDialog({
     setError(null)
 
     try {
-      const skillList = skills
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-
       // create() derives status (triage flag → 'triage', else 'ready'); move to
       // the requested column when they differ, so a per-column add lands right.
       const { task, warning } = await createTask({
@@ -637,7 +656,7 @@ function NewTaskDialog({
         goal_mode: goalMode,
         parents: parent ? [parent] : undefined,
         priority: Number(priority) || 0,
-        skills: skillList.length ? skillList : undefined,
+        skills: selectedSkill ? [selectedSkill] : undefined,
         title: trimmed,
         triage: isTriage,
         workspace_kind: workspaceKind,
@@ -752,7 +771,42 @@ function NewTaskDialog({
           </Field>
 
           <Field label={k.skills}>
-            <Input onChange={event => setSkills(event.target.value)} placeholder={k.skillsPlaceholder} value={skills} />
+            <Select onValueChange={v => setSkill(v === NO_PARENT ? '' : v)} value={selectedSkill || NO_PARENT}>
+              <SelectTrigger>
+                <SelectValue placeholder={k.skillsPlaceholder} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PARENT}>{k.noSkill}</SelectItem>
+                {profileSkills.map(name => (
+                  <SelectItem key={name} value={name}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {/* Empty roster and fetch failures are states, not errors — the
+                task still creates fine without an extra skill. A failed fetch
+                caches for the stale window, so offer a manual retry rather than
+                stranding the profile with no skills until it lapses. */}
+            {skillsFailed ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-[0.625rem] text-(--ui-text-quaternary)">
+                  {k.skillsLoadFailed}
+                </span>
+                <Button
+                  disabled={skillsLoading}
+                  onClick={() => void refetchSkills()}
+                  size="inline"
+                  variant="textStrong"
+                >
+                  {skillsLoading ? k.retryingSkills : k.retrySkills}
+                </Button>
+              </span>
+            ) : (
+              <span className="text-[0.625rem] text-(--ui-text-quaternary)">
+                {profileSkills.length === 0 ? k.noSkillsForProfile : ''}
+              </span>
+            )}
           </Field>
 
           <Field label={k.model}>

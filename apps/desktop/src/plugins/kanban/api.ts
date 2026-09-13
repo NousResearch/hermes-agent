@@ -181,6 +181,11 @@ export const fetchBoards = () => call<BoardsResponse>('/boards')
 
 export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')
 
+/** Skills installed for one profile — the task dialog scopes its skills
+ *  dropdown to the chosen assignee (404 → the typed name isn't a profile). */
+export const fetchProfileSkills = (profile: string) =>
+  call<{ profile: string; skills: string[] }>(`/profiles/${encodeURIComponent(profile)}/skills`)
+
 /** First-class Hermes projects, for scoping a board's default workspace. */
 export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
 

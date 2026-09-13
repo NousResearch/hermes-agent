@@ -199,10 +199,20 @@ def start_flow(
             time.sleep(0.1)
         if not auth_url:
             raise TimeoutError("Timed out waiting for MCP authorization URL")
-    except Exception:
+    except TimeoutError:
+        # Genuinely never got a URL within url_timeout: the "timed out" label is accurate here.
         flow.mark_error("Timed out waiting for MCP authorization URL")
         _shutdown_listener(rec)
         raise
+    except Exception as exc:
+        # Any other failure (e.g. the RuntimeError raised above when the flow's own
+        # status went to "error", carrying the real reason from snap.get("error"))
+        # must not be relabeled as a timeout — that discards the actual cause and
+        # misleads the caller/UI into thinking the user simply ran out of time.
+        flow.mark_error(str(exc) or "MCP OAuth flow failed before authorization")
+        _shutdown_listener(rec)
+        raise
+
     # ``flow`` mirrors the provider-OAuth discriminator: open a URL then poll (no user_code).
     return {"session_id": session_id, "auth_url": auth_url, "flow": "pkce"}
 

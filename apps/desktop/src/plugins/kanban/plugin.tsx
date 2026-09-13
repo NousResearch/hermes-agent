@@ -114,7 +114,37 @@ const plugin: HermesPlugin = {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
         order: 50,
-        data: { codicon: 'project', label: 'Kanban', path: '/kanban' } satisfies SidebarNavContribution
+        data: { codicon: 'project', label: 'Kanban', path: '/kanban' } satisfies SidebarNavContribution,
+        render: () => {
+          const toggle = () => {
+            haptic('tap')
+            if (typeof window !== 'undefined' && window.location.pathname === '/kanban') {
+              host.navigate('/')
+            } else {
+              host.navigate('/kanban')
+            }
+          }
+          return (
+            <button
+              type="button"
+              onClick={toggle}
+              style={{
+                background: 'transparent',
+                border: 0,
+                color: 'var(--ui-text-tertiary)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '0 10px',
+                width: '100%'
+              }}
+            >
+              <Codicon name="project" />
+              <span>Kanban</span>
+            </button>
+          )
+        }
       },
       {
         id: 'count',

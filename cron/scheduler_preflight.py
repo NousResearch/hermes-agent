@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Optional
 
+from cron.env_settings import cron_env_setting
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
@@ -21,12 +23,6 @@ logger = logging.getLogger("cron.scheduler")
 # alert-once dedup. ``:silent`` = already alerted on a previous tick — do not deliver again.
 BLOCKED_CONFIG_MARKER = "[blocked_config]"
 BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
-# Drift-guard skip: same contract (drift_alerted bit on the job record).
-# Same alert-once contract as blocked_config: run_one_job keys off it to record last_status and the
-# ``:silent`` variant means "already alerted on a previous tick — do not deliver again" (the drift_alerted
-# bit on the job record, #73506 shape).
-DRIFT_SKIP_MARKER = "[drift_skip]"
-DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
 
 _TRANSIENT_NET_EXC_NAMES = frozenset({
     "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "NetworkError",
@@ -100,7 +96,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
     requested = (
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
-    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
     from hermes_cli.auth import AuthError
     try:
@@ -204,12 +200,17 @@ class SharedRouteAdapters:
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
         thread_id = str(thread_id) if thread_id else None
+        # A cron target carries no inbound guild anchor, so a route's guild_id is matched against
+        # itself — the target-exact discriminators (chat_id/thread_id) authorize the send. Without
+        # this the documented ``guild_id + chat_id`` Discord route never authorized cron output.
         for route in self._routes:
             if str(route.platform).lower() != platform_key:
                 continue
             if not (route.chat_id or route.thread_id):
                 continue  # guild-only routes are not target-exact
-            if route.matches(str(route.platform), chat_id=chat_id, thread_id=thread_id):
+            if route.matches(
+                str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+            ):
                 return adapter
         return default
 
@@ -316,8 +317,8 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     so the caller refuses BEFORE building agent machinery or burning an LLM call. Every check fails
     open — preflight blocks only on an affirmative misconfiguration verdict.
 
-    Same fail-before-spend spirit as the #44585 drift guard and the fail-loud-on-hidden-tools direction in
-    #27948; alert dedup follows the alert-once pattern from the dead-pin auto-pause (#73506).
+    Same fail-before-spend spirit as the fail-loud-on-hidden-tools direction in #27948; alert dedup
+    follows the alert-once pattern from the dead-pin auto-pause (#73506).
     """
     for name, check in (
         ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),

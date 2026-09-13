@@ -211,6 +211,21 @@ class TestRunTurn:
 
 
 
+    def test_result_records_the_exact_submitted_input(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        rich_input = [
+            {"type": "text", "text": "caption"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        result = make_session(client).run_turn(rich_input, turn_timeout=2.0)
+        _, params = next(request for request in client.requests if request[0] == "turn/start")
+        assert result.submitted_user_text == params["input"][0]["text"]
+        assert result.submitted_user_text != rich_input
+
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
         """Approval draining must not project a child result into the parent."""
         client = FakeClient()

@@ -18,12 +18,28 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+function unwrapMessageEnvelopes(content) {
+  let cur = content;
+  // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel
+  // until an inner message is reached so nested quotes resolve too.
+  for (let i = 0; i < 8 && cur; i++) {
+    const next =
+      cur.ephemeralMessage?.message ??
+      cur.viewOnceMessage?.message ??
+      cur.viewOnceMessageV2?.message ??
+      cur.documentWithCaptionMessage?.message;
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
+}
+
 export function getMessageContent(msg) {
-  const content = msg?.message || {};
-  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
-  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
-  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
-  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  const raw = msg?.message || {};
+  const content = unwrapMessageEnvelopes(raw);
+  // A peeled envelope returns its inner message immediately: the payload
+  // shape (template/buttons/list/etc.) applies to unenveloped messages.
+  if (content !== raw) return content;
   if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;
@@ -60,6 +76,45 @@ export function createBoundedMessageStore(limit = 512) {
     byId.delete(id);
     byId.set(id, msg);
     return msg;
+  }
+
+  return { remember, get };
+}
+
+/**
+ * Bounded cache of the already-downloaded media (and plain text) for
+ * recently seen inbound messages, keyed by "chatId:messageId".
+ *
+ * When a user replies to an earlier message, Baileys' contextInfo.quotedMessage
+ * only carries a thumbnail-sized stub for media (or nothing at all for an
+ * uncaptioned attachment) — never a way to re-fetch the full original file.
+ * Without this cache, replying to a photo/video/document/voice note with no
+ * caption gives the agent no text and no media reference: it looks like the
+ * message never had an attachment. Since extractBridgeEvent already downloads
+ * and caches the media for every inbound message as it arrives, remembering
+ * that outcome here lets a later reply resolve the original file path.
+ */
+export function createQuotedMediaCache(limit = 512) {
+  const byKey = new Map();
+
+  function key(chatId, messageId) {
+    return `${chatId || ''}:${messageId || ''}`;
+  }
+
+  function remember(chatId, messageId, payload) {
+    if (!messageId) return;
+    const k = key(chatId, messageId);
+    byKey.delete(k);
+    byKey.set(k, payload);
+    while (byKey.size > limit) {
+      const oldest = byKey.keys().next().value;
+      byKey.delete(oldest);
+    }
+  }
+
+  function get(chatId, messageId) {
+    if (!messageId) return null;
+    return byKey.get(key(chatId, messageId)) || null;
   }
 
   return { remember, get };
@@ -190,16 +245,17 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
 }
 
 function textFromQuotedMessage(quotedMessage) {
-  if (!quotedMessage) return '';
-  if (quotedMessage.conversation) return quotedMessage.conversation;
-  if (quotedMessage.extendedTextMessage?.text) return quotedMessage.extendedTextMessage.text;
-  if (quotedMessage.imageMessage?.caption) return quotedMessage.imageMessage.caption;
-  if (quotedMessage.videoMessage?.caption) return quotedMessage.videoMessage.caption;
-  if (quotedMessage.documentMessage?.caption) return quotedMessage.documentMessage.caption;
-  if (quotedMessage.documentMessage?.fileName) return `[Document: ${quotedMessage.documentMessage.fileName}]`;
-  if (quotedMessage.locationMessage) return formatLocationText(quotedMessage.locationMessage, false);
-  if (quotedMessage.contactMessage) return formatContactText(quotedMessage.contactMessage);
-  if (quotedMessage.pollCreationMessage) return formatPollText(quotedMessage.pollCreationMessage);
+  const content = unwrapMessageEnvelopes(quotedMessage);
+  if (!content) return '';
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  if (content.imageMessage?.caption) return content.imageMessage.caption;
+  if (content.videoMessage?.caption) return content.videoMessage.caption;
+  if (content.documentMessage?.caption) return content.documentMessage.caption;
+  if (content.documentMessage?.fileName) return `[Document: ${content.documentMessage.fileName}]`;
+  if (content.locationMessage) return formatLocationText(content.locationMessage, false);
+  if (content.contactMessage) return formatContactText(content.contactMessage);
+  if (content.pollCreationMessage) return formatPollText(content.pollCreationMessage);
   return '';
 }
 
@@ -306,6 +362,7 @@ export async function extractBridgeEvent({
   downloadMedia,
   writeMediaFile,
   cacheDirs = {},
+  lookupQuotedMedia,
 }) {
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
@@ -314,7 +371,38 @@ export async function extractBridgeEvent({
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
   const hasQuotedMessage = !!contextInfo?.quotedMessage;
-  const quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  let quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  let quotedMediaUrls = [];
+  let quotedMediaType = '';
+
+  // contextInfo.quotedMessage only ever carries a thumbnail-sized stub for
+  // media (or nothing for an uncaptioned attachment) — never a way to
+  // re-fetch the original file. Resolve the quoted message's already-cached
+  // media (downloaded when it first arrived) via lookupQuotedMedia so a
+  // reply to an uncaptioned photo/video/document/voice note still gives the
+  // agent the original file, not just silence.
+  if (quotedMessageId && typeof lookupQuotedMedia === 'function') {
+    const original = lookupQuotedMedia(quotedRemoteJid || chatId, quotedMessageId);
+    if (original) {
+      if (original.hasMedia && original.mediaUrls?.length) {
+        quotedMediaUrls = original.mediaUrls;
+        quotedMediaType = original.mediaType || '';
+        if (!quotedText) {
+          quotedText = {
+            image: 'sent an image',
+            video: 'sent a video',
+            gif: 'sent a GIF',
+            audio: 'sent an audio message',
+            ptt: 'sent a voice message',
+            document: 'sent a document',
+            sticker: 'sent a sticker',
+          }[original.mediaType] || 'sent media';
+        }
+      } else if (original.body && !quotedText) {
+        quotedText = original.body;
+      }
+    }
+  }
 
   let body = '';
   let hasMedia = false;
@@ -481,6 +569,8 @@ export async function extractBridgeEvent({
     quotedParticipant,
     quotedRemoteJid,
     quotedText,
+    quotedMediaUrls,
+    quotedMediaType,
     hasQuotedMessage,
     botIds,
     readReceiptKey: {

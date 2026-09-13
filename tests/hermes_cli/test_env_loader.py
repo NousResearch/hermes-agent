@@ -57,6 +57,36 @@ def test_utf8_bom_does_not_mangle_first_key(tmp_path, monkeypatch):
     assert os.environ.get("\ufeffFIRST_KEY") is None
 
 
+def test_bom_first_key_is_seen_by_installer_and_scrub_alike(tmp_path, monkeypatch):
+    """Invariant: the key set the dashboard/profile scrub computes (``_env_keys_defined_in_dotenv``) equals
+    the key set the installers define (``load_hermes_dotenv`` into os.environ, ``load_env_file`` into a
+    profile scope). A BOM'd first line, ``export``, quotes and inline comments must not split them —
+    a key one side sees and the other doesn't is a scrub miss."""
+    from hermes_cli.env_loader import _env_keys_defined_in_dotenv
+    from agent.secret_scope import load_env_file
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_bytes(
+        b"\xef\xbb\xbfFIRST_KEY=first-value\n"
+        b"export EXPORTED_KEY='quoted # not a comment'\n"
+        b"COMMENTED_KEY=value # trailing comment\n"
+        b"EMPTY_KEY=\n"
+    )
+    for key in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY", "\ufeffFIRST_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+    installed = {k for k in ("FIRST_KEY", "EXPORTED_KEY", "COMMENTED_KEY", "EMPTY_KEY") if k in os.environ}
+    scoped = load_env_file(env_file)
+
+    assert _env_keys_defined_in_dotenv(env_file) == installed == set(scoped)
+    assert "\ufeffFIRST_KEY" not in _env_keys_defined_in_dotenv(env_file)
+    assert scoped["EXPORTED_KEY"] == os.environ["EXPORTED_KEY"] == "quoted # not a comment"
+    assert scoped["COMMENTED_KEY"] == os.environ["COMMENTED_KEY"] == "value"
+
+
 def test_bomless_utf8_env_still_loads(tmp_path, monkeypatch):
     """BOM-less UTF-8 .env files must keep loading after utf-8-sig."""
     home = tmp_path / "hermes"

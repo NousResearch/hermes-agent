@@ -10,7 +10,7 @@ const classesOf = (label: string): string[] =>
   screen.getByText(label).closest('[data-slot="pane-tab"]')!.className.split(/\s+/).filter(Boolean)
 
 describe('PaneTabStrip titlebar interaction', () => {
-  it('carves the complete tab list out of the native window drag region', () => {
+  it('keeps controls outside a dedicated draggable blank gutter', () => {
     render(
       <PaneTabStrip titlebar>
         <PaneTab>
@@ -21,9 +21,39 @@ describe('PaneTabStrip titlebar interaction', () => {
 
     const tablist = screen.getByRole('tablist')
     const strip = tablist.parentElement!
+    const dragHandle = strip.querySelector<HTMLElement>('[data-window-drag-handle]')!
 
-    expect(strip.className).toContain('[-webkit-app-region:drag]')
+    expect(strip.className).not.toContain('[-webkit-app-region:drag]')
     expect(tablist.className).toContain('[-webkit-app-region:no-drag]')
+    expect(dragHandle.className).toContain('[-webkit-app-region:drag]')
+    expect(dragHandle.parentElement).toBe(strip)
+    expect(tablist.nextElementSibling).toBe(dragHandle)
+  })
+
+  it('keeps tab activation, dragging, and close events in renderer space', () => {
+    const onActivate = vi.fn()
+    const onClose = vi.fn()
+    const onPointerDown = vi.fn()
+
+    render(
+      <PaneTabStrip titlebar>
+        <PaneTab onClose={onClose} onPointerDown={onPointerDown}>
+          <PaneTabLabel as="button" onClick={onActivate}>
+            tab
+          </PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    fireEvent.pointerDown(screen.getByText('tab'), { button: 0 })
+    fireEvent.click(screen.getByText('tab'), { button: 0 })
+    expect(onPointerDown).toHaveBeenCalledTimes(1)
+    expect(onActivate).toHaveBeenCalledTimes(1)
+
+    const close = screen.getByRole('button', { name: 'Close' })
+    fireEvent.pointerDown(close, { button: 0 })
+    fireEvent.click(close, { button: 0 })
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
 

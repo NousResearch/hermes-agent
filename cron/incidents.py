@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from cron import executions as _executions
-from cron.ledger import ledger_transaction, open_ledger, prepare_ledger
+from cron.jobs import _ensure_cron_dir
+from hermes_cli.sqlite_util import open_db, transaction
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -53,11 +54,12 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    return open_ledger(_db_path())
+    path = _db_path()
+    _ensure_cron_dir(path.parent)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    prepare_ledger(conn, db_label="cron/executions.db")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_incidents (
              id            TEXT PRIMARY KEY,
@@ -85,7 +87,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    with ledger_transaction(_lock, _connect, _initialize_schema) as conn:
+    with _lock, transaction(_connect()) as conn:
         yield conn
 
 
@@ -100,7 +102,7 @@ def _redact_error(error: str) -> str:
     try:
         from agent.redact import redact_sensitive_text
 
-        text = redact_sensitive_text(text)
+        text = redact_sensitive_text(text, force=True)  # persisted to disk: always scrub
     except Exception:
         pass
     return text[:MAX_ERROR_CHARS]

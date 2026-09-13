@@ -10,11 +10,10 @@ import shlex
 import sqlite3
 import tempfile
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -120,40 +119,15 @@ def _ledger_enabled() -> bool:
 
 
 def _connect() -> sqlite3.Connection:
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_cli.sqlite_util import open_db
 
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    try:
-        apply_wal_with_fallback(conn, db_label="verification_evidence.db")
-        conn.execute("PRAGMA busy_timeout=5000")
-        _ensure_schema(conn)
-    except Exception:
-        # A PRAGMA/DDL failure after connect() must not leak the open connection.
-        conn.close()
-        raise
-    return conn
+    return open_db(_db_path(), db_label="verification_evidence.db", initialize=_ensure_schema)
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    ``sqlite3.Connection`` as a context manager only commits/rolls back; without
-    the close, each call leaks a connection (and WAL/SHM fds) until GC runs.
-
-    Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM file descriptors — on
-    every call, deferring the close to the garbage collector, which over a long-running process can exhaust
-    ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was #69567 / PR #69594).
-    """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    return transaction(_connect())
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:

@@ -13,7 +13,7 @@ def test_lazy_cron_stores_do_not_require_new_symbols_on_cached_executions_module
 import sys
 import cron.executions as executions
 
-for name in ("ledger_transaction", "open_ledger", "prepare_ledger"):
+for name in ("open_db", "transaction", "add_column_if_missing", "_ensure_cron_dir"):
     delattr(executions, name)
 sys.modules.pop("cron.incidents", None)
 sys.modules.pop("cron.notepad", None)

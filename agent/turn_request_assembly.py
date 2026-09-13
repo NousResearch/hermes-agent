@@ -57,7 +57,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
             aggregator=moa_config.get("aggregator") or {},
             temperature=_preset_temperature(moa_config, "reference_temperature"),
             aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
-            reference_max_tokens=moa_config.get("reference_max_tokens"),
+
             # None = no per-preset override; inherit auxiliary.moa_reference.timeout.
             reference_timeout=(
                 float(moa_config["reference_timeout"])

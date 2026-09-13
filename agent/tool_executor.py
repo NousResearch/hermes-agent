@@ -173,6 +173,13 @@ def _resolve_concurrent_tool_timeout() -> float | None:
 def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) -> bool:
     """Flush tool-call progress to the session DB before projecting it to any UI: tool side
     effects can kill/restart the process before turn-end persistence runs."""
+    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
+
+    # Persist exactly the checkpoint text the next model call will see, before stamping
+    # this tool result as durable. Already-written rows must never be rewritten later.
+    _maybe_inject_run_budget_wrapup(agent, messages)
+    _maybe_inject_iteration_budget_warning(agent, messages)
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
@@ -381,6 +388,10 @@ def _unwrap_tool_search_call(
             return function_name, function_args, None
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
+            return function_name, function_args, None
+        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
+            # Both executors retain the wrapper: scope/probe/hooks run per entry
+            # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
             return function_name, function_args, (
@@ -928,7 +939,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         elif function_name == "terminal":
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                from agent.runtime_cwd import scope_terminal_cwd
+                cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
                 agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 

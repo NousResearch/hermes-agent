@@ -28,6 +28,25 @@ def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
 
 
+def stored_session_route(session_meta, *, current_model, current_provider):
+    """The route a resumed session should run on, or ``None`` when the stored one is absent or
+    already current. Returns ``(model, provider, base_url, api_mode, provider_changed)``; the
+    canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
+    else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
+    hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
+    stored_model = str((session_meta or {}).get("model") or "").strip()
+    if not stored_model:
+        return None
+    from hermes_state import SessionDB as _SessionDB
+    runtime = _SessionDB.session_gateway_runtime(session_meta)
+    base_url = runtime.get("base_url") or None
+    provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model)
+    provider_changed = bool(provider) and provider != current_provider
+    if stored_model == current_model and not provider_changed:
+        return None
+    return stored_model, provider, base_url, (runtime.get("api_mode") or None), provider_changed
+
+
 def _heal_bare_custom_provider(provider, *, base_url, model):
     """Bare ``custom`` is a billing class, not a routable identity: persisting/restoring it makes a
     later resume hard-fail once the config default leaves the custom endpoint. Recover the durable
@@ -151,7 +170,8 @@ def _commit_model_switch(
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
     if persist_global:
-        _persist_global_switch(cli, result)
+        from hermes_cli.model_switch import persist_model_selection
+        persist_model_selection(result)
         _cprint("    Saved to config.yaml (--global)" if picker else "    Saved to config.yaml")
     elif one_turn:
         _cprint("    (next turn only — restores after one response)")
@@ -161,24 +181,6 @@ def _commit_model_switch(
     # stale creation-time model); --once is restored after one turn and never touches the row.
     if not one_turn:
         HermesCLI._persist_model_switch_to_session(cli, result)
-
-
-def _persist_global_switch(cli, result) -> None:
-    """Write the switched route to config.yaml (--global). base_url/api_mode are freshly resolved
-    for the target provider, so sync them every time (None clears a value the new provider doesn't
-    need) — otherwise the OLD provider's endpoint/wire-protocol lingers in config.yaml."""
-    from cli import HermesCLI, save_config_value
-    HermesCLI._clear_persisted_context_for_model_switch(cli, result)
-    save_config_value("model.default", result.new_model)
-    save_config_value("model.provider", result.target_provider)
-    # base_url/api_mode were previously never persisted here, so a global switch left the OLD provider's
-    # endpoint/wire-protocol in config.yaml. result.base_url/api_mode are always freshly resolved for the
-    # target provider (see model_switch.py), so sync them every time; None clears a value the new provider
-    # doesn't need (#25106).
-    # See _apply_model_switch_result above for why base_url/api_mode must be synced on every global switch
-    # (#25106).
-    save_config_value("model.base_url", result.base_url or None)
-    save_config_value("model.api_mode", result.api_mode or None)
 
 
 def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
@@ -348,22 +350,12 @@ class CLIModelSwitchMixin:
         so the session still opens (the first turn surfaces the auth error).
         """
         from cli import logger
-        stored_model = (session_meta or {}).get("model")
-        if not stored_model or getattr(self, "_explicit_model_override", False):
+        if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
             return
-        # Canonical row reader: model_config.gateway_runtime, else the TUI's top-level keys.
-        from hermes_state import SessionDB as _SessionDB
-        _stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
-        stored_base_url = _stored_runtime.get("base_url") or None
-        stored_api_mode = _stored_runtime.get("api_mode") or None
-        # Stricter than the TUI gateway's recovery (which keeps bare "custom" when a
-        # base_url exists) — the CLI's resolve path would hard-fail on it.
-        stored_provider = _heal_bare_custom_provider(
-            _stored_runtime.get("provider") or None, base_url=stored_base_url, model=stored_model)
-        model_changed = stored_model != self.model
-        provider_changed = bool(stored_provider) and stored_provider != self.provider
-        if not model_changed and not provider_changed:
+        route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
+        if route is None:
             return
+        stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
         self.model = stored_model
         if stored_provider:
             self.provider = stored_provider
@@ -535,24 +527,6 @@ class CLIModelSwitchMixin:
         elif selected >= scroll_offset + visible:
             scroll_offset = selected - visible + 1
         return max(0, min(scroll_offset, n - visible)), visible
-
-    def _clear_persisted_context_for_model_switch(self, result) -> None:
-        """Drop a global context pin when its configured owner changes."""
-        from cli import save_config_value
-        try:
-            from hermes_cli.config import load_config_readonly
-            from hermes_cli.route_identity import should_clear_context_pin
-            config = load_config_readonly()
-            model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
-            if not isinstance(model_cfg, dict) or "context_length" not in model_cfg:
-                return
-            if should_clear_context_pin(
-                model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-                model_cfg.get("base_url"), result.base_url,
-                model_cfg.get("provider"), result.target_provider):
-                save_config_value("model.context_length", None)
-        except Exception:
-            save_config_value("model.context_length", None)
 
     def _stage_and_swap_model(self, result, old_model) -> bool:
         """Stage ``result`` onto the CLI fields, then swap the live agent in place.

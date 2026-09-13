@@ -1,8 +1,9 @@
+import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
-import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
+import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'

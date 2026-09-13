@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
+from hermes_cli.timefmt import coerce_epoch
+from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -105,8 +107,7 @@ class SessionPortabilityMixin:
         Reuse the portability validator and message writer so counters and FTS
         obey the same contract as ordinary transcript imports.
         """
-        import uuid
-        session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:12]}"
+        session_id = new_session_id(hex_len=12)
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
              "cwd": cwd, "messages": messages}])
@@ -258,7 +259,22 @@ class SessionPortabilityMixin:
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
         """Export all sessions (with messages) as dicts, e.g. for JSONL backup."""
-        return [self._with_messages(s) for s in self.search_sessions(source=source, limit=100000)]
+        sessions = self.search_sessions(source=source, limit=100000)
+        messages_by_session = {session["id"]: [] for session in sessions}
+        session_ids = list(messages_by_session)
+        # Stay below SQLite's legacy 999-variable limit while replacing the per-session N+1 reads.
+        for start in range(0, len(session_ids), 900):
+            chunk = session_ids[start:start + 900]
+            rows = self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({','.join('?' for _ in chunk)}) "
+                "AND active = 1 ORDER BY session_id, id",
+                chunk,
+            )
+            for row in rows:
+                messages_by_session[row["session_id"]].append(
+                    self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True)
+                )
+        return [{**session, "messages": messages_by_session[session["id"]]} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
@@ -450,7 +466,7 @@ class SessionPortabilityMixin:
 
     def _import_session_row(self, conn, raw: Dict[str, Any], messages: List[Dict[str, Any]], session_id: str) -> None:
         """INSERT one normalized session + its messages; counts fixed up after."""
-        started_at = self._coerce_or(raw.get("started_at"), float, None)
+        started_at = coerce_epoch(raw.get("started_at"), session_id=session_id, field="started_at")
         params = {
             "id": session_id, "source": str(raw.get("source") or "import"),
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
@@ -518,7 +534,7 @@ class SessionPortabilityMixin:
         / ``last_activity_description`` / ``last_activity_provenance``) because they are part of the durable
         row, but import deliberately RESETS them to NULL. This asymmetry is intentional and covered by
         regression
-        (tests/gateway/test_watchdog_review_76354.py::test_s4_export_includes_activity_import_resets_it).
+        (tests/gateway/test_watchdog_review.py::test_s4_export_includes_activity_import_resets_it).
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")

@@ -45,21 +45,17 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
 _DEFAULT_MAX_READ_CHARS = 100_000
-_max_read_chars_cached: int | None = None
-
-
 def _get_max_read_chars() -> int:
-    """Return ``file_read_max_chars`` from config.yaml (cached per process; default on missing/invalid)."""
-    global _max_read_chars_cached
-    if _max_read_chars_cached is None:
-        try:
-            from hermes_cli.config import load_config
-            val = load_config().get("file_read_max_chars")
-        except Exception:
-            val = None
-        valid = isinstance(val, (int, float)) and val > 0
-        _max_read_chars_cached = int(val) if valid else _DEFAULT_MAX_READ_CHARS
-    return _max_read_chars_cached
+    """Return ``file_read_max_chars`` from config.yaml (default on missing/invalid). No module
+    cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
+    would pin the launch profile's value under the multiplexed gateway."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        val = load_config_readonly().get("file_read_max_chars")
+    except Exception:
+        val = None
+    valid = isinstance(val, (int, float)) and val > 0
+    return int(val) if valid else _DEFAULT_MAX_READ_CHARS
 
 
 def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:

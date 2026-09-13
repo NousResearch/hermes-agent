@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret, is_multiplex_active
 from tools.registry import tool_error
 
@@ -449,8 +449,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return
         if self._write_thread and self._write_thread.is_alive():
             self._write_thread.join(timeout=2.0)
-        self._write_thread = threading.Thread(
-            target=_quietly, daemon=False, name="supermemory-memory-write",
+        self._write_thread = spawn_context_thread(
+            _quietly, daemon=False, name="supermemory-memory-write",
             args=(lambda: self._client.add_memory(content.strip(), metadata={"target": target, "type": "explicit_memory"},
                                                   entity_context=self._entity_context), "Supermemory on_memory_write failed"))
         self._write_thread.start()

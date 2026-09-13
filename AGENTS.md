@@ -252,7 +252,7 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`, `docs/`,
+- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.

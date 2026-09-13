@@ -319,14 +319,13 @@ def test_retry_last_rejects_media_before_db_or_memory_mutation():
 
     assert cli.retry_last() is None
     assert cli.conversation_history is history
-    db.get_messages_as_conversation.assert_not_called()
-    db.rewind_to_message.assert_not_called()
+    db.rewind_user_turn.assert_not_called()
 
 
 def test_retry_last_db_failure_leaves_warm_history_unchanged():
     cli = _make_cli()
     db = MagicMock()
-    db.get_messages_as_conversation.side_effect = OSError("db unavailable")
+    db.rewind_user_turn.side_effect = OSError("db unavailable")
     cli._session_db = db
     history = [
         {"role": "user", "content": "retry me"},

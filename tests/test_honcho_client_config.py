@@ -204,3 +204,53 @@ class TestProfileKeyIsolationWarning:
                 host='hermes', config_path=config_path,
             )
         assert not any('NOT inherited' in r.message for r in caplog.records)
+
+
+def test_save_config_refuses_to_replace_a_file_that_does_not_parse(tmp_path):
+    """A corrupt honcho.json must not be rewritten from the new values alone."""
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text("{ not json")
+    with pytest.raises(ValueError):
+        HonchoMemoryProvider().save_config({"api_key": "hc-test-key"}, str(tmp_path))
+    assert config_path.read_text() == "{ not json"
+
+
+def test_save_config_merges_into_a_parseable_file(tmp_path):
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text(json.dumps({"hosts": {"other": {"apiKey": "keep-me"}}}))
+    HonchoMemoryProvider().save_config({"api_key": "hc-test-key"}, str(tmp_path))
+    data = json.loads(config_path.read_text())
+    assert data["hosts"]["other"]["apiKey"] == "keep-me" and data["api_key"] == "hc-test-key"
+
+
+def test_save_config_holds_the_refresh_locks_so_a_rotation_survives(tmp_path, monkeypatch):
+    """A refresh thread that wants the locks while save_config reads must land after its write, not under it."""
+    import threading
+    from plugins.memory.honcho import oauth
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text(json.dumps({"hosts": {"hermes": {"apiKey": "hch-at-old", "oauth": {"refreshToken": "hch-rt-old"}}}}))
+    rotated = oauth.OAuthCredential("hch-at-new", "hch-rt-new", 10_000, "hermes-desktop", "http://localhost:8000/oauth/token")
+    save_read, rotation_done = threading.Event(), threading.Event()
+    real_read = oauth._read_config_strict
+
+    def read_then_wait(path):
+        raw = real_read(path)
+        if not save_read.is_set():
+            save_read.set()
+            rotation_done.wait(0.5)  # the refresh gets this window; only a held lock keeps it out
+        return raw
+
+    def rotate():
+        save_read.wait(2)
+        with oauth._refresh_lock, oauth._config_refresh_lock(config_path):
+            oauth._persist_credential(config_path, "hermes", rotated)
+        rotation_done.set()
+
+    monkeypatch.setattr(oauth, "_read_config_strict", read_then_wait)
+    thread = threading.Thread(target=rotate)
+    thread.start()
+    HonchoMemoryProvider().save_config({"logging": True}, str(tmp_path))
+    thread.join(2)
+    assert rotation_done.is_set()
+    data = json.loads(config_path.read_text())
+    assert data["hosts"]["hermes"]["apiKey"] == "hch-at-new" and data["logging"] is True

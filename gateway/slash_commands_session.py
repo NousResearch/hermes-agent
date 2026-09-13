@@ -496,8 +496,8 @@ class GatewaySessionCommandsMixin:
 
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells
-        the summariser what to preserve."""
-        from hermes_cli.partial_compress import extract_compress_flags, parse_partial_compress_args
+        the summariser what to preserve. Flags/positional forms are parsed by the shared core."""
+        from agent.conversation_compression_manual import MIN_MESSAGES, parse_compress_args
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
@@ -505,37 +505,25 @@ class GatewaySessionCommandsMixin:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
             return HISTORY_UNREADABLE
-        if not history or len(history) < 4:
+        if not history or len(history) < MIN_MESSAGES:
             return t("gateway.compress.not_enough")
-        # Flags are stripped before positional parsing so they coexist with the boundary-aware
-        # "here [N]" (partial) and focus-topic (full) forms.
-        _raw_args, _preview, _aggressive = extract_compress_flags((event.get_command_args() or "").strip())
-        partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
-        _agg_note = ""
-        if _aggressive:
-            # LLM-free hard truncation would need its own persistence branch outside the guarded
-            # _compress_context rotation machinery — unsupported on this surface.
-            _agg_note = t("gateway.compress.aggressive_unsupported")
-            if not _preview:
-                return _agg_note
-        if _preview:
-            return _compress_preview_reply(history, partial, keep_last, focus_topic, _agg_note)
+        request = parse_compress_args(event.get_command_args() or "")
+        _agg_note = t("gateway.compress.aggressive_unsupported") if request.aggressive else ""
+        if request.aggressive and not request.preview:
+            return _agg_note
+        if request.preview:
+            return _compress_preview_reply(history, request.partial, request.keep_last, request.focus_topic, _agg_note)
         try:
-            return await self._run_manual_compression(source, session_entry, history, partial,
-                                                      keep_last, focus_topic)
+            return await self._run_manual_compression(source, session_entry, history, request)
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
 
-    async def _run_manual_compression(self, source, session_entry, history: list, partial: bool,
-                                      keep_last, focus_topic) -> str:
-        """Build a temporary agent, compress the transcript, persist, and describe the outcome."""
+    async def _run_manual_compression(self, source, session_entry, history: list, request) -> str:
+        """Build a temporary agent, run the shared compress core, persist, and describe the outcome."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.manual_compression_feedback import summarize_manual_compression
-        from agent.model_metadata import estimate_request_tokens_rough
+        from agent.conversation_compression_manual import compress_now, render_compress_result
         from gateway.run import _platform_config_key
-        from hermes_cli.partial_compress import (rejoin_compressed_head_and_tail,
-                                                 split_history_for_partial_compress)
 
         session_key = self._session_key_for_source(source)
         # Platform + stable gateway session key bind this agent (for external context engines) to
@@ -551,13 +539,6 @@ class GatewaySessionCommandsMixin:
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves
         # tool-result pruning and can trip the protect-first/last early-return.
         msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
-        # Partial: only the head is summarized; the tail snaps to a user-turn start so role
-        # alternation holds after rejoin.
-        head, tail = msgs, []
-        if partial:
-            head, tail = split_history_for_partial_compress(msgs, keep_last)
-            if not tail:  # degenerate split — fall back to full compression
-                partial, head = False, msgs
         # Assign, not setdefault (a resolver value would be a stale placeholder); platform only when
         # known so None -> "cli" holds.
         if platform_key is not None:
@@ -566,39 +547,24 @@ class GatewaySessionCommandsMixin:
 
         tmp_agent = await self._build_manual_compression_agent(session_entry.session_id, model, runtime_kwargs)
         try:
-            # Estimate with system prompt + tool schemas (real request pressure); needs the built agent.
-            # Must be computed after tmp_agent is built so _cached_system_prompt/tools are populated. See
-            # #6217.
-            _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
-            _tools = getattr(tmp_agent, "tools", None) or None
-            approx_tokens = estimate_request_tokens_rough(msgs, system_prompt=_sys_prompt, tools=_tools)
-            compressor = tmp_agent.context_compressor
-            if not compressor.has_content_to_compress(head):
-                return t("gateway.compress.nothing_to_do")
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
-            compressed, _ = await self._run_in_executor_with_context(
-                lambda: tmp_agent._compress_context(
-                    head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True,
-                    defer_context_engine_notification=True))
-            # A held compression lock returns unchanged; say so instead of the misleading no-op text.
-            _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
-            if _lock_skipped is True or isinstance(_lock_skipped, str):
-                from agent.manual_compression_feedback import describe_compression_lock_skip
-                return describe_compression_lock_skip(_lock_skipped)
-            if partial and tail:
-                compressed = rejoin_compressed_head_and_tail(compressed, tail)
-            await self._persist_manual_compression(tmp_agent, session_entry, source, compressed)
+            result = await self._run_in_executor_with_context(
+                lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True))
+            if result.status == "nothing_to_do":
+                return t("gateway.compress.nothing_to_do")
+            if result.status != "compressed":
+                return "\n".join(render_compress_result(result))
+            await self._persist_manual_compression(tmp_agent, session_entry, source, result.after_messages)
             finalize_context_engine_compression_notification(tmp_agent, committed=True)
-            new_tokens = estimate_request_tokens_rough(compressed, system_prompt=_sys_prompt, tools=_tools)
-            summary = summarize_manual_compression(msgs, compressed, approx_tokens, new_tokens,
-                                                   compression_state=compressor)
+            compressor = tmp_agent.context_compressor
+            summary = result.summary
         finally:
             finalize_context_engine_compression_notification(tmp_agent, committed=False)
             self._evict_cached_agent(session_key)  # next turn rebuilds the prompt from current files
             # Off-loop + bounded: teardown can block on subprocess/network/SQLite.
             await self._cleanup_agent_resources_off_loop(tmp_agent, context="manual compression")
-        return "\n".join(_manual_compression_reply_lines(summary, compressor, focus_topic))
+        return "\n".join(_manual_compression_reply_lines(summary, compressor, request.focus_topic))
 
     async def _build_manual_compression_agent(self, session_id: str, model, runtime_kwargs: dict):
         """Build the throwaway AIAgent that performs a manual /compress rewrite of *session_id*."""

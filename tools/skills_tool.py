@@ -88,17 +88,11 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
 
 
 def load_env() -> Dict[str, str]:
-    """Load profile-scoped environment variables from HERMES_HOME/.env."""
-    env_path = get_hermes_home() / ".env"
-    env_vars: Dict[str, str] = {}
-    if env_path.exists():
-        # utf-8-sig: a Notepad BOM would otherwise glue U+FEFF onto the first key.
-        with env_path.open(encoding="utf-8-sig", errors="replace") as f:
-            for line in map(str.strip, f):
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.removeprefix("export ").partition("=")
-                    env_vars[key.strip()] = value.strip().strip("\"'")
-    return env_vars
+    """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
+    installs the profile scope, so a captured value never differs from the served one)."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(get_hermes_home() / ".env")
 
 
 def set_secret_capture_callback(callback) -> None:

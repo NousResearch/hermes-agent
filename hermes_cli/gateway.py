@@ -261,12 +261,13 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
+def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress=None) -> bool:
     """SIGUSR1 (drain-aware restart) a gateway PID and wait for exit; False if unsent or it outlived the timeout.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
     ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
-    — pass ``resolve_restart_exit_wait_budget(...)``.
+    — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
+    a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
         return False
@@ -277,10 +278,10 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     except (PermissionError, OSError):
         return False
 
-    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
+    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0), on_progress=on_progress)
 
 
-def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+def _wait_for_pid_exit(pid: int, timeout: float, *, on_progress=None) -> bool:
     """Wait up to ``timeout``s for ``pid`` to exit; True once gone. (``launchctl bootstrap`` fails EIO
     while the previous instance still drains, so teardown callers must wait for the real exit.)"""
     if pid <= 0:
@@ -293,6 +294,8 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
             return True
         if time.monotonic() >= deadline:
             return False
+        if on_progress is not None:
+            on_progress()
         time.sleep(0.5)
 
 
@@ -3414,7 +3417,8 @@ def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
         f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
         f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
     )
-    if not _graceful_restart_via_sigusr1(pid, wait_budget):
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    if not _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
         print(f"⚠ Graceful restart did not complete within {int(wait_budget)}s; forcing a service restart...")
         return "restart"
 
@@ -4240,7 +4244,8 @@ def launchd_restart():
             # surfaces with no other feedback (desktop updater) read silence as "update stuck".
             wait_budget = _get_restart_exit_wait_budget()
             print(f"→ Stopping gateway (PID {pid}) — draining in-flight runs (up to {wait_budget:.0f}s)...")
-            if _graceful_restart_via_sigusr1(pid, wait_budget):
+            from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+            if _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
                 # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
                 # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.
                 if _wait_for_launchd_service_pid(label, pid, timeout=15.0, domain=domain):
@@ -4999,6 +5004,10 @@ def _runtime_health_lines() -> list[str]:
         from gateway.status import parse_active_agents
         count = parse_active_agents(state.get("active_agents"))
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
+        work = state.get("active_work")
+        if isinstance(work, list) and work:
+            from hermes_cli.update_cmd_drain_report import describe_active_work_unit
+            lines.extend(f"     • {describe_active_work_unit(u)}" for u in work if isinstance(u, dict))
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
 

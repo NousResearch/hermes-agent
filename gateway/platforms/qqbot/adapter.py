@@ -39,11 +39,13 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
 logger = logging.getLogger(__name__)
@@ -94,12 +96,13 @@ _STT_PROVIDER_BASE_URLS = {
 _AUDIO_URL_EXTENSIONS = {".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"}
 
 
-class QQAdapter(BasePlatformAdapter):
+class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     """QQ Bot adapter backed by the official QQ Bot WebSocket Gateway + REST API."""
 
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    ALLOW_ALL_ENV_PREFIX = "QQ"
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 
@@ -160,7 +163,7 @@ class QQAdapter(BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
         self._pending_responses: Dict[str, asyncio.Future] = {}  # request/response correlation
-        self._seen_messages: Dict[str, float] = {}
+        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: Dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: Dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
         self._access_token: Optional[str] = None
@@ -178,11 +181,6 @@ class QQAdapter(BasePlatformAdapter):
     @property
     def name(self) -> str:
         return "QQBot"
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """QQBot gates DM/group access at intake via dm_policy/group_policy."""
-        return True
 
     # ── Connection lifecycle ──
 
@@ -230,20 +228,12 @@ class QQAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         self._running = False
         self._mark_disconnected()
-        self._listen_task = await self._cancel_task(self._listen_task)
-        self._heartbeat_task = await self._cancel_task(self._heartbeat_task)
+        await cancel_task(self._listen_task)
+        await cancel_task(self._heartbeat_task)
+        self._listen_task = self._heartbeat_task = None
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
-
-    @staticmethod
-    async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-        """Cancel and await *task* (if any); always returns None for reassignment."""
-        if task:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        return None
 
     async def _close_ws(self) -> None:
         """Close the WebSocket + its aiohttp session (keeps _http_client alive)."""
@@ -588,7 +578,7 @@ class QQAdapter(BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._is_duplicate(msg_id):
+        if not msg_id or self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
@@ -685,6 +675,12 @@ class QQAdapter(BasePlatformAdapter):
             return bool(session_user) and operator == session_user
         return False
 
+    def _update_prompt_session_key(self, event: InteractionEvent, chat: str) -> str:
+        """Session key an update-prompt click is authorized against, built by the ONE key builder so
+        it carries the profile namespace (a hard-coded ``agent:main:`` prefix never matched a
+        multiplexed secondary bot's lane). No participant: ``c2c`` authorizes on chat == operator."""
+        return self._source_session_key(self.build_source(chat_id=chat, chat_type=event.scene))
+
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
         tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
@@ -718,7 +714,7 @@ class QQAdapter(BasePlatformAdapter):
         update_answer = parse_update_prompt_button_data(button_data)
         if update_answer is not None:
             chat = event.group_openid or event.guild_id or event.user_openid
-            if not self._is_authorized_interaction_for_session(event, f"agent:main:qqbot:{event.scene}:{chat}"):
+            if not self._is_authorized_interaction_for_session(event, self._update_prompt_session_key(event, chat)):
                 logger.warning(
                     "[%s] Rejected unauthorized update prompt click (operator=%s)", self._log_tag, event.operator_openid
                 )
@@ -1475,22 +1471,20 @@ class QQAdapter(BasePlatformAdapter):
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
-        """Button-based exec-approval prompt (called by gateway/run.py while the
-        agent blocks on approval); clicks resolve via _default_interaction_dispatch."""
-        del metadata  # QQ has no thread_id / DM targeting overrides.
-        del allow_session  # QQ's 3-button keyboard has no session tier.
-        if smart_denied:
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Keyboard-card approval (called while the agent blocks on approval); clicks resolve via
+        _default_interaction_dispatch. QQ's 3-button keyboard has no session tier and no thread /
+        DM targeting, so only the ``always`` choice and the raw command/reason are used."""
+        description = prompt.description
+        if prompt.smart_denied:
             description += " Owner override applies to this one operation only."
         req = ApprovalRequest(
-            session_key=session_key, title="Execute this command?", description=description,
-            command_preview=command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent=allow_permanent and not smart_denied)
+            session_key=prompt.session_key, title="Execute this command?", description=description,
+            command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent="always" in prompt.choices)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
-        return await self.send_approval_request(chat_id, req, reply_to=self._last_msg_id.get(chat_id))
+        return await self.send_approval_request(
+            prompt.chat_id, req, reply_to=self._last_msg_id.get(prompt.chat_id))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
@@ -1656,35 +1650,7 @@ class QQAdapter(BasePlatformAdapter):
     def _strip_at_mention(content: str) -> str:
         return re.sub(r"^@\S+\s*", "", content.strip())
 
-    def _open_dm_opted_in(self) -> bool:
-        # Both names via the scoped reader: under multiplex os.environ is the DEFAULT profile's
-        # opt-in, which must not open a secondary bot's DMs.
-        truthy = {"true", "1", "yes"}
-        return any(_resolve_qq_secret(name, "").lower() in truthy
-                   for name in ("GATEWAY_ALLOW_ALL_USERS", "QQ_ALLOW_ALL_USERS"))
-
-    def _is_dm_allowed(self, user_id: str) -> bool:
-        if self._dm_policy == "allowlist":
-            return self._entry_matches(self._allow_from, user_id)
-        if self._dm_policy == "open":
-            return self._open_dm_opted_in()
-        return False
-
-    def _is_dm_intake_allowed(self, user_id: str) -> bool:
-        principal = str(user_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "pairing":
-            return True
-        return self._is_dm_allowed(principal)
-
-    def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
-        if self._group_policy == "allowlist":
-            return self._entry_matches(self._group_allow_from, group_id)
-        return self._group_policy == "open"
-
-    @staticmethod
-    def _entry_matches(entries: List[str], target: str) -> bool:
+    def _entry_matches(self, entries: List[str], target: str) -> bool:
         normalized_target = str(target).strip().lower()
         return any(str(e).strip().lower() in ("*", normalized_target) for e in entries)
 
@@ -1696,16 +1662,6 @@ class QQAdapter(BasePlatformAdapter):
             with contextlib.suppress(ValueError, TypeError):
                 return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
         return datetime.now(tz=timezone.utc)
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {k: ts for k, ts in self._seen_messages.items() if ts > cutoff}
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
-        return False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -8,9 +8,9 @@ Both ``_handle_model_switch`` (typed ``/model <name>``) and
 ``_apply_model_switch_result`` (interactive picker) shared the same gap: the
 persistence block wrote ``model.default``/``model.provider`` but never
 touched ``base_url``/``api_mode`` at all. Fix: sync both on every global
-switch, clearing to ``None`` when the resolved result doesn't need them —
-mirroring the already-correct ``tui_gateway/server.py:_persist_model_switch``
-pattern (fixed for #48305).
+switch, clearing to ``None`` when the resolved result doesn't need them — now the
+canonical ``hermes_cli.model_switch.persist_model_selection`` shape shared by every
+surface.
 """
 
 from unittest.mock import MagicMock, patch
@@ -80,10 +80,10 @@ def _run_switch(monkeypatch, result, cmd="/model MiniMax-M3 --global"):
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     saved: dict[str, object] = {}
 
-    def _fake_save(key, value):
+    def _fake_save(path, key, value):
         saved[key] = value
 
-    monkeypatch.setattr(cli_mod, "save_config_value", _fake_save)
+    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", _fake_save)
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
     monkeypatch.setattr(
         "hermes_cli.inventory.load_picker_context",
@@ -105,13 +105,13 @@ def test_global_switch_persists_base_url_and_api_mode(monkeypatch):
 
 
 def test_session_only_switch_does_not_touch_config(monkeypatch):
-    """--session must not call save_config_value at all — persistence stays
+    """--session must not write config.yaml at all — persistence stays
     entirely in-memory."""
     import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     save_calls = []
-    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: save_calls.append(a))
+    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda *a, **k: save_calls.append(a))
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: _make_result())
     monkeypatch.setattr(
         "hermes_cli.inventory.load_picker_context",
@@ -134,10 +134,10 @@ def _run_apply(monkeypatch, result, persist_global=True):
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     saved: dict[str, object] = {}
 
-    def _fake_save(key, value):
+    def _fake_save(path, key, value):
         saved[key] = value
 
-    monkeypatch.setattr(cli_mod, "save_config_value", _fake_save)
+    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", _fake_save)
     cli_mod.HermesCLI._apply_model_switch_result(_StubCLI(), result, persist_global)
     return saved
 

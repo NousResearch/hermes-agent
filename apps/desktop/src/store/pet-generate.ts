@@ -361,8 +361,9 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   // Stream drafts in as the backend finishes each one (pet.generate.progress),
   // so the grid fills live instead of sitting on placeholders until all N land.
   const off =
-    $gateway.get()?.on<PetDraft & { token: string; count: number }>('pet.generate.progress', event => {
-      const draft = event.payload
+    $gateway.get()?.on('pet.generate.progress', event => {
+      // Shared map types this payload as an open record; the pet backend's draft shape is desktop-owned.
+      const draft = event.payload as (PetDraft & { count: number; token: string }) | undefined
 
       // Token-only init event (no draft yet): learn the token immediately so an
       // early Stop can still tell the backend to cancel this run.
@@ -492,8 +493,8 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   const offProgress =
     $gateway
       .get()
-      ?.on<{ event: string; state?: string; done?: string; total?: string }>('pet.hatch.progress', event => {
-        const p = event.payload
+      ?.on('pet.hatch.progress', event => {
+        const p = event.payload as { done?: string; event: string; state?: string; total?: string } | undefined
 
         if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
           return

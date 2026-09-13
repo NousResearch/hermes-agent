@@ -887,7 +887,7 @@ class GatewayAdapterLifecycleMixin:
         default profile owns the single shared listener and a secondary's port-binders are built in
         shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
         from gateway.run import (
-            MultiplexConfigError, _load_gateway_runtime_config,
+            MultiplexConfigError, _load_gateway_config,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
@@ -895,7 +895,7 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_runtime_cfg = _load_gateway_runtime_config()
+            profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
             # This profile's `hooks:` block: start() registered before any profile scope existed.

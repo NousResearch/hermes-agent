@@ -1735,7 +1735,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
-    # pinned by tests/run_agent/test_create_openai_client_reuse.py and
+    # pinned by tests/agent/test_create_openai_client_reuse.py and
     # test_sequential_chats_live.py. What IS shared across those per-client wrappers is the
     # connection pool: ``build_keepalive_http_client`` mounts a process-shared ``HTTPTransport``
     # behind a per-client view whose ``close()`` is a no-op for the pool, so a closed wrapper
@@ -2320,7 +2320,7 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     # character so the rest of the repair pipeline (lowercase / snake_case / fuzzy match) can resolve the
     # cleaned name to a real tool. Crucially we DO NOT split on whitespace: legitimate inputs like "write
     # file" must keep flowing through ``_norm`` -> ``write_file`` (covered by test_space_to_underscore in
-    # tests/run_agent/test_repair_tool_call_name.py). See #33007.
+    # tests/agent/test_repair_tool_call_name.py). See #33007.
     for _xml_sep in ('"', "'", "<", ">"):
         _idx = tool_name.find(_xml_sep)
         if _idx > 0:

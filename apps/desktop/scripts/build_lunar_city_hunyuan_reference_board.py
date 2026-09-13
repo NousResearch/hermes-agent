@@ -236,16 +236,40 @@ def export_board() -> None:
 def strip_render_metadata() -> None:
     """Remove Blender's workstation path and render-stamp chunks from PNG output."""
     sips = shutil.which("sips")
-    if sips is None:
-        return
-    clean = BOARD_RENDER.with_name(f"{BOARD_RENDER.stem}.clean{BOARD_RENDER.suffix}")
-    subprocess.run(
-        [sips, "-s", "format", "png", str(BOARD_RENDER), "--out", str(clean)],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    clean.replace(BOARD_RENDER)
+    if sips is not None:
+        clean = BOARD_RENDER.with_name(f"{BOARD_RENDER.stem}.clean{BOARD_RENDER.suffix}")
+        subprocess.run(
+            [sips, "-s", "format", "png", str(BOARD_RENDER), "--out", str(clean)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        clean.replace(BOARD_RENDER)
+
+    # Blender's textual PNG chunks can contain the absolute .blend path. The
+    # stdlib fallback keeps this privacy guarantee on Linux and Windows where
+    # Apple's ``sips`` utility is unavailable.
+    raw = BOARD_RENDER.read_bytes()
+    signature = b"\x89PNG\r\n\x1a\n"
+    if not raw.startswith(signature):
+        raise ValueError(f"Not a PNG: {BOARD_RENDER}")
+    metadata_chunks = {b"tEXt", b"zTXt", b"iTXt", b"eXIf"}
+    offset = len(signature)
+    cleaned = bytearray(signature)
+    while offset < len(raw):
+        if offset + 12 > len(raw):
+            raise ValueError(f"Truncated PNG chunk in {BOARD_RENDER}")
+        length = int.from_bytes(raw[offset:offset + 4], "big")
+        end = offset + 12 + length
+        if end > len(raw):
+            raise ValueError(f"Truncated PNG payload in {BOARD_RENDER}")
+        chunk_type = raw[offset + 4:offset + 8]
+        if chunk_type not in metadata_chunks:
+            cleaned.extend(raw[offset:end])
+        offset = end
+    scrubbed = BOARD_RENDER.with_name(f"{BOARD_RENDER.stem}.scrubbed{BOARD_RENDER.suffix}")
+    scrubbed.write_bytes(cleaned)
+    scrubbed.replace(BOARD_RENDER)
 
 
 def main() -> None:

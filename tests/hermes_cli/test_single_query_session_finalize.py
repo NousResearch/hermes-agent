@@ -108,6 +108,9 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
 
         def chat(self, query, images=None):
             calls.append(("chat", query, images))
+            # Production chat() retains the turn result; the one-shot route reads it
+            # for the process exit code.
+            self._last_turn_result = {"completed": True, "failed": False}
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):
@@ -121,8 +124,12 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
 
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
+    # A successful non-quiet one-shot turn still exits 0; the session is finalized on
+    # the way out (the exit lives inside the try/finally).
+    assert exc_info.value.code == 0
     assert calls == [
         ("claim", "cli", False),
         "query-label",

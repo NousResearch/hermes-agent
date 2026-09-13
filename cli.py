@@ -2537,6 +2537,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
     # _pending_input, so it is enqueued only after the fresh queue exists.
     _seeded_first_message: Optional["_SeededQueryMessage"] = None
+    # Last turn's result dict (set by chat()); one-shot callers read it for the
+    # automation exit code. Optionally-typed on partially built instances.
+    _last_turn_result: Optional[dict] = None
     # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
     disabled_toolsets: Optional[List[str]] = None
 
@@ -4111,19 +4114,38 @@ def _run_quiet_single_query(cli, effective_query):
 
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
-    # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
-    # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
-    # the task without counting a failure (a quota window must not trip the breaker).
-    _exit_code = 0
-    if isinstance(result, dict) and result.get("failed"):
-        _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
-            try:
-                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
-                _exit_code = _RL_CODE
-            except Exception:
-                _exit_code = 1
-    sys.exit(_exit_code)
+    # Exit code 0/1 for automation wrappers, EX_TEMPFAIL for a kanban quota wall.
+    # Shared with the non-quiet one-shot route so BOTH propagate a failed turn —
+    # rc=0 on a failed turn reads as a clean exit to the kanban dispatcher.
+    sys.exit(_single_query_exit_code(result))
+
+
+def _single_query_exit_code(result) -> int:
+    """Automation exit code for one one-shot turn.
+
+    A failed turn MUST NOT exit 0: the kanban dispatcher books ``rc=0`` on a
+    still-``running`` task as a *protocol violation* ("worker exited cleanly without
+    calling kanban_complete or kanban_block"), which hides the real cause and burns the
+    violation retry budget on a provider crash. Shared by the quiet (``-Q``) and
+    non-quiet (``chat -q`` — the shape the dispatcher spawns) one-shot routes.
+
+    Kanban workers that failed purely on rate-limit/billing exit with the EX_TEMPFAIL
+    sentinel so the dispatcher releases the task without counting a failure (a quota
+    window must not trip the breaker).
+    """
+    if not (isinstance(result, dict) and result.get("failed")):
+        return 0
+    if (
+        os.environ.get("HERMES_KANBAN_TASK")
+        and result.get("failure_reason") in ("rate_limit", "billing")
+    ):
+        try:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
+
+            return _RL_CODE
+        except Exception:
+            return 1
+    return 1
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -4441,6 +4463,13 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        # Same exit-code contract as the -Q route: a failed turn must never exit 0
+        # (the kanban dispatcher reads that as a protocol violation). ``chat`` returns
+        # None when credentials/agent init failed before any turn ran — that is a 1 too.
+        _turn_result = getattr(cli, "_last_turn_result", None)
+        if _turn_result is None:
+            sys.exit(1)
+        sys.exit(_single_query_exit_code(_turn_result))
     finally:
         _finalize_single_query(cli)
 

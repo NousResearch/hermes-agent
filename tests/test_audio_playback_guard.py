@@ -29,8 +29,10 @@ test from re-setting the variable mid-test.
 """
 
 import os
+import subprocess
 import sys
 import types
+import wave
 
 import pytest
 
@@ -124,3 +126,83 @@ def test_bypass_marker_restores_the_real_speak_text():
     import hermes_cli.voice as voice
 
     assert voice.speak_text.__name__ == "speak_text"
+
+
+def _write_silent_wav(path):
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 160)
+
+
+def _force_system_player_path(monkeypatch, vm, which_result):
+    """Steer ``play_audio_file`` to the afplay spawn regardless of host."""
+    monkeypatch.setattr(vm, "_sounddevice_output_allowed", lambda: False)
+    monkeypatch.setattr(vm.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(vm.shutil, "which", lambda name: which_result)
+
+
+def test_system_player_spawn_is_neutralised(tmp_path, monkeypatch):
+    """Third route (2026-09-04 incident): beeps and "Hello world." on macOS.
+
+    ``play_beep`` and ``tools.tts_tool.stream_tts_to_speaker`` never touch
+    ``hermes_cli.voice`` — both end in ``tools.voice_mode.play_audio_file``,
+    which on macOS spawns ``afplay``. Drive that exact path with
+    ``subprocess.Popen`` replaced by a *subclass* of the real one (so the
+    guard still classes it as a real spawn, exactly like the live-system
+    guard's wrapper) whose constructor raises. Unguarded, that raise is
+    swallowed by the player loop and ``play_audio_file`` reports ``False``;
+    guarded, the spawn never happens and it reports ``True``.
+    """
+    import tools.voice_mode as vm
+
+    assert vm._spawn_system_player.__name__ == "_silent_spawn_system_player"
+
+    class _ExplodingPopen(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("real system-player spawn reached subprocess.Popen")
+
+    monkeypatch.setattr(subprocess, "Popen", _ExplodingPopen)
+
+    wav = tmp_path / "silent.wav"
+    _write_silent_wav(wav)
+    _force_system_player_path(monkeypatch, vm, "/usr/bin/afplay")
+
+    assert vm.play_audio_file(str(wav)) is True
+
+
+def test_system_player_guard_hands_through_to_a_test_stubbed_popen(tmp_path, monkeypatch):
+    """Tests that stub ``subprocess.Popen`` to assert on argv/env must keep
+    seeing the spawn — the guard defers to them instead of swallowing it."""
+    import tools.voice_mode as vm
+
+    seen = []
+
+    class _Done:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def _recording_popen(cmd, **kwargs):
+        seen.append((list(cmd), kwargs))
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "Popen", _recording_popen)
+
+    wav = tmp_path / "silent.wav"
+    _write_silent_wav(wav)
+    _force_system_player_path(monkeypatch, vm, "/usr/bin/afplay")
+
+    assert vm.play_audio_file(str(wav)) is True
+    assert seen and seen[0][0][0] == "afplay"
+    assert "env" in seen[0][1]
+
+
+@pytest.mark.real_audio_playback
+def test_bypass_marker_restores_the_real_system_player_spawn():
+    """Identity only — calling it would start a real player."""
+    import tools.voice_mode as vm
+
+    assert vm._spawn_system_player.__name__ == "_spawn_system_player"

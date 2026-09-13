@@ -176,7 +176,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const previousAuthority = executionAuthorities.current.get(authorityKey)
 
-      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, payload)) {return}
+      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, event)) {return}
 
       const authority = executionAuthorities.current.get(authorityKey)
 

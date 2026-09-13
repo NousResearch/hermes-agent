@@ -30,6 +30,10 @@ export type GatewayEventName =
 
 export interface GatewayEvent<P = unknown> {
   payload?: P
+  /** Owner execution stamp on canonical gateways: the integer runtime epoch and
+   * the claimed generation, spread onto the params beside `type`/`payload`. */
+  authority_epoch?: number
+  execution_generation?: number
   /** Renderer-side source tag added by the Desktop gateway registry. */
   profile?: string
   /** Registry connection whose socket delivered the event (renderer-side tag;

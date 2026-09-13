@@ -1,0 +1,277 @@
+{
+ "_generated_by": "tests/gateway/fixtures/execution_frames_capture.py",
+ "epoch1": {
+  "authority_epoch": 1,
+  "frames": [
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "type": "session.info",
+     "session_id": "shared",
+     "payload": {
+      "stored_session_id": "shared",
+      "pending": [
+       {
+        "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+        "ref": {
+         "profile_id": "p",
+         "session_id": "shared"
+        },
+        "sequence": 1,
+        "status": "queued",
+        "outcome": null,
+        "authority_epoch": 1,
+        "execution_generation": null,
+        "input_id": "epoch1",
+        "text": "epoch1"
+       }
+      ],
+      "desktop_protocol": "hermes-gateway-v1",
+      "running": false,
+      "execution_generation": 0,
+      "revision": 0
+     },
+     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "seq": 1
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 1,
+     "execution_generation": 1,
+     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "type": "message.start",
+     "session_id": "shared",
+     "payload": {},
+     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "seq": 2
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 1,
+     "execution_generation": 1,
+     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "type": "session.info",
+     "session_id": "shared",
+     "payload": {
+      "stored_session_id": "shared",
+      "pending": [
+       {
+        "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+        "ref": {
+         "profile_id": "p",
+         "session_id": "shared"
+        },
+        "sequence": 1,
+        "status": "started",
+        "outcome": null,
+        "authority_epoch": 1,
+        "execution_generation": 1,
+        "input_id": "epoch1",
+        "text": "epoch1"
+       }
+      ],
+      "desktop_protocol": "hermes-gateway-v1",
+      "running": true,
+      "execution_generation": 1,
+      "revision": 0
+     },
+     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "seq": 3
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 1,
+     "execution_generation": 1,
+     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "type": "session.info",
+     "session_id": "shared",
+     "payload": {
+      "stored_session_id": "shared",
+      "pending": [],
+      "desktop_protocol": "hermes-gateway-v1",
+      "running": false,
+      "execution_generation": 1,
+      "revision": 1
+     },
+     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "seq": 4
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 1,
+     "execution_generation": 1,
+     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "type": "message.complete",
+     "session_id": "shared",
+     "payload": {
+      "text": "answer:epoch1",
+      "content": "answer:epoch1",
+      "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+      "outcome": "completed"
+     },
+     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "seq": 5
+    }
+   }
+  ]
+ },
+ "epoch2": {
+  "authority_epoch": 2,
+  "frames": [
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "type": "session.info",
+     "session_id": "shared",
+     "payload": {
+      "stored_session_id": "shared",
+      "pending": [
+       {
+        "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+        "ref": {
+         "profile_id": "p",
+         "session_id": "shared"
+        },
+        "sequence": 2,
+        "status": "queued",
+        "outcome": null,
+        "authority_epoch": 2,
+        "execution_generation": null,
+        "input_id": "epoch2",
+        "text": "epoch2"
+       }
+      ],
+      "desktop_protocol": "hermes-gateway-v1",
+      "running": false,
+      "execution_generation": 1,
+      "revision": 1
+     },
+     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "seq": 1
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 2,
+     "execution_generation": 2,
+     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "type": "message.start",
+     "session_id": "shared",
+     "payload": {},
+     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "seq": 2
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 2,
+     "execution_generation": 2,
+     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "type": "session.info",
+     "session_id": "shared",
+     "payload": {
+      "stored_session_id": "shared",
+      "pending": [
+       {
+        "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+        "ref": {
+         "profile_id": "p",
+         "session_id": "shared"
+        },
+        "sequence": 2,
+        "status": "started",
+        "outcome": null,
+        "authority_epoch": 2,
+        "execution_generation": 2,
+        "input_id": "epoch2",
+        "text": "epoch2"
+       }
+      ],
+      "desktop_protocol": "hermes-gateway-v1",
+      "running": true,
+      "execution_generation": 2,
+      "revision": 1
+     },
+     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "seq": 3
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 2,
+     "execution_generation": 2,
+     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "type": "session.info",
+     "session_id": "shared",
+     "payload": {
+      "stored_session_id": "shared",
+      "pending": [],
+      "desktop_protocol": "hermes-gateway-v1",
+      "running": false,
+      "execution_generation": 2,
+      "revision": 2
+     },
+     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "seq": 4
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 2,
+     "execution_generation": 2,
+     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "type": "message.complete",
+     "session_id": "shared",
+     "payload": {
+      "text": "answer:epoch2",
+      "content": "answer:epoch2",
+      "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+      "outcome": "completed"
+     },
+     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "seq": 5
+    }
+   }
+  ],
+  "idle_mutation_frames": [
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "type": "session.updated",
+     "session_id": "shared",
+     "payload": {
+      "session_id": "shared",
+      "revision": 3,
+      "operation": "rename",
+      "title": "Renamed while idle"
+     },
+     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "seq": 6
+    }
+   }
+  ]
+ }
+}

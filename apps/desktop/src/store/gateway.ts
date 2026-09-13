@@ -1320,7 +1320,7 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
   const key = turnLeaseKey(scope, sessionId)
 
-  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event.payload as Record<string, unknown> | undefined)) {return}
+  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {return}
 
   if (event.type === 'message.start' || (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)) {
     // The gateway emits settled session.info before immediately chaining a

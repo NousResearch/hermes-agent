@@ -214,6 +214,8 @@ class _Heartbeat:
         # activity_ts) all froze; thresholds differ idle vs in-tool.
         self.last_seen = {"iter": 0, "tool": None, "ts": None, "stale": 0}
         self.handle = None
+        self.stale = threading.Event()
+        self.stale_after_seconds: Optional[float] = None
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -251,11 +253,15 @@ class _Heartbeat:
             else:
                 last_seen["stale"] += 1
             if last_seen["stale"] >= (_HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE):
+                stale_cycles = last_seen["stale"]
+                from tools.delegate_tool import _HEARTBEAT_INTERVAL
+                self.stale_after_seconds = stale_cycles * _HEARTBEAT_INTERVAL
+                self.stale.set()
                 logger.warning(
-                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — stopping heartbeat",
-                    task_index, last_seen["stale"], child_tool or "<none>",
+                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — abandoning pending run",
+                    task_index, stale_cycles, child_tool or "<none>",
                 )
-                return False  # stop touching parent, let gateway timeout fire
+                return False
             if child_tool:
                 desc = f"delegate_task: subagent running {child_tool} (iteration {child_iter}/{child_max})"
             elif child_summary.get("last_activity_desc", ""):
@@ -629,11 +635,13 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
-    def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
+    def await_child(self, heartbeat: _Heartbeat) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
         close_deferred)`` on timeout/exception.
 
-        Hard timeout is off by default (``result(timeout=None)``; stuck children are the heartbeat's job). Daemon
+        A configured hard timeout and the activity heartbeat both bound the wait. The heartbeat's stale event is
+        essential for finite sessions: unlike a gateway turn they have no outer inactivity watchdog, so merely
+        stopping parent activity updates leaves the session lease held forever. Daemon
         worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join. The
         worker installs a non-interactive approval callback (deny/approve per delegation.subagent_auto_approve) so
         dangerous-command prompts never fall back to ``input()`` and deadlock the parent TUI. On failure: steer
@@ -661,8 +669,29 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        timeout_deadline = time.monotonic() + child_timeout if child_timeout is not None else None
+        stale_watchdog = False
         try:
-            return future.result(timeout=child_timeout), None, False
+            while True:
+                if future.done():
+                    return future.result(), None, False
+                if heartbeat.stale.is_set():
+                    stale_watchdog = True
+                    raise FuturesTimeoutError()
+                wait_seconds = 0.5
+                if timeout_deadline is not None:
+                    remaining = timeout_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise FuturesTimeoutError()
+                    wait_seconds = min(wait_seconds, remaining)
+                try:
+                    return future.result(timeout=wait_seconds), None, False
+                except FuturesTimeoutError:
+                    # A child may itself raise TimeoutError. Once the Future is done, re-read it so the outer
+                    # exception path reports that child error instead of mistaking it for this polling slice.
+                    if future.done():
+                        return future.result(), None, False
+                    continue
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
         finally:
@@ -671,7 +700,7 @@ class _ChildRun:
 
         _late_pending_steer = self.close_steering()
         _signal_child_stop(child)
-        is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
+        is_timeout = stale_watchdog or isinstance(exc, (FuturesTimeoutError, TimeoutError))
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
         child_api_calls = 0
@@ -692,6 +721,13 @@ class _ChildRun:
                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
         if not is_timeout:
             _err = str(exc)
+        elif stale_watchdog:
+            stale_after = heartbeat.stale_after_seconds
+            _err = (
+                "Subagent stopped making progress"
+                + (f" for {stale_after:g}s" if stale_after is not None else "")
+                + f" after {child_api_calls} API call(s); the pending worker was abandoned."
+            )
         elif before_first_call:
             _err = (
                 f"Subagent timed out after {child_timeout}s without making any API call — the child never reached its "
@@ -708,9 +744,12 @@ class _ChildRun:
         _error_entry = {
             "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
-            "timeout_seconds": child_timeout if is_timeout else None,
+            "timeout_seconds": child_timeout if is_timeout and not stale_watchdog else None,
             "timed_out_after_seconds": duration if is_timeout else None,
-            "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
+            "timeout_phase": (
+                "stale_after_llm_calls" if stale_watchdog else
+                "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None
+            ),
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }

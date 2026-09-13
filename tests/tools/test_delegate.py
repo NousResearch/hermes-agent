@@ -1451,6 +1451,46 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertEqual(len(touch_calls), count_after,
                          "Heartbeat continued firing after child completed")
 
+    def test_stale_heartbeat_releases_synchronous_delegate_wait(self):
+        """A frozen child must return a timeout result instead of holding a finite session lease forever."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        parent._touch_activity = lambda _desc: None
+        release = threading.Event()
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 2,
+            "max_iterations": 50,
+            "last_activity_desc": "final response persisted",
+            "last_activity_ts": 1000.0,
+        }
+
+        def wedged_after_final_response(**_kwargs):
+            release.wait(5)
+            return {"final_response": "done", "completed": True, "api_calls": 2}
+
+        child.run_conversation.side_effect = wedged_after_final_response
+        try:
+            with (
+                patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.01),
+                patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+                patch("tools.delegate_tool._get_child_timeout", return_value=None),
+            ):
+                entry = _run_single_child(
+                    task_index=0,
+                    goal="Test stalled finalization",
+                    child=child,
+                    parent_agent=parent,
+                )
+
+            self.assertEqual(entry["status"], "timeout")
+            self.assertEqual(entry["timeout_phase"], "stale_after_llm_calls")
+            self.assertIn("stopped making progress", entry["error"])
+        finally:
+            release.set()
+
     def test_heartbeat_does_not_trip_idle_stale_while_inside_tool(self):
         """A long-running tool (no iteration advance, but current_tool set)
         must not be flagged stale at the idle threshold.

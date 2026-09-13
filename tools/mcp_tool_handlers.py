@@ -57,6 +57,19 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
     return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
+def _trust_approval_key(server_name: str, tool_name: str) -> str:
+    """Approval key a session/always answer to the trust gate is kept under: one (server, tool) pair,
+    so allowing one write tool never covers the server's others. Session entries are per chat;
+    always entries land in the active profile's ``command_allowlist``."""
+    return f"mcp:{server_name}/{tool_name}"
+
+
+def _trust_granted(server_name: str, tool_name: str) -> bool:
+    from tools.approval import is_approved
+    from tools.approval_context import get_current_session_key
+    return is_approved(get_current_session_key(), _trust_approval_key(server_name, tool_name))
+
+
 def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
     limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
@@ -67,7 +80,8 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
     key = _server_key(server_name)
     trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
-    gated = trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+             and not _trust_granted(server_name, tool_name))
     charge = None
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
         from tools.approval_context import get_current_session_key
@@ -103,8 +117,12 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
         tail = "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
         # The limit notice leads: the messaging gateway's text fallback keeps only the first ~200 characters.
         message = " ".join([head, *(["This call goes past the chat's spend limit."] if over else []), *extra, tail])
+        # Over the limit the answer covers this call only: a remembered trust grant must not
+        # pre-approve the next over-limit call.
+        remember_key = None if over else _trust_approval_key(server_name, tool_name)
+        scope = "once" if over else "once, for this session, or always"
         description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
-                       f"Approve to run '{tool_name}' once, or deny to block it.")
+                       f"Approve to run '{tool_name}' {scope}, or deny to block it.")
         title = f"MCP server '{server_name}' is asking"
     else:
         message = " ".join([f"MCP tool '{tool_name}' on server '{server_name}' would take this chat past its "
@@ -112,9 +130,11 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
         description = (f"Server '{server_name}' declares a spend limit per chat. Approve to run '{tool_name}' "
                        f"once (every further paid call in this chat asks again), or deny to block it.")
         title = f"MCP server '{server_name}' spend limit"
+        remember_key = None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
-        answer = request_elicitation_consent(message, description, surface=f"mcp-trust/{server_name}", title=title)
+        answer = request_elicitation_consent(message, description, surface=f"mcp-trust/{server_name}", title=title,
+                                            remember_key=remember_key)
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
         if over and charge is not None:

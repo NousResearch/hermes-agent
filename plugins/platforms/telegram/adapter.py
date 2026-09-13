@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, Tuple
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -378,6 +378,14 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     HELD_INBOUND_MAX = 64  # inbound events held across a disconnect window; oldest dropped first
     _GENERAL_TOPIC_THREAD_ID = "1"
+    _DM_TOPIC_LANE_TTL_SECONDS = 300.0  # stale-ish lane still beats the plain-DM default (#109527)
+    _DM_TOPIC_LANE_MAX_ENTRIES = 2000
+    # Only these lose their topic stamp; text/command/location always carry one, so recalling a
+    # lane for them would misroute an ordinary stamped-or-default message into a stale topic (#109527).
+    _DM_TOPIC_LANE_MEDIA_TYPES = frozenset({
+        MessageType.PHOTO, MessageType.VIDEO, MessageType.AUDIO, MessageType.VOICE,
+        MessageType.DOCUMENT, MessageType.STICKER,
+    })
     # send() can race a disconnect blip; failing "Not connected" (retryable=False) parks the answer in the
     # delivery ledger until next boot, so wait briefly for _bot (or a replacement adapter) instead.
     _RECONNECT_WAIT_SECONDS = 15.0
@@ -500,6 +508,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded: bool = False
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: Dict[str, int] = {}  # topic_name -> message_thread_id
+        # Last topic lane a (chat, user) was seen in, keyed by "chat_id:user_id" -> (thread_id, monotonic
+        # timestamp). Inbound media in a private-chat topic can arrive with no topic stamp at all
+        # (message_thread_id/is_topic_message/direct_messages_topic all absent) while text from the same
+        # topic always carries it; stamp-less media inherits the last stamped lane instead of falling
+        # through to the chat's default lane (#109527).
+        self._dm_topic_lanes: Dict[str, Tuple[str, float]] = {}
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
         self._forum_lock = asyncio.Lock()
         # Status indicator: bot short description "Online"/"Offline" on connect/clean disconnect. Off by
@@ -5169,6 +5183,31 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         return cls._GENERAL_TOPIC_THREAD_ID if is_forum_group else None
 
+    def _remember_dm_topic_lane(self, lane_key: str, thread_id: str) -> None:
+        """Record the topic lane a private-chat (chat_id, user_id) pair was last seen in, so stamp-less
+        media can inherit it (#109527). Bounded to ``_DM_TOPIC_LANE_MAX_ENTRIES``, oldest evicted first."""
+        # Some unit tests build a TelegramAdapter via object.__new__() and set only the attributes their
+        # scenario touches, skipping __init__ entirely — lazy-init keeps this method safe against those.
+        lanes = self.__dict__.setdefault("_dm_topic_lanes", {})
+        lanes.pop(lane_key, None)  # re-insert to keep insertion order == recency
+        lanes[lane_key] = (thread_id, time.monotonic())
+        while len(lanes) > self._DM_TOPIC_LANE_MAX_ENTRIES:
+            lanes.pop(next(iter(lanes)))
+
+    def _recall_dm_topic_lane(self, lane_key: str) -> Optional[str]:
+        """Last topic lane seen for ``lane_key`` within the TTL window, or ``None``."""
+        lanes = self.__dict__.get("_dm_topic_lanes")
+        if not lanes:
+            return None
+        entry = lanes.get(lane_key)
+        if entry is None:
+            return None
+        thread_id, seen_at = entry
+        if time.monotonic() - seen_at > self._DM_TOPIC_LANE_TTL_SECONDS:
+            lanes.pop(lane_key, None)
+            return None
+        return thread_id
+
     # Decides only whether a FOREIGN @handle is bot-shaped; our own handle is matched by identity, never
     # shape (collectible/Fragment bot usernames need not end in "bot").
     _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
@@ -6326,6 +6365,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # (message_thread_id=None) normalize to the General-topic id so replies route back to General
         # (#22423).
         thread_id_str = self._effective_message_thread_id(message)
+        if chat_type == "dm":
+            # Inbound DM-topic media can arrive with NO topic stamp at all (message_thread_id,
+            # is_topic_message and direct_messages_topic all absent), while text from the same topic
+            # always carries one. Without inheriting the sender's last stamped lane, stamp-less media
+            # falls into the chat's default lane instead of the topic it was actually sent from (#109527).
+            lane_key = f"{chat.id}:{user.id if user else chat.id}"
+            if thread_id_str is not None:
+                self._remember_dm_topic_lane(lane_key, thread_id_str)
+            elif msg_type in self._DM_TOPIC_LANE_MEDIA_TYPES:
+                thread_id_str = self._recall_dm_topic_lane(lane_key)
         chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
         has_full_name = hasattr(chat, "full_name")
         if user:

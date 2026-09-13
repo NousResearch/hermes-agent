@@ -38,6 +38,8 @@ def validate_toolperf_report(report: Mapping[str, object]) -> list[str]:
             if not isinstance(value, Mapping):
                 errors.append(f"arm_model_provenance.{arm}_must_be_mapping")
             else:
+                if value != provenance:
+                    errors.append(f"arm_model_provenance.{arm}_differs_from_report")
                 for key in ("model", "provider"):
                     if not isinstance(value.get(key), str) or not value[key].strip():
                         errors.append(f"arm_model_provenance.{arm}.{key}_must_be_nonempty_string")

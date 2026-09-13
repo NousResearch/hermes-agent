@@ -25,7 +25,17 @@ fi
 
 PY=${PYTHON:-python3}
 EVAL="$(cd "$(dirname "$0")" && pwd)/ab_eval.py"
-export ABEVAL_ROOT=${ABEVAL_ROOT:-$PWD/abeval-workspace}
+export ABEVAL_ROOT=${ABEVAL_ROOT:-"${TMPDIR:-/tmp}/hermes-abeval-workspace"}
+"$PY" - "$EVAL" "$BASE" "$FIXES" <<'PYTHON'
+import runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+harness = runpy.run_path(sys.argv[1])
+for source in sys.argv[2:]:
+    root, _ = harness["_resolve_clean_source"](source)
+    if harness["ROOT"] == root or root in harness["ROOT"].parents:
+        raise SystemExit("evaluation workspace must be outside both evaluated source trees")
+PYTHON
 
 for model in "${MODELS[@]}"; do
   echo "=== $model / baseline ==="

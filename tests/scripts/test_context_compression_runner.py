@@ -106,6 +106,7 @@ def test_runner_bounds_harness_timeout(tmp_path: Path) -> None:
     harness = tmp_path / "harness"
     harness.mkdir()
     _git_root(root)
+    (tmp_path / "out.json").write_text('{"status":"pass"}')
     result = subprocess.run(
         [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", str(root),
          "--output", str(tmp_path / "out.json"), "--timeout-seconds", "0.1",
@@ -115,3 +116,5 @@ def test_runner_bounds_harness_timeout(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "timed out" in result.stderr
+
+    assert not (tmp_path / "out.json").exists()

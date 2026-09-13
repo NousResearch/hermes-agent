@@ -59,6 +59,7 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    args.output.unlink(missing_ok=True)
     hermes_root = args.hermes_root.expanduser().resolve()
     harness = args.harness.expanduser().resolve()
     command = list(args.command)
@@ -102,7 +103,9 @@ def main() -> int:
     if errors:
         raise SystemExit("invalid compression report: " + ", ".join(errors))
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    pending_output = args.output.with_name(args.output.name + ".pending")
+    pending_output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    pending_output.replace(args.output)
     return 0 if report.get("status") == "pass" else 1
 
 

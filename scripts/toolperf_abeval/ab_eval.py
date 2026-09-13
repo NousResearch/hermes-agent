@@ -17,7 +17,7 @@ Usage:
   python ab_eval.py report --models MODEL1,MODEL2
 
 Environment:
-  ABEVAL_ROOT    working/results root   (default: ./abeval-workspace)
+  ABEVAL_ROOT    working/results root   (default: system temporary directory/hermes-abeval-workspace)
   ABEVAL_HOME    HERMES_HOME for runs   (default: $ABEVAL_ROOT/home)
                  Must be a configured Hermes home with credentials for the
                  models under test. See README.md for a minimal setup.
@@ -36,13 +36,14 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 
 from report_contract import validate_toolperf_report
 
-ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
+ROOT = Path(os.environ.get("ABEVAL_ROOT", str(Path(tempfile.gettempdir()) / "hermes-abeval-workspace"))).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
 _BATTERY_MANIFEST = "manifest.json"
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -182,7 +183,11 @@ def _model_provenance(model: str) -> dict[str, str]:
     )
     provider_config = {}
     if isinstance(config, Mapping) and isinstance(config.get("providers"), Mapping):
-        provider_config = config["providers"].get(provider, {})
+        # Include both runtime configuration views, including aliases and legacy entries.
+        provider_config = {"providers": config["providers"],
+                           "custom_providers": config.get("custom_providers", [])}
+    elif isinstance(config, Mapping):
+        provider_config = {"custom_providers": config.get("custom_providers", [])}
     payload = _safe_config(
         {"model": model, "provider": provider, "model_config": model_config,
          "provider_config": provider_config}
@@ -224,6 +229,9 @@ def _resolve_clean_source(pythonpath: str) -> tuple[Path, str]:
 
 
 def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
+    source_root, source_sha = _resolve_clean_source(pythonpath)
+    if ROOT == source_root or source_root in ROOT.parents:
+        raise SystemExit("evaluation workspace must be outside the evaluated source tree")
     resdir = ROOT / "results" / model.replace("/", "_") / arm
     resdir.mkdir(parents=True, exist_ok=True)
     manifest_path = ROOT / "results" / model.replace("/", "_") / _BATTERY_MANIFEST
@@ -235,7 +243,6 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     else:
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     meta_path = resdir / "meta.jsonl"
-    source_root, source_sha = _resolve_clean_source(pythonpath)
     model_provenance = _model_provenance(model)
     evaluator_provenance = _evaluator_provenance()
     done = set()
@@ -251,7 +258,13 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             raise SystemExit(
                 f"evaluation results are bound to another or unknown source revision: {meta_path}"
             )
+        if any(row.get("model_provenance") != model_provenance or
+               row.get("evaluator_provenance") != evaluator_provenance
+               for row in existing_rows):
+            raise SystemExit("evaluation resume provenance mismatch")
         done = {row["run_id"] for row in existing_rows}
+        if len(done) != len(existing_rows):
+            raise SystemExit("duplicate evaluation run rows")
     for rep in range(reps):
         for name in TASKS:
             if only and name not in only:
@@ -332,16 +345,23 @@ def score_run(atof: Path):
         lines = atof.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
-    valid_events = 0
+    open_scopes = Counter()
     for line in lines:
         try:
             ev = json.loads(line)
         except ValueError:
-            continue
+            return None
         if not isinstance(ev, dict):
-            continue
-        valid_events += 1
+            return None
         k, c, sc = ev.get("kind"), ev.get("category"), ev.get("scope_category")
+        if k == "scope":
+            identity = (c, ev.get("scope_id", ev.get("name")))
+            if sc == "start":
+                open_scopes[identity] += 1
+            elif sc == "end":
+                open_scopes[identity] -= 1
+                if open_scopes[identity] < 0:
+                    return None
         if k == "scope" and c == "llm" and sc == "end":
             llm += 1
         elif k == "scope" and c == "tool" and sc == "start":
@@ -362,7 +382,7 @@ def score_run(atof: Path):
                 last_err_tool = ev.get("name")
             else:
                 last_err_tool = None
-    if not valid_events:
+    if not llm or any(open_scopes.values()):
         return None
     return {"llm": llm, "tools": tools, "errs": errs,
             "retries": retries, "kb": result_bytes // 1024}
@@ -370,6 +390,8 @@ def score_run(atof: Path):
 
 def report(models):
     all_pass = True
+    for model in models:
+        (ROOT / "results" / model.replace("/", "_") / "report.json").unlink(missing_ok=True)
     for model in models:
         mdir = ROOT / "results" / model.replace("/", "_")
         print(f"\n================ MODEL: {model} ================")
@@ -477,8 +499,8 @@ def report(models):
         for arm in ("baseline", "fixes"):
             meta_path = mdir / arm / "meta.jsonl"
             rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()] if meta_path.exists() else []
-            observed[arm] = {(row.get("task"), row.get("rep")) for row in rows}
-        complete = bool(expected) and all(observed[arm] == expected for arm in ("baseline", "fixes"))
+            observed[arm] = Counter((row.get("task"), row.get("rep")) for row in rows)
+        complete = bool(expected) and all(observed[arm] == Counter({pair: 1 for pair in expected}) for arm in ("baseline", "fixes"))
         report_data = {
             "baseline_sha": provenance.get("baseline", "unavailable"),
             "fixes_sha": provenance.get("fixes", "unavailable"),
@@ -495,9 +517,11 @@ def report(models):
         errors = validate_toolperf_report(report_data)
         if errors:
             raise SystemExit("invalid tool-performance report: " + ", ".join(errors))
-        (mdir / "report.json").write_text(
+        pending_report = mdir / "report.pending.json"
+        pending_report.write_text(
             json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        pending_report.replace(mdir / "report.json")
     return all_pass
 
 

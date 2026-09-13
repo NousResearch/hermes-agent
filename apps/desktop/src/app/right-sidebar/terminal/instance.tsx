@@ -1,11 +1,15 @@
 import '@xterm/xterm/css/xterm.css'
 
+import { useEffect } from 'react'
+
+import { $chatTerminalRunRequest, cancelChatTerminalRunRequest } from '@/app/right-sidebar/store'
 import { Button } from '@/components/ui/button'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+import { handoffChatTerminalRunRequest } from './chat-run'
 import { reportTerminalShell } from './terminals'
 import { useAgentTerminal } from './use-agent-terminal'
 import { useTerminalSession } from './use-terminal-session'
@@ -50,6 +54,33 @@ export function TerminalInstance({
     reviveBuffer,
     onShell: shell => reportTerminalShell(id, shell)
   })
+
+  // The session hook's active-terminal injection effect is registered before
+  // this adapter (hook effects preserve call order). Once this exact fresh tab
+  // reports open, a queued chat Run can therefore be handed to that already-live
+  // subscriber synchronously. Switching away/closing before open is cancellation.
+  useEffect(() => {
+    if (!active || status === 'closed') {
+      cancelChatTerminalRunRequest(id)
+
+      return
+    }
+
+    if (status !== 'open') {
+      return
+    }
+
+    const unsubscribe = $chatTerminalRunRequest.subscribe(request => {
+      if (request?.terminalId === id) {
+        handoffChatTerminalRunRequest(id)
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      cancelChatTerminalRunRequest(id)
+    }
+  }, [active, id, status])
 
   return (
     <div

@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import { readKey, writeKey } from '@/lib/storage'
 import { $currentCwd } from '@/store/session'
 
-import { setTerminalTakeover } from '../store'
+import { $chatTerminalRunRequest, cancelChatTerminalRunRequest, setTerminalTakeover } from '../store'
 
 import { seedAgentTerminalCommand } from './agent-terminal-stream'
 
@@ -153,6 +153,16 @@ export const $activeTerminal = computed(
   [$terminals, $activeTerminalId],
   (list, id) => list.find(term => term.id === id) ?? null
 )
+
+// Chat-originated Run authorization is bound to one concrete terminal entry.
+// Any list mutation that removes that entry cancels the request immediately.
+$terminals.listen(list => {
+  const pending = $chatTerminalRunRequest.get()
+
+  if (pending && !list.some(term => term.id === pending.terminalId)) {
+    cancelChatTerminalRunRequest(pending.terminalId)
+  }
+})
 
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`

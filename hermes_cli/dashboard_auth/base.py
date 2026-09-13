@@ -112,6 +112,23 @@ class DashboardAuthProvider(ABC):
     supports_token: bool = False
     supports_session: bool = True
 
+    # When True, this provider can authenticate a request from trusted request
+    # context — e.g. headers an upstream reverse proxy sets after doing its own
+    # authentication (``X-Remote-User``). The gate consults every
+    # ``supports_request_auth`` provider (via ``verify_request_auth``) for a
+    # protected request that has NO valid session cookie, giving the provider
+    # the full :class:`Request` so it can inspect the peer address and headers.
+    # This is the request-scoped analog of ``supports_token`` — the seam for an
+    # "authenticated reverse proxy" (the X-Remote-User / REMOTE_USER pattern).
+    #
+    # SECURITY: a provider that vouches for a user from a client-supplied
+    # header MUST independently establish that the request actually came from a
+    # trusted proxy (peer-IP allowlist, shared secret, or both) before honoring
+    # the header. Otherwise any client that can reach the dashboard port can
+    # forge an identity. The bundled ``remote_user`` provider is the reference
+    # implementation of that discipline.
+    supports_request_auth: bool = False
+
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
 
@@ -146,6 +163,44 @@ class DashboardAuthProvider(ABC):
             f"{type(self).__name__} does not support token auth "
             "(set supports_token = True and override verify_token)")
 
+    def verify_request_auth(self, *, request) -> "Optional[Session]":
+        """Verify a trusted-request credential and return a Session.
+
+        Request-scoped analog of ``verify_token`` / ``verify_session``. Only
+        consulted when ``supports_request_auth`` is True. Called by the gate
+        for a request to a protected route that carries NO valid session
+        cookie and NO valid bearer token, in registration order, until one
+        provider returns a non-None Session. Unlike the other verify methods,
+        the provider receives the full :class:`Request`, because this
+        capability exists to let a trusted upstream proxy vouch for the user
+        via request context — an authenticated-proxy header, a preauth secret
+        header, a client-cert identity, the peer address, etc.
+
+        Contract (mirrors the ``verify_session`` stacking semantics):
+          * Return a :class:`Session` if this provider recognises and accepts
+            the request's credential.
+          * Return ``None`` for a request it does NOT recognise — never raise,
+            so the gate falls through to the cookie/session path or a 401. A
+            missing/mismatched header or a peer that isn't a trusted proxy is
+            "not recognised" -> ``None``.
+          * Raise ``ProviderError`` ONLY for a genuine backing-store outage
+            (the provider can neither confirm nor deny).
+
+        Implementations MUST NOT honor a client-supplied identity unless they
+        have independently established that the request came from a trusted
+        proxy (e.g. a peer-IP allowlist and/or a shared secret), because the
+        header is forgeable by any client that can reach the port directly.
+
+        The default raises ``NotImplementedError`` so a provider that sets
+        ``supports_request_auth`` but forgets to implement this fails loudly
+        rather than silently accepting every caller.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support request auth "
+            "(set supports_request_auth = True and override "
+            "verify_request_auth)"
+        )
+
 
 def assert_protocol_compliance(cls: type) -> None:
     """Raise ``TypeError`` if ``cls`` doesn't fully implement the protocol (call it from every
@@ -157,6 +212,18 @@ def assert_protocol_compliance(cls: type) -> None:
                    "revoke_session"):
         if not callable(getattr(cls, method, None)):
             raise TypeError(f"{cls.__name__} missing method: {method}")
+    # A provider that opts into request auth must actually implement it —
+    # otherwise a would-be trusted-proxy provider could set the flag and lean
+    # on the base NotImplementedError, which would 500 at request time instead
+    # of being a clean no-op.
+    if getattr(cls, "supports_request_auth", False) and cls.__dict__.get(
+        "verify_request_auth"
+    ) is None:
+        raise TypeError(
+            f"{cls.__name__} sets supports_request_auth=True but does not "
+            "override verify_request_auth"
+        )
+    # Also catch the ABC-not-overridden case.
     if getattr(cls, "__abstractmethods__", None):
         raise TypeError(
             f"{cls.__name__} has unimplemented abstract methods: {sorted(cls.__abstractmethods__)}")

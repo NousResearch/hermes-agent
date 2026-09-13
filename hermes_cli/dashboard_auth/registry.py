@@ -118,6 +118,20 @@ def unregister_global_provider(name: str, provider: DashboardAuthProvider) -> bo
     return False
 
 
+def list_request_auth_providers() -> List[DashboardAuthProvider]:
+    """Registered providers that support trusted-request auth.
+
+    The subset of ``list_providers()`` whose ``supports_request_auth`` flag is
+    True, in registration order. The gate's trusted-request branch consults
+    these (and only these) for a protected request with no valid session
+    cookie, so OAuth/password/token-only providers are never asked to
+    ``verify_request_auth``. Returns an empty list when none is registered —
+    the gate's behavior is then unchanged (cookie/bearer only). Mirror of
+    ``list_token_providers``.
+    """
+    return [p for p in list_providers() if getattr(p, "supports_request_auth", False)]
+
+
 def clear_providers() -> None:
     """Test-only: drop all registrations."""
     with _lock:

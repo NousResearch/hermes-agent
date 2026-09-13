@@ -1259,14 +1259,21 @@ class TestMemoryToolToolsetGate:
         from tools.registry import discover_builtin_tools, registry
 
         discover_builtin_tools()
-        enabled = ["terminal", "memory"]
+        deferred_name = "memory_provider_deferred_probe"
+        registry.register(
+            name=deferred_name,
+            handler=lambda args, **kwargs: "{}",
+            schema={"name": deferred_name, "description": "probe", "parameters": {}},
+            toolset="memory-provider-deferred-probe",
+        )
+        enabled = ["memory", "memory-provider-deferred-probe"]
         assembled = model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
         assembled_names = {tool["function"]["name"] for tool in assembled}
         assert "tool_search" in assembled_names
-        assert "process_manage" not in assembled_names
+        assert deferred_name not in assembled_names
 
         mgr = MemoryManager()
-        mgr.add_provider(FakeMemoryProvider("ext", tools=[registry.get_schema("process_manage")]))
+        mgr.add_provider(FakeMemoryProvider("ext", tools=[registry.get_schema(deferred_name)]))
         agent = SimpleNamespace(
             _memory_manager=mgr,
             enabled_toolsets=enabled,
@@ -1276,7 +1283,7 @@ class TestMemoryToolToolsetGate:
         )
 
         assert inject_memory_provider_tools(agent) == 0
-        assert "process_manage" not in {
+        assert deferred_name not in {
             tool["function"]["name"] for tool in agent.tools
         }
 

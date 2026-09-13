@@ -29,7 +29,7 @@ import pytest
 
 
 @pytest.fixture
-def hermes_env(tmp_path, monkeypatch):
+def hermes_env(tmp_path, monkeypatch, cron_owner):
     """Isolate HERMES_HOME for each test so jobs/scripts/snapshots don't leak."""
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -72,7 +72,8 @@ def _install_agent_stubs(monkeypatch, observed: dict):
 
     class FakeAgent:
         def __init__(self, **kwargs):
-            pass
+            self.session_id = kwargs["session_id"]
+            self.task_id = self.session_id
 
         def run_conversation(self, prompt, *_a, **_kw):
             observed["agent_runs"] += 1
@@ -271,7 +272,7 @@ def _make_monitor_job(hermes_env, script_body: str):
 
     _write_script(hermes_env, "mon.sh", script_body)
     return create_job(
-        prompt="Summarize what changed",
+        prompt="Summarize what changed", model="test-model",
         schedule="every 5m",
         monitor_script="mon.sh",
         deliver="local",

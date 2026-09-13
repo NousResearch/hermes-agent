@@ -11,8 +11,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -124,24 +122,6 @@ def _safe_context_slug(value: str, max_len: int = 96) -> str:
     """Sanitize attacker-provided context ids before using in session titles."""
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "")).strip("-._")
     return (slug or "ctx")[:max_len]
-
-
-def _state_db(profile: str, sql: str, params: tuple, log_msg: str, *, commit: bool = False) -> str:
-    """Run one statement against a profile's state.db; first column of the first row or ""."""
-    home = _profile_home(profile)
-    db = os.path.join(home, "state.db") if home else ""
-    if not db or not os.path.exists(db):
-        return ""
-    try:
-        with contextlib.closing(sqlite3.connect(db, timeout=5)) as con:
-            cur = con.execute(sql, params)
-            row = None if commit else cur.fetchone()
-            if commit:
-                con.commit()
-        return str(row[0]) if row else ""
-    except Exception:
-        logger.debug(log_msg, exc_info=True)
-        return ""
 
 
 class A2ARequestHandler(BaseHTTPRequestHandler):
@@ -271,10 +251,6 @@ class A2AAdapter(BasePlatformAdapter):
         self._watchdog_stop = threading.Event()
         # Per-adapter protocol state (not module-global).
         self.tasks, self._turns, self._rate_limiter = protocol.TaskStore(), protocol.TurnTracker(), protocol.RateLimiter()
-        # Forwarded profile sessions: (profile, agent_slug, context_id) -> session_id.
-        self._profile_sessions: Dict[tuple[str, str, str], str] = {}
-        self._profile_session_locks: Dict[tuple[str, str, str], threading.Lock] = {}
-        self._profile_session_locks_guard = threading.Lock()
         # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
         # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
         self._pending: Dict[str, tuple[str, Future]] = {}
@@ -481,10 +457,6 @@ class A2AAdapter(BasePlatformAdapter):
     def _scope_for_agent(self, agent: Optional[dict]) -> tuple[str, str]:
         return tuple(str((agent or self._agents[""]).get(k) or "") for k in ("slug", "tenant"))
 
-    def _forward_lock(self, key: tuple[str, str, str]) -> threading.Lock:
-        with self._profile_session_locks_guard:
-            return self._profile_session_locks.setdefault(key, threading.Lock())
-
     def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
         """Complete a task immediately (rejected / not ready) and build its terminal Task."""
         self.tasks.complete(rec["task_id"], state, stored_reply)
@@ -514,7 +486,7 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
-            reply, state = self._forward_to_profile(agent, peer, context_id, framed)
+            reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=task_id)
             self._record_outcome(task_id, context_id, peer, state, reply)
             return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
         if self._loop is None or self._message_handler is None:
@@ -531,41 +503,28 @@ class A2AAdapter(BasePlatformAdapter):
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
         return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
 
-    def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
-        """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
-        ``source=a2a`` session and titles it deterministically; later turns ``--resume`` that id."""
+    def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str,
+                            *, input_id: Optional[str] = None) -> tuple[str, str]:
+        """Forward to the destination owner; never open its canonical database here."""
+        from gateway.session_a2a import forward_to_owner
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
-        slug = str(agent.get("slug") or profile or "agent")
-        safe_ctx = _safe_context_slug(context_id)
-        session_title = f"a2a-{slug}-{safe_ctx}"
-        key = (profile or "default", slug, safe_ctx)
-        timeout = int(agent.get("timeout") or _reply_timeout())
-        with self._forward_lock(key):
-            session_id = self._profile_sessions.get(key) or _state_db(
-                profile, "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",
-                (session_title,), "A2A: could not lookup forwarded session")
-            cmd = ["hermes", "chat", "-q", framed_text, "-Q", "--source", "a2a"] + (["--resume", session_id] if session_id else [])
-            env = {**os.environ, "HERMES_A2A_PEER": peer}
-            if home := _profile_home(profile):
-                env["HERMES_HOME"] = home
-            start = time.time()
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                      timeout=timeout, env=env, check=False, stdin=subprocess.DEVNULL)
-            except subprocess.TimeoutExpired:
-                return "[profile did not reply in time]", protocol.STATE_FAILED
-            except Exception as e:
-                return security.redact_outbound(f"Profile dispatch failed: {e}"), protocol.STATE_FAILED
-            if proc.returncode != 0:
-                msg = (proc.stderr or proc.stdout or f"profile exited {proc.returncode}").strip()
-                return security.redact_outbound(msg[-2000:]), protocol.STATE_FAILED
-            if not session_id and (session_id := _state_db(
-                    profile, "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
-                    (start - 2.0,), "A2A: could not find latest forwarded session")):
-                self._profile_sessions[key] = session_id
-                _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?", (session_title, session_id),
-                          "A2A: could not title forwarded session", commit=True)
-            return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
+        home = _profile_home(profile)
+        if not home:
+            return "[profile unavailable]", protocol.STATE_FAILED
+        try:
+            receipt = asyncio.run(forward_to_owner(
+                home, agent=str(agent.get("slug") or profile or "agent"),
+                tenant=str(agent.get("tenant") or ""), peer=peer, context_id=context_id,
+                input_id=input_id or protocol.new_task_id(), text=framed_text,
+                timeout=int(agent.get("timeout") or _reply_timeout())))
+        except TimeoutError:
+            return "[profile reply unverified; accepted work was not cancelled]", protocol.STATE_FAILED
+        except Exception as exc:
+            return security.redact_outbound(f"Profile dispatch unverified: {exc}"), protocol.STATE_FAILED
+        result = receipt.get('result') or {}
+        completed = receipt.get('outcome') == 'completed' and not result.get('failed')
+        return (security.redact_outbound(result.get('final_response') or ''),
+                protocol.STATE_COMPLETED if completed else protocol.STATE_FAILED)
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:

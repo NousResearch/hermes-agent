@@ -224,7 +224,7 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
                                    "Try again once that machine reconnects to the Desktop.")
     base = _ensure_dirs(root)
     envelope = {
-        "id": uuid.uuid4().hex, "created_at": int(time.time()),
+        "id": uuid.uuid4().hex, "created_at": int(time.time()), "canonical_delivery_v1": True,
         "from_profile": sender_profile, "from_handle": sender_handle,
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
@@ -273,6 +273,13 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
             out.append(json.loads(claimed.read_text(encoding="utf-8")))
+    seen = {row['id'] for row in out}
+    for path in sorted((base / CLAIMED_DIR).glob('*.json')):
+        with contextlib.suppress(OSError, ValueError):
+            envelope = json.loads(path.read_text(encoding='utf-8'))
+            if (envelope.get('canonical_delivery_v1') is True and envelope['id'] not in seen
+                    and not (base / REPLIES_DIR / path.name).exists()):
+                out.append(envelope)
     return out
 
 
@@ -288,9 +295,16 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
+    from tools.bot_live_delivery import _locked, _read, _write
     path = base / REPLIES_DIR / f"{safe}.json"
-    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code},
-                       prefix=".rep-")
+    outcome = {"reply": str(reply or ""), "error": err, "reason": code}
+    with _locked(root):
+        existing = _read(path)
+        if existing is not None:
+            if any(existing.get(key) != value for key, value in outcome.items()):
+                raise ValueError("delivery already has a different reply")
+            return path
+        _write(path, {"id": safe, "at": int(time.time()), **outcome})
     return path
 
 

@@ -61,7 +61,7 @@ def _result_flags(result: Any) -> tuple:
     """``(completed, partial, failed, error)`` from an agent result dict (defaults if not a dict)."""
     if not isinstance(result, dict):
         return True, False, False, None
-    return (bool(result.get("completed", True)), bool(result.get("partial")),
+    return (bool(result.get("completed", True)) and not result.get('interrupted'), bool(result.get("partial")),
             bool(result.get("failed")), result.get("error"))
 
 
@@ -73,7 +73,21 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
         return "length"
     if agent_error is not None or is_failed or (not completed and err_msg):
         return "error"
-    return "stop"
+    return 'cancelled' if not completed else 'stop'
+
+
+_RESPONSES_FINGERPRINT_KEYS = ("input", "instructions", "previous_response_id", "conversation", "model",
+                               "provider", "model_options", "tools")
+
+
+def _response_status(result):
+    if result.get('interrupted'):
+        return 'cancelled'
+    if result.get('failed') or result.get('error'):
+        return 'failed'
+    if result.get('completed') is False:
+        return 'incomplete'
+    return 'completed'
 
 
 def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str) -> Dict[str, Any]:
@@ -355,8 +369,11 @@ class _ResponsesStream:
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
     async def emit_completed(self) -> None:
-        env = self.terminal_envelope("completed", self._final_items())
         result = self.result
+        status = _response_status(result)
+        env = self.terminal_envelope(status, self._final_items(),
+            error=self._api._redact_api_error_text(result.get('error') or 'The admitted turn failed.')
+            if status == 'failed' else None)
         full_history = self.adapter._build_response_conversation_history(
             self.conversation_history, self.user_message, result, self.final_response_text)
         # Transcript substitution for result["_compressed"] happens in the history builder; only
@@ -366,7 +383,7 @@ class _ResponsesStream:
             env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None)
         self.terminal_snapshot_persisted = True
         await self.write_event(
-            "response.completed", {"type": "response.completed", "response": env})
+            'response.' + status, {'type': 'response.' + status, 'response': env})
 
     async def emit_crash(self, exc: BaseException) -> None:
         error = self._api._redact_api_error_text(exc, limit=500)
@@ -511,6 +528,10 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        if getattr(self.gateway_runner, 'session_authority', None) is not None:
+            key = request.headers.get('Idempotency-Key')
+            run_kwargs.update(request_id=('chat:' + key) if key else None,
+                              history_from_session=bool(provided_session_id))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -612,9 +633,12 @@ class OpenAICompatRoutesMixin:
         route), folded into the key because the store keeps the fingerprint only as the slot's value.
         """
         from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
+        from hermes_state_runtime import RuntimeStoreError
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
-            if idempotency_key:
+            # Durable /v1/runs admissions own idempotency under session authority; the in-memory
+            # cache only serves the pre-authority path.
+            if idempotency_key and getattr(self.gateway_runner, 'session_authority', None) is None:
                 principal_scope = self._run_idempotency_scope(request)
                 scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
@@ -622,6 +646,9 @@ class OpenAICompatRoutesMixin:
             else:
                 result, usage = await compute()
             return (result, usage), None
+        except RuntimeStoreError as exc:
+            from gateway.platforms.api_server import _openai_error
+            return None, web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
             return None, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
@@ -790,6 +817,20 @@ class OpenAICompatRoutesMixin:
         store = _coerce_request_bool(body.get("store"), default=True)
         if conversation and previous_response_id:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
+        durable_key = None
+        if getattr(self.gateway_runner, 'session_authority', None) is not None and request.headers.get('Idempotency-Key'):
+            # An exact retry replays the committed response BEFORE the conversation name is
+            # expanded: the first success already advanced the conversation, so re-expanding
+            # would build a different admission payload and refuse the retry as a conflict.
+            from gateway.platforms.api_server import _make_request_fingerprint
+            durable_key = ('idem:' + self._run_idempotency_scope(request) + ':' + request.headers['Idempotency-Key'],
+                           _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
+            replay = self._response_store.get(durable_key[0])
+            if replay is not None:
+                if replay.get('fingerprint') != durable_key[1]:
+                    from gateway.platforms.api_server import _openai_error
+                    return web.json_response(_openai_error('admission_conflict', code='admission_conflict'), status=409)
+                return web.json_response(replay['response'], headers=replay.get('headers') or {})
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
             previous_response_id = self._response_store.get_conversation(conversation)
@@ -862,6 +903,15 @@ class OpenAICompatRoutesMixin:
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
             **agent_overrides, route=route, relay_metadata=relay_metadata)
+        if getattr(self.gateway_runner, 'session_authority', None) is not None:
+            key = request.headers.get('Idempotency-Key')
+            if key:
+                import hashlib
+                # A fresh responses request must recover its target before admission.
+                if not stored_session_id and not gateway_session_key:
+                    session_id = 'response-' + hashlib.sha256(key.encode()).hexdigest()
+                    run_kwargs['session_id'] = session_id
+                run_kwargs['request_id'] = 'responses:' + key
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -893,8 +943,7 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
-            route="responses",
+            fingerprint_keys=list(_RESPONSES_FINGERPRINT_KEYS), route="responses",
         )
         if err is not None:
             return err
@@ -916,10 +965,13 @@ class OpenAICompatRoutesMixin:
         output_start_index = self._response_messages_turn_start_index(
             conversation_history, user_message, result)
         response_data = {
-            "id": response_id, "object": "response", "status": "completed",
+            "id": response_id, "object": "response", "status": _response_status(result),
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
+        if response_data['status'] == 'failed':
+            response_data['error'] = {'code': 'agent_error', 'message': _redact_api_error_text(
+                result.get('error') or 'The admitted turn failed.')}
         if store:
             self._response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
@@ -929,6 +981,9 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        if durable_key is not None:
+            self._response_store.put(durable_key[0], {
+                'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})
         return web.json_response(response_data, headers=response_headers)
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":

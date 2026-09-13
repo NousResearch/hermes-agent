@@ -3555,6 +3555,12 @@ class BasePlatformAdapter(ABC):
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
+        # The shared runtime's durable FIFO replaces the adapter's busy-message slot.
+        runner = getattr(self._message_handler, '__self__', None)
+        if getattr(runner, 'session_authority', None) is not None and not event.get_command():
+            from gateway.session_ingress import dispatch_shared_busy
+            await dispatch_shared_busy(self, event, session_key)
+            return
         # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
         # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
         # calling the message handler directly and sending the response.  Do NOT use

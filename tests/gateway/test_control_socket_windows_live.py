@@ -2,12 +2,12 @@
 
 Runs ONLY on a real Windows host (the on-demand ``windows-venv-e2e.yml``
 lane). Spawns a REAL child process that binds the REAL named pipe via the
-proactor event loop with the DEFAULT verb handlers, then drives the real
+dedicated native pipe worker with the DEFAULT verb handlers, then drives the real
 sync client and the real fleet consumers against it — no mocks anywhere.
 
 Proves, on windows-latest:
   1. `GatewayControlServer` binds ``\\\\.\\pipe\\hermes-gateway-<hash>`` via
-     ``loop.start_serving_pipe`` and answers ``identify``/``status``.
+     same-user local-only native pipe worker and answers ``identify``/``status``.
   2. The sync client's pipe transport (open/write/read/busy-retry) works
      against a live server and returns the child's true pid + code identity.
   3. ``collect_fleet_versions()`` prefers the socket (``source: socket``).
@@ -27,9 +27,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows named-pipe E2E"
-)
+pytestmark = pytest.mark.windows_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

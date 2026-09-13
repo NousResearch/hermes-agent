@@ -4506,6 +4506,10 @@ def main(
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    if not gateway:
+        from hermes_cli.gateway_chat import launch_from_kwargs
+        sys.exit(launch_from_kwargs(locals()))
+
     # UTF-8 stdio on Windows before any print (Rich box-drawing would UnicodeEncodeError on cp1252).
     with suppress(Exception):
         from hermes_cli.stdio import configure_windows_stdio

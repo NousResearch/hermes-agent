@@ -418,6 +418,8 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
 export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+  if (group.startsWith('canonical:')) {throw new Error('Canonical rooms are driven by the gateway')}
+
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -660,6 +662,7 @@ export function sendToGroupChat(
   thread?: null | string,
   images?: Attachment[]
 ): null | string {
+  if (group.startsWith('canonical:')) {throw new Error('Canonical rooms are driven by the gateway')}
   const trimmed = String(text || '').trim()
 
   if (rejectGroupSlashCommand(trimmed)) {

@@ -5,6 +5,8 @@ import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ConfigSettings } from './config-settings'
+
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
@@ -47,8 +49,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderConfigSettings() {
-  const { ConfigSettings } = await import('./config-settings')
+function renderConfigSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 

@@ -252,6 +252,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 attachedSessionId: next.attachedSessionId,
                 label: next.label,
                 path: next.path,
+                mime: next.mime,
                 refText: next.refText,
                 uploadState: next.uploadState
               })
@@ -395,7 +396,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   )
 
   const steerPrompt = useCallback(
-    async (rawText: string): Promise<boolean> => {
+    async (rawText: string, mode: 'interrupt' | 'steer' = 'interrupt'): Promise<boolean> => {
       const text = rawText.trim()
       const sessionId = runtimeIdRef.current
 
@@ -408,20 +409,13 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
-      // Match the primary composer: record the correction in arrival order —
-      // sealed already-streamed output above, correction below, post-redirect
-      // deltas below that — before awaiting the redirect RPC, whose completion
-      // can race us. The old insert-before-the-active-reply splice put the
-      // bubble above output the user had already read (#73793), and its
-      // last-assistant fallback could land it mid-thread when the stream id
-      // was missing or stale (#83151).
-      mutate(state =>
-        appendMidTurnUserMessage(state, {
-          id: messageId,
-          role: 'user' as const,
-          parts: [textPart(text)]
-        })
-      )
+      // Reserve the correction's arrival position without sealing the stream.
+      // Deltas arriving during a refused RPC must keep their live bubble.
+      mutate(state => {
+        const message = { id: messageId, role: 'user' as const, parts: [textPart(text)] }
+
+        return { ...state, messages: [...state.messages, message] }
+      })
 
       const discardOptimisticMessage = () =>
         mutate(state => ({
@@ -442,7 +436,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         const { result } = await withSessionNotFoundResume(
           sessionId,
           storedIdRef.current,
-          liveId => requestSessionGateway<{ status?: string }>('session.redirect', { session_id: liveId, text }),
+          liveId =>
+            requestSessionGateway<{ status?: string }>(mode === 'steer' ? 'session.steer' : 'session.redirect', {
+              session_id: liveId,
+              text
+            }),
           {
             requestGateway: requestSessionGateway,
             onRecovered: bindRecoveredRuntime
@@ -450,29 +448,48 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         )
 
         if (result?.status === 'redirected') {
+          if (mode === 'interrupt') {
+            mutate(state => {
+              const message = state.messages.find(candidate => candidate.id === messageId)
+
+              // A newer reply may precede this ACK; it already owns its boundary.
+              const hasNewReply = state.messages.slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
+                .some(candidate => candidate.role === 'assistant')
+
+              return message && state.streamId && !hasNewReply
+                ? appendMidTurnUserMessage(
+                    { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
+                    message
+                  )
+                : state
+            })
+          }
+
           triggerHaptic('submit')
 
           return true
         }
 
         if (result?.status === 'queued') {
-          moveOptimisticMessageToEnd()
+          if (mode === 'interrupt') {
+            moveOptimisticMessageToEnd()
+          }
+
           triggerHaptic('submit')
 
           return true
         }
-      } catch {
+      } catch (err) {
         discardOptimisticMessage()
-        // Swallow — the caller queues the text so nothing is lost.
-
-        return false
+        notifyError(err, copy.promptFailed)
+        throw err
       }
 
       discardOptimisticMessage()
 
       return false
     },
-    [bindRecoveredRuntime, requestSessionGateway]
+    [bindRecoveredRuntime, copy.promptFailed, requestSessionGateway]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

@@ -182,11 +182,15 @@ export interface SystemBatteryResponse {
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
+  stored_session_id?: string
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  subscription_id?: string
 }
 
 export interface SessionResumeResponse {
+  stored_session_id?: string
+  session_key?: string
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -196,6 +200,7 @@ export interface SessionResumeResponse {
   session_id: string
   started_at?: number
   status?: LiveSessionStatus
+  subscription_id?: string
 }
 
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
@@ -224,6 +229,7 @@ export interface SessionInflightTurn {
 }
 
 export interface SessionActivateResponse {
+  stored_session_id?: string
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
@@ -233,6 +239,13 @@ export interface SessionActivateResponse {
   session_key?: string
   started_at?: number
   status?: LiveSessionStatus
+  subscription_id?: string
+}
+
+export interface SessionDetachResponse {
+  detached: boolean
+  session_id: string
+  subscription_id: string
 }
 
 export interface SessionListItem {
@@ -331,6 +344,8 @@ export interface SessionCloseResponse {
 }
 
 export interface SessionInterruptResponse {
+  execution_generation?: number
+  execution_state?: string
   ok?: boolean
 }
 
@@ -342,6 +357,12 @@ export interface SessionSteerResponse {
 // ── Prompt / submission ──────────────────────────────────────────────
 
 export interface PromptSubmitResponse {
+  input_id?: string
+  status?: string
+  admission_id?: string
+  target_session_id?: string
+  target_profile_home?: string
+  outcome?: string | null
   ok?: boolean
   /** Set when the submitted text was a bare voice stop phrase consumed
    *  server-side to end the voice chat instead of starting a turn. */

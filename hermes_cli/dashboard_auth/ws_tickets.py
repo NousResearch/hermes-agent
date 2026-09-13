@@ -33,11 +33,13 @@ class TicketInvalid(Exception):
     """Ticket missing, expired, or already consumed."""
 
 
-def mint_ticket(*, user_id: str, provider: str) -> str:
+def mint_ticket(*, user_id: str, provider: str, issuer: str = "") -> str:
     """One-shot base64url ticket (32 random bytes) bound to this identity; ``consume_ticket``
     hands the ``info`` dict back to the WS handler."""
     ticket = secrets.token_urlsafe(32)
     info = {"user_id": user_id, "provider": provider, "minted_at": int(time.time())}
+    if issuer:
+        info["issuer"] = issuer
     with _lock:
         _tickets[ticket] = (int(time.time()) + TTL_SECONDS, info)
         _gc_expired_locked()

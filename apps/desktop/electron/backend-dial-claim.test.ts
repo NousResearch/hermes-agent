@@ -129,7 +129,7 @@ describe('main.ts wiring for #90812', () => {
     const body = mainSource.slice(handlerStart, handlerStart + 1200)
 
     expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureBackend(profile, { spawnPriority })')
+    expect(body).toContain('ensureBackend(profile)')
   })
 
   it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
@@ -139,7 +139,7 @@ describe('main.ts wiring for #90812', () => {
 
     expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
     expect(body).toContain('backendDialClaims.run(scopeKey, ')
-    expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority })")
+    expect(body).toContain('ensureRegistryBackend(id, profile)')
   })
 
   // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()

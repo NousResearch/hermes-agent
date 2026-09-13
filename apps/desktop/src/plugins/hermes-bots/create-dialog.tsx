@@ -43,6 +43,9 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { registerCanonicalGroup } from './canonical-group-registry'
+import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1156,10 +1159,38 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
 
-  const create = () => {
+  const creating = useRef(false)
+
+  const create = async () => {
+    if (creating.current) {return}
+    creating.current = true
+
+    try {
     const base = (name.trim() || placeholder).slice(0, 64)
 
     if (selected.length < 2 || !base) {
+      return
+    }
+
+    const route = captureCanonicalGroupRoute()
+    const sourceCurrent = groupCreationSource(route)
+
+    const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+    const mode = groupExecutionMode(capabilities)
+
+    if (!sourceCurrent() || mode === 'unavailable') {
+      throw new Error(b.canonical.driverUnavailable)
+    }
+
+    if (mode === 'canonical') {
+      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+
+      // Creation already succeeded; leave it on its owner without adopting a stale result.
+      if (!sourceCurrent()) {return}
+      const key = registerCanonicalGroup(route, created.room)
+      onClose()
+      onCreated?.(key)
+
       return
     }
 
@@ -1206,6 +1237,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     })
     onClose()
     onCreated?.(groupName)
+    } catch (error) {
+      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+    } finally { creating.current = false }
   }
 
   return (

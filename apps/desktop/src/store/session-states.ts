@@ -1347,8 +1347,12 @@ export interface SessionTileDelegate {
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached
    *  transcript already exists — reopen-after-idle must not paint the
-   *  snapshot that was current when the panel last had a socket. */
-  resumeTile(storedSessionId: string, options?: { refreshTranscript?: boolean }): Promise<string>
+   *  snapshot that was current when the panel last had a socket.
+   *  `authoritativeSnapshot` forces a message-bearing gateway resume. */
+  resumeTile(
+    storedSessionId: string,
+    options?: { authoritativeSnapshot?: boolean; refreshTranscript?: boolean }
+  ): Promise<string>
   /** Retire one runtime's busy/awaiting claim through the wiring cache
    *  (updateSessionState), so cache, focused view, busyRef, and tile mirrors
    *  settle together. Returns false when the cache holds no busy state for

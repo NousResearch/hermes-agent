@@ -582,7 +582,7 @@ class TestRunOneJobHonoursInterruptedFlag:
         would."""
         import cron.scheduler as sched
 
-        job = self._make_job()
+        job = dict(self._make_job(), deliver="telegram")
         sched._interrupted_job_ids.add(job["id"])
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
@@ -599,7 +599,7 @@ class TestRunOneJobHonoursInterruptedFlag:
                  return_value="This run was interrupted.",
              ) as mock_summarize, \
              patch("cron.scheduler._is_cron_silence_response", return_value=False), \
-             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver, \
+             patch("cron.delivery_queue.enqueue", return_value={"status": "pending"}) as mock_deliver, \
              patch("cron.scheduler.mark_job_run"):
             result = sched.run_one_job(job)
 
@@ -608,7 +608,9 @@ class TestRunOneJobHonoursInterruptedFlag:
         # The summarizer's error argument must mention the interruption,
         # not be silently None / the agent's own (possibly absent) error.
         assert "interrupt" in mock_summarize.call_args.args[1].lower()
-        delivered_content = mock_deliver.call_args.args[1]
+        mock_deliver.assert_called_once()
+        assert mock_deliver.call_args.kwargs["for_failure"] is True
+        delivered_content = mock_deliver.call_args.args[2]
         assert delivered_content == "This run was interrupted."
         assert "plausible final response" not in delivered_content
 

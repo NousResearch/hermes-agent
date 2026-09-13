@@ -1563,6 +1563,8 @@ class GatewayShutdownMixin:
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        from gateway.run_runtime import drain_gateway_runtime
+        await drain_gateway_runtime(self)
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):
@@ -1813,12 +1815,9 @@ class GatewayShutdownMixin:
         logger.info("Shutdown phase: SessionDB close done at +%.2fs", ctx.elapsed())
 
     def _stop_persist_exit_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
-        """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""
+        """Persist exit markers; process bootstrap releases ownership after writer drain."""
         from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
         from utils import atomic_json_write
-        from gateway.status import remove_pid_file, release_gateway_runtime_lock
-        remove_pid_file()
-        release_gateway_runtime_lock()
         # Clean-shutdown marker skips suspend_recently_active() next boot; a timed-out drain left
         # half-finished sessions, so no marker — the next startup suspends them.
         if not ctx.timed_out:
@@ -1901,6 +1900,8 @@ class GatewayShutdownMixin:
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+            from gateway.run_runtime import settle_gateway_runtime
+            await settle_gateway_runtime(self)
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)

@@ -634,6 +634,10 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
 def _mcp_registry_scope() -> Optional[str]:
     """Registry scope for MCP registrations: a profile overlay under a multiplexer, else None."""
+    from tools.registry import current_session_tool_scope
+    session_scope = current_session_tool_scope()
+    if session_scope is not None:
+        return session_scope
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         return None

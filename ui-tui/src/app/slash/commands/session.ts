@@ -17,7 +17,8 @@ import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
+import { getUiState, patchUiState } from '../../uiStore.js'
+import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand } from '../types.js'
 
 const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
@@ -136,6 +137,10 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: { refresh: true } })
       }
 
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('model', arg, ctx)
+      }
+
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
           .rpc<ConfigSetResponse>('config.set', {
@@ -239,6 +244,10 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('compress', arg, ctx)
+      }
+
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -246,14 +255,41 @@ export const sessionCommands: SlashCommand[] = [
         })
         .then(
           ctx.guarded<SessionCompressResponse>(r => {
+            const current = getUiState()
+
+            const authorityKeys = [
+              'stored_session_id',
+              'execution_epoch',
+              'execution_generation',
+              'execution_state',
+              'running'
+            ] as const
+
+            // Compression is not attachment: a delayed reply cannot replace a
+            // newer turn/owner, nor replace its transcript with an old snapshot.
+            if (current.busy !== ctx.ui.busy || authorityKeys.some(key => current.info?.[key] !== ctx.ui.info?.[key])) {
+              return
+            }
+
+            if (
+              current.info?.execution_generation !== undefined &&
+              (r.info?.execution_epoch !== current.info.execution_epoch ||
+                !Number.isSafeInteger(r.info?.execution_generation) ||
+                (r.info?.execution_generation ?? -1) < current.info.execution_generation)
+            ) {
+              return
+            }
+
+            const info = r.info ? { ...current.info, ...r.info } : current.info
+
             if (Array.isArray(r.messages)) {
               const rows = toTranscriptMessages(r.messages)
 
-              ctx.transcript.setHistoryItems(r.info ? [introMsg(r.info), ...rows] : rows)
+              ctx.transcript.setHistoryItems(info ? [introMsg(info), ...rows] : rows)
             }
 
             if (r.info) {
-              patchUiState({ info: r.info })
+              patchUiState({ info })
             }
 
             if (r.usage) {
@@ -294,7 +330,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
-      const prevSid = ctx.sid
+      if (ctx.gateway.gw.isCanonical) {
+        return runCanonicalSessionControl('branch', arg, ctx)
+      }
 
       ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
         ctx.guarded<SessionBranchResponse>(r => {
@@ -302,9 +340,9 @@ export const sessionCommands: SlashCommand[] = [
             return
           }
 
-          void ctx.session.closeSession(prevSid)
-          patchUiState({ sid: r.session_id })
-          ctx.session.setSessionStartedAt(Date.now())
+          // Resume hydrates destination authority/history before closing the
+          // source; changing only sid would inherit the source owner's epoch.
+          ctx.session.resumeById(r.session_id)
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)
         })
       )
@@ -630,7 +668,10 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .rpc<ConfigGetValueResponse>('config.get', {
+            key: 'busy',
+            ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+          })
           .then(
             ctx.guarded<ConfigGetValueResponse>(r => {
               const current = r.value || 'interrupt'
@@ -641,10 +682,19 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .rpc<ConfigSetResponse>('config.set', {
+          key: 'busy',
+          value: mode,
+          ...(ctx.gateway.gw.isCanonical ? { session_id: ctx.sid } : {})
+        })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             const next = r.value || mode
+
+            if (next === 'queue' || next === 'steer' || next === 'interrupt') {
+              patchUiState({ busyInputMode: next })
+            }
+
             ctx.transcript.sys(`busy input mode: ${next}`)
           })
         )

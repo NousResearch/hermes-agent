@@ -252,6 +252,25 @@ class TestSessionTokenInjection:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def mutation_owner(monkeypatch, _isolate_hermes_home):
+    from gateway.session_authority import SessionAuthority
+    from hermes_constants import get_hermes_home
+    from hermes_cli.web_server import app
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    home = get_hermes_home()
+    db = SessionDB(db_path=home / 'state.db')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(home),
+        instance_id='test-owner', db=db, epoch=begin_runtime_epoch(db, instance_id='test-owner'))
+    monkeypatch.setattr(app.state, 'session_authority', authority, raising=False)
+    try:
+        yield authority
+    finally:
+        db.close()
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
@@ -388,7 +407,7 @@ class TestWebServerEndpoints:
 
         assert seen["thread"] != event_loop_thread
 
-    def test_get_sessions_auto_archive_uses_maintenance_writer(self):
+    def test_get_sessions_leaves_auto_archive_to_owner(self):
         from hermes_cli import web_server
         from hermes_cli.config import load_config, save_config
         from hermes_constants import get_hermes_home
@@ -420,25 +439,38 @@ class TestWebServerEndpoints:
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
         assert response.status_code == 200
-        assert [row["id"] for row in response.json()["sessions"]] == ["fresh"]
+        assert {row["id"] for row in response.json()["sessions"]} == {"fresh", "stale"}
+        verify = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert verify.get_session("stale")["archived"] == 0
+            assert not verify.get_meta("last_auto_archive")
+        finally:
+            verify.close()
+
+        # The existing owner maintenance path still honors the configured sweep.
+        _web_server_sessions._maybe_auto_archive_for_profile(None)
         verify = SessionDB(db_path=db_path, read_only=True)
         try:
             assert verify.get_session("stale")["archived"] == 1
+            assert verify.get_session("fresh")["archived"] == 0
             assert verify.get_meta("last_auto_archive")
         finally:
             verify.close()
 
-    def test_get_sessions_fresh_store_returns_empty_list(self):
+    def test_get_sessions_missing_store_is_unavailable_without_creation(self):
+        from hermes_constants import get_hermes_home
+
+        before = set(get_hermes_home().glob("state.db*"))
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
-        assert response.status_code == 200
-        assert response.json()["sessions"] == []
-        assert response.json()["total"] == 0
+        assert response.status_code == 503
+        assert "not initialized" in response.json()["detail"]
+        assert set(get_hermes_home().glob("state.db*")) == before
 
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]
     )
-    def test_get_sessions_heals_stale_schema_store(self, missing_column):
+    def test_get_sessions_reports_stale_schema_without_healing(self, missing_column):
         import sqlite3
 
         from hermes_constants import get_hermes_home
@@ -461,12 +493,12 @@ class TestWebServerEndpoints:
         finally:
             legacy.close()
 
+        before = db_path.read_bytes()
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
-        assert response.status_code == 200
-        assert [row["id"] for row in response.json()["sessions"]] == [
-            "stale-schema"
-        ]
+        assert response.status_code == 503
+        assert "schema" in response.json()["detail"]
+        assert db_path.read_bytes() == before
         healed = sqlite3.connect(str(db_path))
         try:
             columns = {
@@ -474,17 +506,10 @@ class TestWebServerEndpoints:
             }
         finally:
             healed.close()
-        assert missing_column in columns
+        assert missing_column not in columns
 
-    def test_profiles_sidebar_heals_stale_schema_store(self):
-        """The desktop's batched sidebar route must heal a stale store too.
-
-        The shipped regression (#72424 aftermath): a store predating
-        ``sessions.last_activity_at`` made every per-profile read raise
-        "no such column", which this endpoint swallowed into its ``errors``
-        array — the desktop rendered "No sessions yet" after `hermes update`
-        until the user's first message forced a writable open elsewhere.
-        """
+    def test_profiles_sidebar_reports_stale_schema_store(self):
+        """Aggregation reports unavailable profiles instead of healing their DBs."""
         import sqlite3
 
         from hermes_constants import get_hermes_home
@@ -512,20 +537,19 @@ class TestWebServerEndpoints:
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["errors"] == []
-        assert [row["id"] for row in payload["recents"]["sessions"]] == [
-            "sidebar-stale"
-        ]
+        assert payload["errors"]
+        assert "schema" in payload["errors"][0]["error"]
+        assert payload["recents"]["sessions"] == []
 
     def test_startup_eager_reconcile_heals_stale_store(self):
-        """The lifespan's eager reconcile brings a stale store current.
+        """The OWNER's startup open brings a stale store current; the dashboard only reads.
 
         #79531/#80037: after `hermes update` an old-schema state.db used to
         stay stale until the first NEW session forced a writable open —
         every /api/sessions poll 500ed with "no such column" in between.
-        The lifespan now schedules one writable open at startup; this
-        exercises that worker directly against a store missing
-        sessions.last_read_at and asserts the schema is brought current.
+        Under the unified runtime the dashboard is a zero-writer view: its
+        eager probe must NOT heal (#107688 two-writer vector), and the
+        gateway owner's writable acquisition is what reconciles the schema.
         """
         import sqlite3
 
@@ -547,7 +571,21 @@ class TestWebServerEndpoints:
         finally:
             legacy.close()
 
+        # Dashboard probe: read-only, never heals (no writable open from a viewer).
         _web_server_lifecycle._eager_reconcile_own_session_db()
+        stale = sqlite3.connect(str(db_path))
+        try:
+            assert "last_read_at" not in {row[1] for row in stale.execute("PRAGMA table_info(sessions)")}
+        finally:
+            stale.close()
+
+        # Owner path: the gateway's writable acquisition reconciles the schema at startup.
+        from hermes_state_registry import acquire, release_or_close
+        owner = acquire(db_path)
+        try:
+            pass
+        finally:
+            release_or_close(owner)
 
         healed = sqlite3.connect(str(db_path))
         try:
@@ -604,71 +642,27 @@ class TestWebServerEndpoints:
             raise sqlite3_module.OperationalError("database is locked")
 
         monkeypatch.setattr(hermes_state, "SessionDB", boom)
-        # Must swallow — reads fall back to the per-poll probe heal.
+        # Must swallow — reads report unavailable until owner recovery.
         _web_server_lifecycle._eager_reconcile_own_session_db()
 
-    def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
-        """A probe failure reconciliation can't cure must not retry forever.
-
-        The writable heal is a full SessionDB init against a possibly-live
-        DB. If the store is STILL behind the probe afterwards (schema problem
-        ADD COLUMN can't express), retrying that init on every sidebar poll
-        would hammer the DB for nothing: serve reads probe-less instead, warn
-        once, and never pay the writable open for that store again.
-        """
-        from hermes_cli import web_server
+    def test_failed_schema_probes_never_escalate_reads(self, monkeypatch):
+        from fastapi import HTTPException
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
 
         db_path = get_hermes_home() / "state.db"
         seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("unfixable", source="cli")
-        finally:
-            seed.close()
-
-        # A column no SCHEMA_SQL declares: the heal's writable reconcile
-        # cannot add it, so the re-probe keeps failing.
+        seed.create_session("unfixable", source="cli")
+        seed.close()
         monkeypatch.setattr(
-            _web_server_sessions,
-            "_session_db_read_probe_statements",
-            lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',),
-        )
-        monkeypatch.setattr(_web_server_sessions, "_session_db_heal_exhausted", set())
-        monkeypatch.setattr(_web_server_sessions, "_session_db_heal_warned", set())
-
-        writable_opens = []
-
-        import hermes_state
-
-        original_init = hermes_state.SessionDB.__init__
-
-        def counting_init(self, *args, **kwargs):
-            if not kwargs.get("read_only", False):
-                writable_opens.append(1)
-            return original_init(self, *args, **kwargs)
-
-        # web_server imports SessionDB inside the function body, so patching
-        # the class on hermes_state covers every open the helper makes.
-        monkeypatch.setattr(hermes_state.SessionDB, "__init__", counting_init)
-
-        # First open: probe fails -> one writable heal -> re-probe fails ->
-        # exhausted. Still returns a usable read-only handle.
-        db = _web_server_sessions._open_session_db_for_profile(None, read_only=True)
-        try:
-            assert db.list_sessions_rich(limit=10, compact_rows=True)
-        finally:
-            db.close()
-        assert len(writable_opens) == 1
-        assert str(db_path) in _web_server_sessions._session_db_heal_exhausted
-
-        # Second open: probe skipped, NO further writable opens.
-        db = _web_server_sessions._open_session_db_for_profile(None, read_only=True)
-        try:
-            assert db.list_sessions_rich(limit=10, compact_rows=True)
-        finally:
-            db.close()
-        assert len(writable_opens) == 1
+            _web_server_sessions, "_session_db_read_probe_statements",
+            lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',))
+        before = db_path.read_bytes()
+        for _ in range(2):
+            with pytest.raises(HTTPException, match="schema") as caught:
+                _web_server_sessions._open_session_db_for_profile(None, read_only=True)
+            assert caught.value.status_code == 503
+            assert db_path.read_bytes() == before
 
     def test_generic_corruption_does_not_trigger_writable_heal(
         self, tmp_path, monkeypatch
@@ -689,42 +683,30 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
 
-        with pytest.raises(sqlite3.DatabaseError, match="disk image is malformed"):
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException, match="corrupt"):
             _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
 
         assert opens == [True]
 
-    def test_decode_error_triggers_writable_heal(self, tmp_path, monkeypatch):
-        """UnicodeDecodeError — pysqlite failing to decode SQLite's own error
-        message over corrupt file bytes (#98924) — must route through the
-        same one-writable-open heal as malformed schema."""
+    def test_decode_error_never_triggers_writable_heal(self, tmp_path, monkeypatch):
         import hermes_state
-        from hermes_cli import web_server
+        from fastapi import HTTPException
 
         db_path = tmp_path / "state.db"
         db_path.write_bytes(b"not-empty")
         opens = []
 
-        class _OkDB:
-            _conn = None
-
-            def close(self):
-                pass
-
-        def scripted_open(*_args, **kwargs):
+        def corrupt_open(*_args, **kwargs):
             opens.append(kwargs.get("read_only", False))
-            if opens == [True]:
-                raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
-            return _OkDB()
+            raise UnicodeDecodeError("utf-8", b"\x81", 0, 1, "invalid start byte")
 
-        monkeypatch.setattr(hermes_state, "SessionDB", scripted_open)
+        monkeypatch.setattr(hermes_state, "SessionDB", corrupt_open)
+        with pytest.raises(HTTPException, match="corrupt"):
+            _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
+        assert opens == [True]
 
-        db = _web_server_sessions._open_session_db_at_path(db_path, read_only=True)
-
-        assert isinstance(db, _OkDB)
-        assert opens == [True, False, True]
-
-    def test_get_sessions_zero_byte_store_returns_empty_list(self):
+    def test_get_sessions_zero_byte_store_is_not_quarantined(self):
         from hermes_constants import get_hermes_home
 
         db_path = get_hermes_home() / "state.db"
@@ -733,11 +715,11 @@ class TestWebServerEndpoints:
 
         response = self.client.get("/api/sessions?limit=50&offset=0")
 
-        assert response.status_code == 200
-        assert response.json()["sessions"] == []
-        assert response.json()["total"] == 0
+        assert response.status_code == 503
+        assert db_path.read_bytes() == b""
+        assert set(db_path.parent.glob("state.db*")) == {db_path}
 
-    def test_concurrent_first_load_reads_all_succeed_on_fresh_store(self):
+    def test_concurrent_first_load_reads_report_uninitialized_store(self):
         from concurrent.futures import ThreadPoolExecutor
 
         paths = [
@@ -749,9 +731,7 @@ class TestWebServerEndpoints:
         with ThreadPoolExecutor(max_workers=8) as pool:
             responses = list(pool.map(self.client.get, paths))
 
-        assert [response.status_code for response in responses] == [
-            200
-        ] * len(paths)
+        assert [response.status_code for response in responses] == [503] * len(paths)
 
 
 
@@ -1161,7 +1141,7 @@ class TestWebServerEndpoints:
 
 
 
-    def test_import_sessions_endpoint_imports_exported_json(self):
+    def test_import_sessions_endpoint_imports_exported_json(self, mutation_owner):
         from hermes_state import SessionDB
 
         payload = {
@@ -1177,7 +1157,7 @@ class TestWebServerEndpoints:
             ],
         }
 
-        resp = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        resp = self.client.post("/api/sessions/import", json={"sessions": [payload], "request_id": "import-first", "expected_revision": 0})
         assert resp.status_code == 200
         data = resp.json()
         assert data["imported"] == 1
@@ -1195,7 +1175,7 @@ class TestWebServerEndpoints:
         finally:
             db.close()
 
-        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload]})
+        duplicate = self.client.post("/api/sessions/import", json={"sessions": [payload], "request_id": "import-second", "expected_revision": data["revision"]})
         assert duplicate.status_code == 200
         assert duplicate.json()["skipped_ids"] == ["imported-web-session"]
 
@@ -4079,13 +4059,19 @@ class TestDeleteSessionEndpoint:
             db.close()
 
 
-    def test_delete_absent_session_is_idempotent(self):
-        # PREMISE / regression: deleting a row that no longer exists must NOT
-        # 404 — the desktop would resurrect the ghost row and show
-        # "session not found". DELETE's contract is "ensure it's gone".
-        resp = self.auth_client.delete("/api/sessions/never_existed")
-        assert resp.status_code == 200
-        assert resp.json().get("ok") is True
+    def test_delete_absent_session_is_idempotent(self, mutation_owner):
+        from gateway.session_authority import LiveSession
+        self._seed(['delete-retry'])
+        mutation_owner.sessions['delete-retry'] = LiveSession(None, 'route')
+        row = mutation_owner.db.get_session('delete-retry')
+        params = dict(request_id='delete-once', expected_revision=row['runtime_revision'],
+                      expected_generation=row['runtime_generation'])
+        first = self.auth_client.delete('/api/sessions/delete-retry', params=params)
+        assert first.status_code == 200, first.text
+        assert not self._exists('delete-retry')
+        retry = self.auth_client.delete('/api/sessions/delete-retry', params=params)
+        assert retry.status_code == 200, retry.text
+        assert retry.json() == first.json()
 
 
 class TestBulkDeleteSessionsEndpoint:
@@ -5341,7 +5327,7 @@ class TestSessionPatchUnread:
     read/unread, and GET /api/sessions surfaces the derived flag."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, mutation_owner):
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -5355,6 +5341,7 @@ class TestSessionPatchUnread:
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
         )
 
+        self.owner = mutation_owner
         self.client = TestClient(app)
         self.auth_client = TestClient(app)
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -5369,8 +5356,17 @@ class TestSessionPatchUnread:
         finally:
             db.close()
 
+    def _patch(self, payload):
+        from uuid import uuid4
+        from gateway.session_authority import LiveSession
+        self.owner.sessions.setdefault('s1', LiveSession(None, 'route'))
+        row = self.owner.db.get_session('s1')
+        return self.auth_client.patch('/api/sessions/s1', json={
+            **payload, 'request_id': uuid4().hex, 'expected_revision': row['runtime_revision'],
+            'expected_generation': row['runtime_generation']})
+
     def test_patch_unread_true_marks_row_unread(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self._patch({"unread": True})
         assert resp.status_code == 200
         assert resp.json()["unread"] is True
 
@@ -5378,8 +5374,8 @@ class TestSessionPatchUnread:
         assert next(s for s in rows if s["id"] == "s1")["unread"] is True
 
     def test_patch_unread_false_marks_row_read(self):
-        self.auth_client.patch("/api/sessions/s1", json={"unread": True})
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": False})
+        self._patch({"unread": True})
+        resp = self._patch({"unread": False})
         assert resp.status_code == 200
         assert resp.json()["unread"] is False
 
@@ -5388,32 +5384,32 @@ class TestSessionPatchUnread:
 
     def test_patch_unread_alone_is_accepted(self):
         # The route's "Nothing to update" guard must not reject a bare unread.
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self._patch({"unread": True})
         assert resp.status_code == 200
 
     def test_patch_unread_rejects_non_bool(self):
         # NB: pydantic v2 coerces "yes"/"no"/"1"/"0"/"on"/"off" to bool, so use
         # a string outside the accepted set to prove validation rejects it.
-        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
+        resp = self._patch({"unread": "maybe"})
         assert resp.status_code == 422  # pydantic validation
 
     def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        resp = self._patch({"hidden": True})
         assert resp.status_code == 200
         assert resp.json()["hidden"] is True
 
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert all(s["id"] != "s1" for s in rows)
 
-        restored = self.auth_client.patch(
-            "/api/sessions/s1", json={"hidden": False}
+        restored = self._patch(
+            {"hidden": False}
         )
         assert restored.status_code == 200
         rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
         assert bool(next(s for s in rows if s["id"] == "s1")["hidden"]) is False
 
     def test_patch_hidden_alone_is_accepted(self):
-        resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
+        resp = self._patch({"hidden": True})
         assert resp.status_code == 200
 
 

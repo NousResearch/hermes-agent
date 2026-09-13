@@ -2,6 +2,7 @@ import { registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { acceptExecutionEvent } from '@/lib/execution-authority'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
@@ -95,6 +96,7 @@ const HANDLERS: GatewayEventHandler[] = [
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
+  const executionAuthorities = useRef(new Map())
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   const unscopedStreamSessionIdRef = useRef<string | null>(null)
@@ -170,6 +172,20 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+      const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
+
+      const previousAuthority = executionAuthorities.current.get(authorityKey)
+
+      if (sessionId && !acceptExecutionEvent(executionAuthorities.current, authorityKey, event.type, event)) {return}
+
+      const authority = executionAuthorities.current.get(authorityKey)
+
+      if (sessionId && previousAuthority && authority && !authority.terminal &&
+          (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)) {
+        // Stop belongs to the cancelled execution, not the shared session.
+        // Only an accepted newer owner start/snapshot may retire its latch.
+        deps.updateSessionState(sessionId, state => state.interrupted ? { ...state, interrupted: false } : state)
+      }
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn

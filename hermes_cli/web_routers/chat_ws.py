@@ -567,9 +567,19 @@ async def gateway_ws(ws: WebSocket) -> None:
     # The authenticated identity (ticket / internal credential) stamped by
     # _ws_auth_reason becomes the identity authority for privileged RPCs
     # (browser.controller.register). None on the legacy token path.
+    identity = getattr(ws, "_hermes_auth_identity", None)
+    authority = getattr(ws.app.state, "session_authority", None)
+    if authority is not None and identity is None:
+        # The upgrade gate above has already verified the legacy token. Do not
+        # infer owner permissions from an identityless connection downstream.
+        identity = {'user_id': 'legacy-token-owner', 'provider': 'session-token',
+                    'profile_id': authority.profile_id, 'instance_id': authority.instance_id,
+                    'capabilities': ['session:create', 'session:read', 'session:submit',
+                                     'session:control', 'session:approve', 'session:respond']}
     await handle_ws(
         ws,
-        auth_identity=getattr(ws, "_hermes_auth_identity", None),
+        auth_identity=identity,
+        operator=True,  # The dashboard upgrade gate above has verified this operator.
         subprotocol=getattr(ws, "_hermes_ws_subprotocol", None),
     )
 

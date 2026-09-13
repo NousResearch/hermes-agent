@@ -126,8 +126,9 @@ def resolve_breadcrumb_session() -> Optional[str]:
         return None
     try:
         from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
 
-        db = SessionDB()
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     except Exception:
         return None
     try:

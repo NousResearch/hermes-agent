@@ -227,6 +227,23 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('Here you go.\n\n')
   })
 
+  it('hydrates canonical native image suffixes without changing durable history or caption prose', () => {
+    const caption = 'Explain [Image attached at: /not/an/attachment.png] in this sentence.'
+    const paths = ['/cache/native-inputs/hash/a [1].png', 'https://example.test/image.png']
+    const content = `${caption}\n\n[Image attached at: ${paths[0]}]\n[Image attached: ${paths[1]}]\n[screenshot]\n[screenshot]`
+    const stored = { role: 'user' as const, content, timestamp: 1, row_id: 23 }
+    const [message] = toChatMessages([stored])
+
+    expect(chatMessageText(message)).toBe(caption)
+    expect(message.attachmentRefs).toEqual([`@image:\`${paths[0]}\``, `@image:${paths[1]}`])
+    expect(stored.content).toBe(content)
+    const [prose] = toChatMessages([{ ...stored, content: `${caption}\n\n[Image attached at: /literal.png]` }])
+    expect(chatMessageText(prose)).toBe(`${caption}\n\n[Image attached at: /literal.png]`)
+    expect(prose.attachmentRefs).toBeUndefined()
+    const [assistant] = toChatMessages([{ ...stored, role: 'assistant' }])
+    expect(chatMessageText(assistant)).toBe(content)
+  })
+
   it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
     const [message] = toChatMessages([
       {

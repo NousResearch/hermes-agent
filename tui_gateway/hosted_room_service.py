@@ -73,7 +73,7 @@ class HostedRoomService:
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
-        self.rpc = HostedRoomServerRPC(server)
+        self.rpc = self._make_rpc(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
@@ -96,6 +96,9 @@ class HostedRoomService:
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
+
+    def _make_rpc(self, server):
+        return HostedRoomServerRPC(server)
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""
@@ -370,6 +373,7 @@ class HostedRoomService:
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
+        cursor = int(room["latest_seq"])
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
             if self.policy_checkpoint.publication_exists(
@@ -377,15 +381,23 @@ class HostedRoomService:
                 execution_generation=execution_generation):
                 continue
             task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
+                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
+                input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
             plan = discussion.reconstruct_task_plan(
                 room, task_events, task, local_profiles=local_profiles)
+            message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
+            if any(event.get("event_id") == message_id and event["kind"] == "message.member" for event in task_events):
+                # Finish an already visible immutable reply even if a later request arrived.
+                task_events = [event for event in task_events if event["kind"] != "message.user"
+                               or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
                 room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
-                hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
+                appended = hosted_rooms.append_event(
+                    self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
+                cursor = max(cursor, int(appended["seq"]))
             changed = True
         return changed
 
@@ -408,7 +420,12 @@ class HostedRoomService:
         with self._policy_lock:
             room = self._room(binding.room_id)
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
-            if self._publish_terminal_tasks(room):
+            try:
+                changed = self._publish_terminal_tasks(room)
+            except hosted_rooms.EventCursorConflictError:
+                # Rebuild publication next poll; the settled task is never readmitted.
+                return
+            if changed:
                 room = self._room(binding.room_id)
                 snapshot = self._policy_snapshot(room)
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
@@ -418,16 +435,31 @@ class HostedRoomService:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.local_profiles(),
-                initial_watermarks=snapshot.watermarks)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path, decision.task.identity, payload=decision.task.payload,
-                    clock=time.time)
+                existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
+                legacy_payload = dict(decision.task.payload)
+                legacy_payload.pop("input_context", None)
+                if existing is not None and "input_context" in existing["payload"]:
+                    # A rebuilt cache may add older committed context. The slot
+                    # already belongs to its original, frozen admission.
+                    prior_events = self.policy_checkpoint.events_for_task(
+                        room_id=binding.room_id, source_event_seq=existing["payload"]["source_event_seq"],
+                        input_context=existing["payload"]["input_context"], task_id=existing["identity"].task_id)
+                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.local_profiles())
+                    admitted = existing
+                elif existing is not None and existing["payload"] == legacy_payload:
+                    discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
+                                                     local_profiles=self.local_profiles())
+                    admitted = existing
+                else:
+                    admitted = driver.admit_task(
+                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=time.time)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
                 if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(decision.task.identity, cancel_id=f"stop-fence:{fence}")
+                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}")
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
@@ -452,10 +484,10 @@ class HostedRoomService:
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
-        event = hosted_rooms.append_event(
-            self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
-            actor={"kind": "user", "id": "desktop"}, payload=normalized,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
+        from gateway.session_hosted_attachments import append_user_event
+        event = append_user_event(
+            self, room_id=room_id, event_id=event_id, payload=normalized,
+            gateway_id=gateway_id, epoch=epoch)
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if binding is None:
             raise hosted_rooms.RoomNotFoundError("hosted room not found")

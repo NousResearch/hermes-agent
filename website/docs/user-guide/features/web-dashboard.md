@@ -504,7 +504,29 @@ Full-text search across message content. Query parameter: `q`. Returns matching 
 
 ### DELETE /api/sessions/\{session_id\}
 
-Deletes a session and its message history.
+Deletes a session and its message history. The request must carry the mutation identity
+the client read from `GET /api/sessions/{id}/mutation-snapshot` (`request_id`,
+`expected_revision`, and `expected_generation`); without it the route answers `409
+mutation_identity_required`. The delete is executed by the profile's gateway, so a
+session with a running or queued turn is refused with `409 session_busy` and one whose
+last turn was lost across a gateway restart with `409 unknown_execution` — nothing is
+removed in either case. Deleting a session that has executed turns leaves small
+terminal-receipt tombstones in the `state_meta` table (admission and worker identities
+with the user text and history stripped); they let an exact retry of the same delete —
+or of an API run that targeted the deleted session — return the same answer instead of
+recreating the session, and stop the deleted ID from being re-imported. They are kept
+indefinitely (a few hundred bytes per executed turn).
+
+### Bulk maintenance while a gateway owns the store
+
+`POST /api/sessions/bulk-delete`, `DELETE /api/sessions/empty`, `POST /api/sessions/prune`
+(non-dry-run) and `POST /api/sessions/owner-backfill` rewrite many rows at once and
+bypass the per-session revision fence, so they are **offline maintenance**: they take the
+profile's exclusive `gateway.lock`. While that profile's gateway is running they return
+`409` with `Exclusive maintenance refused: Gateway runtime already owns profile <home>.
+Drain and stop the gateway, then retry.` and change nothing. Stop the gateway
+(`hermes gateway stop`), run the maintenance call, then start it again. `dry_run` prune
+and every read endpoint keep working against a live gateway.
 
 ### GET /api/logs
 

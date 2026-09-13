@@ -546,7 +546,8 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     if not cleanup_stale:
         return
     _clear_running_pid_cache()
-    for path in (pid_path, _get_gateway_lock_path(pid_path)):
+    # Keep the inode even when stale: another contender may already have opened it.
+    for path in (pid_path,):
         with contextlib.suppress(Exception):
             path.unlink(missing_ok=True)
 
@@ -666,53 +667,24 @@ def _release_file_lock(handle) -> None:
 
 
 def acquire_gateway_runtime_lock() -> bool:
-    """Claim the cross-process runtime lock; the OS releases it if the process dies."""
-    global _gateway_lock_handle
-    if _gateway_lock_handle is not None:
-        return True
-    path = _get_gateway_lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Reserve the launch profile without unlinking inaccessible lock inodes."""
+    from gateway.runtime_ownership import process_ownership, OwnershipConflict
     try:
-        handle = open(path, "a+", encoding="utf-8")
-    except PermissionError:
-        # Stale root-owned lock (launchd session that ran as root): the directory owner can
-        # unlink it; retry once with a fresh file.
-        try:
-            path.unlink()
-            handle = open(path, "a+", encoding="utf-8")
-        except OSError:
-            return False
-    if not _try_acquire_file_lock(handle):
-        handle.close()
+        process_ownership.reserve([_get_process_hermes_home()])
+    except (OwnershipConflict, OSError):
         return False
-    handle.seek(0)
-    handle.truncate()
-    json.dump(_build_pid_record(), handle)
-    handle.flush()
-    with contextlib.suppress(OSError):
-        os.fsync(handle.fileno())
-    _gateway_lock_handle = handle
     _clear_running_pid_cache()
     return True
 
-
 def release_gateway_runtime_lock() -> None:
-    """Release the gateway runtime lock when owned by this process."""
-    global _gateway_lock_handle
-    handle, _gateway_lock_handle = _gateway_lock_handle, None
-    if handle is None:
-        return
-    _release_file_lock(handle)
-    with contextlib.suppress(OSError):
-        handle.close()
+    """Release only this process's profile reservations, never their lock files."""
+    from gateway.runtime_ownership import process_ownership
+    process_ownership.close()
     _clear_running_pid_cache()
 
-
 def owns_gateway_runtime_lock() -> bool:
-    """True when THIS process holds the runtime lock. ``is_gateway_runtime_lock_active`` answers
-    "does anyone?"; re-probing our own flock succeeds on POSIX, so only the handle discriminates."""
-    return _gateway_lock_handle is not None
-
+    from gateway.runtime_ownership import process_ownership
+    return process_ownership.owns(_get_process_hermes_home())
 
 def _probe_lock_file(handle) -> bool:
     """True when another process holds the lock (a won probe is released); closes ``handle``."""
@@ -729,16 +701,15 @@ def _probe_lock_file(handle) -> bool:
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """True when some process currently owns the gateway runtime lock."""
     resolved_lock_path = lock_path or _get_gateway_lock_path()
-    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+    if owns_gateway_runtime_lock() and resolved_lock_path == _get_gateway_lock_path():
         return True
     if not resolved_lock_path.exists():
         return False
     try:
         handle = open(resolved_lock_path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock (see acquire_gateway_runtime_lock): report inactive.
-        _unlink_quietly(resolved_lock_path)
-        return False
+        # Unknown ownership is not permission to delete a potentially held inode.
+        return True
     return _probe_lock_file(handle)
 
 

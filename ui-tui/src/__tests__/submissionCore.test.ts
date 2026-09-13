@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { isSessionBusyError, markSubmitting, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
+import { captureDestination } from '../app/submissionDestination.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 
@@ -148,6 +149,96 @@ describe('submissionCore.submitPrompt — literal submissions (startup -q querie
 
     expect(submitted).toEqual(['/model $(rm -rf ~)'])
   })
+})
+
+it('keeps the submit destination across preprocessing and never mutates the newly focused session', async () => {
+  resetUiState()
+  patchUiState({ sid: 'original' })
+  const { gw, resolveDrop } = makeDeferredGateway()
+  const deps = makeDeps(gw)
+  submitPrompt('private', deps)
+  patchUiState({ sid: 'other', busy: false, status: 'other ready' })
+  resolveDrop()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(gw.request).toHaveBeenCalledWith(
+    'prompt.submit',
+    expect.objectContaining({ session_id: 'original', text: 'private' })
+  )
+  expect(deps.appendMessage).not.toHaveBeenCalled()
+  expect(getUiState()).toMatchObject({ sid: 'other', busy: false, status: 'other ready' })
+})
+
+it('retains a queued submission on ambiguous response and retries the exact identity until durable acknowledgement', async () => {
+  resetUiState()
+  patchUiState({ sid: 'owner', info: { model: 'test', tools: {}, skills: {}, stored_session_id: 'stored-owner' } })
+  const settle = vi.fn()
+  const item = { text: 'private', display: 'private', submissionId: 'stable-id', settle }
+
+  const request = vi.fn().mockResolvedValueOnce({ status: 'streaming' }).mockResolvedValueOnce({
+    admission_id: 'stable-id',
+    target_session_id: 'stored-owner',
+    target_profile_home: captureDestination().profileHome,
+    status: 'queued'
+  })
+
+  const deps = makeDeps({ request } as unknown as GatewayClient)
+  submitPrompt(item.text, deps, true, undefined, { skipDetectDrop: true, queueItem: item })
+  await Promise.resolve()
+  expect(settle).toHaveBeenLastCalledWith(false)
+  submitPrompt(item.text, deps, true, undefined, { skipDetectDrop: true, queueItem: item })
+  await Promise.resolve()
+  expect(request.mock.calls.map(call => call[1])).toEqual([
+    { session_id: 'owner', text: 'private', submission_id: 'stable-id', queued: true },
+    { session_id: 'owner', text: 'private', submission_id: 'stable-id', queued: true }
+  ])
+  expect(settle).toHaveBeenLastCalledWith(true)
+
+  for (const stored_session_id of [undefined, 'wrong-target']) {
+    patchUiState({ info: { model: 'test', tools: {}, skills: {}, stored_session_id } })
+    request.mockResolvedValueOnce({ admission_id: 'stable-id', target_session_id: 'owner',
+      target_profile_home: captureDestination().profileHome, status: 'queued' })
+    submitPrompt(item.text, deps, true, undefined, { skipDetectDrop: true, queueItem: item })
+    await Promise.resolve()
+    expect(settle).toHaveBeenLastCalledWith(false)
+  }
+})
+
+it('preserves legacy isolated submission after explicit unsupported admission without repeating preprocessing', async () => {
+  resetUiState()
+  patchUiState({ sid: 'owner' })
+  const settle = vi.fn()
+  const item = { text: 'private', display: 'private', submissionId: 'unsupported-id', queued: true, settle }
+  let reject!: (error: unknown) => void
+
+  const request = vi.fn().mockReturnValueOnce(new Promise((_, fail) => { reject = fail }))
+    .mockResolvedValueOnce({ status: 'queued' })
+
+  const deps = makeDeps({ request } as unknown as GatewayClient)
+  submitPrompt(item.text, deps, true, undefined, { skipDetectDrop: true, queueItem: item })
+  patchUiState({ sid: 'other', busy: false, status: 'other ready' })
+  reject(Object.assign(new Error('unsupported'), { code: 4094 }))
+  await vi.waitFor(() => expect(settle).toHaveBeenLastCalledWith(true))
+  expect(request.mock.calls.map(call => call[1])).toEqual([
+    { session_id: 'owner', text: 'private', submission_id: 'unsupported-id', queued: true },
+    { session_id: 'owner', text: 'private', queued: true }
+  ])
+  expect(deps.appendMessage).toHaveBeenCalledTimes(1)
+  expect(getUiState()).toMatchObject({ sid: 'other', busy: false, status: 'other ready' })
+})
+
+it('never downgrades ambiguous or conflicting durable submissions to legacy delivery', async () => {
+  for (const code of [undefined, 4093, 5071]) {
+    resetUiState()
+    patchUiState({ sid: 'owner' })
+    const settle = vi.fn()
+    const item = { text: 'private', display: 'private', submissionId: 'retained-id', settle }
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('not admitted'), { code }))
+    submitPrompt(item.text, makeDeps({ request } as unknown as GatewayClient), true, undefined,
+      { skipDetectDrop: true, queueItem: item })
+    await vi.waitFor(() => expect(settle).toHaveBeenLastCalledWith(false))
+    expect(request).toHaveBeenCalledTimes(1)
+  }
 })
 
 describe('submissionCore.markSubmitting', () => {

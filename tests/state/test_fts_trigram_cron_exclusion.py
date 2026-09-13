@@ -111,7 +111,8 @@ def test_deferred_rebuild_does_not_reintroduce_cron(db: SessionDB):
     assert _trigram_rowids(db) == {cli_id}
 
 
-def test_existing_external_layout_rebuilds_trigram_on_upgrade(tmp_path):
+@pytest.mark.parametrize("old_version", [28, 29])
+def test_existing_external_layout_rebuilds_trigram_on_upgrade(tmp_path, old_version):
     db_path = tmp_path / "state.db"
     old = SessionDB(db_path=db_path)
     if not old._trigram_available:
@@ -125,19 +126,23 @@ def test_existing_external_layout_rebuilds_trigram_on_upgrade(tmp_path):
     cli_id = old.append_message("cli", role="user", content="交互迁移内容")
     cron_id = old.append_message("cron", role="user", content="定时迁移内容")
     assert _trigram_rowids(old) == {cli_id, cron_id}
-    old._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION - 1,))
+    assert [row["id"] for row in old.search_messages("互迁移")] == [cli_id]
+    # Historical migration input, not latest-minus-one: unrelated schema bumps
+    # must not relabel an unfinished v29/v30 FTS migration as already complete.
+    old._conn.execute("UPDATE schema_version SET version = ?", (old_version,))
     old._conn.commit()
     old.close()
 
     migrated = SessionDB(db_path=db_path)
     try:
         assert _trigram_rowids(migrated) == {cli_id}
-        view_sql = migrated._conn.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'view' AND name = 'messages_fts_trigram_src'"
-        ).fetchone()[0]
-        assert "sessions" in view_sql
-        assert "cron" in view_sql
+        assert [row["id"] for row in migrated.search_messages("互迁移")] == [cli_id]
+        assert [row["id"] for row in migrated.search_messages(
+            "定时迁移内容", source_filter=["cron"]
+        )] == [cron_id]
+        new_cron_id = migrated.append_message("cron", role="user", content="新增定时内容")
+        assert new_cron_id not in _trigram_rowids(migrated)
+        assert migrated._conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
         migrated._conn.execute(
             "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('integrity-check')"
         )
@@ -213,7 +218,8 @@ def test_v1_tool_calls_layout_is_left_for_optimize_storage(tmp_path):
         migrated.close()
 
 
-def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path):
+@pytest.mark.parametrize("old_version", [28, 29])
+def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path, old_version):
     db_path = tmp_path / "state.db"
     old = SessionDB(db_path=db_path)
     if not old._trigram_available:
@@ -221,8 +227,11 @@ def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path):
         pytest.skip("trigram tokenizer unavailable in this SQLite build")
     _install_pre_v27_trigram(old)
     old.create_session("cron", source="cron")
+    old.create_session("cli", source="cli")
+    cli_id = old.append_message("cli", role="user", content="交互迁移内容")
     cron_id = old.append_message("cron", role="assistant", content="迁移中断内容")
-    assert _trigram_rowids(old) == {cron_id}
+    assert _trigram_rowids(old) == {cli_id, cron_id}
+    assert [row["id"] for row in old.search_messages("互迁移")] == [cli_id]
 
     # Simulate a crash after new DDL landed but before the rebuild/schema stamp.
     for name in (
@@ -233,13 +242,23 @@ def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path):
         old._conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     old._conn.execute("DROP VIEW messages_fts_trigram_src")
     old._conn.executescript(FTS_TRIGRAM_SQL)
-    old._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION - 1,))
+    # Historical migration input, not latest-minus-one: unrelated schema bumps
+    # must not relabel an unfinished v29/v30 FTS migration as already complete.
+    old._conn.execute("UPDATE schema_version SET version = ?", (old_version,))
     old._conn.commit()
     old.close()
 
     migrated = SessionDB(db_path=db_path)
     try:
-        assert _trigram_rowids(migrated) == set()
+        assert _trigram_rowids(migrated) == {cli_id}
+        assert [row["id"] for row in migrated.search_messages("互迁移")] == [cli_id]
+        assert [row["id"] for row in migrated.search_messages(
+            "迁移中断内容", source_filter=["cron"]
+        )] == [cron_id]
+        migrated._conn.execute(
+            "INSERT INTO messages_fts_trigram(messages_fts_trigram, rank) "
+            "VALUES('integrity-check', 1)"
+        )
     finally:
         migrated.close()
 

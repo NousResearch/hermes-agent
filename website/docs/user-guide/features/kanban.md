@@ -1176,6 +1176,21 @@ needed — each profile gateway simply delivers through its own adapters.
 
 ## Runs — one row per attempt
 
+Canonical workers execute through the assigned profile's gateway owner. The local
+transport carries the dispatcher's exact board database path, including custom
+paths and shared boards assigned to another profile; it does not create a separate
+transcript writer. The owner validates the task/run/claim and freezes its policy.
+
+If the owner or managed worker disappears with an **unknown** admission, the card
+keeps its run and claim. PID death, expired claims, stale heartbeats and runtime
+limits do not automatically reexecute that ambiguous attempt. An unavailable
+owner ledger also pauses reclaim. Resolve the unknown admission explicitly using
+`prompt.resolve_unknown` with its admission ID and execution generation. This
+acknowledges uncertainty; it does **not** authorize another Kanban attempt. Inspect
+the effects, then explicitly complete or block the card; unblock a blocked card
+only when a new attempt is intended. Confirmed timeouts and provider rate-limit
+results retain their ordinary retry/failure-accounting behavior.
+
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.
 
 Why two tables instead of just mutating the task: you need **full attempt history** for real-world postmortems ("the second reviewer attempt got to approve, the third merged"), and you need a clean place to hang per-attempt metadata — which files changed, which tests ran, which findings a reviewer noted. Those are run facts, not task facts.

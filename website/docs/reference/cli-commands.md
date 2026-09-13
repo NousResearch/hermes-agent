@@ -128,7 +128,8 @@ Common options:
 | `--pass-session-id` | Pass the session ID into the system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
-| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, shell hooks, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
+| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, shell hooks, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). The gateway freezes code defaults plus your explicit options into the session and runs the turn in an isolated worker process that never reads the profile, so a broken `config.yaml` cannot block it. Requires an explicit `--model` (there is no profile default to inherit); pair with `--provider custom --base-url <url> --api-key <key>` for a fully explicit endpoint. |
+| `--base-url <url>` / `--api-key <key>` | Explicit OpenAI-compatible endpoint and launch-only key for `--provider custom`. The key is held in the running gateway's memory for this session and never written to disk. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 | `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 500, or `agent.max_turns` in config). |
 
@@ -143,7 +144,8 @@ hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
 hermes chat --worktree -q "Review this repo and open a PR"
 hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
-hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
+hermes chat --safe-mode --model gpt-4.1 -q "Is this bug mine or Hermes'?"
+hermes chat --safe-mode --provider custom --base-url http://127.0.0.1:8000/v1 --model local -q "Isolate against a local server"
 ```
 
 #### Delegation in finite chat runs
@@ -156,16 +158,20 @@ final response before the CLI exits.
 
 - **Automatic joining:** no opt-in or background-mode override is needed.
   Interactive TTY chat and messaging sessions keep background delegation.
-- **Existing safeguards:** delegation limits, timeouts, cancellation, and
-  `approvals.single_query_mode` still apply. Joining does not auto-approve commands
-  or guarantee successful child outcomes. Inspect results and verify artifacts.
-- **Terminal completions:** this does not change background terminal notification
-  behavior or the bounded `terminal.oneshot_completion_wait_seconds` exit wait.
-  That setting is not a delegation timeout.
+- **Per-input policy:** the CLI records finite consumption with the admitted prompt,
+  including when resuming an interactive session. It does not change that session's
+  creation policy, sibling viewers, or the daemon environment.
+- **Existing safeguards:** delegation limits, timeouts, and cancellation still apply.
+  Joining does not auto-approve commands or guarantee successful child outcomes.
+  Inspect results and verify artifacts. Managed/safe workers still reject child
+  delegation until their child-registration contract is available.
+- **Separate limits:** `--run-budget` remains unsupported by gateway chat; it is not
+  required for joining. `terminal.oneshot_completion_wait_seconds` is not a
+  delegation timeout. Canonical terminal notifications remain gateway-owned.
 
-Delegation remains process-local. Interrupting or terminating the parent can
-cancel unfinished children. Use a durable scheduler for work that must survive
-the initiating process.
+Closing the CLI detaches rather than terminating its gateway-owned turn. Child
+execution is still process-local to that owner: use a durable scheduler for work
+that must survive an owner restart.
 
 ### `hermes -z <prompt>` — scripted one-shot
 
@@ -265,6 +271,7 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
+| `ensure` | Discover or request a local session runtime without installing a service or replacing an existing owner. Emits JSON; see below. |
 | `start` | Start the installed systemd/launchd background service. |
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
@@ -298,6 +305,75 @@ stopped.
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
 :::
+
+### Local runtime discovery and startup
+
+```bash
+hermes gateway ensure --json --timeout 30
+```
+
+`ensure` targets the active profile and emits one JSON object with `state`,
+`reason_code`, and `endpoint`. The endpoint is present only when authenticated
+local discovery reports compatible session readiness. Output contains no bootstrap
+tickets or bearer credentials. JSON is also the default without `--json`.
+
+The timeout is a finite, positive total deadline in seconds (default `30`). An
+existing reservation or starting owner is waited for, not replaced. When absence
+is established, an existing service takes precedence; an unmanaged process is
+requested only when no service is found. This command never installs or rewrites
+service definitions, enables linger, elevates privileges, or clears update fences.
+Ambiguous or inaccessible ownership fails closed.
+
+Before requesting a service start, `ensure` checks its canonical profile directory
+and execution account, not just its unit/task name. Linux uses the manager's
+loaded command and environment (including effective drop-ins), macOS checks the
+loaded launchd job rather than assuming the on-disk plist is current, and Windows
+queries the actual task XML, principal, and installed launcher.
+
+- `profile_mismatch`: the installed service selects a different home or profile.
+  Inspect the selected service's `HERMES_HOME` and command-line profile selector;
+  use the matching profile or explicitly repair the service configuration.
+- `service_account_mismatch`: the service belongs to another account. Run the
+  client as that account, or explicitly configure a service for the intended user.
+- `service_identity_unverified`: the manager did not expose enough identity data,
+  or the definition uses unsupported dynamic configuration. Inspect it with
+  `systemctl [--user] show <unit> --all`, `launchctl print <domain>/<label>`, or
+  `schtasks /Query /TN <task> /XML`. Linux environment files, PAM/dynamic users,
+  start-time hooks and alternate root filesystems require operator review;
+  arbitrary shell launchers and modified Windows launcher scripts are not
+  interpreted by `ensure`. Restore an explicit supported definition through an
+  intentional service-management operation before retrying.
+
+These refusals do not start a service, rewrite configuration, or launch an
+unmanaged replacement. Standard explicitly bound default and custom-root installs
+remain eligible; a successful start request still must pass live readiness checks.
+
+On POSIX, local bootstrap requires an owner-only profile directory. Newly reserved
+homes are created with mode `0700`; existing permissions are never changed by
+`ensure`. An existing home readable by other users returns
+`inaccessible / unsafe_control_permissions`. Review the directory's intended
+sharing policy and explicitly make it private before retrying local attachment.
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Compatible session runtime ready. |
+| `2` | Invalid invocation, including invalid timeout or unknown arguments. |
+| `3` | Incompatible runtime protocol or capabilities. |
+| `4` | Authorization or profile mismatch. |
+| `5` | Deadline reached; startup may still be pending. |
+| `6` | Runtime draining or update in progress. |
+| `7` | Inaccessible runtime, conflicting supervisor, or startup failure. |
+
+A service start command or process creation is not a readiness acknowledgement.
+A gateway that has not exposed the session-authority capability can remain
+`starting` until the deadline even while its messaging adapters work. Do not treat
+exit `5` as permission to replace that owner. On Windows, a Startup-folder-only
+installation requires login rather than an unmanaged fallback; failure to detach
+from a parent job is reported instead of retried with weaker process isolation.
+
+Service persistence is separately opt-in during setup. Imports and noninteractive
+setup do not install a missing service based on an imported preference. See
+[optional service installation](../developer-guide/gateway-internals.md#optional-service-installation).
 
 ## `hermes lsp`
 

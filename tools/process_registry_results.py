@@ -72,7 +72,7 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         return True
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = SessionDB(read_only=True)
     try:
         return db.get_compression_tip(parent) == owner
     finally:

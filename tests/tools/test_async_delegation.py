@@ -527,7 +527,8 @@ def test_in_tool_stall_uses_higher_threshold(monkeypatch):
 
 
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
-    """Real-import E2E: a fresh interpreter restores a prior process's result."""
+    """Real-import E2E: the owning runtime, in a fresh interpreter, restores a prior process's
+    result exactly once. Importing the tools graph alone restores nothing (client fence)."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
     producer = r'''
@@ -552,6 +553,9 @@ print(r["delegation_id"])
     consumer = r'''
 import json
 from tools.process_registry import process_registry
+from tools.async_delegation import restore_undelivered_completions
+assert process_registry.completion_queue.empty(), "import must not restore"
+restore_undelivered_completions(process_registry.completion_queue)
 evt = process_registry.completion_queue.get_nowait()
 print(json.dumps(evt, sort_keys=True))
 '''
@@ -574,7 +578,7 @@ assert ad.mark_completion_delivered({delegation_id!r})
         text=True, capture_output=True, timeout=15, check=True,
     )
     probe = subprocess.run(
-        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        [sys.executable, "-c", "from tools.process_registry import process_registry; from tools.async_delegation import restore_undelivered_completions; restore_undelivered_completions(process_registry.completion_queue); print(process_registry.completion_queue.qsize())"],
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"

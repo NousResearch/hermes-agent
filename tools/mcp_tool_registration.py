@@ -387,10 +387,18 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     _record_tool_trust_metadata(name, config, server._tools)
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
+    if (_core._server_registry_scope(name) or '').startswith('editor-session:'):
+        import json
+        from hermes_state_runtime import RuntimeStoreError
+        manifest = json.dumps({c.registry_name: c.schema for c in candidates}, sort_keys=True)
+        frozen = getattr(server, '_editor_frozen_manifest', manifest)
+        if manifest != frozen:
+            raise RuntimeStoreError('acp_mcp_schema_changed')
+        server._editor_frozen_manifest = frozen
     registered = _register_candidates(
         name, _resolve_name_collisions(name, candidates),
         check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key)
-    if registered:
+    if registered and not (_core._server_registry_scope(key) or '').startswith('editor-session:'):
         _write_schema_cache(name, server, config, should_register)
     return registered
 

@@ -1,6 +1,8 @@
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { type GatewayEvent, type GatewayEventName, JsonRpcGatewayClient } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
+
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -26,14 +28,59 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export class HermesGateway extends JsonRpcGatewayClient {
+  private canonical = false
+  private readonly protocol = new CanonicalDesktopProtocol()
+
+  override on<P = unknown>(type: GatewayEventName, handler: (event: GatewayEvent<P>) => void): () => void {
+    return super.on<P>(type, event => {
+      // Named listeners run before wildcard listeners in the shared client.
+      // Normalize before either kind sees the prompt, including replay delivery.
+      if (this.canonical) { this.protocol.event(event) }
+      handler(event)
+    })
+  }
+
+  override async connect(wsUrl: string): Promise<void> {
+    this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+
+    return super.connect(wsUrl)
+  }
+
+  override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+    if (!this.canonical) { return super.request<T>(method, params, timeoutMs, signal) }
+    const prepared = this.protocol.prepare(method, params)
+    const wireMethod = this.protocol.wire(method, prepared)
+
+    try {
+      const result = await super.request<T>(wireMethod, prepared, timeoutMs, signal)
+
+      return this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), (m, p) => this.request(m, p)) as T
+    } catch (error) {
+      this.protocol.failure(prepared, error)
+      throw error
+    }
+  }
+
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: 'Hermes gateway is not connected',
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      socketFactory: url => {
+        const parsed = new URL(url)
+
+        if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
+        const ticket = parsed.searchParams.get('ticket')
+
+        if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
+        parsed.searchParams.delete('ticket')
+
+        return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
+      }
     })
+    this.onEvent(event => { if (this.canonical) { this.protocol.event(event) } })
   }
 }
 

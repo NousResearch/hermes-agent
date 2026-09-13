@@ -154,6 +154,10 @@ def _resolve_skill_commands_home() -> str:
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
         return None
@@ -368,6 +372,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return {}
     global _skill_commands, _skill_commands_platform, _skill_commands_home
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
@@ -424,6 +432,10 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     See #14536, #88023.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return {}
     current_platform = _resolve_skill_commands_platform()
     current_home = _resolve_skill_commands_home()
     with _publish_lock:
@@ -586,6 +598,10 @@ def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | N
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
     bundle-invocation gate (#59156).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return "", [], list(skill_identifiers)
     loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
         [(raw or "").strip() for raw in skill_identifiers],
         lambda identifier: _load_skill_payload(identifier, task_id=task_id),

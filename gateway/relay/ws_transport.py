@@ -932,7 +932,10 @@ class WebSocketRelayTransport:
     async def _on_inbound(self, frame: Dict[str, Any]) -> None:
         if self._inbound is None:
             return
-        await self._inbound(_event_from_wire(frame.get("event", {})))
+        from gateway.session_ingress_context import relay_callback
+        event = _event_from_wire(frame.get("event", {}))
+        with relay_callback(self, event):
+            await self._inbound(event)
         # A replayed buffered delivery carries a bufferId; ack AFTER the handler
         # has taken it so the connector advances its cursor (no dup).
         buffer_id = frame.get("bufferId")

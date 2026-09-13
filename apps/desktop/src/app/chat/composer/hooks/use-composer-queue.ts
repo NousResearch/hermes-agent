@@ -17,6 +17,7 @@ import {
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
+  serverOwnsComposerQueue,
   shouldAutoDrain,
   unparkQueuedPrompts,
   updateQueuedPrompt
@@ -96,13 +97,15 @@ export function useComposerQueue({
 
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
 
+  const currentQueueKeyRef = useRef(activeQueueSessionKey)
+  currentQueueKeyRef.current = activeQueueSessionKey
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
   const drainFailuresRef = useRef(new Map<string, number>())
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
-    if (!activeQueueSessionKey || queueEdit) {
+    if (!activeQueueSessionKey || queueEdit || entry.serverStatus) {
       return
     }
 
@@ -188,6 +191,22 @@ export function useComposerQueue({
       return false
     }
 
+    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+      return Promise.resolve(onSubmit(text, {
+        attachments: cloneAttachments(attachments), fromQueue: true,
+        sessionId: sessionId ?? null, storedSessionId: activeQueueSessionKey
+      })).then(accepted => {
+        if (accepted !== true) { return false }
+
+        if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
+          clearDraft()
+          scope.attachments.removeOccurrences(attachments)
+        }
+
+        return true
+      }).catch(() => false)
+    }
+
     if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
@@ -197,7 +216,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -209,7 +228,7 @@ export function useComposerQueue({
 
       const drainQueueSessionKey = activeQueueSessionKey
       const drainRuntimeSessionId = sessionId ?? null
-      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey))
+      const entry = pickEntry(getQueuedPrompts(drainQueueSessionKey).filter(entry => !entry.serverStatus))
 
       if (!entry) {
         return false
@@ -224,12 +243,13 @@ export function useComposerQueue({
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
             fromQueue: true,
+            submission_id: entry.id,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey
           })
         )
 
-        if (accepted === false) {
+        if (accepted !== true) {
           return false
         }
 
@@ -254,7 +274,7 @@ export function useComposerQueue({
     (entries: QueuedPromptEntry[]) => {
       const skip = queueEditRef.current?.entryId
 
-      return skip ? entries.find(e => e.id !== skip) : entries[0]
+      return entries.find(e => !e.serverStatus && e.id !== skip)
     },
     [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
   )

@@ -15,6 +15,26 @@ _FORCE_SERVED_PROFILE_HELP = (
     "(not recommended: two pollers on one bot token, port conflicts)")
 
 
+class _GatewayCommandParser(argparse.ArgumentParser):
+    """Ensure's parser errors share its machine-readable command boundary."""
+
+    def __init__(self, *args, ensure_json=False, **kwargs):
+        self.ensure_json = ensure_json
+        super().__init__(*args, **kwargs)
+
+    def parse_known_args(self, args=None, namespace=None):
+        parsed, unknown = super().parse_known_args(args, namespace)
+        if self.ensure_json and unknown:
+            self.error("unknown arguments")
+        return parsed, unknown
+
+    def error(self, message):
+        if not self.ensure_json:
+            return super().error(message)
+        print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
+        self.exit(2, "gateway ensure: invalid invocation\n")
+
+
 def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
@@ -38,7 +58,8 @@ def build_gateway_parser(
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     gateway_parser = subparsers.add_parser("gateway", help="Messaging gateway management",
         description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)")
-    gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
+    gateway_subparsers = gateway_parser.add_subparsers(
+        dest="gateway_command", parser_class=_GatewayCommandParser)
 
     gateway_run = gateway_subparsers.add_parser(
         "run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
@@ -67,6 +88,18 @@ def build_gateway_parser(
             "launchd/systemd wrapper strips its native environment markers.")
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
+
+    from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure
+    gateway_ensure = gateway_subparsers.add_parser(
+        "ensure", ensure_json=True,
+        help="Ensure a local runtime without installing or replacing a service",
+        epilog="Exit codes: 0 ready; 2 invalid invocation; 3 incompatible; "
+               "4 authorization/profile mismatch; 5 deadline; 6 draining/update-paused; "
+               "7 inaccessible/conflicting supervisor. Pending startup is not readiness.")
+    _flag(gateway_ensure, "--json", help="Emit one credential-free JSON result (default)")
+    gateway_ensure.add_argument("--timeout", default="30",
+                                help="Total startup deadline in seconds (default: 30)")
+    gateway_ensure.set_defaults(func=cmd_gateway_ensure)
 
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")

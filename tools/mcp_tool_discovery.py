@@ -373,6 +373,11 @@ def _log_summary(prefix: str, names, **lazy) -> None:
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect ``{name: config}`` servers and register their tools; idempotent for connected
     names, ``enabled: false`` skipped without disconnecting. Returns every MCP tool name."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        # A troubleshooting worker never spawns MCP processes; nor may it borrow tools
+        # another caller already connected in this process.
+        return []
     if not _core._ensure_mcp_sdk():
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
@@ -438,6 +443,9 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        return []
     servers = _config._load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")

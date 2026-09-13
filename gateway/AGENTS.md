@@ -75,6 +75,12 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
+FIFO as human input, retaining the private local launch policy and `internal_notification` display
+kind. Observers neither own nor consume those turns. Accepted local automation survives owner
+restart; an interrupted started turn remains unknown and pauses its followers. Watch hits carry
+separate event IDs even for identical text, but their pre-admission process queue is not durable.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

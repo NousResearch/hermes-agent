@@ -826,7 +826,9 @@ class RelayAdapter(BasePlatformAdapter):
         # the connector replays its durable buffer, and a long turn straddling a
         # quiet socket drop got re-run (final answer 2-5x). Platform message identity
         # is stable across replays.
-        dedupe_key = self._inbound_dedupe_key(event)
+        runner = getattr(self._message_handler, '__self__', None)
+        native = getattr(runner, 'session_authority', None) is not None and not event.get_command()
+        dedupe_key = None if native else self._inbound_dedupe_key(event)
         if dedupe_key is not None:
             if dedupe_key in self._seen_inbound:
                 logger.info("relay inbound dropped as replay (dedupe key=%s)", dedupe_key)
@@ -840,7 +842,17 @@ class RelayAdapter(BasePlatformAdapter):
         if await self._consume_prompt_response(event):
             return
         await self._localize_inbound_media(event)
-        await self.handle_message(event)
+        if native:
+            from datetime import datetime, timezone
+            from gateway.platforms.webhook_ingress import admit_producer
+            # The connector does not transmit a provider timestamp. Local arrival
+            # time must not change the fingerprint of a retried provider identity.
+            event.timestamp = datetime.fromtimestamp(0, timezone.utc)
+            # Wait only for the SQLite receipt, never inference or outbound ACKs
+            # (those need this same WS reader). Exceptions deliberately suppress ACK.
+            await admit_producer(self, event)
+        else:
+            await self.handle_message(event)
 
     _SEEN_INBOUND_MAX = 512
 

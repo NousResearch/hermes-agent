@@ -10,7 +10,8 @@ schedule via the `cronjob` tool; users via `hermes cron list|add|edit|pause|resu
 `/cron`. Schedules: duration (`"30m"`, `"2h"`, `"1d"`), "every" phrase (`"every 2h"`, `"every monday
 9am"`), 5-field cron (`"0 9 * * *"`), ISO one-shot (`"2026-06-01T09:00:00Z"`). Per-job fields:
 `skills`, `model`/`provider` overrides, `script` (pre-run data-collection script whose stdout is
-injected into the prompt; `no_agent=True` makes the script the whole job), `context_from` (chain job
+injected into the prompt; `no_agent=True` makes the script the whole job; always a FILE under
+`HERMES_HOME/scripts/`, never a command line — `script='echo hi'` is refused at creation), `context_from` (chain job
 A's last output into job B's prompt), `workdir` (run with that directory's `AGENTS.md`/`CLAUDE.md`
 loaded), multi-platform delivery.
 

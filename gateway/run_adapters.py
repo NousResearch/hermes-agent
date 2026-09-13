@@ -760,6 +760,9 @@ class GatewayAdapterLifecycleMixin:
     def _publish_primary_adapter(self, platform, adapter) -> None:
         """Register a connected primary adapter and wire voice mode/input (transcription without /voice join)."""
         self.adapters[platform] = adapter
+        if platform == Platform.API_SERVER:
+            from gateway.session_api_turn import recover_api_turns
+            recover_api_turns(adapter)
         self._sync_voice_mode_state_to_adapter(adapter)
         self._bind_voice_input_callback(adapter)
 
@@ -1296,13 +1299,18 @@ class GatewayAdapterLifecycleMixin:
         (auth runs BEFORE the agent-turn scope, so the profile's ``.env`` must be visible here)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
+        from gateway.session_ingress_context import native_callback, register_transport_home
+        register_transport_home(self, profile_name, profile_home)
 
-        async def _handler(event):
+        async def _handler(_runner, event):
             self._stamp_event_profile(event, profile_name)
-            async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
-                return await self._handle_message(event)
+            if profile_home is not None:
+                event.source._authorization_profile_home = profile_home
+            with native_callback(self, event, profile_home, profile_name):
+                async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
+                    return await self._handle_message(event)
 
-        return _handler
+        return _handler.__get__(self)
 
     def _make_profile_busy_session_handler(self, profile_name: str):
         """Stamp an owning adapter's profile, then resolve busy policy under the profile scope
@@ -1322,14 +1330,18 @@ class GatewayAdapterLifecycleMixin:
         with the transport profile (a routed profile may have no credential/allowlist)."""
         from gateway.run import _async_profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
+        from gateway.session_ingress_context import register_transport_home
+        register_transport_home(self, None, default_home)
 
-        async def _handler(event):
+        async def _handler(_runner, event):
             # A rejected route still enters ``_handle_message``, whose ingress gate drops it fail-closed.
             profile_home = self._admit_primary_source(event.source, default_home) or default_home
-            async with _async_profile_runtime_scope(profile_home):
-                return await self._handle_message(event)
+            from gateway.session_ingress_context import native_callback
+            with native_callback(self, event, default_home):
+                async with _async_profile_runtime_scope(profile_home):
+                    return await self._handle_message(event)
 
-        return _handler
+        return _handler.__get__(self)
 
     def _make_default_profile_busy_session_handler(self):
         """Busy-path twin of ``_make_default_profile_message_handler``: busy callbacks bypass the message
@@ -1380,7 +1392,8 @@ class GatewayAdapterLifecycleMixin:
 
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
-        return self._make_default_profile_message_handler() if self._multiplex_on() else self._handle_message
+        shared = getattr(self, 'session_authority', None) is not None
+        return self._make_default_profile_message_handler() if self._multiplex_on() or shared else self._handle_message
 
     def _primary_busy_session_handler(self):
         """Return the correctly scoped busy-session handler for a primary adapter."""

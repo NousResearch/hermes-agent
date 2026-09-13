@@ -227,6 +227,11 @@ def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int]]:
 
 def _load_raw_config() -> Dict[str, Any]:
     """Read config.yaml with an mtime+size keyed cache (no hermes_cli.config import)."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    snapshot = worker_config_snapshot()
+    if snapshot is not None:
+        return snapshot
     config_path = get_config_path()
     if not config_path.exists():
         return {}

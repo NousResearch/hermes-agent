@@ -2,10 +2,9 @@
 
 The Desktop's relay door on each connected gateway. Contracts:
 - roster.sync persists validated rows and reports the accepted count;
-- outbox.drain returns queued envelopes exactly once;
-- deliver validates the target profile against THIS install and runs the
-  one-turn Bot Chat transport (subprocess is faked here — the argv contract
-  is what's pinned);
+- outbox.drain replays a canonical envelope (same id) until its reply lands;
+- deliver requires a stable envelope id, resolves the target profile's home
+  on THIS install and forwards to that profile's authority — never a CLI turn;
 - reply writes the waiter's file and rejects malformed envelope ids.
 """
 
@@ -49,7 +48,10 @@ def test_roster_sync_persists_and_counts(home):
     assert [r["profile"] for r in bot_relay.read_remote_roster(home)] == ["scout"]
 
 
-def test_outbox_drain_returns_each_envelope_once(home):
+def test_outbox_drain_replays_canonical_envelope_until_reply_acknowledged(home):
+    """A drained envelope is not "delivered" — its stable id is replayed on every
+    drain until the target's terminal reply is written under that id, so a
+    Desktop that lost the first drain result cannot drop the DM."""
     target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
               "connection_label": "", "title": "", "description": ""}
     env = bot_relay.enqueue_envelope(
@@ -58,99 +60,75 @@ def test_outbox_drain_returns_each_envelope_once(home):
     first = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in first["envelopes"]] == [env["id"]]
     second = _result(srv._methods["bot_relay.outbox.drain"](2, {}))
-    assert second["envelopes"] == []
+    assert [e["id"] for e in second["envelopes"]] == [env["id"]], "same id, never a duplicate envelope"
+    assert second["envelopes"][0]["message"] == "m"
+    _result(srv._methods["bot_relay.reply"](3, {"id": env["id"], "reply": "done"}))
+    assert _result(srv._methods["bot_relay.outbox.drain"](4, {}))["envelopes"] == []
 
 
-def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
-    calls = {}
+def test_deliver_forwards_stable_id_to_target_profile_authority(home, monkeypatch):
+    """The relay door is a transport bridge: it resolves the target profile's
+    own home and forwards the envelope id + message to THAT authority. It
+    never runs a CLI turn of its own."""
+    from tools import bot_live_delivery as live
 
-    class _Proc:
-        returncode = 0
-        stdout = "pong from ops"
-        stderr = ""
-
-    def _fake_run(argv, **kwargs):
-        calls["argv"] = argv
-        calls["kwargs"] = kwargs
-        return _Proc()
-
-    monkeypatch.setattr("subprocess.run", _fake_run)
-    out = _result(
-        srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})
-    )
-    assert out["reply"] == "pong from ops"
-    # Decoding is pinned (#93590 sibling defect): without encoding= the
-    # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on
-    # Windows — mangling non-ASCII replies; errors="replace" keeps a bad
-    # byte from raising instead of delivering.
-    assert calls["kwargs"]["encoding"] == "utf-8"
-    assert calls["kwargs"]["errors"] == "replace"
-    argv = calls["argv"]
-    # argv[0] may be a resolved venv path (#93590) — match by basename.
-    assert argv[1:3] == ["-p", "ops"]
-    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
-    assert "Bot Chat" in argv and "--query-file" in argv
-
-    # 'hermes' alias resolves to default
-    _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
-    assert calls["argv"][1:3] == ["-p", "default"]
-
-    # unknown profile refuses without spawning
-    calls.clear()
-    err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
-    assert "error" in err and "ghost" in err["error"]["message"]
-    assert not calls
-
-
-def test_deliver_requires_params(home):
-    err = srv._methods["bot_relay.deliver"](1, {"profile": "", "message": ""})
-    assert "error" in err
-
-
-def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):
-    """#100523: a Desktop-owned Bot Chat receives the DM as a normal user turn.
-
-    With the target's Bot Chat live in this gateway, the subprocess transport
-    would be fenced out by the single-owner lease and drop the payload. The
-    handler must route through prompt.submit (the composer's choke point) and
-    never spawn the CLI.
-    """
+    forwarded = []
     spawned = []
-    submitted = []
-
-    class _Proc:
-        returncode, stdout, stderr = 0, "pong", ""
 
     def _fake_run(argv, *a, **k):
-        # The server module's import-time update prefetch runs `git ...` on a
-        # daemon thread; only the relay's `hermes` CLI spawn is under test.
+        # The server module's import-time update prefetch runs `git ...`; only
+        # a `hermes` spawn would be a delivery attempt.
         if argv and argv[0] != "git":
             spawned.append(argv)
-        return _Proc()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def _fake_authority(target_home, params):
+        forwarded.append((target_home, dict(params)))
+        return {"status": "queued", "delivery_id": params["id"], "reply": ""}
 
     monkeypatch.setattr("subprocess.run", _fake_run)
-    monkeypatch.setitem(
-        srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
-    )
-    monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
-    monkeypatch.setitem(
-        srv._sessions,
-        "live-ops",
-        {"profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []},
-    )
-    out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
-    # queued=True is the invariant: a DM never interrupts a turn in flight.
-    assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True}]
+    monkeypatch.setattr(live, "authority_delivery", _fake_authority)
+    envelope_id = "b" * 32
+    out = _result(srv._methods["bot_relay.deliver"](1, {"id": envelope_id, "profile": "ops", "message": "ping"}))
+    assert out["status"] == "queued" and out["delivery_id"] == envelope_id
+    assert forwarded[-1][0] == home / "profiles" / "ops"
+    assert forwarded[-1][1]["id"] == envelope_id and forwarded[-1][1]["profile"] == "ops"
+
+    # Exact retry carries the SAME id to the same authority — no second envelope.
+    _result(srv._methods["bot_relay.deliver"](2, {"id": envelope_id, "profile": "ops", "message": "ping"}))
+    assert [p["id"] for _h, p in forwarded] == [envelope_id, envelope_id]
+
+    # 'hermes' alias resolves to the default profile's home.
+    _result(srv._methods["bot_relay.deliver"](3, {"id": "c" * 32, "profile": "hermes", "message": "x"}))
+    assert forwarded[-1][0] == home and forwarded[-1][1]["profile"] == "default"
     assert not spawned
-    assert "reply" in out
 
-    # A live session titled anything else for the same profile does not qualify:
-    # the subprocess path runs exactly as before.
-    srv._sessions["live-ops"]["pending_title"] = "Scratch"
-    submitted.clear()
 
-    out = _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
-    assert out["reply"] == "pong" and spawned and not submitted
+def test_deliver_unreachable_authority_is_a_typed_refusal(home, monkeypatch):
+    from tools import bot_live_delivery as live
+
+    def _down(target_home, params):
+        raise ValueError("profile authority is not ready")
+
+    monkeypatch.setattr(live, "authority_delivery", _down)
+    err = srv._methods["bot_relay.deliver"](1, {"id": "d" * 32, "profile": "ghost", "message": "x"})
+    assert err["error"]["data"]["reason"] == "runtime_unavailable"
+    assert "not ready" in err["error"]["message"]
+
+
+@pytest.mark.parametrize("params", [
+    {"profile": "", "message": ""},
+    {"profile": "ops", "message": "no envelope id"},
+    {"id": "../evil", "profile": "ops", "message": "x"},
+    {"id": "e" * 32, "profile": "../ops", "message": "x"},
+])
+def test_deliver_requires_stable_id_and_valid_profile(home, monkeypatch, params):
+    from tools import bot_live_delivery as live
+
+    monkeypatch.setattr(live, "authority_delivery",
+                        lambda *a, **k: pytest.fail("malformed requests never reach an authority"))
+    err = srv._methods["bot_relay.deliver"](1, params)
+    assert err["error"]["data"]["reason"] == "invalid_params"
 
 
 def test_reply_roundtrip_and_id_validation(home):
@@ -161,81 +139,6 @@ def test_reply_roundtrip_and_id_validation(home):
 
     err = srv._methods["bot_relay.reply"](2, {"id": "../evil"})
     assert "error" in err
-
-
-def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_path):
-    """A failed payload write must not leak the relay DM tempfile."""
-    import glob
-    import os
-    import tempfile as _tempfile
-
-    made = []
-    real_mkstemp = _tempfile.mkstemp
-
-    def _tracking_mkstemp(*args, **kwargs):
-        kwargs["dir"] = str(tmp_path)
-        fd, path = real_mkstemp(*args, **kwargs)
-        made.append(path)
-        return fd, path
-
-    class _BrokenWriter:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info):
-            return False
-
-        def write(self, content):
-            raise OSError("disk full")
-
-    monkeypatch.setattr("tempfile.mkstemp", _tracking_mkstemp)
-    monkeypatch.setattr("os.fdopen", lambda *a, **k: _BrokenWriter())
-    err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
-    assert "error" in err
-    assert made, "mkstemp was never reached"
-    assert not glob.glob(str(tmp_path / "hermes-relay-dm-*")), "tempfile leaked"
-
-
-@pytest.fixture
-def fake_runs(monkeypatch):
-    """Fake ``subprocess.run`` that records each call's kwargs; ``outcomes`` holds (returncode, stderr) per call."""
-    calls, outcomes = [], []
-
-    def _fake_run(argv, **kwargs):
-        calls.append(kwargs)
-        code, err = outcomes.pop(0) if outcomes else (0, "")
-
-        class _Proc:
-            returncode, stdout, stderr = code, "ok" if code == 0 else "", err
-
-        return _Proc()
-
-    monkeypatch.setattr("subprocess.run", _fake_run)
-    return calls, outcomes
-
-
-@pytest.mark.parametrize("sender, expected", [
-    ({"from_profile": "scout", "from_handle": "scout"}, {"id": "bot:scout", "name": "scout", "is_bot": True}),
-    ({"from_profile": "scout", "from_handle": "scout", "from_connection": "cloud-1"},
-     {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}),
-    ({}, None),
-], ids=["sender fields", "sender on another connection", "no sender fields"])
-def test_deliver_child_env_carries_the_envelope_sender_on_every_attempt(home, monkeypatch, fake_runs, sender, expected):
-    """HERMES_TURN_AUTHOR on the child comes from the envelope's sender fields alone: the retry gets the same
-    author, and without sender fields a stale author on the gateway's own environment never reaches the child."""
-    from agent.turn_author import TURN_AUTHOR_ENV
-
-    calls, outcomes = fake_runs
-    outcomes.extend([(1, "HTTP 429 rate limit"), (0, "")])
-    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
-    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:stale", "name": "stale", "is_bot": True}))
-
-    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender}))
-
-    envs = [c["env"] for c in calls]
-    assert len(envs) == 2
-    assert [json.loads(e[TURN_AUTHOR_ENV]) if TURN_AUTHOR_ENV in e else None for e in envs] == [expected, expected]
-    assert all(e["HERMES_RELAY_TEST_MARKER"] == "kept" for e in envs)
 
 
 class _Client:
@@ -264,34 +167,23 @@ SENDER = {"from_profile": "scout", "from_handle": "scout", "from_connection": "c
 SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
 
 
-@pytest.mark.parametrize("identity", [
-    None,
-    {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER},
-], ids=["no identity", "server-internal identity"])
-def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_runs, bound_client, identity):
-    """The Desktop and server-internal callers carry no login identity; their sender fields become the author."""
-    from agent.turn_author import TURN_AUTHOR_ENV
-
-    calls, _outcomes = fake_runs
+@pytest.mark.parametrize("identity, refused", [
+    (None, False),
+    ({"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}, False),
+    ({"user_id": "alice", "provider": "google"}, True),
+])
+def test_relay_sender_attribution_obeys_transport_identity(home, monkeypatch, bound_client, identity, refused):
+    from tools import bot_live_delivery as live
+    forwarded = []
+    monkeypatch.setattr(live, "authority_delivery",
+                        lambda home, params: forwarded.append(params) or {"status": "queued"})
     bound_client.auth_identity = identity
-
-    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **SENDER}))
-
-    assert [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls] == [SENDER_AUTHOR]
-
-
-def test_deliver_refuses_a_sender_from_a_logged_in_client(home, fake_runs, bound_client):
-    """A browser login never relays for another connection, so its from_* fields are refused before any turn runs.
-    Without sender fields the same client still delivers, unattributed."""
-    from agent.turn_author import TURN_AUTHOR_ENV
-
-    calls, _outcomes = fake_runs
-    bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
-
-    for sender in ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER):
-        err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender})
-        assert err["error"]["code"] == 4095
-    assert not calls
-
-    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
-    assert len(calls) == 1 and TURN_AUTHOR_ENV not in calls[0]["env"]
+    result = srv._methods["bot_relay.deliver"](1, {
+        "id": "f" * 32, "profile": "ops", "message": "ping", **SENDER})
+    if refused:
+        assert result["error"]["code"] == 4095
+        assert not forwarded
+    else:
+        assert _result(result)["status"] == "queued"
+        assert forwarded[0]["author"] == SENDER_AUTHOR
+        assert not any(key in forwarded[0] for key in SENDER)

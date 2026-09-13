@@ -321,6 +321,9 @@ def _portable_mcp_servers(safe_servers: Dict[str, dict]) -> None:
 
 def _load_mcp_config() -> Dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        return {}
     try:
         from hermes_cli.config import load_config
         from utils import env_var_enabled as _env_enabled

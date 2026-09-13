@@ -193,6 +193,7 @@ describe('Hermes REST helpers', () => {
 
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
+    api.mockResolvedValue({ ...emptySessionsResponse, exists: true, runtime_revision: 9, runtime_generation: 2 })
 
     await getSession('ambient-session')
     await getSessionMessages('ambient-session')

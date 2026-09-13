@@ -1,3 +1,5 @@
+import type { SharedControl } from './canonicalGateway.js'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -95,6 +97,7 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  sharedControl?: SharedControl
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
@@ -120,6 +123,7 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
+  sharedControl?: SharedControl
   choices: string[] | null
   question: string
   requestId: string
@@ -188,6 +192,7 @@ export interface ProjectInfo {
 }
 
 export interface SessionInfo {
+  stored_session_id?: string
   cwd?: string
   fast?: boolean
   install_warning?: string
@@ -197,6 +202,18 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  pending_submissions?: Array<{
+    admission_id: string
+    input_id?: string
+    target_session_id: string
+    target_profile_home: string
+    status: string
+    user: string
+    outcome?: string | null
+  }>
+  execution_epoch?: string
+  execution_generation?: number
+  execution_state?: string
   running?: boolean
   release_date?: string
   service_tier?: string

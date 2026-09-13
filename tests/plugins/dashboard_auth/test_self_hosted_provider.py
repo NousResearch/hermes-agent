@@ -728,3 +728,29 @@ class TestPluginRegister:
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert registered._client_secret == "cfg-secret"
 
+
+
+class TestForgedSignature:
+    """A bearer whose signature does not verify is an invalid token, never a provider outage.
+
+    Live remote-bind probe: a tampered OIDC bearer on the gated API returned 503
+    ``Auth provider 'self-hosted' unreachable`` (cookies kept, no fall-through), so a forged
+    token was indistinguishable from an IDP outage. iss/aud drift keeps its 503 (config drift).
+    """
+
+    def test_tampered_signature_is_invalid_token_not_unreachable(self, rsa_keypair):
+        provider = _make_provider(rsa_keypair)
+        token = _mint_id_token(rsa_keypair)
+        head, body, sig = token.split(".")
+        forged = ".".join((head, body, sig[:-4] + ("AAAA" if not sig.endswith("AAAA") else "BBBB")))
+        assert provider.verify_session(access_token=forged) is None
+
+    def test_wrong_key_signature_is_invalid_token_not_unreachable(self, rsa_keypair):
+        provider = _make_provider(rsa_keypair)
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = other.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption())
+        now = int(time.time())
+        token = jwt.encode({"iss": _ISSUER, "aud": _CLIENT_ID, "sub": "usr_abc", "iat": now, "exp": now + 900},
+                           pem, algorithm="RS256", headers={"kid": rsa_keypair["kid"]})
+        assert provider.verify_session(access_token=token) is None

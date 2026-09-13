@@ -9,7 +9,6 @@ import type { ProfileInfo } from '@/types/hermes'
 const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const openSecondaryCount = vi.fn(() => 0)
 const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
@@ -19,16 +18,8 @@ vi.mock('@/store/gateway', () => ({
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
-  openGatewayForProfile,
-  openSecondaryCount
+  openGatewayForProfile
 }))
-// The pool-limits atom is profile.ts's live saturation signal — keep the real
-// one so tests can move the cap via the store, but stub its IPC bridge.
-vi.mock('@/store/pool-limits', async () => {
-  const { atom } = await import('nanostores')
-
-  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
-})
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -44,8 +35,6 @@ const {
   prewarmProfileBackend,
   refreshProfiles
 } = await import('./profile')
-
-const { $poolLimits } = await import('@/store/pool-limits')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -73,7 +62,6 @@ beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
   openGatewayForProfile.mockClear()
-  openSecondaryCount.mockReturnValue(0)
   $gateway.set({ id: 'live-socket', connectionState: 'open' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
@@ -187,43 +175,6 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     openGatewayForProfile.mockRejectedValueOnce(new Error('spawn failed'))
 
     expect(() => prewarmProfileBackend('warm-failing')).not.toThrow()
-  })
-
-  it('skips pre-warm when the pool is saturated (#91545 evict/respawn cascade)', () => {
-    // Every pool slot occupied: a speculative spawn would LRU-evict a warm
-    // backend — often the one the user is about to click. Default limit 3,
-    // 3 open secondaries → the next spawn would exceed the cap.
-    openSecondaryCount.mockReturnValue(3)
-
-    prewarmProfileBackend('warm-saturated')
-
-    expect(openGatewayForProfile).not.toHaveBeenCalled()
-  })
-
-  it('pre-warms while pool slots are free', () => {
-    openSecondaryCount.mockReturnValue(1)
-
-    prewarmProfileBackend('warm-slot-free')
-
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
-  })
-
-  it('follows the live pool-limit atom, not a hard-coded cap', () => {
-    // User raises Warm Bot Backends to 8 in Settings: prewarming must keep
-    // working well past the old default of 3.
-    openSecondaryCount.mockReturnValue(5)
-    $poolLimits.set({ idleMs: 600_000, maxBackends: 8 })
-
-    prewarmProfileBackend('warm-raised-cap')
-
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-raised-cap')
-
-    // And lowering the cap re-engages the guard at the new boundary.
-    $poolLimits.set({ idleMs: 600_000, maxBackends: 2 })
-
-    prewarmProfileBackend('warm-lowered-cap')
-
-    expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
   })
 })
 

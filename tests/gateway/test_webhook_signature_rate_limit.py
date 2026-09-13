@@ -41,6 +41,8 @@ def _make_adapter(routes, rate_limit=5, **extra_kw) -> WebhookAdapter:
 def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter."""
     app = web.Application()
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+    mount_authority(app, adapter)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app

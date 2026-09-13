@@ -279,13 +279,21 @@ class SessionUsageMixin:
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
     ) -> None:
-        """Update token counters and backfill model if unset. *absolute*=False increments
-        (per-API-call deltas, CLI path); *absolute*=True sets directly (gateway path,
-        where the cached agent holds cumulative totals)."""
-        usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
-        # Ensure the row exists: under concurrent load create_session() may have failed on
-        # locking, and the UPDATE would silently affect 0 rows.
+        """Update totals and route attribution, ensuring the legacy missing-row backfill."""
+        values = dict(locals())
+        values.pop('self')
+        values.pop('session_id')
         self._insert_session_row(session_id, "unknown", model=model)
+        self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, **values))
+
+    def _update_token_counts_in_transaction(
+        self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str=None, cache_read_tokens: int=0,
+        cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
+        actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
+        pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
+        billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+    ) -> None:
+        usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
         has_usage = bool(input_tokens or output_tokens or cache_read_tokens or cache_write_tokens or reasoning_tokens
                          or api_call_count or estimated_cost_usd)
@@ -308,28 +316,26 @@ class SessionUsageMixin:
         # of how many times the user switches. See #51607.
         record_model_usage = (not absolute) and has_usage
 
-        def _do(conn):
-            row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
-            ).fetchone()
-            existing = dict(row) if row is not None else {}
-            # create_session records the requested route before any API call. If that fails
-            # and fallback succeeds, the first accounted usage is the authoritative route;
-            # after that keep the row as is (one row cannot represent mixed usage).
-            first_accounted_route = (
-                int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
-                and bool(billing_provider)
-                and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
-            )
-            if first_accounted_route:
-                conn.execute("""UPDATE sessions
-                       SET model = ?, billing_provider = ?,
-                       billing_base_url = ?, billing_mode = ?
-                       WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
-            conn.execute(sql, params)
-            if record_model_usage:
-                self._record_model_usage(conn, session_id, **usage)
-        self._execute_write(_do)
+        row = conn.execute(
+            "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
+        ).fetchone()
+        existing = dict(row) if row is not None else {}
+        # create_session records the requested route before any API call. If that fails
+        # and fallback succeeds, the first accounted usage is the authoritative route;
+        # after that keep the row as is (one row cannot represent mixed usage).
+        first_accounted_route = (
+            int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
+            and bool(billing_provider)
+            and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
+        )
+        if first_accounted_route:
+            conn.execute("""UPDATE sessions
+                   SET model = ?, billing_provider = ?,
+                   billing_base_url = ?, billing_mode = ?
+                   WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
+        conn.execute(sql, params)
+        if record_model_usage:
+            self._record_model_usage(conn, session_id, **usage)
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

@@ -73,10 +73,56 @@ retains its legacy unscoped contract.
    `command.dispatch` fallback, which the gateway resolves into a skill / alias / exec directive
    (a skill command resolves to `{type: "skill", message}` and is submitted as a normal prompt).
 
-`commands.catalog` (empty-query list) and `complete.slash` (typed-query completions) already include
-built-ins, user `quick_commands`, AND skill-derived commands (`scan_skill_commands()` /
-`get_skill_commands()`) — clients do not need a new RPC to see skills. The command definitions
-themselves come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+`commands.catalog` (empty-query list) includes built-ins, user `quick_commands`, plugin commands,
+and skill-derived commands. `complete.slash` uses the existing CLI completer (registry, plugins,
+skills/bundles, argument completions); quick commands remain catalog-only. Shared data builders
+live in `tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
+come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+
+The canonical gateway exposes the same two discovery RPCs through `gateway/session_discovery.py`.
+It requires authenticated `session:read` capability and the authority's exact profile before any
+discovery. An optional named `profile` must resolve to that same home; a foreign selector returns
+`profile_mismatch`. Discovery runs off-loop in the authority's profile scope, without creating a
+legacy session or execution runtime. Catalog warnings, categories, aliases, desktop metadata,
+skill usage/origin, and completion replacement offsets retain their legacy shapes. Discovery is
+not an assertion that every listed slash execution command is implemented by the canonical RPCs.
+
+## Canonical local slash execution
+
+`gateway/session_commands.py` adapts both `slash.exec({session_id, command})` and
+`command.dispatch({session_id, name, arg})` without loading the legacy server or
+slash worker. Optional `profile` must name the authority's exact profile. Only
+server-registered local sources belonging to the authenticated actor may dispatch;
+caller-supplied source, routing, credentials, or platform fields are rejected.
+
+Reviewed gateway handlers: `help`, `commands`, `status`, `context`, `version`,
+`whoami` require `session:read`; `title` requires `session:control` (including its
+query form). Registry aliases are accepted. Existing registry busy rejection and
+mid-turn dispatch policies apply. Results are `{type: "exec", output}`.
+
+Profile skills and configured quick-command aliases to these commands/skills are
+supported. Skill resolution requires `session:submit` and returns the existing
+`{type: "skill", name, message, display}` directive. Desktop and Ink already submit
+that message through `prompt.submit`, retaining their own durable input identity.
+Resolution itself does not start a turn or change the cached system prompt; the
+normal durable admission path owns FIFO, retries, approvals, and execution.
+
+All other commands return `unsupported_command`, including shell quick commands,
+plugin execution, bundles, runtime/config mutation, approval/secret slash shortcuts,
+and lifecycle commands. Use the existing generation-bound control RPCs where
+available. Catalog presence alone does not imply execution support. No legacy
+fallback is installed on the canonical transport.
+
+## Canonical native projections
+
+`gateway/session_config.py` exposes profile-authorized `config.get` presentation
+reads and `model.options` through the shared provider inventory. `full` contains
+display, approval and paste preferences plus voice record/submit settings, not
+provider/MCP/plugin credentials. Session reasoning/model selection comes from the
+retained agent or frozen launch policy. `mtime.mcp_rev` is pinned to that policy;
+cosmetic edits do not request a cache-breaking live MCP reload. Busy overrides
+remain session-scoped; composer model changes use `session.mutate`, never global
+`config.set`. Discovery can refresh provider metadata, but never starts inference.
 
 ## Dev commands
 

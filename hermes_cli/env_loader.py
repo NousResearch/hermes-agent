@@ -110,6 +110,10 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
 
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    if worker_config_snapshot() is not None:
+        return {}
     home_key = str(home.resolve())
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
@@ -332,6 +336,12 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    # The private bootstrap supplies credentials explicitly; do not rehydrate
+    # profile behavior, external secret plugins, or managed env in this worker.
+    if worker_config_snapshot() is not None:
+        return []
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env

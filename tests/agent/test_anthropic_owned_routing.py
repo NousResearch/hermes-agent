@@ -59,3 +59,34 @@ def test_auxiliary_owned_refresh_does_not_spend_borrowed_rotation(tmp_path, monk
     retry.close()
     assert borrowed.read_bytes() == before
     assert aux._refresh_anthropic_credentials("unrelated-api-key") is False
+
+
+def test_suppressed_claude_code_source_is_not_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.auth import suppress_credential_source
+
+    suppress_credential_source("anthropic", "claude_code")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("suppressed Claude Code credentials were read")
+
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_keychain", forbidden)
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_file", forbidden)
+
+    assert ac.read_claude_code_credentials() is None
+
+
+def test_auxiliary_refresh_respects_claude_code_suppression(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.auth import suppress_credential_source
+
+    suppress_credential_source("anthropic", "claude_code")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("auxiliary refresh bypassed Claude Code source suppression")
+
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_keychain", forbidden)
+    monkeypatch.setattr(ac, "_read_claude_code_credentials_from_file", forbidden)
+    monkeypatch.setattr(ac, "_refresh_oauth_token", forbidden)
+
+    assert aux._refresh_anthropic_credentials("failed-token") is False

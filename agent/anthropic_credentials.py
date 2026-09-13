@@ -54,6 +54,15 @@ def _first_env(*names: str) -> str:
     return next((v for v in (_getenv(n).strip() for n in names) if v), "")
 
 
+def _claude_code_source_is_suppressed() -> bool:
+    """Whether the user removed Hermes' borrowed Claude Code credential source."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+    except ImportError:
+        return False
+    return is_source_suppressed("anthropic", "claude_code")
+
+
 def _is_oauth_token(key: str) -> bool:
     """True for Anthropic OAuth/setup tokens (sk-ant-*, eyJ JWTs, cc-); False for sk-ant-api* Console keys."""
     if not key or key.startswith("sk-ant-api"):
@@ -251,6 +260,9 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
     refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded."""
+    if _claude_code_source_is_suppressed():
+        logger.debug("Claude Code credential source is suppressed — skipping Keychain and file reads")
+        return None
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()
     if not (kc_creds and file_creds):

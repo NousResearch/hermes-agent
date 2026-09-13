@@ -11770,6 +11770,21 @@ def test_session_status_reads_live_compute_host_metadata(monkeypatch):
     assert "Model: live-host-model (live-host-provider)" in resp["result"]["output"]
 
 
+def test_session_status_falls_back_to_agent_before_first_host_frame(monkeypatch):
+    agent = types.SimpleNamespace(model="live-model", provider="live-provider")
+    server._sessions["sid"] = _session(agent=agent, _compute_host_active=True)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Model: live-model (live-provider)" in resp["result"]["output"]
+
+
 def test_skills_reload_runs_in_gateway_process(monkeypatch):
     import agent.skill_commands as skill_commands
 

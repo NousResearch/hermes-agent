@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { preparedSubmissionKey, writePreparedSubmission } from '@/app/session/hooks/use-prompt-actions/prepared-submissions'
 import { captureSubmissionDestination } from '@/app/session/hooks/use-prompt-actions/submission-destination'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { PreparedImageRecovery } from './prepared-image-recovery'
 
@@ -45,14 +46,19 @@ test('recovery never overwrites a newer draft or offers an ambiguous legacy send
   expect(restore).not.toHaveBeenCalled()
 })
 
-test.each(['switch', 'unmount'])('late atomic recovery does not restore into a disposed composer: %s', async action => {
+test.each([
+  { action: 'switch', fails: false }, { action: 'unmount', fails: false },
+  { action: 'switch', fails: true }, { action: 'unmount', fails: true }
+])('late atomic recovery cannot restore or report errors into a disposed composer: %j', async ({ action, fails }) => {
+  clearNotifications()
   const request = vi.fn()
   const destination = captureSubmissionDestination('original', request)
   const key = preparedSubmissionKey('original', destination, 'retained text', [])
   await writePreparedSubmission(key, { id: 'late-recovery', owner: destination.owner, text: 'retained text', attachments: [], params: { session_id: 'original' } })
   const serialized = localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!
   let release!: (value: boolean) => void
-  const compareAndSet = vi.fn(() => new Promise<boolean>(resolve => {release = resolve}))
+  let reject!: (error: Error) => void
+  const compareAndSet = vi.fn(() => new Promise<boolean>((resolve, fail) => {release = resolve; reject = fail}))
   vi.stubGlobal('hermesDesktop', { preparedSubmissions: {
     owner: async () => 'new-window', read: async () => serialized, update: vi.fn(), compareAndSet
   } })
@@ -64,7 +70,11 @@ test.each(['switch', 'unmount'])('late atomic recovery does not restore into a d
   if (action === 'unmount') {view.unmount()}
   else {view.rerender(<PreparedImageRecovery occupied={false} onRestore={restore} request={request} sessionKey="elsewhere" />)}
 
-  await act(async () => {release(true)})
+  await act(async () => {
+    if (fails) {reject(new Error('fixture stale claim failure'))}
+    else {release(true)}
+  })
   expect(restore).not.toHaveBeenCalled()
   expect(request).not.toHaveBeenCalled()
+  expect($notifications.get()).toEqual([])
 })

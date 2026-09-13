@@ -50,17 +50,20 @@ export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore
     <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs" key={draft.key}>
       <span className="min-w-0 flex-1 truncate">{draft.text || draft.attachments.map(attachment => attachment.label).join(', ')}</span>
       <Button disabled={occupied || pending} onClick={async () => {
-        if (claiming.current) {return}
+        const isCurrent = () => mounted.current && current.current.sessionKey === sessionKey &&
+          current.current.scopeKey === scopeKey && !current.current.occupied && current.current.onRestore === onRestore
+
+        if (claiming.current || !isCurrent()) {return}
         claiming.current = true
         setPending(true)
 
         try {
           await claimPreparedSubmission(draft.key, draft.expected)
 
-          if (!mounted.current || current.current.sessionKey !== sessionKey || current.current.scopeKey !== scopeKey || current.current.occupied || current.current.onRestore !== onRestore) {return}
+          if (!isCurrent()) {return}
           onRestore(draft.text, draft.attachments)
           setDrafts(current => current.filter(entry => entry.key !== draft.key))
-        } catch (error) {if (mounted.current) {notifyError(error, t.composer.restoreImageDraft)}}
+        } catch (error) {if (isCurrent()) {notifyError(error, t.composer.restoreImageDraft)}}
         finally {
           claiming.current = false
 

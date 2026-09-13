@@ -9,13 +9,18 @@ proxy cannot reach (e.g. an intranet Anthropic-compatible gateway) get tunneled
 through the proxy and fail with an opaque ``APIConnectionError`` /
 ``ConnectError [SSL: UNEXPECTED_EOF_WHILE_READING]``.
 
-The OpenAI-wire path (``_build_keepalive_http_client`` in ``run_agent.py``) is
-already immune because it builds a custom ``httpx.Client`` (which disables
-httpx's ``trust_env`` proxy auto-detection) and routes only through hermes's
-own env-/NO_PROXY-aware resolver. ``build_anthropic_client`` now mirrors that:
-it injects an ``httpx.Client(trust_env=False, proxy=_get_proxy_for_base_url(...))``
-so the system proxy is never silently applied, while explicit HTTP(S)_PROXY env
-still works and NO_PROXY is honored.
+The OpenAI-wire path (``build_keepalive_http_client`` in
+``agent/process_bootstrap.py``) is already immune because it builds a custom
+``httpx.Client`` (which disables httpx's ``trust_env`` proxy auto-detection) and
+routes only through hermes's own env-/NO_PROXY-aware resolver.
+``build_anthropic_client`` now mirrors that policy with its own client:
+``httpx.Client(trust_env=False, proxy=_get_proxy_for_base_url(...))``, so the
+system proxy is never silently applied, while explicit HTTP(S)_PROXY env still
+works and NO_PROXY is honored. That helper is deliberately not reused here — it
+pins ``read=None`` for SSE streaming (which would discard this path's
+caller-supplied read timeout) and returns ``None`` on failure, which the SDK
+would read as "no http_client" and fall back to the trust_env default this
+guard exists to prevent.
 
 ``trust_env=False`` also stops httpx from loading ``SSL_CERT_FILE`` /
 ``SSL_CERT_DIR`` into its default SSL context, so ``build_anthropic_client``
@@ -48,16 +53,26 @@ def _clear_proxy_env(monkeypatch):
 
 
 def _capture_anthropic_kwargs(monkeypatch):
-    """Stub the lazily-imported anthropic SDK so no real client/network is needed."""
+    """Stub the lazily-imported anthropic SDK so no real client/network is needed.
+
+    ``anthropic`` is an optional extra, so this shard fakes the SDK rather than
+    ``importorskip``-ing it — otherwise the guard would silently skip in any
+    environment built without the provider extra. The stub must therefore carry
+    the small slice of SDK surface ``_new_sdk_client`` touches: ``Anthropic``
+    plus ``Omit``, the sentinel it uses to drop the unused credential header.
+    """
     captured = {}
 
     class _FakeAnthropic:
         def __init__(self, **kwargs):
             captured["kwargs"] = kwargs
 
+    class _FakeOmit:
+        """Stand-in for ``anthropic.Omit`` (a header-suppressing sentinel)."""
+
     monkeypatch.setattr(
         aa, "_get_anthropic_sdk",
-        lambda: types.SimpleNamespace(Anthropic=_FakeAnthropic),
+        lambda: types.SimpleNamespace(Anthropic=_FakeAnthropic, Omit=_FakeOmit),
     )
     return captured
 

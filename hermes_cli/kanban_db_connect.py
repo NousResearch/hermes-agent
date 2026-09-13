@@ -903,12 +903,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     canonical_candidate_columns = {
         "id", "request_id", "request_hash", "signature_hash", "permissions_hash",
         "source_key_hash", "policy_digest", "evidence_ref_hashes_json",
-        "generation_id", "lifecycle_status", "reason_code", "cooldown_until", "created_at",
+        "generation_id", "requested_profile_id", "lifecycle_status", "reason_code",
+        "cooldown_until", "created_at",
     }
     if _table_exists(conn, "candidate_profile_requests"):
         existing_columns = _column_names(conn, "candidate_profile_requests")
-        legacy_columns = canonical_candidate_columns - {"generation_id"}
-        if existing_columns == legacy_columns:
+        previous_canonical_columns = canonical_candidate_columns - {"requested_profile_id"}
+        legacy_columns = previous_canonical_columns - {"generation_id"}
+        if existing_columns == previous_canonical_columns:
+            conn.execute(
+                "ALTER TABLE candidate_profile_requests ADD COLUMN requested_profile_id TEXT"
+            )
+        elif existing_columns == legacy_columns:
             # ``connect()`` has already run SCHEMA_SQL, which installs the
             # append-only trigger on an existing legacy table. Backfilling
             # this additive column is the one intentional UPDATE during the
@@ -916,6 +922,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             # it before any later migration step can fail.
             conn.execute("DROP TRIGGER IF EXISTS candidate_profile_requests_no_update")
             try:
+                conn.execute(
+                    "ALTER TABLE candidate_profile_requests ADD COLUMN requested_profile_id TEXT"
+                )
                 conn.execute(
                     "ALTER TABLE candidate_profile_requests ADD COLUMN generation_id TEXT"
                 )
@@ -951,6 +960,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             policy_digest            TEXT NOT NULL,
             evidence_ref_hashes_json TEXT NOT NULL,
             generation_id            TEXT,
+            requested_profile_id     TEXT,
             lifecycle_status         TEXT NOT NULL,
             reason_code              TEXT NOT NULL,
             cooldown_until           INTEGER,

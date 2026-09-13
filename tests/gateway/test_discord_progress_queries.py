@@ -120,4 +120,4 @@ def test_specialist_routing_registry_requires_explicit_profile_declarations(adap
     registry = adapter._specialist_capability_registry(settings)
     assert registry is not None
     assert registry.has_configured_profile("task-orchestrator") is True
-    assert registry.is_profile_declared("task-orchestrator") is False
+    assert registry.is_profile_declared("task-orchestrator") is True

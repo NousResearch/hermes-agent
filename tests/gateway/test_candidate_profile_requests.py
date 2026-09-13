@@ -37,6 +37,12 @@ WRITE_CAPABILITY = CapabilitySignature(
 NO_MATCH_RESOLUTION = RegistryResolution(
     status="no_match", profile=None, reason="no active profile"
 )
+ORCHESTRATOR_CAPABILITY = CapabilitySignature(
+    domain="repository-evidence",
+    actions=("audit", "read"),
+    evidence_class="diagnostic-only",
+    requested_permissions=("repository-evidence:read",),
+)
 
 
 def _opaque_reference(label: str) -> OpaqueEvidenceReference:
@@ -556,12 +562,17 @@ def test_no_match_handoff_uses_existing_orchestrator_and_preserves_source_idempo
         reason="request requires a local capability",
         title="Audit market data",
     )
+    registry = CapabilityRegistry(
+        board=kb.DEFAULT_BOARD,
+        configured_profiles={"task-orchestrator": ORCHESTRATOR_CAPABILITY},
+    )
+    registry.register_configured_profile("task-orchestrator")
     kwargs = {
         "decision": decision,
         "source": source,
         "request": "Audit the supplied market-data evidence.",
         "signature": NO_MATCH,
-        "registry": CapabilityRegistry(board=kb.DEFAULT_BOARD),
+        "registry": registry,
         "board": kb.DEFAULT_BOARD,
     }
 
@@ -579,14 +590,47 @@ def test_no_match_handoff_uses_existing_orchestrator_and_preserves_source_idempo
             "SELECT COUNT(*) AS count FROM kanban_notify_subs WHERE task_id = ?", (first.task_id,)
         ).fetchone()
         candidate_rows = conn.execute(
-            "SELECT request_hash, lifecycle_status FROM candidate_profile_requests"
+            "SELECT request_hash, requested_profile_id, lifecycle_status "
+            "FROM candidate_profile_requests"
         ).fetchall()
     assert task is not None
     assert task.assignee == "task-orchestrator"
     assert json.loads(task.body)["candidate_request_id"] == first.candidate_request_id
     assert subscriptions["count"] == 1
     assert len(candidate_rows) == 1
+    assert candidate_rows[0]["requested_profile_id"] == "generated-market-data-candidate"
     assert candidate_rows[0]["lifecycle_status"] == "candidate"
+
+
+def test_no_match_handoff_rejects_inactive_orchestrator_fallback(kanban_home):
+    source = HandoffSource(
+        platform="discord",
+        chat_id="channel-inactive-fallback",
+        chat_type="group",
+        user_id="user-1",
+        message_id="message-inactive-fallback",
+    )
+    decision = SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile="generated-market-data-candidate",
+        confidence=1.0,
+        reason="request requires a local capability",
+        title="Audit market data",
+    )
+
+    result = create_specialist_handoff(
+        decision=decision,
+        source=source,
+        request="Audit the supplied market-data evidence.",
+        signature=NO_MATCH,
+        registry=CapabilityRegistry(board=kb.DEFAULT_BOARD),
+        board=kb.DEFAULT_BOARD,
+    )
+
+    assert result.ok is False
+    assert result.reason == "inactive_fallback"
+    with kbc.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"] == 0
 
 
 def test_handoff_rechecks_registry_inside_transaction_before_candidate_fallback(

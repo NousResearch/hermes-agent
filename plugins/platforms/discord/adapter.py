@@ -5023,6 +5023,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             registry = CapabilityRegistry(
                 db_path=db_path, board=settings["board"], configured_profiles=declarations,
             )
+            # Explicit Discord declarations are the operator activation
+            # boundary. Candidate receipts remain inert and cannot activate
+            # or create profiles.
+            for profile in declarations:
+                registry.register_configured_profile(profile)
             return registry
         except (KeyError, TypeError, ValueError):
             return CapabilityRegistry(db_path=db_path, board=settings["board"], configured_profiles={})

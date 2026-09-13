@@ -112,10 +112,22 @@ def _candidate_fallback(
     db_path: object,
     candidate_requests: CandidateProfileRequests | None,
     connection: object,
+    registry: CapabilityRegistry,
 ) -> tuple[SpecialistRouteDecision, CandidateProfileRequest | None]:
-    """Queue a no-match locally and retain the source task's safe known owner."""
+    """Queue a no-match only when a distinct active orchestrator is available."""
     if resolution is None or resolution.status not in {"no_match", "ambiguous"}:
         return decision, None
+    fallback_signature = registry.configured_signature("task-orchestrator")
+    if fallback_signature is None:
+        return replace(decision, profile=None, audit_reason="inactive_fallback"), None
+    fallback_resolution = _resolve_handoff_registry(
+        signature=fallback_signature,
+        registry=registry,
+        connection=connection,
+        profile_id="task-orchestrator",
+    )
+    if fallback_resolution.status != "active_match":
+        return replace(decision, profile=None, audit_reason="inactive_fallback"), None
     fallback = replace(decision, profile="task-orchestrator")
     if signature is None:
         return fallback, None
@@ -126,7 +138,7 @@ def _candidate_fallback(
             source_key=source_key,
             envelope=SanitizedTaskEnvelope(evidence_refs=(_candidate_source_ref(source_key),)),
             profile_id=(
-                decision.profile if decision.profile in SPECIALIST_PROFILES else None
+                decision.profile
             ),
             connection=connection,
         )
@@ -267,6 +279,7 @@ def create_specialist_handoff(
                             db_path=db_path,
                             candidate_requests=candidate_requests,
                             connection=conn,
+                            registry=registry,
                         )
                     else:
                         effective_decision = apply_registry_resolution(

@@ -31,8 +31,10 @@ _ALLOWED_LIFECYCLE_TRANSITIONS = {
 }
 _DEFAULT_COOLDOWN_SECONDS = 3_600
 _MAX_SOURCE_KEY_CHARS = 512
+_MAX_PROFILE_ID_CHARS = 96
 _MAX_EVIDENCE_REFERENCES = 16
 _OPAQUE_REFERENCE_RE = re.compile(r"^[0-9a-f]{64}$")
+_PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 _LOCAL_READ_ONLY_SCOPES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "financial-analysis": (
@@ -192,6 +194,12 @@ class CandidateProfileRequests:
             raise TypeError("signature must be a CapabilitySignature")
         if not isinstance(source_key, str) or not source_key.strip() or len(source_key) > _MAX_SOURCE_KEY_CHARS:
             raise ValueError("source_key must be a bounded non-empty string")
+        if profile_id is not None and (
+            not isinstance(profile_id, str)
+            or len(profile_id) > _MAX_PROFILE_ID_CHARS
+            or not _PROFILE_ID_RE.fullmatch(profile_id)
+        ):
+            raise ValueError("profile_id must be a bounded canonical identifier")
         local_resolution = CapabilityRegistry(
             db_path=self._db_path, board=self._board
         ).resolve(signature, profile_id=profile_id, connection=connection)
@@ -230,6 +238,7 @@ class CandidateProfileRequests:
             source_key=source_key,
             policy_digest=stored_policy_digest,
             evidence_ref_hashes=evidence_refs or (),
+            requested_profile_id=profile_id,
             reason_code=reason_code,
             connection=connection,
         )
@@ -242,6 +251,7 @@ class CandidateProfileRequests:
         source_key: str,
         policy_digest: str,
         evidence_ref_hashes: tuple[str, ...],
+        requested_profile_id: str | None,
         reason_code: str | None,
         connection: object | None = None,
     ) -> CandidateProfileRequest:
@@ -254,6 +264,7 @@ class CandidateProfileRequests:
                 source_key=source_key,
                 policy_digest=policy_digest,
                 evidence_ref_hashes=evidence_ref_hashes,
+                requested_profile_id=requested_profile_id,
                 reason_code=reason_code,
                 now=now,
             )
@@ -266,6 +277,7 @@ class CandidateProfileRequests:
                     source_key=source_key,
                     policy_digest=policy_digest,
                     evidence_ref_hashes=evidence_ref_hashes,
+                    requested_profile_id=requested_profile_id,
                     reason_code=reason_code,
                     now=now,
                 )
@@ -279,6 +291,7 @@ class CandidateProfileRequests:
         source_key: str,
         policy_digest: str,
         evidence_ref_hashes: tuple[str, ...],
+        requested_profile_id: str | None,
         reason_code: str | None,
         now: int,
     ) -> CandidateProfileRequest:
@@ -308,6 +321,7 @@ class CandidateProfileRequests:
         request_id = self._insert(
             conn, request_hash=request_hash, signature=signature, source_key=source_key,
             policy_digest=policy_digest, evidence_ref_hashes=evidence_ref_hashes,
+            requested_profile_id=requested_profile_id,
             lifecycle_status=lifecycle_status, reason_code=stored_reason_code,
             cooldown_until=cooldown_until, now=now,
         )
@@ -386,7 +400,7 @@ class CandidateProfileRequests:
                 original = conn.execute(
                     """
                     SELECT request_id, generation_id, request_hash, signature_hash, permissions_hash,
-                           source_key_hash, policy_digest, evidence_ref_hashes_json
+                           source_key_hash, requested_profile_id, policy_digest, evidence_ref_hashes_json
                     FROM candidate_profile_requests WHERE request_id = ?
                     """,
                     (candidate_id,),
@@ -412,9 +426,10 @@ class CandidateProfileRequests:
                     """
                     INSERT INTO candidate_profile_requests (
                         request_id, generation_id, request_hash, signature_hash, permissions_hash, source_key_hash,
+                        requested_profile_id,
                         policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
                         cooldown_until, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                     """,
                     (
                         transition_id,
@@ -423,6 +438,7 @@ class CandidateProfileRequests:
                         original["signature_hash"],
                         original["permissions_hash"],
                         original["source_key_hash"],
+                        original["requested_profile_id"],
                         original["policy_digest"],
                         original["evidence_ref_hashes_json"],
                         next_status,
@@ -470,6 +486,7 @@ class CandidateProfileRequests:
         reason_code: str,
         cooldown_until: int | None,
         now: int,
+        requested_profile_id: str | None = None,
     ) -> str:
         if not _OPAQUE_REFERENCE_RE.fullmatch(request_hash):
             raise ValueError("request_hash must be a SHA-256 hex digest")
@@ -486,13 +503,14 @@ class CandidateProfileRequests:
             """
             INSERT INTO candidate_profile_requests (
                 request_id, generation_id, request_hash, signature_hash, permissions_hash, source_key_hash,
+                requested_profile_id,
                 policy_digest, evidence_ref_hashes_json, lifecycle_status, reason_code,
                 cooldown_until, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 request_id, request_id, request_hash, signature.signature_hash, signature.permissions_hash,
-                _hash(source_key), policy_digest, _canonical_json(evidence_ref_hashes),
+                _hash(source_key), requested_profile_id, policy_digest, _canonical_json(evidence_ref_hashes),
                 lifecycle_status, reason_code, cooldown_until, now,
             ),
         )

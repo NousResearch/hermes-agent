@@ -9,6 +9,7 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import yaml
+import gateway.status as _gw_status
 
 
 _VALID_WORKER_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
@@ -100,12 +101,12 @@ class TestProfileScopedMessagingReads:
             yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda *a, **k: None)
         monkeypatch.setattr(
-            web_server, "get_running_pid_cached", lambda *a, **k: None
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
         )
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             # Accepts path= : the profile-scoped read now passes the
             # profile's own gateway_state.json explicitly rather than
@@ -267,3 +268,40 @@ class TestMultiplexPortBindingGuard:
             )
             assert resp.status_code == 200
 
+def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
+    from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    for scope in (None, "current", "default"):
+        response = client.get("/api/messaging/platforms", params={"profile": scope} if scope else {})
+        assert response.status_code == 200
+        assert _telegram(response.json())["enabled"] is True
+    with _hermes_home_scope(isolated_profiles["worker_alpha"]):
+        with _config_profile_scope("default") as scoped:
+            assert scoped is None
+            assert get_hermes_home() == isolated_profiles["default"]
+
+
+def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    worker = isolated_profiles["worker_alpha"]
+    params = {"profile": "worker_alpha"}
+    assert _telegram(client.get("/api/messaging/platforms", params=params).json())["enabled"] is False
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8")
+    payload = client.get("/api/messaging/platforms", params=params).json()
+    assert _telegram(payload)["enabled"] is True
+    assert _telegram(payload)["configured"] is True
+    assert _telegram(payload)["state"] != "disabled"
+    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+    empty = {entry["id"] for entry in _messaging_platform_catalog() if not entry["required_env"]}
+    for platform in payload["platforms"]:
+        if platform["id"] in empty:
+            assert platform["enabled"] is False
+            assert platform["configured"] is False
+    for enabled in (False, True):
+        (worker / "config.yaml").write_text(yaml.safe_dump({"platforms": {"telegram": {"enabled": enabled}}}), encoding="utf-8")
+        platform = _telegram(client.get("/api/messaging/platforms", params=params).json())
+        assert platform["enabled"] is enabled
+        assert platform["configured"] is True
+    assert "root-token" in (isolated_profiles["default"] / ".env").read_text(encoding="utf-8")

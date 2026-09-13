@@ -10,10 +10,13 @@ import unittest
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.platforms.base import ProcessingOutcome
+from gateway.platforms.event import ProcessingOutcome
+
+if TYPE_CHECKING:
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
 try:
     import lark_oapi
@@ -907,7 +910,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_uses_event_sender_identity_only(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
@@ -960,7 +963,7 @@ class TestAdapterBehavior(unittest.TestCase):
     )
     def test_text_batch_flushes_when_message_count_limit_is_hit(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.feishu.adapter import FeishuAdapter
         from gateway.session import SessionSource
 
@@ -1004,7 +1007,7 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.feishu.adapter import FeishuAdapter
         from gateway.session import SessionSource
 
@@ -1105,8 +1108,8 @@ class TestAdapterBehavior(unittest.TestCase):
                             side_effect=lambda **_kwargs: _FakeAsyncClient(),
                         ):
                             with patch(
-                                "plugins.platforms.feishu.adapter.cache_document_from_bytes",
-                                return_value="/tmp/cached-doc.bin",
+                                "plugins.platforms.feishu.adapter.cache_document_from_bytes_async",
+                                new=AsyncMock(return_value="/tmp/cached-doc.bin"),
                             ):
                                 return await adapter._download_remote_document(
                                     "https://example.com/doc.bin",
@@ -1186,9 +1189,9 @@ class TestAdapterBehavior(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_home:
             with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=False):
                 first = FeishuAdapter(PlatformConfig())
-                self.assertFalse(first._is_duplicate("om_same"))
+                self.assertFalse(asyncio.run(first._is_duplicate("om_same")))
                 second = FeishuAdapter(PlatformConfig())
-                self.assertTrue(second._is_duplicate("om_same"))
+                self.assertTrue(asyncio.run(second._is_duplicate("om_same")))
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -1622,7 +1625,7 @@ class TestDedupTTL(unittest.TestCase):
         with patch.object(adapter, "_persist_seen_message_ids"):
             adapter._seen_message_ids = {"om_dup": time.time()}
             adapter._seen_message_order = ["om_dup"]
-            self.assertTrue(adapter._is_duplicate("om_dup"))
+            self.assertTrue(asyncio.run(adapter._is_duplicate("om_dup")))
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -1655,6 +1658,61 @@ class TestDedupTTL(unittest.TestCase):
                 assert "om_good" in adapter._seen_message_ids
                 assert "om_bad_str" not in adapter._seen_message_ids
                 assert "om_bad_null" not in adapter._seen_message_ids
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_persist_on_new_message_runs_off_event_loop_thread(self):
+        """atomic_json_write() calls os.fsync(), which blocks until the write
+        reaches stable storage. _is_duplicate() runs on the event loop for
+        every inbound message (_handle_message_event_data), so the persist
+        step must be offloaded to a thread — mirrors
+        test_directory_write_runs_off_event_loop_thread in
+        test_channel_directory.py for the same #83906 bug class."""
+        import threading
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=fake_write):
+            is_dup = asyncio.run(adapter._is_duplicate("om_new"))
+
+        self.assertFalse(is_dup)
+        self.assertTrue(write_threads)
+        self.assertTrue(all(tid != loop_thread for tid in write_threads))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_concurrent_dedup_persists_land_in_order(self):
+        """Two in-flight _is_duplicate() calls (two chats) must not let an
+        older seen-ids snapshot overwrite a newer one on disk."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        writes = []
+        calls = [0]
+
+        def slow_first_write(path, data, *args, **kwargs):
+            idx = calls[0]
+            calls[0] += 1
+            if idx == 0:
+                time.sleep(0.05)
+            writes.append(sorted(data["message_ids"]))
+
+        async def run():
+            first = asyncio.create_task(adapter._is_duplicate("om_a"))
+            await asyncio.sleep(0.005)
+            second = asyncio.create_task(adapter._is_duplicate("om_b"))
+            await asyncio.gather(first, second)
+
+        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
+            asyncio.run(run())
+
+        self.assertEqual(writes[-1], ["om_a", "om_b"])
 
 
 class TestGroupMentionAtAll(unittest.TestCase):
@@ -2229,7 +2287,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
 
 
     def test_non_command_message_with_mentions_injects_hint(self):
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         adapter = self._build_adapter()
         alice = SimpleNamespace(

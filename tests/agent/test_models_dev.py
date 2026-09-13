@@ -825,6 +825,33 @@ class TestGetModelCapabilities:
         assert caps is not None
         assert caps.supports_vision is False
 
+    def test_astra_builtin_metadata_fills_catalog_lag_without_listing_it(self):
+        """An explicitly discovered Astra remains fully described before models.dev catches up."""
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("openai", "gpt-6-astra")
+
+        assert caps is not None
+        assert caps.supports_vision is True  # the one thing _UNKNOWN_MODEL_BASE could not supply
+
+        api_caps = get_model_capabilities("openai-api", "gpt-6-astra")
+        assert api_caps == caps
+
+    def test_deepseek_flash_builtin_vision_fills_catalog_lag(self):
+        """Native Flash stays multimodal when models.dev is empty; Pro does not.
+
+        Vendor docs: deepseek-flash accepts images, deepseek-v4-pro does not.
+        A global model.supports_vision pin would lie about Pro.
+        """
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            flash = get_model_capabilities("deepseek", "deepseek-flash")
+            alias = get_model_capabilities("deepseek", "deepseek-v4-flash")
+            pro = get_model_capabilities("deepseek", "deepseek-v4-pro")
+
+        assert flash is not None and flash.supports_vision is True
+        assert flash.context_window == 1_000_000
+        assert alias is not None and alias.supports_vision is True
+        assert pro is None
+
 
 # ---------------------------------------------------------------------------
 # Per-model metadata overrides (model_overrides config)
@@ -1144,8 +1171,8 @@ class TestModelOverrides:
     def test_model_info_override_for_unknown_model(self):
         """Canonical-schema override provides metadata for an unknown model.
 
-        Same key space as every other consumer — context_window,
-        max_output_tokens, supports_* — NOT the internal catalog shape.
+        Context and capabilities remain configurable; a legacy output override
+        cannot displace the unknown-model metadata fallback.
         """
         overrides = {
             "custom:my-vllm": {
@@ -1161,10 +1188,13 @@ class TestModelOverrides:
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-llava-model")
+            del overrides["custom:my-vllm"]["my-llava-model"]["max_output_tokens"]
+            uncapped_info = get_model_info("custom:my-vllm", "my-llava-model")
         assert info is not None
         assert info.family == "llava"
         assert info.context_window == 8192
-        assert info.max_output == 4096
+        assert uncapped_info is not None
+        assert info.max_output == uncapped_info.max_output > 0
         assert info.tool_call is True
         assert info.reasoning is False
 

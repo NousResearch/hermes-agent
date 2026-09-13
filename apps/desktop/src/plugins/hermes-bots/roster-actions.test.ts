@@ -53,6 +53,7 @@ vi.mock('./shared', () => ({
 // The open path drags the whole group-chat surface in; the poll under test
 // touches none of it.
 vi.mock('./canonical-chat', () => ({
+  CANONICAL_CHAT_TITLE: 'Bot Chat',
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat: vi.fn(),
   prepareBotSource: vi.fn()

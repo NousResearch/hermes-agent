@@ -1,6 +1,6 @@
 """Invariant tests for the bundled comfyui skill.
 
-Covers skills/creative/comfyui — the diffusion workflow runner. Tests assert
+Covers optional-skills/creative/comfyui — the diffusion workflow runner. Tests assert
 contracts (locale-independent file reads), not snapshots of skill content.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent.parent
-SCRIPTS = REPO / "skills" / "creative" / "comfyui" / "scripts"
+SCRIPTS = REPO / "optional-skills" / "creative" / "comfyui" / "scripts"
 
 # Text reads that must not depend on the host locale. The workflow and schema
 # JSON are user-authored files (exported by ComfyUI or hand-edited), so they

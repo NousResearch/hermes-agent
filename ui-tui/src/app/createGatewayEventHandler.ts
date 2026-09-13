@@ -420,7 +420,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
-  const { bellOnComplete, stdout, sys } = ctx.system
+  const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
+
+  // display.bell_on_prompt — BEL whenever a blocking prompt modal opens
+  // (same mechanism as bell_on_complete; works over SSH, triggers tmux bell-action).
+  const ringPromptBell = () => {
+    if (bellOnPrompt && stdout?.isTTY) {
+      stdout.write('\x07')
+    }
+  }
+
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
   const { submitLiteralRef, submitRef } = ctx.submission
@@ -775,6 +784,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'session.info': {
         const info = ev.payload
 
+        // A replayed snapshot can be the only terminal signal after reconnect.
+        // Missing running on older gateways must not clear a live turn.
+        if (info.running === false) {
+          turnController.clearStatusTimer()
+          turnController.idle()
+          setStatus('ready')
+        }
+
         patchUiState(state => ({
           ...state,
           info,
@@ -852,10 +869,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus(p.text)
 
-        if (p.kind === 'compressing') {
+        if (p.kind === 'compressing' || p.kind === 'compacting') {
           sys(p.text)
+          turnController.clearStatusTimer()
+          patchUiState({ compacting: true })
 
           return
+        }
+
+        if (p.kind === 'compacted') {
+          patchUiState({ compacting: false })
         }
 
         if (!p.kind || p.kind === 'status') {
@@ -1244,6 +1267,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               }
         })
         setStatus('waiting for input…')
+        ringPromptBell()
 
         return
       }
@@ -1263,6 +1287,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
         })
         setStatus('approval needed')
+        ringPromptBell()
 
         return
       }
@@ -1270,6 +1295,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'sudo.request':
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')
+        ringPromptBell()
 
         return
 
@@ -1278,6 +1304,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
         setStatus('secret input needed')
+        ringPromptBell()
 
         return
 
@@ -1288,6 +1315,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'secret.expire':
         patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
+
+        return
+
+      case 'vault.unlock.request':
+        patchOverlayState({
+          vaultUnlock: {
+            backend: ev.payload.backend,
+            displayName: ev.payload.display_name,
+            requestId: ev.payload.request_id
+          }
+        })
+        setStatus(`unlock ${ev.payload.display_name}`)
+        ringPromptBell()
+
+        return
+
+      case 'vault.unlock.expire':
+        patchOverlayState(prev =>
+          prev.vaultUnlock?.requestId === ev.payload.request_id ? { ...prev, vaultUnlock: null } : prev
+        )
 
         return
 

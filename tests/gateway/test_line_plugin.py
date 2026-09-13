@@ -205,10 +205,14 @@ class TestInboundMedia:
         return adapter.handle_message.await_args.args[0]
 
     def test_image_message_uses_photo_type_and_image_mime(self, adapter):
-        with patch.object(_line, "cache_image_from_bytes", return_value="/cache/image.jpg") as cache:
+        with patch.object(
+            _line,
+            "cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/cache/image.jpg"),
+        ) as cache:
             asyncio.run(adapter._handle_message_event(self._event("image")))
 
-        cache.assert_called_once_with(b"line-bytes", ext=".jpg")
+        cache.assert_awaited_once_with(b"line-bytes", ext=".jpg")
         event = self._captured_event(adapter)
         assert event.message_type is _line.MessageType.PHOTO
         assert event.media_urls == ["/cache/image.jpg"]
@@ -304,6 +308,54 @@ class TestRegister:
         register(ctx)
         # LINE per-bubble limit is 5000; we register 4500 to leave headroom.
         assert ctx.kwargs["max_message_length"] <= 5000
+
+
+class TestSlowLLMPostbackRegression:
+    """#106446 — the two reporter reproductions, driven through the real ``send()`` /
+    ``_handle_postback_event()`` paths with only the HTTP client mocked."""
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={"channel_access_token": "tok", "channel_secret": "sec"})
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        return ad
+
+    def test_repro_a_heartbeat_does_not_become_the_cached_answer(self, adapter):
+        # The gateway's periodic heartbeat (stamped ``_interim_send`` by ``_interim_metadata``)
+        # arrives while the postback button is PENDING; the real answer follows.
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+        asyncio.run(adapter.send("Uchat", "⏳ Working — 3 min — iteration 1/60, research_market",
+                                 metadata={"_interim_send": True}))
+        assert adapter._cache.get(rid).state is State.PENDING, "heartbeat must not fill the cache"
+        assert adapter._client.push.await_count == 1, "heartbeat lands as a visible bubble"
+        asyncio.run(adapter.send("Uchat", "Final answer: task completed"))
+        assert adapter._cache.get(rid).payload == "Final answer: task completed"
+
+    def test_repro_b_stale_mapping_does_not_swallow_the_next_answer(self, adapter):
+        # A READY entry still mapped to the chat, then a tap on a button whose entry is gone:
+        # neither may absorb a later send or leave the chat stuck.
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._cache.set_ready(rid, "Previous answer")
+        adapter._pending_buttons["Uchat"] = rid
+        result = asyncio.run(adapter.send("Uchat", "Answer to the NEXT user message"))
+        assert result.success and adapter._client.push.await_count == 1, "next answer reaches the wire"
+        assert adapter._cache.get(rid).payload == "Previous answer"
+        assert "Uchat" not in adapter._pending_buttons
+        # Expired button tap: user gets a notice and the dead mapping is dropped.
+        adapter._pending_buttons["Uchat"] = "ghost-rid"
+        asyncio.run(adapter._handle_postback_event({
+            "replyToken": "reply-token", "source": {"type": "user", "userId": "Uchat"},
+            "postback": {"data": json.dumps({"action": "show_response", "request_id": "ghost-rid"})}}))
+        adapter._client.reply.assert_awaited_once()
+        assert adapter._client.reply.await_args.args[1][0]["text"] == adapter.expired_text
+        assert "Uchat" not in adapter._pending_buttons
 
 
 class TestEnvEnablement:

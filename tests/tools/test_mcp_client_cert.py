@@ -41,13 +41,13 @@ def _patch_sdk_async_client(dummy):
 
 class TestResolveClientCert:
     def test_returns_none_when_unset(self):
-        from tools.mcp_tool import _resolve_client_cert
+        from tools.mcp_tool_errors import _resolve_client_cert
 
         assert _resolve_client_cert("srv", {}) is None
         assert _resolve_client_cert("srv", {"url": "https://x"}) is None
 
     def test_string_form_single_pem(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
+        from tools.mcp_tool_errors import _resolve_client_cert
 
         pem = tmp_path / "combined.pem"
         pem.write_text("dummy")
@@ -57,7 +57,7 @@ class TestResolveClientCert:
 
 
     def test_list_form_two_elements(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
+        from tools.mcp_tool_errors import _resolve_client_cert
 
         cert = tmp_path / "client.crt"
         key = tmp_path / "client.key"
@@ -71,7 +71,7 @@ class TestResolveClientCert:
 
 
     def test_password_must_be_string(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
+        from tools.mcp_tool_errors import _resolve_client_cert
 
         cert = tmp_path / "client.crt"
         key = tmp_path / "client.key"

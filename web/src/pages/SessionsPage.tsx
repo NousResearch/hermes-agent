@@ -489,6 +489,7 @@ function SessionRow({
     api
       .getSessionMessages(session.id, session.profile)
       .then((resp) => {
+        // REST /messages returns oldest-first already — render as-is.
         if (!cancelled) setMessages(resp.messages);
       })
       .catch((err) => {

@@ -43,6 +43,7 @@ connected. An enabled platform can correctly show **Messaging gateway stopped**.
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Synology Chat | — | — | — | — | — | — | — |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -633,6 +634,7 @@ Each platform has its own toolset:
 | Email | `hermes-email` | Full tools including terminal |
 | Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
+| Synology Chat | `hermes-synology_chat` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
@@ -825,6 +827,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Email Setup](email.md)
 - [Home Assistant Integration](homeassistant.md)
 - [Mattermost Setup](mattermost.md)
+- [Synology Chat Setup](synology-chat.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
 - [Feishu/Lark Setup](feishu.md)

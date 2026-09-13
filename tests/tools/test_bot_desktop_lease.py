@@ -122,3 +122,24 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     held = lease.acquire("desk-1", profile_key=home)
     assert held.pending_handoff is None and held.reason == "log in to the bank, 2FA on your phone"
     assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available
+
+
+def test_lease_works_without_fcntl(tmp_path):
+    """Windows and fcntl-less hosts: ``computer_use`` imports the lease (via handoff) on EVERY call, so a
+    module-level fcntl dependency turns every desktop action into ModuleNotFoundError there. The file
+    semantics must still work; only the cross-process lock degrades. Subprocess so the module cache is clean."""
+    import os
+    import subprocess
+    import sys
+
+    probe = ("import sys; sys.modules['fcntl'] = None; sys.path.insert(0, %r)\n"
+             "from tools.bot_desktop import lease\n"
+             "import tools.computer_use.handoff\n"
+             "assert lease.get().holder == lease.AGENT\n"
+             "assert lease.acquire('v1').holder == lease.HUMAN\n"
+             "assert lease.get().holder == lease.HUMAN\n"
+             "assert lease.release('v1').holder == lease.AGENT\n"
+             "print('OK')\n") % os.getcwd()
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=60,
+                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})
+    assert out.stdout.strip() == "OK", out.stderr

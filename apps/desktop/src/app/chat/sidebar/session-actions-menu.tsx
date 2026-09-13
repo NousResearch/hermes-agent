@@ -7,6 +7,7 @@ import {
   closeAllTreeTabs,
   closeOtherTreeTabs,
   closeTreeTabsToRight,
+  lastChatZoneSessionAnchor,
   reloadTreePane,
   treeTabCloseTargets
 } from '@/components/pane-shell/tree/store'
@@ -44,11 +45,13 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeAllOpenSessionTiles, openSessionTile } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { SplitSubmenu } from './split-submenu'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -462,6 +465,21 @@ function useSessionActions({
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderActionItem(kit, item))}
+      <SplitSubmenu
+        // A session that IS main's cannot become a tile — one conversation is
+        // either main or a tile, never both — so say so instead of offering an
+        // item that would silently do nothing.
+        disabled={!sessionId || sessionId === selectedStoredSessionId}
+        kit={kit}
+        label={t.sidebar.row.openInSplit}
+        onSplit={dir => {
+          // Dock beside the zone the user last worked in. The ladder answer is
+          // wrong here: a real right-click lands the pointer (and the focusin)
+          // on the sidebar's own zone, which falls through to main. An
+          // already-open tile MOVES there, the gesture the sidebar drag makes.
+          openSessionTile(sessionId, dir, lastChatZoneSessionAnchor() ?? undefined)
+        }}
+      />
       {openItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>

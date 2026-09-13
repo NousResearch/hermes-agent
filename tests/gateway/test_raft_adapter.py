@@ -11,6 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.event import MessageEvent
 from plugins.platforms.raft.adapter import (
     ACTIVITY_DRAIN_SCHEMA,
     ACTIVITY_EVENT_SCHEMA,
@@ -118,6 +119,41 @@ class TestRaftWakeHttp:
 
         assert body == {"ok": False, "error": "content_not_allowed"}
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_custom_busy_queue_path_observes_once_before_queueing(self):
+        adapter = _make_adapter()
+        adapter.set_message_handler(AsyncMock())
+        source = adapter.build_source(
+            chat_id="default",
+            chat_name="Raft channel",
+            chat_type="dm",
+            user_id="raft-bridge",
+            user_name="Raft Bridge",
+        )
+        event = MessageEvent(
+            text="wake",
+            source=source,
+            message_id="wake-observed",
+        )
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+            profile=adapter._session_key_profile(source),
+        )
+        adapter._active_sessions[session_key] = asyncio.Event()
+        order = []
+
+        def observer(observed, observed_key):
+            order.append(("observer", observed, observed_key))
+
+        adapter.set_ingress_observer(observer)
+        await adapter.handle_message(event)
+        order.append(("queued", adapter._pending_messages[session_key], session_key))
+
+        assert [step for step, _, _ in order] == ["observer", "queued"]
+        assert all(observed is event and key == session_key for _, observed, key in order)
 
 
 class TestRaftActivityHttp:

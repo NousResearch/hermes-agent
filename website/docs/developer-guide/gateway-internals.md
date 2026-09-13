@@ -67,6 +67,50 @@ When a message arrives from any platform:
    - Otherwise → create `AIAgent` instance and run conversation
 4. **Response** is sent back through the platform adapter
 
+### Adapter ingress observer
+
+`BasePlatformAdapter.set_ingress_observer()` installs one optional observer at the
+shared normalized-message boundary. It is intended for infrastructure that must see
+both idle and active-session traffic before the adapter queues, dispatches, or drops
+the event:
+
+The runner installs this boundary on every primary, reconnect, and multiplex-profile
+adapter path and publishes the observer-only `gateway_ingress_observed` plugin hook:
+
+```python
+def observe(event, gateway, session_key, **kwargs):
+    receipt_store.record(event, session_key)
+
+def register(ctx):
+    ctx.register_hook("gateway_ingress_observed", observe)
+```
+
+The callback runs once per `handle_message()` invocation, after plaintext-command
+coercion, Telegram topic recovery, and session-key derivation. Its return value is
+always ignored, and an exception is logged and treated as fail-open, so a return value
+cannot block, rewrite, authorize, or otherwise steer routing. Sync and async callbacks
+are supported; callbacks are on the ingress path and should stay bounded. The event is
+borrowed read-only: mutating it is unsupported and consumers that need ownership must
+copy the data they retain.
+
+That sync/async support applies to direct `set_ingress_observer()` callers. The
+runner's `gateway_ingress_observed` plugin surface is intentionally synchronous:
+plugins must register a fast regular function, and `async def` callbacks are rejected
+at registration so no coroutine can leak or block adapter routing unexpectedly.
+
+Platform adapters that override `handle_message()` must delegate to the base method.
+If an override has a custom branch that intentionally bypasses the base method, that
+branch must call `_notify_ingress_observer(event, session_key)` exactly once before
+its own queue/drop decision. Calling both for the same branch would double-observe.
+
+This boundary is deliberately **pre-authorization**. It includes internal events and
+events that the runner later rejects through profile routing, ignored-channel policy,
+pairing, allowlists, or bot-loop policy. Consumers must treat the event as read-only
+and must not interpret observation as admission. If a consumer persists private
+content or sends an acknowledgement, it must perform and record its own authoritative
+authorization/admission decision. Platform-native events that are not `MessageEvent`
+instances continue to use `gateway_platform_event` instead.
+
 ### Session Key Format
 
 Session keys encode the full routing context:

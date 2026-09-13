@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import inspect
 from contextlib import suppress
 import functools
 import os
@@ -1028,7 +1029,7 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        ingress_observer=None, busy_text_mode: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
@@ -1044,6 +1045,9 @@ class GatewayAdapterLifecycleMixin:
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
+        _set_ingress_observer = getattr(adapter, "set_ingress_observer", None)
+        if callable(_set_ingress_observer):
+            _set_ingress_observer(ingress_observer or self._primary_ingress_observer())
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
@@ -1067,6 +1071,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
+            ingress_observer=self._make_profile_ingress_observer(profile_name),
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)
@@ -1387,6 +1392,76 @@ class GatewayAdapterLifecycleMixin:
         return (
             self._make_default_profile_busy_session_handler()
             if self._multiplex_on() else self._handle_active_session_busy_message
+        )
+
+    def _handle_gateway_ingress_observed(self, event, session_key: str) -> None:
+        """Synchronously publish one adapter-level MessageEvent observer hook."""
+        with _log_suppressed(
+            logging.DEBUG, "gateway_ingress_observed hook dispatch failed", exc_info=True
+        ):
+            from hermes_cli.lifecycle import has_hook, invoke_hook
+
+            if has_hook("gateway_ingress_observed"):
+                results = invoke_hook(
+                    "gateway_ingress_observed",
+                    event=event,
+                    gateway=self,
+                    session_key=session_key,
+                )
+                # Compatibility managers may return a bare coroutine from a
+                # sync callback. Never leak it or schedule plugin work after
+                # this synchronous observer boundary.
+                for result in results:
+                    if not inspect.isawaitable(result):
+                        continue
+                    cancel = getattr(result, "cancel", None)
+                    close = getattr(result, "close", None)
+                    if callable(cancel):
+                        cancel()
+                    elif callable(close):
+                        close()
+                    logger.warning(
+                        "gateway_ingress_observed ignored awaitable result (%s)",
+                        type(result).__name__,
+                    )
+
+    def _make_profile_ingress_observer(self, profile_name: str):
+        """Bind adapter ingress observation to one multiplex profile."""
+        from gateway.run import _profile_runtime_scope
+
+        profile_home = self._profile_home_or_none(profile_name)
+
+        def _observer(event, session_key):
+            self._stamp_event_profile(event, profile_name)
+            with self._scope_or_null(_profile_runtime_scope, profile_home):
+                self._handle_gateway_ingress_observed(event, session_key)
+
+        return _observer
+
+    def _make_default_profile_ingress_observer(self):
+        """Scope primary-adapter observation to the routed profile when known."""
+        from gateway.run import _profile_runtime_scope, get_hermes_home
+
+        default_home = Path(get_hermes_home())
+
+        def _observer(event, session_key):
+            source = event.source
+            source._authorization_profile_home = default_home
+            try:
+                profile_home = self._resolve_profile_home_for_source(source)
+            except Exception:
+                profile_home = default_home
+            with _profile_runtime_scope(profile_home):
+                self._handle_gateway_ingress_observed(event, session_key)
+
+        return _observer
+
+    def _primary_ingress_observer(self):
+        """Return the correctly scoped ingress observer for a primary adapter."""
+        return (
+            self._make_default_profile_ingress_observer()
+            if self._multiplex_on()
+            else self._handle_gateway_ingress_observed
         )
 
     def _multiplex_on(self) -> bool:

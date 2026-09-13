@@ -1736,6 +1736,9 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 # Handler result: str (reply), ``EphemeralReply`` (auto-delete) or None (already delivered).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+# Observer result is deliberately unconstrained and ignored. Implementations may be
+# synchronous or asynchronous, but cannot influence adapter routing through a return.
+IngressObserver = Callable[[MessageEvent, str], Any]
 
 
 def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
@@ -1847,6 +1850,9 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Optional read-only observation seam for every normalized MessageEvent.
+        # It fires before idle/busy routing; return values never affect admission.
+        self._ingress_observer: Optional[IngressObserver] = None
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
         self._platform_event_handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = None
@@ -2200,6 +2206,37 @@ class BasePlatformAdapter(ABC):
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Set the incoming-message handler (MessageEvent -> optional response str)."""
         self._message_handler = handler
+
+    def set_ingress_observer(self, observer: Optional[IngressObserver]) -> None:
+        """Install a read-only normalized-message observer.
+
+        The observer is called exactly once per :meth:`handle_message` invocation,
+        after command/topic normalization and session-key derivation but before any
+        idle/busy routing or drop.  It therefore sees internal events and events that
+        later fail runner authorization.  This is an observation boundary, not an
+        authorization or middleware boundary: return values are ignored, mutation of
+        ``event`` is unsupported, and failures are logged without changing message
+        flow.  ``None`` clears the observer.
+        """
+        self._ingress_observer = observer
+
+    async def _notify_ingress_observer(self, event: MessageEvent, session_key: str) -> None:
+        """Run the optional ingress observer with fail-open routing semantics."""
+        observer = getattr(self, "_ingress_observer", None)
+        if not callable(observer):
+            return
+        try:
+            result = observer(event, session_key)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            # Observer failures can contain private message/session material.
+            # Report only the exception class; routing still fails open.
+            logger.warning(
+                "[%s] Ingress observer failed (%s); continuing",
+                self.name,
+                type(exc).__name__,
+            )
 
     def set_platform_event_handler(
         self, handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]]) -> None:
@@ -3528,7 +3565,9 @@ class BasePlatformAdapter(ABC):
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
-        if not self._message_handler:
+        # Preserve the no-handler fast path unless an observer explicitly asked to
+        # see adapter-level ingress before a runner is attached.
+        if not self._message_handler and not callable(getattr(self, "_ingress_observer", None)):
             return
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
@@ -3539,6 +3578,9 @@ class BasePlatformAdapter(ABC):
                 and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
             await asyncio.to_thread(self._apply_topic_recovery, event)
         session_key = self._event_session_key(event)
+        await self._notify_ingress_observer(event, session_key)
+        if not self._message_handler:
+            return
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)

@@ -489,13 +489,18 @@ class RaftAdapter(BasePlatformAdapter):
             # Durable gateway wakes need the base session fence and admission receipt.
             await super().handle_message(event)
             return
-        if not self._message_handler:
+        if not self._message_handler and not callable(getattr(self, "_ingress_observer", None)):
             return
         session_key = build_session_key(
             event.source, group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
             profile=self._session_key_profile(event.source))
         if session_key in self._active_sessions:
+            # This custom queue path bypasses BasePlatformAdapter.handle_message(),
+            # so it must cross the same observer boundary explicitly.
+            await self._notify_ingress_observer(event, session_key)
+            if not self._message_handler:
+                return
             logger.debug("[raft] Wake queued for busy session %s", session_key)
             merge_pending_message_event(self._pending_messages, session_key, event)
             return

@@ -200,12 +200,14 @@ Authorization: Bearer ***
 X-Hermes-Session-Id: openwebui-chat-42
 ```
 
-The header is authoritative even alongside `previous_response_id` or
-`conversation`. It controls the client-visible transcript identity, not request
-context: clients must still supply context through the standard Responses fields
-or the Hermes-specific `conversation_history` extension. If Hermes rotated that
-client transcript during compression, a matching response chain transparently
-resumes the stored post-compression session.
+The header is authoritative for transcript identity even alongside
+`previous_response_id` or `conversation`. When a request carries only its new
+input, Hermes recovers that transcript's persisted `state.db` history, including
+after a gateway restart. Explicit `conversation_history`, a multi-message
+`input`, or a `previous_response_id`/`conversation` response chain supplies the
+request context instead and is never combined with the header-loaded history.
+If Hermes rotated the client transcript during compression, the header resolves
+to the stored post-compression session before its history is loaded.
 
 Hermes returns the selected ID in the same response header for both JSON and SSE
 responses. The default `compression.in_place: true` mode keeps that ID stable.

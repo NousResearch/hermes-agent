@@ -1055,7 +1055,9 @@ gateway:
 The option defaults to `false` and affects only `/v1/responses`. When enabled,
 an authenticated `X-Hermes-Session-Id` is authoritative even if the request
 also contains `previous_response_id` or `conversation`. The header controls
-transcript identity; it does not provide conversation context. See
+transcript identity and, when the request contains only new input, recovers its
+persisted history across gateway restarts. Explicit request context retains
+precedence and is not combined with that recovered history. See
 [OpenAI-Compatible API Server](/user-guide/features/api-server#client-managed-session-id)
 for the full request and security contract.
 

@@ -811,7 +811,8 @@ class OpenAICompatRoutesMixin:
         # Explicit conversation_history (stateless clients) beats previous_response_id chaining.
         conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
-        if raw_history:
+        has_explicit_history = raw_history is not None
+        if has_explicit_history:
             if not isinstance(raw_history, list):
                 return _error_response("'conversation_history' must be an array of message objects", 400)
             for i, entry in enumerate(raw_history):
@@ -828,15 +829,33 @@ class OpenAICompatRoutesMixin:
         stored_client_session_id = None
         if previous_response_id:
             stored = self._response_store.get(previous_response_id)
-            if stored is None and not conversation_history:
+            if stored is None and not has_explicit_history:
                 return _error_response(f"Previous response not found: {previous_response_id}", 404)
             if stored is not None:
                 stored_session_id = stored.get("session_id")
                 stored_client_session_id = stored.get("client_session_id")
-                if not conversation_history:
+                if not has_explicit_history:
                     conversation_history = list(stored.get("conversation_history", []))
                 if instructions is None:
                     instructions = stored.get("instructions")
+
+        # A client-managed ID is also a durable transcript address. Resolve a
+        # pre-compression parent to its live continuation before loading state,
+        # then recover SessionDB history when the request carries only its new
+        # input. Explicit client context and response chains remain authoritative
+        # and must never be duplicated with the durable transcript.
+        resolved_client_session_id = provided_session_id
+        if provided_session_id:
+            from gateway.platforms.api_server_runs import _resolve_live_session_id
+            resolved_client_session_id = await _resolve_live_session_id(
+                self, provided_session_id)
+            if (
+                not has_explicit_history
+                and not previous_response_id
+                and len(input_messages) <= 1
+            ):
+                conversation_history = await self._conversation_history_for_session(
+                    resolved_client_session_id)
         # All input messages but the last become history; the last is the user message.
         conversation_history.extend(input_messages[:-1])
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
@@ -851,7 +870,7 @@ class OpenAICompatRoutesMixin:
             provided_session_id and stored_session_id
             and stored_client_session_id == provided_session_id)
         session_id = (
-            stored_session_id if _resume_rotated_session else provided_session_id
+            stored_session_id if _resume_rotated_session else resolved_client_session_id
         ) or (
             stored_session_id
             or self._declared_conversation_session(gateway_session_key)

@@ -2622,6 +2622,55 @@ class TestSessionIdHeader:
             assert resp.headers["X-Hermes-Session-Id"] == "openwebui-chat-42"
 
     @pytest.mark.asyncio
+    async def test_responses_session_header_recovers_persisted_history_after_restart(
+        self, tmp_path, monkeypatch
+    ):
+        """A header-only follow-up reloads its real SessionDB transcript."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        session_id = "openwebui-chat-42"
+        first_adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        db = await first_adapter._ensure_session_db_async()
+        db.create_session(session_id, source="api_server")
+        db.append_message(session_id, "user", "persisted question")
+        db.append_message(session_id, "assistant", "persisted answer")
+        await first_adapter.disconnect()
+
+        restarted_adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        app = _create_app(restarted_adapter)
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                with patch.object(
+                    restarted_adapter, "_run_agent", new_callable=AsyncMock
+                ) as mock_run:
+                    mock_run.return_value = (
+                        {"final_response": "continued", "messages": [], "api_calls": 1},
+                        {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    )
+                    resp = await cli.post(
+                        "/v1/responses",
+                        headers={
+                            "Authorization": "Bearer sk-secret",
+                            "X-Hermes-Session-Id": session_id,
+                        },
+                        json={"model": "hermes-agent", "input": "new question"},
+                    )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["session_id"] == session_id
+            restored_history = mock_run.call_args.kwargs["conversation_history"]
+            assert [(item["role"], item["content"]) for item in restored_history] == [
+                ("user", "persisted question"),
+                ("assistant", "persisted answer"),
+            ]
+            assert all(item["_db_persisted"] is True for item in restored_history)
+        finally:
+            await restarted_adapter.disconnect()
+
+    @pytest.mark.asyncio
     async def test_responses_session_header_requires_configured_api_key(self):
         adapter = _make_adapter(responses_client_managed_session_id=True)
         app = _create_app(adapter)

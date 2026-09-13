@@ -223,6 +223,7 @@ def test_verified_successor_fulfills_exact_marker_generation(monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [os.getpid()])
     monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.dashboard_procs._scan_dashboard_processes", lambda **_kwargs: [])
 
     assert update_cmd._pending_fleet_restart_needed() is False
     assert marker.read_bytes() == original
@@ -283,6 +284,7 @@ def test_vanished_successor_cannot_fulfill_marker(monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [42])
     monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.dashboard_procs._scan_dashboard_processes", lambda **_kwargs: [])
 
     def vanished(_pid):
         raise psutil.NoSuchProcess(_pid)
@@ -347,6 +349,7 @@ def test_multiple_profiles_require_identity_matched_successors(monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [os.getpid()])
     monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.dashboard_procs._scan_dashboard_processes", lambda **_kwargs: [])
 
     assert update_cmd._pending_fleet_restart_needed() is False
 
@@ -390,6 +393,28 @@ def test_unidentified_gateway_keeps_marker_pending(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
+def test_unledgered_serve_process_keeps_marker_pending(monkeypatch):
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(_marker_body(started=1, expected_sha="abc123"), encoding="utf-8")
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(json.dumps({
+        "pid": 99999999,
+        "update_id": _UPDATE_ID,
+        "post_update": {"sha": "abc123"},
+        "plan": {"inventory_complete": True, "runtimes": []},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        "hermes_cli.dashboard_procs._scan_dashboard_processes",
+        lambda **_kwargs: [(77, "hermes --profile work serve")],
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
 def test_legacy_marker_settles_from_strict_live_fleet_evidence(monkeypatch):
     marker = update_cmd._fleet_restart_pending_marker_path()
     marker.write_text("started=1\npid=99999999\nexpected_sha=abc123\n", encoding="utf-8")
@@ -400,6 +425,7 @@ def test_legacy_marker_settles_from_strict_live_fleet_evidence(monkeypatch):
     )
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [42])
     monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.dashboard_procs._scan_dashboard_processes", lambda **_kwargs: [])
 
     assert update_cmd._pending_fleet_restart_needed() is False
     completion = json.loads(update_cmd_fleet._fleet_restart_completion_path().read_text(encoding="utf-8"))
@@ -444,6 +470,7 @@ def test_empty_worklist_requires_completed_inventory(monkeypatch, inventory_comp
     monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: [])
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [])
     monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.dashboard_procs._scan_dashboard_processes", lambda **_kwargs: [])
 
     assert update_cmd._pending_fleet_restart_needed() is pending
 

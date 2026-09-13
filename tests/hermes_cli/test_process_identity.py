@@ -100,6 +100,17 @@ def test_install_id_stable_and_path_scoped():
     assert len(a) == 12
 
 
+@pytest.mark.parametrize("payload", [[42], [{"install": "abc", "pid": "42"}]])
+def test_strict_ledger_rejects_malformed_entries(tmp_path, monkeypatch, payload):
+    ledger = tmp_path / "spawn-ledger.json"
+    ledger.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(pi, "_ledger_path", lambda: ledger)
+    monkeypatch.setattr(pi, "install_id", lambda _root=None: "abc")
+
+    with pytest.raises(RuntimeError, match="spawn ledger"):
+        pi.ledger_entries(strict=True)
+
+
 # ---------------------------------------------------------------------------
 # Ledger
 # ---------------------------------------------------------------------------

@@ -137,7 +137,7 @@ def _ledger_path() -> Path:
         return Path(get_hermes_home()) / LEDGER_FILENAME
 
 
-def _read_ledger(path: Path) -> Optional[list[dict]]:
+def _read_ledger(path: Path, *, strict: bool = False) -> Optional[list[dict]]:
     """Entries list, ``[]`` for empty/missing, ``None`` for CORRUPT (never silently an empty roster).
 
     Mirrors the #89298 contract: corrupt is a distinct state that must never be silently treated as an empty
@@ -155,7 +155,9 @@ def _read_ledger(path: Path) -> Optional[list[dict]]:
         parsed = json.loads(text)
     except (ValueError, TypeError):
         return None
-    return [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else None
+    if not isinstance(parsed, list) or (strict and any(not isinstance(entry, dict) for entry in parsed)):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
 
 
 def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
@@ -311,13 +313,20 @@ def ledger_entries(*, project_root: Optional[Path] = None, strict: bool = False)
     """
     want_install = install_id(project_root)
     with _LEDGER_LOCK:
-        entries = _read_ledger(_ledger_path()) if strict else _read_ledger_or_quarantine(_ledger_path())
+        entries = _read_ledger(_ledger_path(), strict=True) if strict else _read_ledger_or_quarantine(_ledger_path())
     if entries is None:
         if strict:
             raise RuntimeError("spawn ledger is unreadable")
         return []
     live: list[dict] = []
     for entry in entries:
+        if strict and (
+            not isinstance(entry.get("install"), str)
+            or not isinstance(entry.get("pid"), int)
+            or entry["pid"] <= 0
+            or not isinstance(entry.get("create_time"), (int, float))
+        ):
+            raise RuntimeError("spawn ledger contains a malformed entry")
         if entry.get("install") != want_install or not isinstance(entry.get("pid"), int):
             continue
         alive = _pid_alive_matches(entry["pid"], entry.get("create_time"))

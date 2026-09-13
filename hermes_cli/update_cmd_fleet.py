@@ -256,6 +256,10 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
             if entry.get("purpose") in {"serve", "dashboard"}
         ):
             return False
+        from hermes_cli.dashboard_procs import _scan_dashboard_processes
+
+        if any(pid not in recorded_pids for pid, _cmd in _scan_dashboard_processes(strict=True)):
+            return False
     except Exception:
         return False
 
@@ -1712,7 +1716,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # Code updated but a gateway may still run stale modules: fail so automation
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
-    _clear_fleet_restart_pending_marker()
+    # Settle the exact marker generation instead of unlinking after verification: a separate
+    # compare/delete step could consume a newer updater's marker.
+    if _pending_fleet_restart_needed():
+        sys.exit(1)
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
     with _best_effort('Multiplex auto-migration after update failed: %s'):

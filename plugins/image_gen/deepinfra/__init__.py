@@ -1,8 +1,10 @@
 """DeepInfra image generation (FLUX, Qwen-Image-Edit, …) via the OpenAI-compatible
 ``/v1/openai/images/generations`` endpoint. The catalog is fully dynamic (``image-gen``-tagged
 models from :func:`hermes_cli.models._fetch_deepinfra_models_by_tag`; no ids hardcoded).
-Selection: ``DEEPINFRA_IMAGE_MODEL`` → ``image_gen.deepinfra.model`` → first live model;
-when all are absent ``generate()`` errors rather than guessing."""
+Selection: ``model`` kwarg (the ``image_generate`` dispatcher forwards the ``hermes tools`` pick,
+``image_gen.model``; honored when the live catalog lists it or is unavailable) →
+``DEEPINFRA_IMAGE_MODEL`` → ``image_gen.deepinfra.model`` → first live model; when all are absent
+``generate()`` errors rather than guessing."""
 
 from __future__ import annotations
 
@@ -49,8 +51,15 @@ def _format_catalog_row(item: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
-def _resolve_model(catalog: List[Dict[str, Any]], cfg: Dict[str, Any]) -> Optional[str]:
-    """env > config > first live result, else None (``cfg`` = loaded ``image_gen.deepinfra``)."""
+def _resolve_model(
+    catalog: List[Dict[str, Any]], cfg: Dict[str, Any], explicit: Optional[str] = None,
+) -> Optional[str]:
+    """caller kwarg > env > config > first live result, else None (``cfg`` = loaded
+    ``image_gen.deepinfra``). The caller's model is validated against the live catalog when one is
+    available, so a stale id left behind by another backend falls through instead of being sent."""
+    explicit = explicit.strip() if isinstance(explicit, str) else ""
+    if explicit and (not catalog or any(item.get("id") == explicit for item in catalog)):
+        return explicit
     env_override = os.environ.get("DEEPINFRA_IMAGE_MODEL", "").strip()
     if env_override:
         return env_override
@@ -104,7 +113,7 @@ class DeepInfraImageGenProvider(StaticImageGenProvider):
                 "to add the key.",
                 "auth_required")
         di_cfg = load_image_gen_config("deepinfra")
-        model_id = _resolve_model(_live_models() or [], di_cfg)
+        model_id = _resolve_model(_live_models() or [], di_cfg, kwargs.get("model"))
         if not model_id:
             return fail(
                 "No DeepInfra image-gen model available. Pin one in "

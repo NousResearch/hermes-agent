@@ -104,3 +104,75 @@ def test_capabilities_advertise_text_to_image_only():
         "modalities": ["text"],
         "max_reference_images": 0,
     }
+
+
+# ── Model selection ─────────────────────────────────────────────────────────
+
+
+def _capturing_openai(captured: dict) -> MagicMock:
+    class _FakeImages:
+        def generate(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=_b64_png(), url=None)])
+
+    class _FakeClient:
+        def __init__(self, api_key=None, base_url=None):
+            self.images = _FakeImages()
+
+    fake_openai = MagicMock()
+    fake_openai.OpenAI = _FakeClient
+    return fake_openai
+
+
+_LIVE = [{"id": "vendor/first"}, {"id": "vendor/picked"}]
+
+
+def test_resolve_model_precedence(monkeypatch):
+    """caller kwarg > env > scoped config > first live model."""
+    monkeypatch.setenv("DEEPINFRA_IMAGE_MODEL", "vendor/first")
+    assert deepinfra_plugin._resolve_model(_LIVE, {"model": "vendor/picked"}, "vendor/picked") == "vendor/picked"
+    assert deepinfra_plugin._resolve_model(_LIVE, {"model": "vendor/picked"}) == "vendor/first"
+    monkeypatch.delenv("DEEPINFRA_IMAGE_MODEL")
+    assert deepinfra_plugin._resolve_model(_LIVE, {"model": "vendor/picked"}) == "vendor/picked"
+    assert deepinfra_plugin._resolve_model(_LIVE, {}) == "vendor/first"
+    assert deepinfra_plugin._resolve_model([], {}) is None
+
+
+def test_model_kwarg_selects_live_model(monkeypatch):
+    """The `hermes tools` pick arrives as ``model`` from the image_generate dispatcher; the
+    request must use it rather than the first live catalog entry."""
+    monkeypatch.delenv("DEEPINFRA_IMAGE_MODEL", raising=False)
+    monkeypatch.setattr(deepinfra_plugin, "_live_models", lambda: list(_LIVE))
+    captured: dict = {}
+    with patch.dict("sys.modules", {"openai": _capturing_openai(captured)}):
+        result = deepinfra_plugin.DeepInfraImageGenProvider().generate(
+            prompt="a cat", aspect_ratio="square", model="vendor/picked")
+    assert result["success"] is True
+    assert result["model"] == "vendor/picked"
+    assert captured["kwargs"]["model"] == "vendor/picked"
+
+
+def test_foreign_model_kwarg_falls_back_to_first_live(monkeypatch):
+    """An id another backend left in ``image_gen.model`` is not in DeepInfra's catalog: fall
+    through to the existing selection chain instead of sending it."""
+    monkeypatch.delenv("DEEPINFRA_IMAGE_MODEL", raising=False)
+    monkeypatch.setattr(deepinfra_plugin, "_live_models", lambda: list(_LIVE))
+    captured: dict = {}
+    with patch.dict("sys.modules", {"openai": _capturing_openai(captured)}):
+        result = deepinfra_plugin.DeepInfraImageGenProvider().generate(
+            prompt="a cat", aspect_ratio="square", model="fal-ai/flux-2/klein/9b")
+    assert result["success"] is True
+    assert captured["kwargs"]["model"] == "vendor/first"
+
+
+def test_model_kwarg_honored_when_catalog_unavailable(monkeypatch):
+    """With the live catalog unreachable there is nothing to validate against; a picked model
+    still generates instead of erroring with ``no_model_available``."""
+    monkeypatch.delenv("DEEPINFRA_IMAGE_MODEL", raising=False)
+    monkeypatch.setattr(deepinfra_plugin, "_live_models", lambda: None)
+    captured: dict = {}
+    with patch.dict("sys.modules", {"openai": _capturing_openai(captured)}):
+        result = deepinfra_plugin.DeepInfraImageGenProvider().generate(
+            prompt="a cat", aspect_ratio="square", model="vendor/picked")
+    assert result["success"] is True
+    assert captured["kwargs"]["model"] == "vendor/picked"

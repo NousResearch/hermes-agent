@@ -162,6 +162,48 @@ class TestGenerate:
         # finals and presented as smeared/unfinished images.
         assert tool["partial_images"] == 0
 
+    def test_model_kwarg_selects_tier_over_scoped_config(self, provider, monkeypatch, tmp_path):
+        """The dispatcher forwards the `hermes tools` pick as ``model``; it beats a stale
+        ``image_gen.openai-codex.model`` and reaches the Responses tool as ``quality``."""
+        import yaml
+
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"openai-codex": {"model": "gpt-image-2-high"}}
+        }))
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, input_images=None):
+            captured["quality"] = quality
+            return {"b64": _b64_png(), "source": "final"}
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", model="gpt-image-2-low")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-low"
+        assert result["quality"] == "low"
+        assert captured["quality"] == "low"
+
+    def test_unknown_model_kwarg_falls_back_to_config(self, provider, monkeypatch, tmp_path):
+        """An id from another backend left in ``image_gen.model`` is ignored, not sent."""
+        import yaml
+
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"openai-codex": {"model": "gpt-image-2-high"}}
+        }))
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin, "_collect_image_b64", lambda *a, **kw: {"b64": _b64_png(), "source": "final"})
+
+        result = provider.generate("a cat", model="fal-ai/flux-2/klein/9b")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-high"
+
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
         assert caps["modalities"] == ["text", "image"]

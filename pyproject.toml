@@ -336,6 +336,19 @@ google = [
   "httplib2==0.32.0",
   "pyasn1==0.6.4",
 ]
+google-chat = [
+  # Google Chat adapter (Pub/Sub inbound + Chat REST). Kept out of [all] so a
+  # quarantined google-cloud-pubsub cannot break every fresh install; Docker
+  # bakes `--extra google-chat` and lazy_deps installs into
+  # HERMES_LAZY_INSTALL_TARGET on sealed hosted images.
+  "google-cloud-pubsub==2.39.0",
+  "google-api-python-client==2.194.0",
+  "google-auth==2.55.1",
+  "google-auth-oauthlib==1.3.1",
+  "google-auth-httplib2==0.3.1",
+  "httplib2==0.32.0",
+  "pyasn1==0.6.4",
+]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
@@ -490,6 +503,7 @@ google-api-python-client = false
 google-auth = false
 google-auth-httplib2 = false
 google-auth-oauthlib = false
+google-cloud-pubsub = false
 h2 = false
 hindsight-client = false
 honcho-ai = false

@@ -1078,6 +1078,11 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            if evt.get("truncated") is True or any(
+                isinstance(result, dict) and result.get("truncated") is True
+                for result in (evt.get("results") or [])
+            ):
+                metadata["goal_execution_incomplete"] = True
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
@@ -1227,6 +1232,54 @@ class GatewayNotificationsMixin:
                 return False
         return True
 
+    async def _completion_goal_session_id(self, evt: dict) -> str:
+        """Resolve the Goal row owning a completion, following compression rotation when available."""
+        session_id = str(evt.get("parent_session_id") or evt.get("origin_session_id") or "").strip()
+        session_db = getattr(self, "_session_db", None)
+        if session_id and session_db is not None:
+            try:
+                session_id = str(await session_db.get_compression_tip(session_id) or session_id)
+            except Exception:
+                logger.debug("Could not resolve completion Goal lineage for %s", session_id, exc_info=True)
+        return session_id
+
+    async def _is_stale_goal_completion(self, evt: dict) -> bool:
+        session_id = await self._completion_goal_session_id(evt)
+        if not session_id:
+            return False
+        try:
+            from hermes_cli.goals import is_stale_goal_event
+            return await asyncio.to_thread(is_stale_goal_event, session_id, evt)
+        except Exception:
+            logger.debug("Could not classify completion against active Goal", exc_info=True)
+            return False
+
+    async def _deliver_stale_goal_completion(self, synth_text: str, evt: dict) -> bool:
+        """Display a superseded Goal's result without injecting an agent turn."""
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
+        if source is None:
+            logger.info("Stale Goal completion retained in records; no direct notification route")
+            return True
+        platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        adapter = self._resolve_injection_adapter(platform, source)
+        if adapter is None:
+            logger.info("Stale Goal completion retained in records; no adapter for %s", platform)
+            return True
+        metadata = None
+        with suppress(Exception):
+            metadata = self._thread_metadata_for_source(source)
+        notice = "Background result from a superseded Goal (not applied to the current Goal):\n" + synth_text
+        send = getattr(adapter, "send", None)
+        if not callable(send):
+            logger.info("Stale Goal completion retained in records; adapter %s has no push send", platform)
+            return True
+        try:
+            result = await send(source.chat_id, notice, metadata=metadata)
+        except Exception:
+            logger.warning("Could not display stale Goal completion", exc_info=True)
+            return False
+        return result is None or bool(getattr(result, "success", True))
+
     async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.
 
@@ -1336,6 +1389,14 @@ class GatewayNotificationsMixin:
                 if self._completion_identity_seen(identity, claim=True):
                     return None
                 identity_claimed = True
+            if await self._is_stale_goal_completion(evt):
+                if not await self._deliver_stale_goal_completion(synth_text, evt):
+                    return False
+                accepted = True
+                if identity is not None:
+                    with self._completion_delivery_lock:
+                        self._mark_completions_delivered_locked((identity,))
+                return True
             injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
             if injection_result is not True:
                 return injection_result
@@ -1468,6 +1529,8 @@ class GatewayNotificationsMixin:
 
     async def _enqueue_process_completion_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
         """Fan in concurrent process completions that share one conversation."""
+        if await self._is_stale_goal_completion(evt):
+            return await self._deliver_completion_notification(synth_text, evt)
         # Lazy defaults: lifecycle tests build GatewayRunner via object.__new__.
         for attr, default in (
             ("_completion_notification_batches", dict), ("_completion_notification_batch_tasks", dict),
@@ -1520,6 +1583,20 @@ class GatewayNotificationsMixin:
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
+        fresh_group = []
+        stale_outcomes = []
+        for evt in group:
+            if await self._is_stale_goal_completion(evt):
+                text = _format_gateway_process_notification(evt)
+                if text:
+                    stale_outcomes.append(await self._deliver_completion_notification(text, evt))
+            else:
+                fresh_group.append(evt)
+        group = fresh_group
+        if False in stale_outcomes:
+            return False
+        if not group:
+            return True
         # API delivery does not start a model turn, so there is nothing to coalesce.
         # Keep each unit's stable identity with its row across partial delivery/retry.
         if group and group[0].get("origin_session_id"):

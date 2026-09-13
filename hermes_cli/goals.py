@@ -651,6 +651,24 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
+def is_stale_goal_event(session_id: str, event: Dict[str, Any]) -> bool:
+    """True when a background event began before the current active Goal was created.
+
+    ``replace`` creates a fresh GoalState timestamp. Late work from the superseded Goal may still be
+    displayed, but must not re-enter the model/judge lifecycle of the replacement.
+    """
+    state = load_goal(str(session_id or "").strip())
+    if state is None or state.status != "active" or not state.created_at:
+        return False
+    raw_started = event.get("dispatched_at") if event.get("type") == "async_delegation" else event.get("started_at")
+    if raw_started is None:
+        return False
+    try:
+        return float(raw_started) < float(state.created_at)
+    except (TypeError, ValueError):
+        return False
+
+
 def save_goal(session_id: str, state: GoalState) -> None:
     """Persist a goal to SessionDB. No-op if DB unavailable."""
     if not session_id:
@@ -1459,6 +1477,7 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
         active_delegations: int = 0,
+        execution_incomplete: bool = False,
     ) -> Dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1473,6 +1492,18 @@ class GoalManager:
 
         state.turns_used += 1
         state.last_turn_at = time.time()
+
+        if execution_incomplete:
+            reason = "execution terminated before semantic completion"
+            state.last_verdict = "continue"
+            state.last_reason = reason
+            if state.turns_used >= state.max_turns:
+                return self._budget_pause(state, "continue", reason, note=" (execution ended before completion)")
+            self._save()
+            return _decision(
+                "active", True, self.next_continuation_prompt(), "continue", reason,
+                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
+            )
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).

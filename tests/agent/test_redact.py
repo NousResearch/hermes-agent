@@ -1197,6 +1197,12 @@ class TestRedactForEgress:
         assert "opaque0123456789abcdef" not in out
         assert "https://x.example" in out
 
+    def test_bearer_sweep_masks_real_tokens_not_the_english_word(self):
+        from agent.redact import redact_for_egress
+        prose = "I'm the bearer of bad news: the deploy failed"
+        assert redact_for_egress(prose) == prose
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in redact_for_egress("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+
     def test_fails_closed_when_the_redactor_raises(self, monkeypatch):
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))

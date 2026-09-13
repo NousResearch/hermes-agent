@@ -798,7 +798,10 @@ def is_env_dump_command(command: str | None) -> bool:
 
 
 REDACTION_UNAVAILABLE = "[redaction-unavailable]"
-_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]+=*)", re.IGNORECASE)
+# The opaque branch needs a 20-char floor (the floor the gateway/A2A sweeps always had): without it the
+# English word "bearer" turns "the bearer of bad news" into "Bearer [redacted] bad news" on every chat
+# reply. The bracket branch folds an already-masked residue ("Bearer [redacted-jwt]") to one marker.
+_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)", re.IGNORECASE)
 
 
 def redact_for_egress(text: str) -> str:

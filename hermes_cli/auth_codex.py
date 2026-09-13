@@ -16,7 +16,7 @@ import json
 import os
 import threading
 import time
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
@@ -81,11 +81,18 @@ def _load_auth_store_maybe_locked(lock: bool) -> Dict[str, Any]:
     return _load_auth_store()
 
 
-def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+def _read_codex_tokens(
+    *, _lock: bool = True, source_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json)."""
-    from hermes_cli.auth import _load_provider_state, _nonempty_str
+    from hermes_cli.auth import (
+        _load_auth_store, _load_provider_state, _load_provider_state_with_source, _nonempty_str)
     auth_store = _load_auth_store_maybe_locked(_lock)
-    state = _load_provider_state(auth_store, "openai-codex")
+    if source_path is None:
+        state, source_path = _load_provider_state_with_source(auth_store, "openai-codex")
+    else:
+        # The caller holds the source lock: bypass the global fallback cache.
+        state = _load_auth_store(source_path).get("providers", {}).get("openai-codex")
     if not state:
         raise _codex_err(_NO_CREDENTIALS_MSG, "codex_auth_missing", relogin=True)
     tokens = state.get("tokens")
@@ -98,7 +105,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if not _nonempty_str(tokens.get("refresh_token")):
         raise _codex_err(
             _MISSING_REFRESH_TOKEN_MSG, "codex_auth_missing_refresh_token", relogin=True)
-    return {"tokens": tokens, "last_refresh": state.get("last_refresh")}
+    return {"tokens": tokens, "last_refresh": state.get("last_refresh"), "source_path": source_path}
 
 
 def _sync_codex_pool_entries(
@@ -146,6 +153,8 @@ def _write_through_codex_tokens_to_global_root(
     state: Dict[str, Any],
     tokens: Dict[str, str],
     last_refresh: Optional[str],
+    *,
+    strict: bool = False,
 ) -> None:
     """Persist a profile-refreshed Codex OAuth state into the global-root auth.json.
 
@@ -155,8 +164,9 @@ def _write_through_codex_tokens_to_global_root(
     selects credentials from — or root keeps the *consumed* refresh token and the next process
     to read it replays it, at which point OpenAI revokes the whole rotation family and the
     credential needs a manual device-code re-auth (#87503). Mirrors the xAI write-through
-    (#43589/#74339): root-only (never creates a shadowing profile key), best-effort — a
-    failed write-through must never break the profile's own save.
+    (#43589/#74339): root-only (never creates a shadowing profile key). Legacy saves remain
+    best-effort; runtime refresh uses ``strict=True`` so a persistence failure cannot report
+    success after consuming a single-use grant.
     """
     from hermes_cli.auth import (
         _auth_store_lock, _global_auth_file_path, _load_auth_store, _save_auth_store,
@@ -176,8 +186,13 @@ def _write_through_codex_tokens_to_global_root(
             real_root = Path(real_home_env) / ".hermes" / "auth.json"
             try:
                 if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    if strict:
+                        raise RuntimeError(
+                            "Refusing Codex refresh write-through to the real auth store")
                     return
             except Exception:
+                if strict:
+                    raise
                 return
     try:
         with _auth_store_lock(target_path=global_path):
@@ -194,11 +209,16 @@ def _write_through_codex_tokens_to_global_root(
             _sync_codex_pool_entries(
                 root_store, tokens, last_refresh, previous_singleton_tokens=root_prev_tokens)
             _save_auth_store(root_store, target_path=global_path)
-    except Exception as exc:  # pragma: no cover - best effort
+    except Exception as exc:
+        if strict:
+            raise
         logger.debug("Codex OAuth: write-through to global root failed: %s", exc)
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
+def _save_codex_tokens(
+    tokens: Dict[str, str], last_refresh: str = None, label: str = None,
+    *, source_path: Optional[Path] = None,
+) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     from hermes_cli.auth import (
         _auth_store_lock, _global_auth_file_path, _load_auth_store,
@@ -213,7 +233,12 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         # fallback, and a refresh under that profile must rotate ROOT's
         # chain, not fork a shadowing profile key (#87503, mirrors the xAI
         # source-aware save from #43589/#74339).
-        state, source_path = _load_provider_state_with_source(auth_store, "openai-codex")
+        refresh_source = source_path
+        if source_path is None:
+            state, source_path = _load_provider_state_with_source(auth_store, "openai-codex")
+        else:
+            state = dict(
+                _load_auth_store(source_path).get("providers", {}).get("openai-codex") or {})
         if state is None:
             state = {}
         # Capture the previous singleton tokens BEFORE overwriting: the pool sync uses them to
@@ -232,8 +257,11 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             # Grant was resolved from root — write the rotated chain back to
             # root only. Do NOT also persist into the profile store (it would
             # create a shadowing providers.openai-codex key that disables
-            # the write-through on the next refresh, #74339).
-            _write_through_codex_tokens_to_global_root(state, tokens, last_refresh)
+            # the write-through on the next refresh, #74339). A caller that
+            # already holds the source lock (runtime refresh) gets strict
+            # persistence: a failure must propagate, not report success.
+            _write_through_codex_tokens_to_global_root(
+                state, tokens, last_refresh, strict=refresh_source is not None)
             return
         _save_provider_state(auth_store, "openai-codex", state)
         _sync_codex_pool_entries(
@@ -432,9 +460,12 @@ def refresh_codex_oauth_pure(
     return updated
 
 
-def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -> Dict[str, str]:
+def _refresh_codex_auth_tokens(
+    tokens: Dict[str, str], timeout_seconds: float, *, source_path: Optional[Path] = None,
+) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token."""
-    from hermes_cli.auth import _save_codex_tokens, refresh_codex_oauth_pure
+    from hermes_cli.auth import (
+        _auth_file_path, _same_path, _save_codex_tokens, refresh_codex_oauth_pure)
     try:
         refreshed = refresh_codex_oauth_pure(
             str(tokens.get("access_token", "") or ""), str(tokens.get("refresh_token", "") or ""),
@@ -447,6 +478,11 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
         # (429 quota) keep relogin_required=False — the stored token is still valid — re-raise.
         if not getattr(exc, "relogin_required", False):
             raise
+        if source_path is not None and not _same_path(source_path, _auth_file_path()):
+            # A rejected borrowed grant does not authorize an unrelated CLI import: the CLI
+            # holds a different rotation family, and adopting it would fork the profile away
+            # from the root singleton this refresh was guarding (#87503).
+            raise
         imported = _recover_codex_tokens_from_cli(
             f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
         if not imported:
@@ -455,7 +491,10 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
     updated_tokens = {
         **tokens, "access_token": refreshed["access_token"],
         "refresh_token": refreshed["refresh_token"]}
-    _save_codex_tokens(updated_tokens)
+    if source_path is None:
+        _save_codex_tokens(updated_tokens)
+    else:
+        _save_codex_tokens(updated_tokens, source_path=source_path)
     return updated_tokens
 
 
@@ -543,14 +582,31 @@ def resolve_codex_runtime_credentials(
             refresh_if_expiring and _codex_access_token_is_expiring(token, refresh_skew_seconds))
 
     if _should_refresh(access_token):
-        # Re-read under lock to avoid racing with other Hermes processes
+        # Keep the existing profile -> root lock order used by the save path.
+        # The owning lock must span the re-read, endpoint call and writeback.
+        source_path = data.get("source_path")
+        observed_pair = (tokens.get("access_token"), tokens.get("refresh_token"))
         lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)
-        with _auth_store_lock(timeout_seconds=lock_timeout):
-            data = _read_codex_tokens(_lock=False)
+        with _auth_store_lock(timeout_seconds=lock_timeout), (
+                _auth_store_lock(timeout_seconds=lock_timeout, target_path=source_path)
+                if source_path is not None else nullcontext()):
+            data = (_read_codex_tokens(_lock=False, source_path=source_path)
+                    if source_path is not None else _read_codex_tokens(_lock=False))
             tokens = dict(data["tokens"])
-            if _should_refresh(_stripped(tokens.get("access_token"))):
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
             access_token = _stripped(tokens.get("access_token"))
+            # A peer can rotate just the refresh token while keeping the access token; the
+            # single-use grant is already consumed, so a fresh pair means "someone else
+            # refreshed" — adopt it instead of firing a second endpoint call.
+            same_pair = observed_pair == (tokens.get("access_token"), tokens.get("refresh_token"))
+            should_refresh = bool(force_refresh and same_pair)
+            if (not should_refresh) and refresh_if_expiring:
+                should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
+            if should_refresh:
+                tokens = (_refresh_codex_auth_tokens(
+                    tokens, refresh_timeout_seconds, source_path=source_path)
+                    if source_path is not None else
+                    _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds))
+                access_token = _stripped(tokens.get("access_token"))
     return _codex_runtime_result(
         access_token, source="hermes-auth-store", last_refresh=data.get("last_refresh"))
 

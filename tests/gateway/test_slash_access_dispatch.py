@@ -27,6 +27,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from tools.approval import disable_session_yolo, is_session_yolo_enabled
 
 
 def _make_source(
@@ -163,6 +164,33 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
 # ---------------------------------------------------------------------------
 # Backward compatibility — no admin list set means no gating at all
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("user_id", "response_text", "enabled"),
+    [("999", "admin", False), ("111", "ON", True)],
+)
+@pytest.mark.asyncio
+async def test_yolo_authority_is_enforced_through_real_dispatch(
+    user_id, response_text, enabled
+):
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["yolo"],
+        }
+    )
+    source = _make_source(user_id=user_id)
+    session_key = runner._session_key_for_source(source)
+    disable_session_yolo(session_key)
+
+    try:
+        result = await runner._handle_message(_make_event("/yolo", source))
+
+        assert response_text in result
+        assert is_session_yolo_enabled(session_key) is enabled
+    finally:
+        disable_session_yolo(session_key)
 
 
 # ---------------------------------------------------------------------------

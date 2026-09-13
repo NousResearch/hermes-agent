@@ -38,12 +38,12 @@ def _install_lease_listener() -> None:
     """Once per process: broadcast every lease change to all connected clients."""
     if _lease_listener_installed.is_set():
         return
-    _lease_listener_installed.set()
     from tools.bot_desktop import lease as _bd_lease
 
     def _on_change(profile_key: str, lease) -> None:
         _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": lease.as_dict()})
     _bd_lease.on_change(_on_change)
+    _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
 
 
 @method("display.status")

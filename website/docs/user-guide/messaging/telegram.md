@@ -1238,6 +1238,32 @@ The proxy applies to both the primary transport and all fallback IP transports. 
 This covers the custom fallback transport layer that Hermes uses for Telegram connections. The standard `httpx` client used elsewhere already respects proxy env vars natively.
 :::
 
+### TLS handshake failures with OpenSSL 3.5
+
+If Telegram repeatedly reconnects with an empty `httpx.ConnectError` or an
+`SSL: UNEXPECTED_EOF_WHILE_READING`, while curl works through the same proxy,
+the network path may reject OpenSSL 3.5's larger post-quantum TLS ClientHello.
+This symptom alone is not proof: compare the default handshake with X25519
+before enabling the workaround.
+
+To use classic X25519 key exchange only for Telegram, add to `config.yaml`
+and restart the gateway:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      tls_classic_key_exchange: true
+```
+
+This covers both Bot API requests and long polling, including proxy and
+fallback-IP connections. TLS 1.3, hostname checks, and certificate verification
+remain enabled; `SSL_CERT_FILE` and `SSL_CERT_DIR` are still respected. The
+tradeoff is opting out of post-quantum key exchange for Telegram. Other
+platforms and model-provider clients keep their existing TLS settings.
+The default is `false`; remove the setting or set it to `false` to restore
+OpenSSL's default groups. See also [the related OpenSSL 3.5 report](https://github.com/NousResearch/hermes-agent/issues/106384).
+
 ## Message Reactions
 
 The bot can add emoji reactions to messages as visual processing feedback:

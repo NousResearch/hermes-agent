@@ -191,13 +191,23 @@ export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: s
   return Math.max(20, available)
 }
 
-export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false) {
+// Box-drawing frame around the composer: 1 col per vertical border, plus
+// inner paddingX=1 in normal density (compact density drops the padding).
+export const composerFrameChromeCols = (compact: boolean) => 2 + (compact ? 0 : 2)
+
+export function stableComposerColumns(
+  totalCols: number,
+  promptWidth: number,
+  termuxMode = false,
+  frameChrome = 0
+) {
   // Physical render/wrap width. Always reserve outer composer padding and
   // prompt prefix. Only reserve the transcript scrollbar gutter when the
   // terminal is wide enough; on narrow panes, preserving input columns beats
-  // keeping gutters visually aligned.
+  // keeping gutters visually aligned.  `frameChrome` is extra cols taken by
+  // the box-drawing composer frame (borders + inner padding).
   const afterPrompt = totalCols - promptWidth
   const reserveScrollbar = afterPrompt >= (termuxMode ? 36 : 24) ? 2 : 0
 
-  return Math.max(1, totalCols - promptWidth - 2 - reserveScrollbar)
+  return Math.max(1, totalCols - promptWidth - 2 - reserveScrollbar - frameChrome)
 }

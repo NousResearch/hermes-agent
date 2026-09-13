@@ -583,9 +583,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    # Desktop/dev launches always rebuild; Termux cold starts use the freshness
-    # check because esbuild startup is expensive on old mobile CPUs.
-    if not termux_startup or did_install or termux_need_rebuild:
+    # Skip esbuild when dist/entry.js is newer than TUI inputs unless npm
+    # install just ran (deps may have changed) or HERMES_TUI_FORCE_BUILD=1.
+    # The build subprocess captures stdout, so skipping stale rebuilds avoids
+    # long silent PTY periods before Ink starts (local dev + CI smoke).
+    should_build = did_install or _tui_need_rebuild(tui_dir)
+
+    if should_build:
         _run_tui_npm_build(_tui_node_bin("npm"), tui_dir, "TUI build failed.")
 
     return [_tui_node_bin("node"), "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir

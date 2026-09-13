@@ -830,12 +830,16 @@ DEFAULT_CONFIG = {
         # UI language for static messages (approval prompts, some gateway slash replies); not agent
         # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
-        # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
-        "tui_status_indicator": "kaomoji",
-        # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
-        # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
-        # fights terminal auto-scroll in non-fullscreen mode.
-        # See #45592.
+        # TUI busy indicator style: unicode (default pulse / braille spinner),
+        # ascii, emoji, or kaomoji.  Live-swappable via `/indicator <style>`.
+        "tui_status_indicator": "unicode",
+        # Seconds between prompt_toolkit redraws in the classic CLI when idle.
+        # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
+        # last-turn) ticking and keeps the bottom chrome alive during idle —
+        # without it prompt_toolkit stops repainting the status bar after a
+        # turn and it can go stale/disappear (#45592).
+        # Set 0 to disable the background refresh if it fights terminal
+        # auto-scroll in non-fullscreen mode on some emulators (#48309).
         "cli_refresh_interval": 1.0,
         "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,

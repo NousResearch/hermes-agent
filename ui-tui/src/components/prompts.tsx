@@ -354,7 +354,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
                       <Text key={ci}>
                         <Text color={t.color.muted} {...chipRowProps(t, sel === ci)}>
                           {sel === ci ? '▸ ' : '  '}
-                          {ci + 1}. {c}
+                          {c}
                         </Text>
                       </Text>
                     ))}
@@ -404,7 +404,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         <Text key={i}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
-            {i + 1}. {c}
+            {c}
           </Text>
         </Text>
       ))}

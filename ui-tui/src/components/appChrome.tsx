@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import { type BatteryInfo, DEFAULT_INDICATOR_STYLE, type IndicatorStyle, type Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
@@ -496,7 +496,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
-  indicatorStyle = 'kaomoji',
+  indicatorStyle = DEFAULT_INDICATOR_STYLE,
   notice,
   usage,
   bgCount,

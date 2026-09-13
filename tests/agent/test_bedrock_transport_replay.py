@@ -153,3 +153,23 @@ def test_tool_call_dropped_after_capture_is_not_replayed(streaming):
     tool_uses = [b["toolUse"]["toolUseId"] for m in messages for b in m["content"] if "toolUse" in b]
     tool_results = [b["toolResult"]["toolUseId"] for m in messages for b in m["content"] if "toolResult" in b]
     assert tool_uses == tool_results == ["t1"]
+
+
+def test_tool_call_missing_from_sidecar_is_still_sent():
+    """The inverse of the case above: the sidecar lost a toolUse that ``tool_calls`` still holds. Its
+    toolResult is sent regardless, so the toolUse must be too, or Converse rejects the turn with
+    "number of toolResult blocks exceeds the number of toolUse blocks"."""
+    from agent.bedrock_adapter import convert_messages_to_converse
+
+    calls = [{"id": i, "type": "function", "function": {"name": "one", "arguments": '{"n":1}'}} for i in ("t1", "t2")]
+    history = {
+        "role": "assistant", "content": None, "tool_calls": calls,
+        "bedrock_content_blocks": [{"text": "working"}, {"toolUse": {"toolUseId": "t1", "name": "one", "input": {"n": 1}}}],
+    }
+    results = [{"role": "tool", "tool_call_id": i, "content": "ok"} for i in ("t1", "t2")]
+    _system, messages = convert_messages_to_converse([{"role": "user", "content": "go"}, history, *results])
+
+    assert messages[1]["content"][0] == {"text": "working"}
+    tool_uses = [b["toolUse"]["toolUseId"] for m in messages for b in m["content"] if "toolUse" in b]
+    tool_results = [b["toolResult"]["toolUseId"] for m in messages for b in m["content"] if "toolResult" in b]
+    assert tool_uses == tool_results == ["t1", "t2"]

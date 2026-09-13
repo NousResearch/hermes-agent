@@ -587,14 +587,28 @@ def _parse_tool_args(args) -> Any:
         return {}
 
 
+def _tool_call_blocks(tool_calls: List) -> List[Dict]:
+    """OpenAI ``tool_calls`` → Converse toolUse blocks."""
+    return [
+        _tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}")))
+        for tc in tool_calls if isinstance(tc, dict)
+        for fn in [tc.get("function") or {}]
+    ]
+
+
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:
     """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative
-    for block order (``tool_calls`` still decides which toolUse blocks exist); otherwise redacted thinking
-    from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
+    for block order, ``tool_calls`` for which toolUse blocks exist: ids it lacks are skipped by the replay
+    and ids the replay lost are appended, so every toolResult that follows has its toolUse. Without a
+    sidecar: redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
     ordered_blocks = msg.get("bedrock_content_blocks")
-    tool_call_ids = {tc.get("id", "") for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict)}
+    tool_calls = msg.get("tool_calls") or []
+    tool_call_ids = {tc.get("id", "") for tc in tool_calls if isinstance(tc, dict)}
     if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks, tool_call_ids)):
-        return content_blocks
+        replayed = {block["toolUse"]["toolUseId"] for block in content_blocks if "toolUse" in block}
+        return content_blocks + _tool_call_blocks(
+            [tc for tc in tool_calls if isinstance(tc, dict) and tc.get("id", "") not in replayed]
+        )
     redacted = [
         _decode_redacted(d.get("data") or d.get("redactedContentBase64"))
         for d in (msg.get("reasoning_details") or []) if isinstance(d, dict) and d.get("type") == "redacted_thinking"
@@ -604,9 +618,7 @@ def _assistant_blocks(msg: Dict, content) -> List[Dict]:
         content_blocks.append({"text": content})
     elif isinstance(content, list):
         content_blocks.extend(_convert_content_to_converse(content))
-    for tc in (msg.get("tool_calls", []) or []):
-        fn = tc.get("function", {})
-        content_blocks.append(_tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}"))))
+    content_blocks.extend(_tool_call_blocks(tool_calls))
     return content_blocks
 
 

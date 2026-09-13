@@ -24,7 +24,7 @@ async def test_gateway_startup_discovery_suppresses_interactive_oauth(monkeypatc
 
 
 def test_mcp_config_reconciler_runs_only_when_config_changes(monkeypatch, tmp_path: Path):
-    import gateway.run as gateway_run
+    from gateway.run_profile_reconcile import _mcp_config_reconciler
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools.mcp_oauth import _is_interactive
 
@@ -35,10 +35,11 @@ def test_mcp_config_reconciler_runs_only_when_config_changes(monkeypatch, tmp_pa
 
     def fake_reconcile():
         calls.append(_is_interactive())
-        return {"removed": ["linear"], "added": []}
+        return {"removed": ["linear"], "added": [], "pending": pending.copy()}
 
+    pending: list = []
     monkeypatch.setattr(_mcp_discovery, "reconcile_mcp_servers_with_config", fake_reconcile)
-    tick = gateway_run._mcp_config_reconciler(runner=None)
+    tick = _mcp_config_reconciler(runner=None)
 
     tick()  # baseline only: startup discovery already reflects this file
     tick()
@@ -48,3 +49,10 @@ def test_mcp_config_reconciler_runs_only_when_config_changes(monkeypatch, tmp_pa
     assert calls == [False], "reconcile must run once per change, with interactive OAuth suppressed"
     tick()
     assert calls == [False]
+    cfg.write_text("model:\n  default: y\n")
+    pending.append("linear")  # dropped server was still mid-connect: retry next tick, unchanged file
+    tick()
+    pending.clear()
+    tick()
+    tick()
+    assert calls == [False, False, False], "one retry after a pending teardown, then quiet again"

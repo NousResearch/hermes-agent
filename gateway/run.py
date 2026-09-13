@@ -4523,49 +4523,6 @@ def _housekeeping_memory_trim() -> None:
     trim_memory(reason="messaging gateway housekeeping")
 
 
-def _mcp_config_reconciler(runner=None):
-    """Chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry the user
-    removed (or disabled) after boot must stop — a parked one otherwise self-probes every
-    ``_PARKED_RETRY_INTERVAL`` for the life of the process (and, before the OAuth gating in this
-    same change, opened a browser tab each time). One ``stat`` per profile per tick; the reconcile
-    runs only when ``config.yaml``'s (mtime, size) changed. Interactive OAuth is suppressed — this
-    runs on a housekeeping thread nobody is watching."""
-    from hermes_cli.config import get_config_path
-    seen: dict = {}
-
-    def _sig(path) -> tuple:
-        try:
-            st = os.stat(path)
-            return (st.st_mtime_ns, st.st_size)
-        except OSError:
-            return (None, None)
-
-    def _reconcile_current(label: str) -> None:
-        from tools.mcp_oauth import suppress_interactive_oauth
-        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
-        path = get_config_path()
-        sig = _sig(path)
-        prev = seen.get(label)
-        seen[label] = sig
-        if prev is None or prev == sig:
-            return  # first tick just records the baseline; startup discovery already ran
-        with suppress_interactive_oauth():
-            result = reconcile_mcp_servers_with_config()
-        if result["removed"] or result["added"]:
-            logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
-
-    def _tick() -> None:
-        config = getattr(runner, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            _reconcile_current("default")
-            return
-        for profile_name, profile_home in _multiplex_profile_homes(config):
-            with _profile_runtime_scope(Path(profile_home)):
-                _reconcile_current(str(profile_name))
-
-    return _tick
-
-
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
@@ -4597,6 +4554,7 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
+    from gateway.run_profile_reconcile import _mcp_config_reconciler
     chores: list[tuple[int, str, Any]] = []
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for

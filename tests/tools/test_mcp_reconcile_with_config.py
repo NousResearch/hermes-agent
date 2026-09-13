@@ -31,7 +31,7 @@ def test_reconcile_tears_down_server_dropped_from_config(monkeypatch, tmp_path):
         mcp_tool._servers["linear"] = srv
         mcp_tool._server_scope_keys["linear"] = None
     try:
-        assert disc.reconcile_mcp_servers_with_config() == {"removed": [], "added": []}
+        assert disc.reconcile_mcp_servers_with_config() == {"removed": [], "added": [], "pending": []}
         assert "linear" in mcp_tool._servers and not discovered
 
         configured.clear()  # user deletes the entry
@@ -49,24 +49,39 @@ def test_reconcile_tears_down_server_dropped_from_config(monkeypatch, tmp_path):
         _loop._stop_mcp_loop()
 
 
-def test_disabled_entry_counts_as_dropped(monkeypatch, tmp_path):
+def test_disabled_lazy_and_connecting_entries(monkeypatch, tmp_path):
+    """``enabled: false`` counts as dropped; a schema-cache (lazy) registration loses its cached
+    tools; a server still mid-connect is reported ``pending`` (torn down on a later pass)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from tools import mcp_tool
     from tools import mcp_tool_config as _config
     from tools import mcp_tool_discovery as disc
     from tools import mcp_tool_lifecycle as _lifecycle
+    from tools import mcp_tool_registration as _registration
 
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"linear": {"url": "https://x/mcp", "enabled": False}})
     torn_down: list = []
+    deregistered: list = []
     monkeypatch.setattr(_lifecycle, "shutdown_mcp_servers", lambda **kw: torn_down.append(kw))
+    monkeypatch.setattr(_registration, "_deregister_mcp_tool_all_scopes", lambda key, name: deregistered.append(name))
     monkeypatch.setattr(disc, "discover_mcp_tools", lambda *a, **k: [])
     with mcp_tool._lock:
         mcp_tool._servers["linear"] = object()
         mcp_tool._server_scope_keys["linear"] = None
+        mcp_tool._server_scope_keys["notion"] = None
+        mcp_tool._server_connecting.add("notion")
+        mcp_tool._lazy_server_configs["asana"] = {"url": "https://a/mcp"}
+        mcp_tool._lazy_server_tool_names["asana"] = ["mcp__asana__list"]
     try:
-        assert disc.reconcile_mcp_servers_with_config()["removed"] == ["linear"]
+        result = disc.reconcile_mcp_servers_with_config()
+        assert result == {"removed": ["linear", "asana"], "added": [], "pending": ["notion"]}
         assert torn_down == [{"scope": None, "names": {"linear"}}]
+        assert deregistered == ["mcp__asana__list"] and "asana" not in mcp_tool._lazy_server_configs
     finally:
         with mcp_tool._lock:
-            mcp_tool._servers.pop("linear", None)
-            mcp_tool._server_scope_keys.pop("linear", None)
+            for name in ("linear", "notion"):
+                mcp_tool._servers.pop(name, None)
+                mcp_tool._server_scope_keys.pop(name, None)
+            mcp_tool._server_connecting.discard("notion")
+            mcp_tool._lazy_server_configs.pop("asana", None)
+            mcp_tool._lazy_server_tool_names.pop("asana", None)

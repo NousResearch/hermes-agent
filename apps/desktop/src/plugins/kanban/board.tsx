@@ -333,7 +333,7 @@ function Card({
 
 // ── column ───────────────────────────────────────────────────────────────────
 
-function Column({
+export function Column({
   collapsed,
   column,
   columns,
@@ -420,7 +420,7 @@ function Column({
         {...dragHandlers}
         aria-label={k.expand(label)}
         className={cn(
-          'flex h-full w-8 shrink-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors hover:bg-(--ui-bg-quinary)',
+          'flex h-full w-8 shrink-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors hover:bg-(--ui-bg-quinary) focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
           wash
         )}
         onClick={onToggle}
@@ -444,7 +444,12 @@ function Column({
       {...dragHandlers}
       className={cn('group/col flex h-full w-64 shrink-0 flex-col rounded-lg p-2 transition-colors', wash)}
     >
-      <header className="mb-1.5 flex h-5 items-center gap-1.5 px-1">
+      <button
+        aria-label={k.collapse(label)}
+        className="group/lane mb-1.5 flex h-5 w-full items-center gap-1.5 rounded px-1 text-left transition-colors hover:bg-(--chrome-action-hover) focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground"
+        onClick={onToggle}
+        type="button"
+      >
         <span className="size-1.5 rounded-full" style={{ backgroundColor: meta.tone }} />
         <Tip label={columnHelp(k, column.name)}>
           <span className="cursor-help text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
@@ -452,15 +457,10 @@ function Column({
           </span>
         </Tip>
         <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
-        <button
-          aria-label={k.collapse(label)}
-          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
-          onClick={onToggle}
-          type="button"
-        >
+        <span className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground group-hover/col:opacity-100 group-focus-visible/lane:opacity-100">
           <Codicon name="chevron-left" size="0.75rem" />
-        </button>
-      </header>
+        </span>
+      </button>
       <div className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
         {lanes
           ? lanes.map(([assignee, tasks]) => (

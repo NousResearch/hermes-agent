@@ -201,9 +201,8 @@ hermes send --list --json
 | `hermes send` | ✅ | ✅ | 否（bot token） | 以下所有场景 |
 | 对各平台直接 `curl` | 各自单独编写 | 手动管理 | 否 | 关键 watchdog |
 | 带 `--deliver` 的 `cron` 任务 | ✅ | ✅ | 否 | 定时 agent 任务 |
-| `send_message` agent 工具 | ✅ | ✅ | 否 | agent 循环内部 |
 
-`hermes send` 有意保持最简接口。如果需要 agent 决定说什么，请在对话或 cron 任务中使用 `send_message` 工具。如果需要定时运行并生成 LLM 内容，请使用带 `deliver='telegram:...'` 的 `cronjob(action='create', prompt=...)`。如果只需要管道传输原始字符串，直接用 `hermes send`。
+`hermes send` 有意保持最简接口。如果需要定时运行并生成 LLM 内容，请使用带 `deliver='telegram:...'` 的 `cronjob(action='create', prompt=...)`。如果只需要管道传输原始字符串，直接用 `hermes send`。Agent 可调用的跨平台消息发送不会作为模型工具暴露；出站投递由 gateway、scheduler 和 CLI 在 agent 循环外处理。
 
 ---
 

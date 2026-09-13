@@ -6,7 +6,10 @@ from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
 
 
 def _snapshot(conn, task_id):
-    row = conn.execute("SELECT current_run_id, status, completion_contract FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = conn.execute(
+        "SELECT current_run_id, status, completion_contract, claim_lock, tenant, workspace_path "
+        "FROM tasks WHERE id=?", (task_id,),
+    ).fetchone()
     return tuple(row) if row else None
 
 
@@ -14,22 +17,23 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     snapshot = _snapshot(conn, task_id)
     if snapshot is None:
         return False
-    run_id, status, contract = snapshot
+    run_id, status, contract = snapshot[:3]
     if not contract or contract == "local-only":
         return None
+    contract_text: str = f"{contract}"
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
     match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
     # Publication binds once. Retrying cannot replace the task's PR with a green sibling.
-    if match and contract == match[1]:
+    if match and contract_text == match[1]:
         with write_txn(conn):
             if _snapshot(conn, task_id) != snapshot:
                 return False
             conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
-        snapshot = (run_id, status, published_pr)
-        contract = published_pr
-    return snapshot, collect_acceptance(contract, published_pr)
+        snapshot = (run_id, status, published_pr, *snapshot[3:])
+        contract_text = f"{published_pr}"
+    return snapshot, collect_acceptance(contract_text, published_pr)
 
 
 def record_acceptance(conn, task_id, acceptance):

@@ -813,6 +813,9 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    ("bucket_key", "bucket_key TEXT"),
+    ("route_policy_ref", "route_policy_ref TEXT"),
+    ("route_policy_version", "route_policy_version INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -874,6 +877,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_bucket_key ON tasks(bucket_key)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_route_policy "
+        "ON tasks(route_policy_ref, route_policy_version)"
+    )
 
     # task_events.run_id back-fills as NULL for historical events (they predate
     # runs and can't be attributed).

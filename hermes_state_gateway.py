@@ -364,7 +364,9 @@ class SessionGatewayMixin:
             """,
             (cutoff,),
         )
-        return [dict(r) for r in rows]
+        # Same normalization boundary as the other public session projections: a corrupt cell
+        # stored in BLOB storage bypasses text_factory and must not escape as bytes (#109465 review).
+        return [self._session_row_dict(r) for r in rows]
 
     def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives

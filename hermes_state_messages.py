@@ -640,6 +640,12 @@ class SessionMessagesMixin:
                     f"FROM messages WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
                     f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
                     "ORDER BY id", tuple(lineage)).fetchall():
+                # A BLOB-stored role bypasses text_factory (sqlite3 contract) and would escape the
+                # take payload as bytes; same normalize-every-field contract as _row_to_message_dict
+                # (#109465 review, completeness gap 3).
+                role = row["role"]
+                if isinstance(role, bytes):
+                    role = tolerant_decode_bytes(role)
                 meta = self._strict_display_metadata_cell(row["display_metadata"], row["id"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):
@@ -652,7 +658,7 @@ class SessionMessagesMixin:
                     changed = True
                     content = self._decode_content(row["content"])
                     pending.append({
-                        "row_id": row["id"], "role": row["role"], "emoji": reaction.get("emoji") or "",
+                        "row_id": row["id"], "role": role, "emoji": reaction.get("emoji") or "",
                         "text": content if isinstance(content, str) else ""})
                 if changed:
                     conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))

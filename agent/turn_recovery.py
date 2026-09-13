@@ -1263,6 +1263,11 @@ def _cap_long_context_tier(agent: Any) -> int:
             f"requires extra usage — reducing context: "
             f"{old_ctx:,} → {_LONG_CONTEXT_TIER_CAP:,} tokens"
         )
+        from agent.conversation_compression import apply_context_engine_compression_budget
+
+        apply_context_engine_compression_budget(
+            agent, compressor.context_length, reason="long_context_tier"
+        )
     return old_ctx
 
 

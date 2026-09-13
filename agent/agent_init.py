@@ -1807,15 +1807,13 @@ def _compressor_max_tokens(agent):
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+    agent._compression_threshold_percent = cs.threshold
+    agent._compression_model_thresholds = cs.model_thresholds
+    agent._compression_threshold_tokens_cap = cs.threshold_tokens
+    agent._compression_max_tokens = _compressor_max_tokens(agent)
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy — the host threshold (and its Codex
-        # autoraise) never reaches the plugin, so drop the notice.
-        agent._compression_threshold_autoraised = None
-        # External engines own compaction policy: the host compression threshold (including the Codex
-        # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
@@ -1830,6 +1828,14 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             model=agent.model, context_length=_plugin_ctx_len, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
         )
+        from agent.conversation_compression import apply_context_engine_compression_budget
+
+        if not apply_context_engine_compression_budget(
+            agent, _plugin_ctx_len, threshold_percent=cs.threshold, reason="model_init"
+        ):
+            # Legacy engines retain their private policy, so a host threshold
+            # notice would be misleading.
+            agent._compression_threshold_autoraised = None
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -1840,7 +1846,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             api_key=getattr(agent, "api_key", ""), config_context_length=_effective_context_length,
             provider=agent.provider, api_mode=agent.api_mode,
             abort_on_summary_failure=cs.abort_on_summary_failure,
-            max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
+            max_tokens=agent._compression_max_tokens, model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
@@ -2027,9 +2033,12 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
             "Compressor window clamped to Ollama num_ctx: %d -> %d",
             _cc_window, agent._ollama_num_ctx,
         )
-        agent.context_compressor.update_model(
-            model=agent.model, context_length=agent._ollama_num_ctx, base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+        from agent.conversation_compression import update_runtime_context_compressor
+
+        update_runtime_context_compressor(
+            agent, agent._ollama_num_ctx, reason="ollama_num_ctx", model=agent.model,
+            base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
+            provider=agent.provider, api_mode=agent.api_mode,
         )
 
 

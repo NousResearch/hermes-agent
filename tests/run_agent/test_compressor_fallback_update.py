@@ -72,3 +72,37 @@ def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     assert c.threshold_tokens == int(128_000 * c.threshold_percent)
 
 
+@patch("agent.auxiliary_client.resolve_provider_client")
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+def test_native_gemini_fallback_releases_builtin_output_reserve(mock_ctx_len, mock_resolve):
+    """A non-Gemini fallback clears Gemini's default output reservation everywhere."""
+    agent = _make_agent_with_compressor()
+    agent.model = "gemini-2.5-pro"
+    agent.provider = "gemini"
+    agent.base_url = "https://generativelanguage.googleapis.com/v1beta"
+    agent.max_tokens = None
+    agent.context_compressor.update_model(
+        agent.model, 1_000_000, base_url=agent.base_url, provider=agent.provider,
+        max_tokens=65_535,
+    )
+    budget_calls = []
+    agent.context_compressor.set_compression_budget = lambda *args, **kwargs: (
+        budget_calls.append((args, kwargs)) or True
+    )
+
+    fb_client = MagicMock()
+    fb_client.base_url = "https://api.openai.com/v1"
+    fb_client.api_key = "sk-fallback"
+    mock_resolve.return_value = (fb_client, None)
+    agent._is_direct_openai_url = lambda url: "api.openai.com" in url
+    agent._emit_status = lambda msg: None
+
+    assert agent._try_activate_fallback() is True
+
+    c = agent.context_compressor
+    assert c.max_tokens is None
+    assert c.context_length == 1_000_000
+    assert c.threshold_tokens == 500_000
+    assert budget_calls == [((1_000_000, 500_000), {"reason": "fallback_model"})]
+
+

@@ -5560,6 +5560,11 @@ def _get_cached_client(
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
     if client is not None:
+        if isinstance(client, _AuxProbeClientStub):
+            # An availability probe must never leave its stub in the cache:
+            # the next runtime caller for the same tuple would receive it
+            # (same invariant _store_cached_client enforces).
+            return client, default_model
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 # FIFO safety-belt eviction. Do NOT close evicted clients: another caller may be

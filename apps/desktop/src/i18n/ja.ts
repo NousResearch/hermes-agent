@@ -3554,6 +3554,7 @@ export const ja = defineLocale({
     previousImage: '前の画像',
     nextImage: '次の画像',
     imagePosition: (current, total) => `画像 ${current} / ${total}`,
+    thumbnailRange: (start, end, total) => `プレビュー ${start}–${end} / ${total}`,
     downloadImage: '画像をダウンロード',
     savingImage: '画像を保存中',
     imagePreviewFailed: '画像のプレビューに失敗しました',

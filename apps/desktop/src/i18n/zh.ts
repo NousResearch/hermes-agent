@@ -4218,6 +4218,7 @@ export const zh = defineLocale({
     previousImage: '上一张图片',
     nextImage: '下一张图片',
     imagePosition: (current, total) => `第 ${current} 张，共 ${total} 张`,
+    thumbnailRange: (start, end, total) => `预览 ${start}–${end} / ${total}`,
     downloadImage: '下载图片',
     savingImage: '正在保存图片',
     imagePreviewFailed: '图片预览失败',

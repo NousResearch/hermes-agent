@@ -180,31 +180,36 @@ function ToolImageGallery({
         </figcaption>
       </figure>
       {multiple && (
-        <div className="flex max-w-xl gap-2" data-slot="image-gallery-thumbnails">
-          {pageSources.map((item, offset) => {
-            const itemIndex = pageStart + offset
-            const thumbnail = images.get(item)
+        <div className="grid max-w-xl gap-1">
+          <span className="text-xs text-muted-foreground">
+            {t.desktop.thumbnailRange(pageStart + 1, pageStart + pageSources.length, sources.length)}
+          </span>
+          <div className="flex gap-2" data-slot="image-gallery-thumbnails">
+            {pageSources.map((item, offset) => {
+              const itemIndex = pageStart + offset
+              const thumbnail = images.get(item)
 
-            return (
-              <button
-                aria-label={`${t.desktop.openImage} ${itemIndex + 1}/${sources.length}`}
-                aria-pressed={index === itemIndex}
-                className="relative grid h-16 min-w-0 flex-1 cursor-pointer place-items-center overflow-hidden rounded-md border border-border bg-muted/30 focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:ring-1 aria-pressed:ring-primary"
-                key={item}
-                onClick={() => select(itemIndex)}
-                type="button"
-              >
-                {thumbnail?.status === 'ready' ? (
-                  <img alt="" className="h-full w-full object-contain" decoding="async" src={thumbnail.src} />
-                ) : (
-                  <Codicon name={thumbnail?.status === 'error' ? 'warning' : 'file-media'} />
-                )}
-                <span className="absolute right-1 bottom-1 rounded bg-background/90 px-1 text-[0.625rem] tabular-nums text-foreground">
-                  {itemIndex + 1}
-                </span>
-              </button>
-            )
-          })}
+              return (
+                <button
+                  aria-label={`${t.desktop.openImage} ${itemIndex + 1}/${sources.length}`}
+                  aria-pressed={index === itemIndex}
+                  className="relative grid h-16 min-w-0 flex-1 cursor-pointer place-items-center overflow-hidden rounded-md border border-border bg-muted/30 focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:ring-1 aria-pressed:ring-primary"
+                  key={item}
+                  onClick={() => select(itemIndex)}
+                  type="button"
+                >
+                  {thumbnail?.status === 'ready' ? (
+                    <img alt="" className="h-full w-full object-contain" decoding="async" src={thumbnail.src} />
+                  ) : (
+                    <Codicon name={thumbnail?.status === 'error' ? 'warning' : 'file-media'} />
+                  )}
+                  <span className="absolute right-1 bottom-1 rounded bg-background/90 px-1 text-[0.625rem] tabular-nums text-foreground">
+                    {itemIndex + 1}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
       <ImageLightbox

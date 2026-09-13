@@ -89,7 +89,7 @@ export function ImageLightbox({
         bodyClassName="block overflow-visible p-0"
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
         onKeyDown={onKeyDown}
-        showCloseButton={false}
+        showCloseButton
       >
         <div className="group/lightbox relative inline-block">
           {src ? (
@@ -104,7 +104,7 @@ export function ImageLightbox({
           )}
           {src && (
             <ImageActionButton
-              className="group-hover/lightbox:opacity-100"
+              className="left-2 right-auto group-hover/lightbox:opacity-100"
               copy={copy}
               onClick={onClick}
               saving={saving}

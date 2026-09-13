@@ -3405,6 +3405,7 @@ export const zhHant = defineLocale({
     previousImage: '上一張圖片',
     nextImage: '下一張圖片',
     imagePosition: (current, total) => `第 ${current} 張，共 ${total} 張`,
+    thumbnailRange: (start, end, total) => `預覽 ${start}–${end} / ${total}`,
     downloadImage: '下載圖片',
     savingImage: '正在儲存圖片',
     imagePreviewFailed: '圖片預覽失敗',

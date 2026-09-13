@@ -3141,6 +3141,7 @@ export const ar = defineLocale({
     previousImage: 'الصورة السابقة',
     nextImage: 'الصورة التالية',
     imagePosition: (current, total) => `الصورة ${current} من ${total}`,
+    thumbnailRange: (start, end, total) => `المعاينات ${start}–${end} من ${total}`,
     downloadImage: 'تنزيل الصورة',
     savingImage: 'جار حفظ الصورة',
     imagePreviewFailed: 'فشلت معاينة الصورة',

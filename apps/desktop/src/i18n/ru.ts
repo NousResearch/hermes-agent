@@ -3819,6 +3819,7 @@ export const ru = defineLocale({
     previousImage: 'Предыдущее изображение',
     nextImage: 'Следующее изображение',
     imagePosition: (current, total) => `Изображение ${current} из ${total}`,
+    thumbnailRange: (start, end, total) => `Миниатюры ${start}–${end} из ${total}`,
     downloadImage: 'Скачать изображение',
     savingImage: 'Сохранение изображения',
     imagePreviewFailed: 'Предпросмотр изображения не удался',

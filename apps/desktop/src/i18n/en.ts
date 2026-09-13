@@ -4108,6 +4108,7 @@ export const en: Translations = {
     previousImage: 'Previous image',
     nextImage: 'Next image',
     imagePosition: (current, total) => `Image ${current} of ${total}`,
+    thumbnailRange: (start, end, total) => `Previews ${start}–${end} of ${total}`,
     downloadImage: 'Download image',
     savingImage: 'Saving image',
     imagePreviewFailed: 'Image preview failed',

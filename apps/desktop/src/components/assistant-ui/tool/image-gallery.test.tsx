@@ -125,3 +125,20 @@ it('navigates numbered images inside the lightbox without stealing arrow keys fr
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Steer' }), { key: 'ArrowLeft' })
   expect(screen.getByRole('img', { name: /Image 2 of 2/ })).toBeTruthy()
 })
+
+it('labels the visible thumbnail range and updates it on page navigation', async () => {
+  $activeSessionId.set('runtime-range')
+  $selectedStoredSessionId.set('stored-range')
+  $cronSessions.set([{ id: 'stored-range', connection_id: 'range-owner', profile: 'default' }] as never)
+  window.hermesDesktop = {
+    api: vi.fn().mockResolvedValue({ dataUrl: IMAGE })
+  } as unknown as typeof window.hermesDesktop
+  render(
+    <ToolFallback {...props} args={{}} result={{ images: Array.from({ length: 7 }, (_, i) => `./image-${i}.png`) }} />
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Open image (7)' }))
+  expect(await screen.findByText('Previews 1–5 of 7')).toBeTruthy()
+  fireEvent.keyDown(screen.getByRole('region', { name: 'Image gallery' }), { key: 'End' })
+  expect(await screen.findByText('Previews 6–7 of 7')).toBeTruthy()
+  await screen.findByRole('img', { name: /Image 7 of 7/ })
+})

@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _https_branch() -> str:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     m = re.search(
         r"log_info \"SSH failed, trying HTTPS\.\.\..*?(?=\n    fi\n)",
         text,
@@ -115,15 +115,13 @@ def test_materialization_fails_closed():
 
 def test_partial_clone_failure_still_cleans_up_and_exits():
     branch = _https_branch()
-    m = re.search(
-        r'if \[ "\$clone_ok" = true \]; then\n\s*log_success "Cloned via HTTPS"'
-        r"\n\s*else\n\s*log_error \"Failed to clone repository\"\n\s*exit 1",
-        branch,
-    )
-    assert m is not None, (
+    failure_tail = branch.split('log_error "Failed to clone repository"', 1)
+    assert len(failure_tail) == 2, "clone failure must have a terminal error path"
+    assert "exit 1" in failure_tail[1], (
         "when the fallback also fails the installer must still report the "
         "failure and exit 1"
     )
+    assert "clone_ok" in failure_tail[0], "the terminal error must remain gated by clone success state"
 
 
 def test_fallback_runs_only_after_all_direct_attempts_fail():

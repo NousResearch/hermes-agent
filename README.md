@@ -119,6 +119,56 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### Restricted or high-latency networks (no proxy needed)
+
+The installer and updater try official endpoints first. If the Git repository
+fetch or locked Python sync fails, Hermes can retry that channel through a
+configured fallback only after the measured failure. It never selects a mirror
+from an IP address or inferred region.
+
+The Git fallback is **opt-in** (`GIT_FALLBACK_REPO_URL` is unset by default) so
+that unauthenticated source mirrors are never contacted automatically. When
+using a Git fallback mirror, pair it with `--commit <40-char-sha>` so the
+installer verifies upstream commit provenance before accepting the tree. The
+locked Python sync defaults to a fallback Simple API mirror because `uv.lock`
+maintains Tier-0 cryptographic hash verification regardless of index:
+
+```bash
+# Enable a Git fallback mirror (pair with --commit for provenance verification)
+export GIT_FALLBACK_REPO_URL=https://your-mirror.example/NousResearch/hermes-agent.git
+
+# Set or disable the uv fallback index (defaults to TUNA Simple API mirror)
+export UV_FALLBACK_INDEX=https://your-mirror.example/simple
+# export UV_FALLBACK_INDEX=
+```
+
+After a fresh mirror clone, `origin` is restored to the official repository and
+the checkout passes Git object verification. Existing checkouts keep their
+current remote identity (a fork may be intentional); for a fork remote, the
+fallback stays scoped to that fork identity or fails closed rather than
+switching repositories. Pinned commit fetches (`--commit`) always fetch from
+the configured `origin` remote.
+
+The locked `uv sync` keeps the hashes in `uv.lock` enabled. An explicit
+`UV_DEFAULT_INDEX` always wins over the failure-triggered fallback.
+
+Use explicit channel overrides for the remaining downloads:
+
+```bash
+export npm_config_registry=https://registry.npmmirror.com
+export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+export UV_PYTHON_INSTALL_MIRROR=https://your-mirror.example/python-build-standalone
+export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+```
+
+`npm` checks lockfile `sha512` integrity; `uv` checks `uv.lock`; Electron's
+downloader checks its release checksum. Playwright browser downloads do not yet
+have the same per-file checksum guarantee, and the optional `cua-driver`
+installer has no mirror or checksum hook. Use those two overrides only when you
+accept the residual risk. If a run still fails, inspect the channel-specific
+error before changing every source at once.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

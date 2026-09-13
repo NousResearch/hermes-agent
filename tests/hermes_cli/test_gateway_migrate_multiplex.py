@@ -176,6 +176,30 @@ def test_rollback_rerun_does_not_respawn_a_running_detached_secondary(fleet, mon
     assert spawned == ["ops"]
 
 
+def test_malformed_manifest_is_refused_before_any_mutation(fleet, capsys):
+    (fleet.root / gm.MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "flag_was": False, "default": [], "secondaries": [{"home": "x"}]}), encoding="utf-8")
+    assert gm.rollback_migration(fleet.root) is False
+    assert _config_flag(fleet.root) is None and fleet.ops == []
+    assert "fix or delete the manifest" in capsys.readouterr().out
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+    assert "fix or delete the manifest" in capsys.readouterr().out
+
+
+def test_rollback_plan_and_execution_agree_on_a_secondary_with_nothing_recorded(fleet, capsys):
+    gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
+        {"profile": "coder", "home": str(fleet.root / "profiles/coder"), "pid": None, "service": None}]})
+    fleet.services.clear()
+    fleet.pids.clear()
+    plan = "\n".join(gm.format_rollback_plan(fleet.root, gm._read_manifest(fleet.root), dry_run=True))
+    assert gm.rollback_migration(fleet.root) is True
+    out = capsys.readouterr().out
+    # The plan must not promise an action the run never performs: both name the same outcome.
+    plan_line = next(line.split("coder: ", 1)[1] for line in plan.splitlines() if "coder: " in line)
+    assert plan_line in out and "restore" not in plan_line.split(";")[0]
+    assert fleet.ops == []
+
+
 def test_standalone_dry_run_prints_rollback_plan_without_mutation(fleet, capsys):
     assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
     capsys.readouterr()

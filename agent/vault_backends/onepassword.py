@@ -118,14 +118,30 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
+    def _service_vault_args(self) -> List[str]:
+        """Scope item reads for 1Password service accounts.
+
+        The CLI permits listing login metadata across the service account's vaults,
+        but requires an explicit vault for `item get`. When there is precisely one
+        accessible vault, discover it without reading any secret values.
+        """
+        if not self._service_token:
+            return []
+        raw = json.loads(self._run("vault", "list", "--format", "json") or "[]")
+        vaults = raw if isinstance(raw, list) else []
+        if len(vaults) != 1 or not vaults[0].get("id"):
+            raise RuntimeError("1Password service account must expose exactly one vault for browser-login fills")
+        return ["--vault", str(vaults[0]["id"])]
+
     def resolve_password(self, handle: str) -> str:
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run("item", "get", item_id, *self._service_vault_args(),
+                         "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", handle[len(self.prefix):], *self._service_vault_args(), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

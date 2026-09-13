@@ -118,6 +118,13 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     lease.release(profile_key=home)  # a successful write repairs it
     assert lease.get(profile_key=home).holder == lease.AGENT
 
+    # Valid JSON of the wrong shape is just as untrustworthy as torn JSON: never read it as "agent holds".
+    for wrong_shape in ("[]", "null", "5", "{}", '{"holder": "root"}'):
+        path.write_text(wrong_shape, encoding="utf-8")
+        assert lease.get(profile_key=home).holder == lease.HUMAN, wrong_shape
+    lease.release(profile_key=home)
+    assert lease.get(profile_key=home).holder == lease.AGENT
+
     lease.request_handoff("log in to the bank, 2FA on your phone", profile_key=home)
     held = lease.acquire("desk-1", profile_key=home)
     assert held.pending_handoff is None and held.reason == "log in to the bank, 2FA on your phone"

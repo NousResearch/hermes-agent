@@ -74,8 +74,13 @@ def _read(path: Path) -> Lease:
         return Lease(holder=HUMAN, viewer_id="unreadable-lease", reason="lease file unreadable")
     try:
         data = json.loads(raw)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or data.get("holder") not in (AGENT, HUMAN):
+        return Lease(holder=HUMAN, viewer_id="unreadable-lease", reason="lease file corrupt")
+    try:
         return Lease(**{k: v for k, v in data.items() if k in Lease.__dataclass_fields__})
-    except (ValueError, TypeError):
+    except TypeError:
         return Lease(holder=HUMAN, viewer_id="unreadable-lease", reason="lease file corrupt")
 
 

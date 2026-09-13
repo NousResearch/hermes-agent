@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { fuzzyRank, fuzzyScore, fuzzyScoreMulti } from './fuzzy.js'
+import { fuzzyRank, fuzzyScore, fuzzyScoreMulti } from './fuzzy'
 
 describe('fuzzyScore', () => {
   it('matches a query as a subsequence (g4o → gpt-4o)', () => {

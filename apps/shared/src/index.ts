@@ -46,6 +46,7 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export {
   type ConnectionState,
   type GatewayClientOptions,
@@ -59,6 +60,7 @@ export {
   JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { modelSearchText } from './model-search-text'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

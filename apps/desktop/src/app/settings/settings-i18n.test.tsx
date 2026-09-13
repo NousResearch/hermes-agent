@@ -52,6 +52,7 @@ describe('Settings i18n', () => {
 
   it('provides reported Chinese field copy without falling through to English', () => {
     const en = TRANSLATIONS.en.settings
+
     const cases = [
       { locale: 'zh' as const, labels: SHARED_LABEL_GAPS, descriptions: SHARED_DESCRIPTION_GAPS },
       {

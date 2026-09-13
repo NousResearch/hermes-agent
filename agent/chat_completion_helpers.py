@@ -1572,6 +1572,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 ):
                     note_checkpoint()
 
+    # Anthropic-family thinking signatures are minted against (and only valid for) the exact
+    # endpoint that produced them: replaying a Kimi/DeepSeek/MiniMax-minted signature to
+    # api.anthropic.com (or vice versa) is a hard HTTP 400 ("Invalid signature in thinking
+    # block"), not a soft mismatch. Stamp the minting endpoint on the stored turn so a later
+    # cross-provider fallback can demote a now-foreign signature to plain text instead of
+    # replaying it verbatim (see _thinking_signature_foreign / _manage_thinking_signatures).
+    if getattr(agent, "api_mode", None) == "anthropic_messages" and (msg.get("reasoning_details") or msg.get("anthropic_content_blocks")):
+        msg["_thinking_signed_base_url"] = getattr(agent, "_anthropic_base_url", None) or ""
+
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
     return msg

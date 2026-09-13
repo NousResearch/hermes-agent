@@ -22,6 +22,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import goals
 
 
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -35,7 +36,6 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # DB layer
 # ---------------------------------------------------------------------------
-
 
 
 
@@ -95,7 +95,6 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Goal loop logic (callback-injected, no live model)
 # ---------------------------------------------------------------------------
@@ -127,7 +126,6 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     )
     assert res["outcome"] == "completed_by_worker"
     assert turns == []  # no extra turns
-
 
 
 
@@ -224,3 +222,192 @@ class TestCLIJudgeGate:
         assert complete_calls == [], "an unachievable goal must never reach complete_task"
         assert "unachievable" in err.lower()
         assert "kanban block" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Verifier / goal-loop budget default (t_bb181168)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifierGoalBudgetDefault:
+    """Spawn-time default ``goal_max_turns=40`` for verifier-style cards.
+
+    Verifier-style = goal_mode AND ``goal_max_turns`` NULL AND
+    (assignee==\"reviewer\" OR title starts with Verify / Re-verify / Review).
+    Default applies via a one-shot UPDATE gated on ``goal_max_turns IS
+    NULL`` so explicit overrides and idempotency across ticks are
+    preserved.
+    """
+
+    def _create_task(self, conn, *, title, assignee, goal_mode=True, goal_max_turns=None):
+        return kb.create_task(
+            conn,
+            title=title,
+            body="x",
+            assignee=assignee,
+            goal_mode=goal_mode,
+            goal_max_turns=goal_max_turns,
+        )
+
+    def test_reviewer_assignee_gets_default(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import (
+            _apply_default_verifier_goal_max_turns,
+            _DEFAULT_VERIFIER_GOAL_MAX_TURNS,
+        )
+
+        with kbc.connect() as conn:
+            tid = self._create_task(conn, title="Ship the patch", assignee="reviewer")
+            task = kb.get_task(conn, tid)
+            assert task.goal_max_turns is None
+            effective = _apply_default_verifier_goal_max_turns(conn, task)
+            assert effective == _DEFAULT_VERIFIER_GOAL_MAX_TURNS == 40
+            assert kb.get_task(conn, tid).goal_max_turns == 40
+
+    def test_verify_title_prefix_gets_default(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(conn, title="Verify auth flow", assignee="engineer")
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) == 40
+            assert kb.get_task(conn, tid).goal_max_turns == 40
+
+    def test_re_verify_title_prefix_gets_default(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(
+                conn, title="Re-verify regression suite", assignee="engineer"
+            )
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) == 40
+            assert kb.get_task(conn, tid).goal_max_turns == 40
+
+    def test_review_title_prefix_gets_default(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(
+                conn, title="Review the PR diff", assignee="engineer"
+            )
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) == 40
+            assert kb.get_task(conn, tid).goal_max_turns == 40
+
+    def test_explicit_override_is_not_stomped(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(
+                conn,
+                title="Verify auth flow",
+                assignee="reviewer",
+                goal_max_turns=12,
+            )
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) == 12
+            assert kb.get_task(conn, tid).goal_max_turns == 12
+
+    def test_non_goal_mode_skipped(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(
+                conn,
+                title="Verify something",
+                assignee="reviewer",
+                goal_mode=False,
+            )
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) is None
+            assert kb.get_task(conn, tid).goal_max_turns is None
+
+    def test_non_matching_goal_mode_left_null(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(
+                conn,
+                title="Investigate flaky test",
+                assignee="engineer",
+            )
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) is None
+            assert kb.get_task(conn, tid).goal_max_turns is None
+
+    def test_idempotent_on_second_call(self, kanban_home):
+        from hermes_cli.kanban_db_dispatch import _apply_default_verifier_goal_max_turns
+
+        with kbc.connect() as conn:
+            tid = self._create_task(conn, title="Verify login", assignee="reviewer")
+            task = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task) == 40
+            task2 = kb.get_task(conn, tid)
+            assert _apply_default_verifier_goal_max_turns(conn, task2) == 40
+            assert kb.get_task(conn, tid).goal_max_turns == 40
+
+    def test_spawned_task_carries_default_through_dispatch_once(
+        self, kanban_home, all_assignees_spawnable, monkeypatch, caplog
+    ):
+        """Claim + spawn path stamps 40 and logs ``goal_budget=40``."""
+        import logging
+
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        monkeypatch.setattr(
+            kbd, "_system_memory_sample",
+            lambda: {"mem_available_kib": 8 * 1024 * 1024, "mem_total_kib": 16 * 1024 * 1024},
+        )
+
+        seen: list[tuple[str, object]] = []
+
+        def _stub_spawn(task, workspace, board=None):
+            seen.append((task.id, task.goal_max_turns))
+            return 4242
+
+        caplog.set_level(logging.INFO)
+        with kbc.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title="Verify smoke pack",
+                assignee="reviewer",
+                goal_mode=True,
+            )
+            res = kbd.dispatch_once(conn, spawn_fn=_stub_spawn)
+        assert tid in [row[0] for row in res.spawned]
+        assert seen == [(tid, 40)]
+        with kbc.connect() as conn:
+            assert kb.get_task(conn, tid).goal_max_turns == 40
+        assert any(
+            "goal_budget=40" in rec.getMessage() and tid in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_explicit_override_survives_dispatch_once(
+        self, kanban_home, all_assignees_spawnable, monkeypatch
+    ):
+        from hermes_cli import kanban_db_dispatch as kbd
+
+        monkeypatch.setattr(
+            kbd, "_system_memory_sample",
+            lambda: {"mem_available_kib": 8 * 1024 * 1024, "mem_total_kib": 16 * 1024 * 1024},
+        )
+        seen: list[tuple[str, object]] = []
+
+        def _stub_spawn(task, workspace, board=None):
+            seen.append((task.id, task.goal_max_turns))
+            return 4242
+
+        with kbc.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title="Verify smoke pack",
+                assignee="reviewer",
+                goal_mode=True,
+                goal_max_turns=80,
+            )
+            res = kbd.dispatch_once(conn, spawn_fn=_stub_spawn)
+        assert tid in [row[0] for row in res.spawned]
+        assert seen == [(tid, 80)]
+        with kbc.connect() as conn:
+            assert kb.get_task(conn, tid).goal_max_turns == 80

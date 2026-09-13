@@ -247,7 +247,7 @@ class _RecordlessFlagConsumer(GatewayStreamConsumer):
         self._delivered_commentary_texts = []
 
 
-def _make_runner(adapter):
+def _make_runner(adapter, tmp_path):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {adapter.platform: adapter}
@@ -260,7 +260,9 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
-    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    from gateway.session import SessionStore
+    from gateway.config import GatewayConfig
+    runner.session_store = SessionStore(tmp_path / "sessions", GatewayConfig())
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -310,7 +312,7 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
     )
 
     adapter = CaptureAdapter()
-    runner = _make_runner(adapter)
+    runner = _make_runner(adapter, tmp_path)
     source = SessionSource(
         platform=Platform.DISCORD, chat_id="1534932197436424204", chat_type="group"
     )

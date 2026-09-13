@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
 
+TYPED_EVENT_RECOVERY_METADATA_KEY = "_gateway_system_event_recovery_v1"
+_TYPED_EVENT_RECOVERY_VERSION = 1
+
 
 def _now() -> datetime:
     """Return the current local time."""
@@ -127,17 +130,75 @@ class SessionLifecycleMixin:
         if started_at is not None:
             entry.updated_at = started_at
 
-    def mark_turn_active(self, session_key: str) -> Optional[str]:
-        """Persist exact ownership of the running agent turn; returns the opaque token for
-        :meth:`clear_turn_active`. Re-marking replaces the previous token so a stale asynchronous
-        unwind cannot clear a newer turn."""
+    def mark_turn_active(
+        self,
+        session_key: str,
+        *,
+        expected_session_id: Optional[str] = None,
+        clear_typed_event_recovery: bool = False,
+    ) -> Optional[str]:
+        """Persist exact ownership of the agent turn running for *session_key*.
+
+        The opaque token is returned to the caller and must be supplied to
+        :meth:`clear_turn_active`.  Re-marking replaces the previous token so
+        a stale asynchronous unwind cannot clear a newer turn.
+        """
         token = uuid.uuid4().hex
         with self._lock:
-            entry = self._entry_locked(session_key)
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
             if entry is None:
                 return None
-            self._set_turn_marker_locked(session_key, entry, token, _now())
+            if expected_session_id is not None and entry.session_id != expected_session_id:
+                return None
+            if clear_typed_event_recovery and expected_session_id is None:
+                return None
+            now = _now()
+            candidate = entry.to_dict()
+            candidate["active_turn_token"] = token
+            candidate["active_turn_started_at"] = now.isoformat()
+            # Keep the legacy 120-second startup heuristic effective during a
+            # rolling downgrade/upgrade window where an older binary cannot
+            # understand the exact marker fields.
+            candidate["updated_at"] = now.isoformat()
+
+            recovery_aliases = (
+                [
+                    alias
+                    for alias in self._entries.values()
+                    if alias.session_id == expected_session_id
+                    and TYPED_EVENT_RECOVERY_METADATA_KEY in alias.metadata
+                ]
+                if clear_typed_event_recovery
+                else []
+            )
+            if recovery_aliases:
+                data, generation = self._snapshot_routing_locked()
+                active_data = data[session_key]
+                active_data["active_turn_token"] = token
+                active_data["active_turn_started_at"] = now.isoformat()
+                active_data["updated_at"] = now.isoformat()
+                for alias in recovery_aliases:
+                    alias_data = data[alias.session_key]
+                    metadata = dict(alias_data.get("metadata") or {})
+                    metadata.pop(TYPED_EVENT_RECOVERY_METADATA_KEY, None)
+                    alias_data["metadata"] = metadata
+                self._persist_routing_data(data, generation)
+                for alias in recovery_aliases:
+                    alias.metadata.pop(TYPED_EVENT_RECOVERY_METADATA_KEY, None)
+            else:
+                # Persist before publishing the marker in memory.  If the durable
+                # write raises, a later unrelated save cannot leak an unowned token.
+                self._save_entry(
+                    session_key,
+                    entry_data=candidate,
+                    lock_held=True,
+                )
+            entry.active_turn_token = token
+            entry.active_turn_started_at = now
+            entry.updated_at = now
         return token
+
 
     def clear_turn_active(self, session_key: str, token: str) -> bool:
         """Compare-and-swap clear an active-turn marker; ``False`` when the entry disappeared or a
@@ -159,6 +220,8 @@ class SessionLifecycleMixin:
 
         def _promote(entry: SessionEntry) -> bool:
             nonlocal promoted
+            if entry.session_id in self._typed_event_recovery_session_ids_locked():
+                return False
             if not entry.active_turn_token:
                 return False
             started_at = entry.active_turn_started_at
@@ -200,6 +263,8 @@ class SessionLifecycleMixin:
         """Mark a session resumable after a restart interruption (keeps the session_id/transcript,
         unlike ``suspend_session``). True if marked."""
         def _apply(entry: SessionEntry):
+            if entry.session_id in self._typed_event_recovery_session_ids_locked():
+                return False
             if entry.suspended:  # never override an explicit ``suspended`` (hard forced-wipe)
                 return False
             entry.resume_pending = True
@@ -254,6 +319,8 @@ class SessionLifecycleMixin:
         cutoff = _now() - timedelta(seconds=max_age_seconds)
 
         def _mark(entry: SessionEntry) -> bool:
+            if entry.session_id in self._typed_event_recovery_session_ids_locked():
+                return False
             if entry.resume_pending or entry.suspended or entry.updated_at < cutoff:
                 return False
             entry.resume_pending = True
@@ -261,3 +328,102 @@ class SessionLifecycleMixin:
             entry.last_resume_marked_at = _now()
             return True
         return self._update_all_entries_locked(_mark)
+
+
+    def _typed_event_recovery_state_locked(self, session_id: str) -> str:
+        """Return ``none``, ``owned`` or ``conflict`` for a physical session.
+
+        Presence is fail-closed: malformed data, or a marker naming another
+        physical session, suppresses generic recovery until a real user turn
+        replaces it under the session lease.
+        """
+        found = False
+        for candidate in self._entries.values():
+            if candidate.session_id != session_id:
+                continue
+            if TYPED_EVENT_RECOVERY_METADATA_KEY not in candidate.metadata:
+                continue
+            found = True
+            marker = candidate.metadata.get(TYPED_EVENT_RECOVERY_METADATA_KEY)
+            if not isinstance(marker, dict):
+                return "conflict"
+            if marker.get("version") != _TYPED_EVENT_RECOVERY_VERSION:
+                return "conflict"
+            if marker.get("session_id") != session_id:
+                return "conflict"
+            owner_id = marker.get("owner_id")
+            if not isinstance(owner_id, str) or not owner_id:
+                return "conflict"
+        return "owned" if found else "none"
+
+
+    def _typed_event_recovery_session_ids_locked(self) -> set[str]:
+        """Return every physical session with a present recovery marker."""
+        return {
+            entry.session_id
+            for entry in self._entries.values()
+            if TYPED_EVENT_RECOVERY_METADATA_KEY in entry.metadata
+        }
+
+
+    def typed_event_recovery_owner_state(
+        self,
+        session_key: str,
+        expected_session_id: str,
+    ) -> str:
+        """Read the fail-closed typed recovery state for an exact route."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.session_id != expected_session_id:
+                return "conflict"
+            return self._typed_event_recovery_state_locked(expected_session_id)
+
+
+    def mark_typed_event_recovery_owner(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        owner_id: str,
+    ) -> bool:
+        """Persist trusted recovery ownership before a typed turn reads history.
+
+        A later authorized typed event may replace a valid owner after it has
+        acquired the same physical-session lease.  Malformed ownership,
+        suspension, or an older generic resume obligation fails closed.
+        """
+        if not isinstance(owner_id, str) or not owner_id:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.session_id != expected_session_id:
+                return False
+            aliases = [
+                candidate
+                for candidate in self._entries.values()
+                if candidate.session_id == expected_session_id
+            ]
+            if any(candidate.suspended or candidate.resume_pending for candidate in aliases):
+                return False
+            if self._typed_event_recovery_state_locked(expected_session_id) == "conflict":
+                return False
+
+            marker = {
+                "version": _TYPED_EVENT_RECOVERY_VERSION,
+                "session_id": expected_session_id,
+                "owner_id": owner_id,
+            }
+            data, generation = self._snapshot_routing_locked()
+            for candidate in aliases:
+                candidate_data = data[candidate.session_key]
+                metadata = dict(candidate_data.get("metadata") or {})
+                metadata[TYPED_EVENT_RECOVERY_METADATA_KEY] = marker
+                candidate_data["metadata"] = metadata
+
+            # Publish in-memory state only after the complete alias snapshot is
+            # durable.  A failed write cannot leak a marker through a later save.
+            self._persist_routing_data(data, generation)
+            for candidate in aliases:
+                candidate.metadata[TYPED_EVENT_RECOVERY_METADATA_KEY] = dict(marker)
+            return True

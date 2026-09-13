@@ -36,6 +36,7 @@ const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'sh
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
 export function relativeTime(targetMs: number, nowMs = Date.now()): string {
+  if (!Number.isFinite(targetMs) || !Number.isFinite(nowMs)) return ''
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1

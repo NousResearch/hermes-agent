@@ -103,11 +103,32 @@ def test_switch_model_resets_stale_streak():
     assert agent._consecutive_stale_streams == 0
 
 
+def test_switch_model_closes_stale_codex_app_server_session():
+    agent = _make_agent_openrouter()
+    codex_session = MagicMock()
+    setattr(agent, "_codex_session", codex_session)
+    agent._create_openai_client = MagicMock(return_value=MagicMock(name="NewClient"))
+
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="openai/gpt-5",
+            new_provider="openrouter",
+            api_key="or-key-new",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+        )
+
+    assert codex_session.close.call_count == 1
+    assert agent._codex_session is None
+
+
 def test_switch_model_failure_does_not_reset_streak():
     """A failed swap rolls back — the agent is still on the wedged provider,
     so the breaker must stay latched (reset happens after the rebuild)."""
     agent = _make_agent_openrouter()
     agent._consecutive_stale_streams = 7
+    codex_session = MagicMock()
+    setattr(agent, "_codex_session", codex_session)
 
     def boom(*_a, **_kw):
         raise RuntimeError("simulated client build failure")
@@ -127,6 +148,8 @@ def test_switch_model_failure_does_not_reset_streak():
             pass
 
     assert agent._consecutive_stale_streams == 7
+    assert codex_session.close.call_count == 0
+    assert agent._codex_session is codex_session
 
 
 def test_fallback_activation_resets_stale_streak():

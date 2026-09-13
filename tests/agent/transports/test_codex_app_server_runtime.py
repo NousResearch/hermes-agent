@@ -93,6 +93,97 @@ class TestCodexAppServerModule:
     """Module-surface tests for the JSON-RPC speaker. Don't require codex CLI."""
 
 
+    @pytest.mark.parametrize(
+        "config,kanban_root,expected",
+        [
+            (
+                {},
+                None,
+                ['model="gpt-5.6-codex"'],
+            ),
+            (
+                {
+                    "model_reasoning_effort": "high",
+                    "sandbox_mode": "workspace-write",
+                    "ask_for_approval": "on-request",
+                    "network_access": True,
+                    "writable_roots": ["/work", "/work", "/tmp/😀"],
+                },
+                "/kanban",
+                [
+                    'model="gpt-5.6-codex"',
+                    'model_reasoning_effort="high"',
+                    'sandbox_mode="workspace-write"',
+                    'approval_policy="on-request"',
+                    'sandbox_workspace_write.network_access=false',
+                    'sandbox_workspace_write.writable_roots=["/kanban"]',
+                ],
+            ),
+            (
+                {
+                    "sandbox_mode": "danger-full-access",
+                    "network_access": False,
+                    "writable_roots": ["/ignored"],
+                },
+                "/kanban",
+                [
+                    'model="gpt-5.6-codex"',
+                    'sandbox_mode="workspace-write"',
+                    'sandbox_workspace_write.network_access=false',
+                    'sandbox_workspace_write.writable_roots=["/kanban"]',
+                ],
+            ),
+            (
+                {
+                    "sandbox_mode": "danger-full-access",
+                    "network_access": True,
+                    "writable_roots": ["/work"],
+                },
+                None,
+                ['model="gpt-5.6-codex"', 'sandbox_mode="danger-full-access"'],
+            ),
+            (
+                {},
+                "/kanban",
+                [
+                    'model="gpt-5.6-codex"',
+                    'sandbox_mode="workspace-write"',
+                    "sandbox_workspace_write.network_access=false",
+                    'sandbox_workspace_write.writable_roots=["/kanban"]',
+                ],
+            ),
+        ],
+    )
+    def test_launch_config_resolves_session_scoped_overrides_without_conflicts(
+        self, config, kanban_root, expected
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_app_server_args
+
+        args = resolve_codex_app_server_args(
+            model="gpt-5.6-codex",
+            config=config,
+            kanban_root=kanban_root,
+        )
+
+        assert args == [part for value in expected for part in ("-c", value)]
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"model_reasoning_effort": "extreme"},
+            {"sandbox_mode": "host-write"},
+            {"ask_for_approval": "always"},
+            {"sandbox_mode": "workspace-write", "network_access": "yes"},
+            {"sandbox_mode": "workspace-write", "writable_roots": ["relative/path"]},
+        ],
+    )
+    def test_launch_config_rejects_invalid_values(self, config) -> None:
+        from agent.transports.codex_app_server import resolve_codex_app_server_args
+
+        with pytest.raises(ValueError, match="model.codex_app_server"):
+            resolve_codex_app_server_args(model="gpt-5.6-codex", config=config)
+
+
 
 
     def test_check_binary_handles_missing_executable(self) -> None:
@@ -213,7 +304,7 @@ class TestSpawnEnvIsolation:
         """Codex-runtime Kanban workers need to write board state outside
         their scratch/worktree workspace, but should not fall back to
         danger-full-access. Hermes passes a narrow app-server config override
-        for the Kanban root only.
+        for the Kanban root only and keeps it authoritative over legacy args.
         """
         import subprocess
         from agent.transports import codex_app_server as cas
@@ -251,18 +342,19 @@ class TestSpawnEnvIsolation:
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
         )
 
-        client = cas.CodexAppServerClient(codex_bin="codex")
+        client = cas.CodexAppServerClient(
+            codex_bin="codex",
+            extra_args=["-c", 'sandbox_mode="danger-full-access"'],
+        )
         client._closed = True
 
         cmd = captured["cmd"]
         assert cmd[:2] == ["codex", "app-server"]
-        assert 'sandbox_mode="workspace-write"' in cmd
-        assert (
-            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
-            in cmd
-        )
-        assert "sandbox_workspace_write.network_access=false" in cmd
-        assert all("danger" not in part for part in cmd)
+        assert cmd[-6:] == [
+            "-c", 'sandbox_mode="workspace-write"',
+            "-c", 'sandbox_workspace_write.network_access=false',
+            "-c", 'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]',
+        ]
 
 
 class TestSpawnEnvSecretStripping:

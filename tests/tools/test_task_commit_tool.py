@@ -151,6 +151,21 @@ def test_11b_replace_cutoff_stays_monotonic_if_wall_clock_moves_backwards():
     assert result["goal"]["created_at"] > old_created
 
 
+def test_11c_create_after_done_keeps_cutoff_monotonic_if_wall_clock_moves_backwards():
+    create()
+    old = GoalManager("task-commit-session")
+    old_created = old.state.created_at
+    old.mark_done("first goal finished")
+    with patch("hermes_cli.goals.time.time", return_value=old_created - 10):
+        result = create(
+            objective="Successor objective",
+            outcome="Successor exists",
+            verification="Successor is verified",
+        )
+    assert result["success"] and result["result"] == "created"
+    assert result["goal"]["created_at"] > old_created
+
+
 def test_12_empty_array_never_means_clear():
     create()
     result = call("task-commit-session", operation="amend", constraints=[])
@@ -224,9 +239,9 @@ def test_17_inline_executor_uses_agent_session_identity():
 
 
 def test_17b_subagent_completed_plus_truncated_is_marked_incomplete():
-    from tools.process_registry_notifications import SubagentNotification
+    from tools.process_registry_notifications import TimelineNotification
 
-    notification = SubagentNotification("model text", {
+    notification = TimelineNotification.for_delegation("model text", {
         "results": [{"status": "completed", "truncated": True}],
     })
     assert notification.goal_execution_incomplete is True
@@ -316,6 +331,22 @@ def test_19_replaced_goal_classifies_old_process_as_stale_but_not_new_process():
     })
     assert not is_stale_goal_event("task-commit-session", {
         "type": "completion", "started_at": replaced["goal"]["created_at"] + 1,
+    })
+
+
+def test_19b_paused_replacement_still_rejects_old_background_events():
+    first = create()
+    replaced = call(
+        "task-commit-session", operation="replace", objective="Paused replacement",
+        outcome="Replacement outcome", verification="Replacement proof",
+    )
+    manager = GoalManager("task-commit-session")
+    manager.pause("waiting for user")
+    assert is_stale_goal_event("task-commit-session", {
+        "type": "async_delegation", "dispatched_at": first["goal"]["created_at"],
+    })
+    assert not is_stale_goal_event("task-commit-session", {
+        "type": "async_delegation", "dispatched_at": replaced["goal"]["created_at"] + 1,
     })
 
 

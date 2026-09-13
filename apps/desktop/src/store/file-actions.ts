@@ -4,6 +4,7 @@ import { translateNow } from '@/i18n'
 import {
   copyTextToClipboard,
   isDesktopFsRemoteMode,
+  readDesktopFileText,
   renameDesktopPath,
   revealDesktopPath,
   trashDesktopPath
@@ -13,11 +14,11 @@ import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 // Shared file-row actions for BOTH trees (the file browser + the review/git
-// tree): reveal, copy path, download (remote), rename, delete. Rename/delete
-// route through a single dialog set (driven by this atom, rendered once by
-// `FileActionDialogs`) instead of one dialog per row. After a successful
-// mutation we bump the workspace tick so every git-/fs-mirroring surface
-// refreshes.
+// tree): reveal, copy path, copy content, download (remote), rename, delete.
+// Rename/delete route through a single dialog set (driven by this atom,
+// rendered once by `FileActionDialogs`) instead of one dialog per row. After a
+// successful mutation we bump the workspace tick so every git-/fs-mirroring
+// surface refreshes.
 
 export interface FileActionTarget {
   isDirectory: boolean
@@ -68,6 +69,32 @@ export async function copyFilePath(path: string): Promise<void> {
   try {
     await copyTextToClipboard(path)
     notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.pathCopied') })
+  } catch (error) {
+    notifyError(error, translateNow('common.copyFailed'))
+  }
+}
+
+/** Read a file's text content and copy it to the system clipboard. */
+export async function copyFileContent(path: string): Promise<void> {
+  try {
+    const result = await readDesktopFileText(path)
+
+    if (result.binary) {
+      notifyError(new Error('Binary file'), translateNow('common.copyFailed'))
+
+      return
+    }
+
+    const text = result.text
+
+    if (!text) {
+      notifyError(new Error('File has no readable text content'), translateNow('common.copyFailed'))
+
+      return
+    }
+
+    await copyTextToClipboard(text)
+    notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.contentCopied') })
   } catch (error) {
     notifyError(error, translateNow('common.copyFailed'))
   }

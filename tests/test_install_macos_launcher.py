@@ -36,6 +36,8 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
     command_dir = tmp_path / "command"
     minimal_path = tmp_path / "minimal-path"
     result = tmp_path / "launch-result"
+    home = tmp_path / "home"
+    home.mkdir()
     venv_bin.mkdir(parents=True)
     minimal_path.mkdir()
 
@@ -63,11 +65,15 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
             'get_command_link_display_dir() { printf "%s" "$COMMAND_LINK_DIR"; }',
             "log_info() { :; }",
             "log_success() { :; }",
+            "log_warn() { :; }",
             _setup_path_function(),
             "setup_path",
         ]
     )
     env = os.environ | {
+        # setup_path may update shell profiles; never use the caller's home.
+        "HOME": str(home),
+        "SHELL": "/bin/bash",
         "USE_VENV": "true",
         "INSTALL_DIR": str(install_dir),
         "DISTRO": "macos",
@@ -77,7 +83,7 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
 
     completed = subprocess.run(
         [command_dir / "hermes", "--version"],
-        env=os.environ | {"LAUNCH_RESULT": str(result)},
+        env=env | {"LAUNCH_RESULT": str(result)},
         text=True,
         capture_output=True,
     )

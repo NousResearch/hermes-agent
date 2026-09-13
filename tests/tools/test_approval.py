@@ -430,8 +430,8 @@ class TestHermesHomeHardline:
             "find $HERMES_HOME -exec cp {} /tmp/backup \\;",
             "busybox sqlite3 $HERMES_HOME/state.db 'select 1'",
             "sqlite3 $HERMES_HOME/state.db '.backup /tmp/state.db.bak'",
-            f"cd {tmp_path} && rm scratch.txt",
-            f"cd {tmp_path} && : > scratch.txt",
+            f"cd {tmp_path.as_posix()} && rm scratch.txt",
+            f"cd {tmp_path.as_posix()} && : > scratch.txt",
             "rm ../scratch.txt",
             f"cp -t {tmp_path} ./a $HERMES_HOME/SOUL.md",
             f"cp --target-directory={tmp_path} $HERMES_HOME/SOUL.md ./a",
@@ -485,16 +485,17 @@ class TestHermesHomeHardline:
             target.write_text("keep", encoding="utf-8")
             terminal_module.register_task_env_overrides(task_id, {"cwd": str(workspace)})
             cd_result = json.loads(terminal_module.terminal_tool(
-                command=f'cd "{home}"', task_id=task_id,
+                command=f'cd "{home.as_posix()}"', task_id=task_id,
             ))
             assert cd_result["exit_code"] == 0
+            assert os.path.samefile(terminal_module.get_session_cwd(task_id), home)
             monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", mode == "yolo")
 
             result = json.loads(terminal_module.terminal_tool(
                 command=f'rm "{target.name}"', task_id=task_id, force=force,
             ))
 
-            assert result["status"] == "blocked"
+            assert result.get("status") == "blocked", result
             assert target.read_text(encoding="utf-8") == "keep"
 
 

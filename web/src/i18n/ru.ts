@@ -768,7 +768,7 @@ export const ru: Translations = {
     assigneePlaceholder: "исполнитель",
     priority: "Приоритет",
     skillsPlaceholder:
-      "навыки (необязательно, через запятую): translation, github-code-review",
+      "навыки (необязательно, через запятую): translation, github",
     noParent: "— без родителя —",
     workspacePathDir: "путь к рабочей области (обязательно, например ~/projects/my-app)",
     workspacePathOptional:

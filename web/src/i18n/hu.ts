@@ -768,7 +768,7 @@ export const hu: Translations = {
     assigneePlaceholder: "felelős",
     priority: "Prioritás",
     skillsPlaceholder:
-      "készségek (opcionális, vesszővel elválasztva): translation, github-code-review",
+      "készségek (opcionális, vesszővel elválasztva): translation, github",
     noParent: "— nincs szülő —",
     workspacePathDir: "munkaterület útvonala (kötelező, pl. ~/projects/my-app)",
     workspacePathOptional:

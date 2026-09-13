@@ -677,13 +677,14 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
 
 def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
-                 state_reset: bool, exec_start: float) -> Dict[str, Any]:
+                 state_reset: bool, exec_start: float, code: str = "") -> Dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
-    from agent.redact import redact_sensitive_text
+    from agent.redact import _command_reads_env_file, redact_sensitive_text
     from tools.ansi_strip import strip_ansi
+    code_file = not _command_reads_env_file(code)
     def clean(text: str) -> str:
-        return redact_sensitive_text(strip_ansi(text), code_file=True)
+        return redact_sensitive_text(strip_ansi(text), code_file=code_file)
     if status in ("timeout", "interrupted"):
         # No safe way to interrupt one cell in place: kill the kernel, report the loss, respawn next call.
         _REGISTRY.discard(key, kernel)
@@ -787,7 +788,7 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             result = _cell_result(
                 kernel, key, status, payload,
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,
-                state_reset=state_reset, exec_start=exec_start,
+                state_reset=state_reset, exec_start=exec_start, code=code,
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:  # pragma: no cover - defensive parity with per-call

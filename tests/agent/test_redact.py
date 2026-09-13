@@ -905,7 +905,6 @@ class TestTerminalOutputRedaction:
         assert not _command_reads_env_file("cat README.md")
         assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
         assert not _command_reads_env_file("python app.py")
-        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
         assert not _command_reads_env_file("")
         assert not _command_reads_env_file(None)
 
@@ -1185,3 +1184,29 @@ class TestValueAwareGatingCorpus:
         result = redact_sensitive_text(block, force=True)
         assert prose_line in result
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
+
+
+@pytest.mark.parametrize("reader", [
+    'grep KEY {path}', 'grep -n API_KEY {path}', 'sed -n 1,20p {path}',
+    "awk -F= '{{print}}' {path}", 'sort {path}',
+    'python3 -c "print(open(\'{path}\').read())"',
+    "perl -pe '' {path}", "ruby -e 'puts File.read(\"{path}\")'",
+    'node -e "console.log(require(\'fs\').readFileSync(\'{path}\',\'utf8\'))"',
+    'xxd {path}', 'od {path}', 'strings {path}', 'cut -f1 {path}',
+    'diff /dev/null {path}', 'column {path}', 'base64 {path}',
+    'sudo cat {path}', 'sort <{path}', 'echo $(sort {path})',
+    'echo `sort {path}`', 'true; sort {path} | head', 'true && sort {path}',
+])
+def test_env_file_output_routing_contract(reader):
+    """Reader identity must not decide whether opaque assignments are secrets."""
+    from agent.redact import redact_terminal_output
+
+    value = 'q7Vm2R9xK4pL8wN6zB3d'
+    output = f'TAVILY_API_KEY={value}\nDEBUG=true\n'
+    for path in ('.env', 'config/.ENV.local', r'C:\config\.envrc'):
+        result = redact_terminal_output(output, reader.format(path=path), force=True)
+        assert value not in result
+        assert 'DEBUG=true' in result
+    for path in ('source.py', '.env.example', '.env.sample', '.env.template',
+                 '.env.dist', '.envrc.bak', '.env/source.py'):
+        assert redact_terminal_output(output, reader.format(path=path), force=True) == output

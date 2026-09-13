@@ -176,6 +176,12 @@ def extract_text(message_or_params: dict) -> str:
     return "\n".join(chunks).strip()
 
 
+def extract_message_id(params: dict) -> str:
+    """v1.0 puts messageId inside the Message; a peer retrying a send repeats it."""
+    msg = params.get("message") or {}
+    return str(msg.get("messageId") or "") if isinstance(msg, dict) else ""
+
+
 def extract_context_id(params: dict) -> str:
     """v1.0 puts contextId inside the Message; tolerate legacy top-level."""
     msg = params.get("message") or {}

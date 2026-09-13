@@ -1379,6 +1379,38 @@ class TestMultiAgentRouting:
         route = adapter._route_for_request("/dev/", {"tenant": "research"})
         assert "error" in route
 
+    def test_forwarded_retry_of_the_same_message_reuses_its_admission_id(self, monkeypatch):
+        """A peer that resends after a timeout repeats its messageId; the forwarded input id must
+        repeat with it so the owner answers from the accepted work instead of queueing a second turn."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
+        }))
+        agent = adapter._agents["dev"]
+        seen = []
+
+        def fake_forward(agent_arg, peer, context_id, framed_text, *, input_id):
+            seen.append(input_id)
+            return "dev reply", protocol.STATE_COMPLETED
+
+        adapter._forward_to_profile = fake_forward  # type: ignore
+        message = protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")
+        for _ in range(2):
+            adapter._prepare_task({"tenant": "dev", "message": dict(message)}, "peer-x", agent=agent)
+        fresh = protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")
+        adapter._prepare_task({"tenant": "dev", "message": fresh}, "peer-x", agent=agent)
+        other_context = {**dict(message), "contextId": "ctx-other"}
+        adapter._prepare_task({"tenant": "dev", "message": other_context}, "peer-x", agent=agent)
+        assert seen[0] == seen[1]
+        assert len({seen[0], seen[2], seen[3]}) == 3
+        assert all(i.startswith("a2a-msg:") and len(i) < 1024 for i in seen)
+        # A message without an id keeps the per-task id, which is never reused.
+        adapter._prepare_task({"tenant": "dev", "message": {"role": "user", "parts": [{"text": "hi"}], "contextId": "ctx-dev"}},
+                              "peer-x", agent=agent)
+        assert not seen[4].startswith("a2a-msg:")
+
     def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig

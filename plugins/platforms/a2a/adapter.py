@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -520,9 +521,13 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
+            # A retry after a timeout must find its accepted work, not queue a second turn.
+            message_id = protocol.extract_message_id(params)
+            input_id = ("a2a-msg:" + hashlib.sha256(f"{context_id}\0{message_id}".encode()).hexdigest()
+                        if message_id else task_id)
             self._activate_task(task_id)
             try:
-                reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=task_id)
+                reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=input_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
                 return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
             finally:

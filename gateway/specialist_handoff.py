@@ -111,6 +111,7 @@ def _candidate_fallback(
     source_key: str,
     db_path: object,
     candidate_requests: CandidateProfileRequests | None,
+    connection: object,
 ) -> tuple[SpecialistRouteDecision, CandidateProfileRequest | None]:
     """Queue a no-match locally and retain the source task's safe known owner."""
     if resolution is None or resolution.status not in {"no_match", "ambiguous"}:
@@ -124,6 +125,7 @@ def _candidate_fallback(
             signature,
             source_key=source_key,
             envelope=SanitizedTaskEnvelope(evidence_refs=(_candidate_source_ref(source_key),)),
+            connection=connection,
         )
     except Exception:
         # The candidate ledger is advisory and local-only. Its unavailability
@@ -212,6 +214,10 @@ def create_specialist_handoff(
                     # terminal candidate; otherwise the task keeps the old
                     # candidate in its body while the new ledger row is orphaned.
                     return HandoffResult(True, task_id=row["id"], created=False)
+            # Validate the known fallback owner before opening any candidate
+            # record; a missing profile must not leave an inert orphan behind.
+            if signature is not None and not profile_exists("task-orchestrator"):
+                return HandoffResult(False, reason="profile_unavailable")
             effective_decision, candidate_result = _candidate_fallback(
                 decision=effective_decision,
                 signature=signature,
@@ -219,6 +225,7 @@ def create_specialist_handoff(
                 source_key=key or "",
                 db_path=db_path,
                 candidate_requests=candidate_requests,
+                connection=conn,
             )
             # Preserve the established handoff contract for fixed routes while
             # requiring the new registry-backed path to target a real profile.

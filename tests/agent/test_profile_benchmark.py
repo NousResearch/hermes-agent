@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 
+import pytest
+
 from agent.profile_benchmark import (
     CandidatePromotionGate,
     CandidateProposal,
@@ -59,6 +61,18 @@ def test_candidate_cannot_score_or_verify_its_own_proposal(tmp_path):
 
     assert benchmark_result.status == "rejected"
     assert receipt.status == "rejected"
+
+
+def test_proposal_and_sol_reviewer_must_be_distinct_identities(tmp_path):
+    with pytest.raises(ValueError, match="independent identities"):
+        CandidateProposal(
+            candidate_id="candidate-1",
+            proposal_author="same-actor",
+            sol_reviewer="SAME-ACTOR",
+            proposal_hash=_digest("proposal"),
+            signature_hash=SIGNATURE.signature_hash,
+            permissions_hash=SIGNATURE.permissions_hash,
+        )
 
 
 def test_unavailable_scorer_fails_closed_without_benchmark_transition(tmp_path):
@@ -346,6 +360,41 @@ def test_durable_active_promotion_creates_registry_profile(tmp_path):
     assert CapabilityRegistry(db_path=requests._db_path).resolve(
         SIGNATURE, profile_id="market-data-specialist"
     ).status == "active_match"
+
+
+def test_expired_activation_is_rejected_before_promotion_proof_is_written(tmp_path):
+    now = [1_000]
+    requests, gate, proposal, cases = _candidate(tmp_path, now)
+    _, benchmark = gate.benchmark(
+        proposal, cases, scorer_model="benchmark-model", scores=(90, 90), scorer_available=True
+    )
+    assert gate.open_disposable_sandbox(proposal, benchmark, sandbox_id="sandbox-1").status == "benchmarked"
+    _, verification = gate.verify(
+        proposal, benchmark, verifier_identity="independent-verifier", sandbox_id="sandbox-1", verifier_available=True
+    )
+    approval = OperatorApproval(
+        candidate_id=proposal.candidate_id,
+        approval_id="active-approval",
+        operator_identity="portal:operator-1",
+        verification_result_hash=verification.result_hash,
+        target_state="active",
+        approved=True,
+        issued_at=now[0],
+    )
+    stage_approval = replace(approval, target_state="staged", approval_id="stage-approval")
+    assert gate.record_operator_approval(
+        stage_approval, authenticated_operator_identity="portal:operator-1"
+    )
+    assert gate.stage(proposal, benchmark, verification, stage_approval).status == "staged"
+    result = gate.activate(
+        proposal, SIGNATURE, "market-data-specialist", benchmark, verification, approval, expires_at=now[0]
+    )
+
+    assert result.status == "rejected"
+    with gate._connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM specialist_promotion_proofs WHERE target_state = 'active'"
+        ).fetchone()[0] == 0
 
 
 def test_arbitrary_operator_identity_never_creates_staged_or_active_authority(tmp_path):

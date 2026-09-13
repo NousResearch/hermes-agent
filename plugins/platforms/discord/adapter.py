@@ -5117,10 +5117,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False
         try:
             from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
-            from gateway.specialist_routing import capability_signature_for_profile
 
             platform = getattr(event.source.platform, "value", event.source.platform)
             registry = self._specialist_capability_registry(settings)
+            signature = registry.configured_signature(decision.profile or "")
+            if signature is None:
+                logger.warning(
+                    "[Discord] specialist routing profile is not configured: %s",
+                    decision.profile,
+                )
+                return False
             source = HandoffSource(
                 platform=str(platform), chat_id=str(event.source.chat_id),
                 chat_type=str(event.source.chat_type or "group"),
@@ -5135,7 +5141,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 create_specialist_handoff, decision=decision, source=source,
                 request=event.text, router_model=settings["model"] or "configured_auxiliary",
                 board=settings["board"],
-                signature=capability_signature_for_profile(decision.profile),
+                signature=signature,
                 registry=registry,
             )
         except Exception:

@@ -178,6 +178,7 @@ class CandidateProfileRequests:
         resolution: RegistryResolution | None = None,
         envelope: SanitizedTaskEnvelope | None = None,
         policy_digest: str = DEFAULT_POLICY_DIGEST,
+        connection: object | None = None,
     ) -> CandidateProfileRequest:
         """Create or reuse a request only after a concrete local no-match lookup.
 
@@ -228,6 +229,7 @@ class CandidateProfileRequests:
             policy_digest=stored_policy_digest,
             evidence_ref_hashes=evidence_refs or (),
             reason_code=reason_code,
+            connection=connection,
         )
 
     def _open_or_reuse_latest(
@@ -239,39 +241,74 @@ class CandidateProfileRequests:
         policy_digest: str,
         evidence_ref_hashes: tuple[str, ...],
         reason_code: str | None,
+        connection: object | None = None,
     ) -> CandidateProfileRequest:
         now = int(self._clock())
+        if connection is not None:
+            return self._open_or_reuse_latest_in_transaction(
+                connection,
+                request_hash=request_hash,
+                signature=signature,
+                source_key=source_key,
+                policy_digest=policy_digest,
+                evidence_ref_hashes=evidence_ref_hashes,
+                reason_code=reason_code,
+                now=now,
+            )
         with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
             with kanban_db.write_txn(conn):
-                row = conn.execute(
-                    """
-                    SELECT request_id, lifecycle_status, cooldown_until
-                    FROM candidate_profile_requests
-                    WHERE request_hash = ?
-                    ORDER BY id DESC LIMIT 1
-                    """,
-                    (request_hash,),
-                ).fetchone()
-                if row is not None and row["lifecycle_status"] in _LIFECYCLE_TERMINAL:
-                    if isinstance(row["cooldown_until"], int) and now < row["cooldown_until"]:
-                        return CandidateProfileRequest(
-                            request_id=row["request_id"], status="cooldown", profile_id=None,
-                            reason="repeated terminal candidate request is in bounded cooldown",
-                        )
-                elif row is not None and row["lifecycle_status"] in _LIFECYCLE_NONTERMINAL:
-                    return CandidateProfileRequest(
-                        request_id=row["request_id"], status="duplicate", profile_id=None,
-                        reason="reused existing nonterminal inert candidate request",
-                    )
-                lifecycle_status = "rejected" if reason_code else "candidate"
-                cooldown_until = now + self._cooldown_seconds if reason_code else None
-                stored_reason_code = reason_code or "candidate_opened"
-                request_id = self._insert(
-                    conn, request_hash=request_hash, signature=signature, source_key=source_key,
-                    policy_digest=policy_digest, evidence_ref_hashes=evidence_ref_hashes,
-                    lifecycle_status=lifecycle_status, reason_code=stored_reason_code,
-                    cooldown_until=cooldown_until, now=now,
+                return self._open_or_reuse_latest_in_transaction(
+                    conn,
+                    request_hash=request_hash,
+                    signature=signature,
+                    source_key=source_key,
+                    policy_digest=policy_digest,
+                    evidence_ref_hashes=evidence_ref_hashes,
+                    reason_code=reason_code,
+                    now=now,
                 )
+
+    def _open_or_reuse_latest_in_transaction(
+        self,
+        conn: object,
+        *,
+        request_hash: str,
+        signature: CapabilitySignature,
+        source_key: str,
+        policy_digest: str,
+        evidence_ref_hashes: tuple[str, ...],
+        reason_code: str | None,
+        now: int,
+    ) -> CandidateProfileRequest:
+        row = conn.execute(
+            """
+            SELECT request_id, lifecycle_status, cooldown_until
+            FROM candidate_profile_requests
+            WHERE request_hash = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (request_hash,),
+        ).fetchone()
+        if row is not None and row["lifecycle_status"] in _LIFECYCLE_TERMINAL:
+            if isinstance(row["cooldown_until"], int) and now < row["cooldown_until"]:
+                return CandidateProfileRequest(
+                    request_id=row["request_id"], status="cooldown", profile_id=None,
+                    reason="repeated terminal candidate request is in bounded cooldown",
+                )
+        elif row is not None and row["lifecycle_status"] in _LIFECYCLE_NONTERMINAL:
+            return CandidateProfileRequest(
+                request_id=row["request_id"], status="duplicate", profile_id=None,
+                reason="reused existing nonterminal inert candidate request",
+            )
+        lifecycle_status = "rejected" if reason_code else "candidate"
+        cooldown_until = now + self._cooldown_seconds if reason_code else None
+        stored_reason_code = reason_code or "candidate_opened"
+        request_id = self._insert(
+            conn, request_hash=request_hash, signature=signature, source_key=source_key,
+            policy_digest=policy_digest, evidence_ref_hashes=evidence_ref_hashes,
+            lifecycle_status=lifecycle_status, reason_code=stored_reason_code,
+            cooldown_until=cooldown_until, now=now,
+        )
         if reason_code:
             return CandidateProfileRequest(
                 request_id=request_id, status="rejected", profile_id=None,

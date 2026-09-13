@@ -89,6 +89,8 @@ class CandidateProposal:
         _require_identity(self.candidate_id, field="candidate_id")
         _require_identity(self.proposal_author, field="proposal_author")
         _require_identity(self.sol_reviewer, field="sol_reviewer")
+        if self.proposal_author.casefold() == self.sol_reviewer.casefold():
+            raise ValueError("proposal_author and sol_reviewer must be independent identities")
         for field in ("proposal_hash", "signature_hash", "permissions_hash"):
             _require_hash(getattr(self, field), field=field)
 
@@ -421,8 +423,14 @@ class CandidatePromotionGate:
         )
         if status != "verified":
             return PromotionResult("rejected", f"verification {status}"), receipt
-        self._store_verification(receipt)
-        snapshot = self._append(proposal.candidate_id, "benchmarked", "verified", "sandbox_verified", receipt.result_hash)
+        snapshot = self._append(
+            proposal.candidate_id,
+            "benchmarked",
+            "verified",
+            "sandbox_verified",
+            receipt.result_hash,
+            before_transition=lambda conn: self._insert_verification(conn, receipt),
+        )
         return self._transition_result("verified", snapshot, "verification transition rejected"), receipt
 
     def stage(
@@ -550,21 +558,40 @@ class CandidatePromotionGate:
             return PromotionResult("rejected", "candidate must be staged before activation")
         if not self._has_local_no_send_canary(proposal.candidate_id, verification.result_hash):
             return PromotionResult("rejected", "durable local no-send canary is required before activation")
+        now = int(self._clock())
+        if expires_at is not None:
+            try:
+                expires_at_value = int(expires_at)
+            except (TypeError, ValueError, OverflowError):
+                return PromotionResult("rejected", "activation expiry is invalid")
+            if expires_at_value <= now:
+                return PromotionResult("rejected", "activation expiry must be later than activation time")
         proof_hash = self._store_proof(proposal, "active", profile_id, benchmark, verification, approval)
         if proof_hash is None:
             return PromotionResult("rejected", "durable authorized promotion proof is unavailable")
         try:
-            self._registry.add_active_from_durable_promotion(
-                profile_id=profile_id,
-                signature=signature,
-                candidate_id=proposal.candidate_id,
-                promotion_proof_hash=proof_hash,
-                expires_at=expires_at,
-                now=int(self._clock()),
+            self._registry.ensure_schema()
+        except Exception as exc:
+            return PromotionResult("rejected", f"capability activation unavailable: {type(exc).__name__}")
+        try:
+            snapshot = self._append(
+                proposal.candidate_id,
+                "staged",
+                "active",
+                "profile_activated",
+                approval.approval_hash,
+                before_transition=lambda conn: self._registry.add_active_from_durable_promotion(
+                    profile_id=profile_id,
+                    signature=signature,
+                    candidate_id=proposal.candidate_id,
+                    promotion_proof_hash=proof_hash,
+                    expires_at=expires_at,
+                    now=now,
+                    connection=conn,
+                ),
             )
         except Exception as exc:
             return PromotionResult("rejected", f"capability activation unavailable: {type(exc).__name__}")
-        snapshot = self._append(proposal.candidate_id, "staged", "active", "profile_activated", approval.approval_hash)
         return self._transition_result("active", snapshot, "activation transition rejected")
 
     def valid_benchmark(
@@ -743,10 +770,13 @@ class CandidatePromotionGate:
     def _store_verification(self, receipt: VerificationReceipt) -> None:
         with self._connection() as conn:
             with kanban_db.write_txn(conn):
-                conn.execute(
-                    "INSERT INTO specialist_verification_receipts (result_hash, candidate_id, benchmark_result_hash, verifier_identity, sandbox_id, status, issued_at, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (receipt.result_hash, receipt.candidate_id, receipt.benchmark_result_hash, receipt.verifier_identity, receipt.sandbox_id, receipt.status, receipt.issued_at, receipt.expires_at, int(self._clock())),
-                )
+                self._insert_verification(conn, receipt)
+
+    def _insert_verification(self, conn: object, receipt: VerificationReceipt) -> None:
+        conn.execute(
+            "INSERT INTO specialist_verification_receipts (result_hash, candidate_id, benchmark_result_hash, verifier_identity, sandbox_id, status, issued_at, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (receipt.result_hash, receipt.candidate_id, receipt.benchmark_result_hash, receipt.verifier_identity, receipt.sandbox_id, receipt.status, receipt.issued_at, receipt.expires_at, int(self._clock())),
+        )
 
     def _stored_benchmark_matches(self, receipt: BenchmarkReceipt, proposal: CandidateProposal) -> bool:
         try:

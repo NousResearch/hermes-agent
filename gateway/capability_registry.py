@@ -11,7 +11,7 @@ import json
 import re
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -357,6 +357,7 @@ class CapabilityRegistry:
         promotion_proof_hash: str,
         expires_at: datetime | int | float | None = None,
         now: int | None = None,
+        connection: object | None = None,
     ) -> int:
         """Activate only a profile backed by an append-only promotion proof."""
         self._validate_profile_id(profile_id)
@@ -370,8 +371,12 @@ class CapabilityRegistry:
         if isinstance(created_at, bool) or not isinstance(created_at, int):
             raise ValueError("now must be an integer timestamp")
         expiry = _expiry_timestamp(expires_at)
-        with self._connection() as conn:
-            with _write_txn()(conn):
+        if expiry is not None and expiry <= created_at:
+            raise ValueError("expires_at must be later than activation time")
+        connection_context = self._connection() if connection is None else nullcontext(connection)
+        with connection_context as conn:
+            transaction_context = _write_txn()(conn) if connection is None else nullcontext()
+            with transaction_context:
                 proof = conn.execute(
                     """
                     SELECT benchmark_result_hash, verification_result_hash, approval_hash
@@ -453,7 +458,6 @@ class CapabilityRegistry:
                 ).fetchone()
                 if canary is None:
                     raise ValueError("durable local no-send canary is missing")
-                self._configured_profiles[profile_id] = signature
                 existing = conn.execute(
                     """
                     SELECT profiles.id FROM capability_profiles AS profiles
@@ -469,6 +473,7 @@ class CapabilityRegistry:
                     (profile_id, signature.signature_hash, signature.permissions_hash, expiry),
                 ).fetchone()
                 if existing is not None:
+                    self._configured_profiles[profile_id] = signature
                     return int(existing["id"])
                 cursor = conn.execute(
                     """
@@ -490,6 +495,7 @@ class CapabilityRegistry:
                         created_at,
                     ),
                 )
+                self._configured_profiles[profile_id] = signature
                 return int(cursor.lastrowid)
 
     def revoke(
@@ -612,6 +618,19 @@ class CapabilityRegistry:
         except ValueError:
             return False
         return profile_id in self._configured_profiles
+
+    def configured_signature(self, profile_id: str) -> CapabilitySignature | None:
+        """Return the current operator declaration for one profile, if present."""
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return None
+        return self._configured_profiles.get(profile_id)
+
+    def ensure_schema(self) -> None:
+        """Create the append-only registry tables before a shared transaction."""
+        with self._connection():
+            pass
 
     def resolve(self, signature: CapabilitySignature, *, profile_id: str | None = None) -> RegistryResolution:
         """Resolve exactly one active, unexpired, non-expanding local profile."""

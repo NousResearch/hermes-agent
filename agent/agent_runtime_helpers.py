@@ -2101,20 +2101,41 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
     return rt
 
 
-def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
+def _finish_switch(agent, old_provider, old_model, old_base_url, new_provider) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0
-    # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;
-    # otherwise a failed turn silently re-activates the provider the user just rejected.
+    # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW deployment;
+    # otherwise a failed turn silently re-activates the primary the user just replaced.
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+    old_norm = (old_provider or "").strip().lower()
+    new_norm = (new_provider or "").strip().lower()
     if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
+        from agent.backend_identity import BackendIdentity, should_skip_candidate
+
+        old_identity = BackendIdentity.build(
+            provider=old_provider, model=old_model, base_url=old_base_url
+        )
+        new_identity = BackendIdentity.build(
+            provider=new_provider,
+            model=getattr(agent, "model", ""),
+            base_url=getattr(agent, "base_url", ""),
+        )
+
+        def targets_switched_deployment(entry):
+            candidate = BackendIdentity.build(
+                provider=entry.get("provider"),
+                model=entry.get("model"),
+                base_url=entry.get("base_url"),
+            )
+            return (
+                should_skip_candidate(candidate, old_identity)
+                or should_skip_candidate(candidate, new_identity)
+            )
+
+        fallback_chain = [entry for entry in fallback_chain if not targets_switched_deployment(entry)]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
     # Apply the switched-to provider's request_overrides (custom_providers extra_body).
@@ -2149,6 +2170,7 @@ def switch_model(
     snapshot and re-raises (callers catch)."""
     old_model = agent.model
     old_provider = agent.provider
+    old_base_url = agent.base_url
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,
     # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
     # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
@@ -2199,7 +2221,7 @@ def switch_model(
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
-    _finish_switch(agent, new_provider, old_norm, new_norm)
+    _finish_switch(agent, old_provider, old_model, old_base_url, new_provider)
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,

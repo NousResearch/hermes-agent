@@ -12,12 +12,18 @@ from unittest.mock import MagicMock, patch
 from run_agent import AIAgent
 
 
-def _make_agent(chain):
+def _make_agent(
+    chain,
+    *,
+    provider="openrouter",
+    model="x-ai/grok-4",
+    base_url="https://openrouter.ai/api/v1",
+):
     agent = AIAgent.__new__(AIAgent)
 
-    agent.provider = "openrouter"
-    agent.model = "x-ai/grok-4"
-    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.provider = provider
+    agent.model = model
+    agent.base_url = base_url
     agent.api_key = "or-key"
     agent.api_mode = "chat_completions"
     agent.client = MagicMock()
@@ -76,6 +82,51 @@ def test_switch_with_empty_chain_stays_empty():
 
     assert agent._fallback_chain == []
     assert agent._fallback_model is None
+
+
+def test_switch_from_bare_custom_preserves_distinct_custom_fallbacks():
+    survivors = [
+        {
+            "provider": "custom",
+            "model": "hy4-preview",
+            "base_url": "http://127.0.0.1:8001/v1",
+        },
+        {
+            "provider": "custom",
+            "model": "glm-5.3-flash",
+            "base_url": "http://127.0.0.1:8002/v1",
+        },
+    ]
+    chain = [
+        {
+            "provider": "custom",
+            "model": "gemini-3.8-flash-high",
+            "base_url": "http://primary.example/v1",
+        },
+        *survivors,
+        {
+            "provider": "custom",
+            "model": "claude-opus-4.6",
+            "base_url": "http://antigravity.example/v1",
+        },
+    ]
+    agent = _make_agent(
+        chain,
+        provider="custom",
+        model="gemini-3.8-flash-high",
+        base_url="http://primary.example/v1",
+    )
+
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="claude-opus-4.6",
+            new_provider="custom:antigravity",
+            api_key="new-key",
+            base_url="http://antigravity.example/v1",
+        )
+
+    assert agent._fallback_chain == survivors
+    assert agent._fallback_model == survivors[0]
 
 
 def test_manual_switch_clears_provider_fallback_provenance():

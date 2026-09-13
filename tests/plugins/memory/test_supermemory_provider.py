@@ -456,3 +456,85 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+# --- recall text for document / session hits -------------------------------
+# The SDK reports document and full-session hits with ``memory`` = None and the
+# text in ``chunk`` (or ``chunks[].content``). Reading only ``memory`` made those
+# hits look empty, and ``_format_prefetch_context`` then dropped them from recall
+# (its dedupe key is ``item.get("memory", "")``, and a falsy key filters the item).
+
+
+@pytest.fixture
+def sdk(monkeypatch):
+    """Stub the Supermemory SDK so canned search results can be injected."""
+    import sys
+    import types
+
+    class _Search:
+        def __init__(self):
+            self.results = []
+
+        def memories(self, **kwargs):
+            return types.SimpleNamespace(results=self.results)
+
+    class StubSupermemory:
+        def __init__(self, **kwargs):
+            self.search = _Search()
+
+    module = types.ModuleType("supermemory")
+    module.Supermemory = StubSupermemory
+    monkeypatch.setitem(sys.modules, "supermemory", module)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    return StubSupermemory
+
+
+class _Hit:
+    """Mimics an SDK search result; ``memory`` is None for document/session hits."""
+
+    def __init__(self, **kw):
+        self.id = kw.get("id", "hit-1")
+        self.memory = kw.get("memory")
+        self.chunk = kw.get("chunk")
+        self.chunks = kw.get("chunks", [])
+        self.context = kw.get("context")
+        self.similarity = 0.84
+        self.updated_at = "2026-09-13T00:00:00Z"
+        self.updatedAt = self.updated_at
+        self.metadata = kw.get("metadata", {})
+
+
+def _client(sdk, results):
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient(api_key="test-key", timeout=1.0, container_tag="hermes")
+    client._client.search.results = results
+    return client
+
+
+def test_document_hit_text_comes_from_chunk(sdk):
+    client = _client(sdk, [_Hit(chunk="gateway restart commands")])
+    assert client.search_memories("gateway")[0]["memory"] == "gateway restart commands"
+
+
+def test_chunked_hit_text_comes_from_chunks(sdk):
+    client = _client(sdk, [_Hit(chunks=[{"content": "from chunks"}])])
+    assert client.search_memories("anything")[0]["memory"] == "from chunks"
+
+
+def test_extracted_memory_still_used(sdk):
+    """Extracted memories keep reading ``memory`` — no regression on that path."""
+    client = _client(sdk, [_Hit(memory="likes short answers", chunk="ignored")])
+    assert client.search_memories("anything")[0]["memory"] == "likes short answers"
+
+
+def test_document_hit_reaches_the_recall_block(sdk):
+    """The user-visible symptom: chunk-only hits vanished from the recall block."""
+    client = _client(sdk, [_Hit(chunk="gateway restart commands")])
+    rendered = _format_prefetch_context([], [], client.search_memories("gateway"), max_results=10)
+    assert "Relevant Memories" in rendered
+    assert "gateway restart commands" in rendered
+
+
+def test_no_text_anywhere_yields_empty_string(sdk):
+    client = _client(sdk, [_Hit()])
+    assert client.search_memories("anything")[0]["memory"] == ""

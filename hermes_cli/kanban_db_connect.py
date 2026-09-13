@@ -894,6 +894,178 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
+    # Candidate ledgers were briefly prototyped with raw scope/evidence
+    # columns. Replace that shape before any caller can write to it: the
+    # candidate contract stores only opaque hashes and bounded lifecycle data.
+    # The table is intentionally checked here rather than relying on
+    # ``CREATE TABLE IF NOT EXISTS`` because SQLite does not reconcile an
+    # existing table's columns with the canonical schema.
+    canonical_candidate_columns = {
+        "id", "request_id", "request_hash", "signature_hash", "permissions_hash",
+        "source_key_hash", "policy_digest", "evidence_ref_hashes_json",
+        "lifecycle_status", "reason_code", "cooldown_until", "created_at",
+    }
+    if _table_exists(conn, "candidate_profile_requests"):
+        if _column_names(conn, "candidate_profile_requests") != canonical_candidate_columns:
+            conn.execute("DROP TABLE candidate_profile_requests")
+        else:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_candidate_profile_requests_hash_state "
+                "ON candidate_profile_requests(request_hash, lifecycle_status, created_at)"
+            )
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS candidate_profile_requests (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id               TEXT NOT NULL UNIQUE,
+            request_hash             TEXT NOT NULL,
+            signature_hash           TEXT NOT NULL,
+            permissions_hash         TEXT NOT NULL,
+            source_key_hash          TEXT NOT NULL,
+            policy_digest            TEXT NOT NULL,
+            evidence_ref_hashes_json TEXT NOT NULL,
+            lifecycle_status         TEXT NOT NULL,
+            reason_code              TEXT NOT NULL,
+            cooldown_until           INTEGER,
+            created_at               INTEGER NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
+        BEFORE UPDATE ON candidate_profile_requests BEGIN
+            SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_delete
+        BEFORE DELETE ON candidate_profile_requests BEGIN
+            SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+        END;
+        CREATE INDEX IF NOT EXISTS idx_candidate_profile_requests_hash_state
+            ON candidate_profile_requests(request_hash, lifecycle_status, created_at);
+
+        CREATE TABLE IF NOT EXISTS specialist_benchmark_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            result_hash TEXT NOT NULL UNIQUE,
+            candidate_id TEXT NOT NULL,
+            proposal_input_hash TEXT NOT NULL,
+            proposal_author TEXT NOT NULL,
+            sol_reviewer TEXT NOT NULL,
+            signature_hash TEXT NOT NULL,
+            permissions_hash TEXT NOT NULL,
+            case_set_hash TEXT NOT NULL,
+            scorer_model TEXT NOT NULL,
+            scores_json TEXT NOT NULL,
+            pass_threshold INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            issued_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS specialist_sandbox_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sandbox_id TEXT NOT NULL UNIQUE,
+            candidate_id TEXT NOT NULL,
+            benchmark_result_hash TEXT NOT NULL,
+            disposable INTEGER NOT NULL,
+            task_count INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS specialist_verification_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            result_hash TEXT NOT NULL UNIQUE,
+            candidate_id TEXT NOT NULL,
+            benchmark_result_hash TEXT NOT NULL,
+            verifier_identity TEXT NOT NULL,
+            sandbox_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            issued_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS specialist_operator_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_hash TEXT NOT NULL UNIQUE,
+            approval_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            operator_identity TEXT NOT NULL,
+            verification_result_hash TEXT NOT NULL,
+            approved INTEGER NOT NULL,
+            issued_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS specialist_promotion_proofs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proof_hash TEXT NOT NULL UNIQUE,
+            candidate_id TEXT NOT NULL,
+            target_state TEXT NOT NULL,
+            profile_id TEXT,
+            signature_hash TEXT NOT NULL,
+            permissions_hash TEXT NOT NULL,
+            benchmark_result_hash TEXT NOT NULL,
+            verification_result_hash TEXT NOT NULL,
+            approval_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS specialist_canary_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            result_hash TEXT NOT NULL UNIQUE,
+            candidate_id TEXT NOT NULL,
+            promotion_proof_hash TEXT NOT NULL,
+            verification_result_hash TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            issued_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS specialist_benchmark_receipts_no_update
+        BEFORE UPDATE ON specialist_benchmark_receipts BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_benchmark_receipts_no_delete
+        BEFORE DELETE ON specialist_benchmark_receipts BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_sandbox_runs_no_update
+        BEFORE UPDATE ON specialist_sandbox_runs BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_sandbox_runs_no_delete
+        BEFORE DELETE ON specialist_sandbox_runs BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_verification_receipts_no_update
+        BEFORE UPDATE ON specialist_verification_receipts BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_verification_receipts_no_delete
+        BEFORE DELETE ON specialist_verification_receipts BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_operator_approvals_no_update
+        BEFORE UPDATE ON specialist_operator_approvals BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_operator_approvals_no_delete
+        BEFORE DELETE ON specialist_operator_approvals BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_promotion_proofs_no_update
+        BEFORE UPDATE ON specialist_promotion_proofs BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_promotion_proofs_no_delete
+        BEFORE DELETE ON specialist_promotion_proofs BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_canary_receipts_no_update
+        BEFORE UPDATE ON specialist_canary_receipts BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS specialist_canary_receipts_no_delete
+        BEFORE DELETE ON specialist_canary_receipts BEGIN
+            SELECT RAISE(ABORT, 'specialist receipts are append-only');
+        END;
+        """
+    )
+
     cols = _column_names(conn, "tasks")
     for name, ddl in _EARLY_TASK_COLUMNS:
         if name not in cols:

@@ -21,6 +21,52 @@ _MAX_EXPIRY_TIMESTAMP = 253402300799
 _PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 
+_FIXED_BASELINE_SCOPES: dict[str, tuple[str, frozenset[str], str]] = {
+    "task-orchestrator": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "burndown-patch-steward": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "acceptance-gate-verifier": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "paper-safety-guardian": (
+        "financial-analysis", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "financial-analysis:read",
+    ),
+    "market-data-authority-auditor": (
+        "market-data", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "market-data:read",
+    ),
+    "route-execution-boundary-auditor": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "dependency-tooling-health-sentinel": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "copilot-learning-steward": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "mission-control-ux-auditor": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+    "research-scout": (
+        "research", frozenset({"audit", "read", "research", "review"}), "research:read"
+    ),
+    "performance-sentinel": (
+        "repository-evidence", frozenset({"audit", "inspect", "read", "review", "validate"}),
+        "repository-evidence:read",
+    ),
+}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS capability_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,6 +236,36 @@ class CapabilityRegistry:
         if not isinstance(profile_id, str) or not _PROFILE_ID_RE.fullmatch(profile_id):
             raise ValueError("profile_id must be a bounded canonical identifier")
         return profile_id
+
+    def register_fixed_baseline(
+        self,
+        *,
+        profile_id: str,
+        signature: CapabilitySignature,
+        expires_at: datetime | int | float | None = None,
+    ) -> int:
+        """Register one closed baseline declaration for compatibility with the router."""
+        self._validate_profile_id(profile_id)
+        fixed_scope = _FIXED_BASELINE_SCOPES.get(profile_id)
+        if fixed_scope is None:
+            raise ValueError("profile_id is not a fixed baseline specialist")
+        if not isinstance(signature, CapabilitySignature):
+            raise TypeError("signature must be a CapabilitySignature")
+        domain, allowed_actions, permission = fixed_scope
+        if (
+            signature.domain != domain
+            or signature.evidence_class != "diagnostic-only"
+            or not signature.actions
+            or not set(signature.actions) <= allowed_actions
+            or not signature.requested_permissions
+            or not set(signature.requested_permissions) <= {permission}
+        ):
+            raise ValueError("fixed baseline profile scope does not match its closed declaration")
+        configured = self._configured_profiles.get(profile_id)
+        if configured is not None and configured != signature:
+            raise ValueError("fixed baseline profile scope conflicts with configured declaration")
+        self._configured_profiles[profile_id] = signature
+        return self.register_configured_profile(profile_id, expires_at=expires_at)
 
     @contextmanager
     def _connection(self) -> Iterator[object]:

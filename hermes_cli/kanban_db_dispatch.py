@@ -1017,6 +1017,13 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        if not release_claim and row["current_run_id"] is not None:
+            # Crash/timeout path: the run being accounted for already ended
+            # (its reclaim/timeout txn nulled current_run_id). A non-null
+            # value here means a new run has since been claimed on this task
+            # — the stale error/counter must not land on that unrelated run.
+            # Historical data already written to task_runs/events stands.
+            return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim

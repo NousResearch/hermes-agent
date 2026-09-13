@@ -113,3 +113,39 @@ def test_genuine_crash_still_reclaims(conn):
     assert tid in crashed
     final = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
     assert final["status"] in ("ready", "blocked", "todo")
+
+
+def test_account_crashes_rejects_task_reclaimed_between_reclaim_and_accounting(conn):
+    """``_reclaim_dead_workers`` commits its reclaim txn, then
+    ``_account_crashes`` runs failure accounting in a SEPARATE txn. A new
+    worker that claims the task in between must not have its run's task row
+    clobbered by the old crash's stale error/counter."""
+    host = kb._claimer_id().split(":", 1)[0]
+    tid = kb.create_task(conn, title="race", assignee="w")
+
+    kb.claim_task(conn, tid, claimer=f"{host}:A")
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    kbd._set_worker_pid(conn, tid, dead.pid)
+    conn.execute("UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,))
+    conn.execute("UPDATE task_runs SET started_at = started_at - 9999 WHERE task_id=?", (tid,))
+    conn.commit()
+    kbd._record_worker_exit(dead.pid, 1 << 8)  # nonzero exit → crash
+
+    sweep = kbd._reclaim_dead_workers(conn)
+    assert tid in sweep.crashed
+
+    # A new worker claims the task before the crash is accounted for.
+    kb.claim_task(conn, tid, claimer=f"{host}:B")
+
+    kbd._account_crashes(conn, sweep.crash_details)
+
+    final = conn.execute(
+        "SELECT last_failure_error, consecutive_failures, status FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert final["status"] == "running"
+    assert final["last_failure_error"] is None, (
+        "old run's crash accounting must not clobber the new run's task row"
+    )
+    assert final["consecutive_failures"] == 0

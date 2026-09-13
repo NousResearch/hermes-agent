@@ -2064,7 +2064,21 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
-    return summary_kwargs
+
+    # The OpenCode relay pins a conversation to one upstream backend via
+    # ``x-opencode-session`` and rejects a request that omits it
+    # (MissingSessionID). The main turn and the auxiliary client both attach
+    # it; this hand-rolled builder was the one OpenCode call site that did not,
+    # so every max-iterations summary to opencode-go/zen failed with a 400 and
+    # the turn's work was reported to the user as lost.
+    from agent.opencode_affinity import merge_opencode_session_headers
+
+    return merge_opencode_session_headers(
+        summary_kwargs,
+        getattr(agent, "provider", None),
+        getattr(agent, "base_url", None),
+        getattr(agent, "session_id", None),
+    )
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:
@@ -2150,7 +2164,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        # "couldn't summarize" alone hid that the PROVIDER rejected the summary
+        # request (e.g. OpenCode MissingSessionID); name the stage that failed.
+        final_response = (
+            f"Reached the maximum iterations ({agent.max_iterations}); the follow-up summary "
+            f"request to {agent.provider or 'the provider'} failed, so this turn ended without "
+            f"a summary. Provider error: {e}"
+        )
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)

@@ -1282,6 +1282,7 @@ class _LoopState:
     final_response: Any = None
     interrupted: bool = False
     failed: bool = False
+    blocked: bool = False
     codex_ack_continuations: int = 0
     length_continue_retries: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS

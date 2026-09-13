@@ -18,10 +18,21 @@ from hermes_state_rewind import RewindTargetUnavailableError
 SURFACES = ("cli", "gateway", "tui")
 
 
-def _seed(db: SessionDB, sid: str, turns: int = 3) -> None:
+_IMAGE = {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+
+
+def _seed(db: SessionDB, sid: str, turns: int = 3, rich: bool = False) -> None:
+    """``rich``: every turn is an image-bearing user ask answered through a tool_call/tool_result pair."""
     db.create_session(sid, source="cli")
     for i in range(1, turns + 1):
-        db.append_message(sid, "user", f"q{i}")
+        if not rich:
+            db.append_message(sid, "user", f"q{i}")
+            db.append_message(sid, "assistant", f"a{i}")
+            continue
+        db.append_message(sid, "user", [{"type": "text", "text": f"q{i}"}, dict(_IMAGE)])
+        db.append_message(sid, "assistant", None, tool_calls=[
+            {"id": f"call-{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+        db.append_message(sid, "tool", f"out{i}", tool_call_id=f"call-{i}", tool_name="terminal")
         db.append_message(sid, "assistant", f"a{i}")
 
 
@@ -65,16 +76,25 @@ def db(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("n", [1, 2])
-def test_every_surface_persists_the_same_active_set(db, n):
+@pytest.mark.parametrize("rich", [False, True], ids=["text", "tool_calls+image"])
+def test_every_surface_persists_the_same_active_set(db, n, rich):
     expected = None
     for surface in SURFACES:
-        sid = f"rewind-{surface}-{n}"
-        _seed(db, sid)
+        sid = f"rewind-{surface}-{n}-{rich}"
+        _seed(db, sid, rich=rich)
         assert _rewind_via(surface, db, sid, n)
         rows = [(role, content, active) for _id, role, content, active in _active_rows(db, sid)]
         assert rows == (expected := expected or rows), surface
-    assert [c for _r, c, a in expected if a] == [f"q{i}" if k == 0 else f"a{i}"
-                                                 for i in range(1, 4 - n) for k in (0, 1)]
+    active = [(r, c) for r, c, a in expected if a]
+    if not rich:
+        assert [c for _r, c in active] == [f"q{i}" if k == 0 else f"a{i}" for i in range(1, 4 - n) for k in (0, 1)]
+    else:
+        # The whole tool exchange of a rewound turn goes with it (no orphan tool_result), and the
+        # surviving image-bearing user rows stay byte-identical to what was stored.
+        assert [r for r, _c in active] == ["user", "assistant", "tool", "assistant"] * (3 - n)
+        assert [c for r, c in active if r == "user"] == [
+            c for r, c, _a in expected if r == "user"][: 3 - n]
+        assert all("QUJD" in c for r, c in active if r == "user")
 
 
 @pytest.mark.parametrize("surface", SURFACES)

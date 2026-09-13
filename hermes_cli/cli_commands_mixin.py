@@ -2569,7 +2569,14 @@ class CLICommandsMixin:
                        _dim_line('Display:      show, hide'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        if self.agent is not None:
+            # reasoning_config is read dynamically on every API call
+            # (agent/chat_completion_helpers.py), so update in-place instead
+            # of destroying the agent — avoids MCP rediscovery storm, prompt
+            # cache invalidation, and "Agent updated — 0 tool(s) available".
+            self.agent.reasoning_config = parsed
+        else:
+            self.agent = None  # No live agent — re-init on next turn
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:
             if not isinstance(CLI_CONFIG.get("agent"), dict):
@@ -2626,7 +2633,14 @@ class CLICommandsMixin:
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
         self.service_tier, saved_value = _FAST_TIERS[arg]
-        self.agent = None  # Force agent re-init with new service-tier config
+        if self.agent is not None:
+            # service_tier is resolved per-turn via request_overrides
+            # (hermes_cli/cli_agent_setup_mixin.py), so update in-place
+            # instead of destroying the agent — avoids MCP rediscovery storm,
+            # prompt cache invalidation, and "Agent updated — 0 tool(s)".
+            self.agent.service_tier = self.service_tier
+        else:
+            self.agent = None  # No live agent — re-init on next turn
         saved = explicit_global and _save("agent.service_tier", saved_value)
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))

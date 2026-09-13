@@ -15,6 +15,7 @@ Bodies are rebound onto server.py's globals (method_ctx.bind_module) and referen
 
 import logging
 import threading
+import weakref
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -27,11 +28,23 @@ _DISPLAY_ERR = 5300
 _lease_listener_installed = threading.Event()
 
 
+def _lease_view(lease) -> dict:
+    """The lease as clients may see it: the holder's viewer id is a capability (whoever presents it
+    co-drives or releases the lease), so it is replaced by a short hash the holder can match against
+    its own id to know it is the one in control."""
+    import hashlib
+    d = lease.as_dict()
+    vid = d.pop("viewer_id")
+    d["viewer_id"] = None
+    d["viewer_hash"] = hashlib.sha256(vid.encode()).hexdigest()[:12] if vid else None
+    return d
+
+
 def _display_snapshot() -> dict:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     st = _bd_runtime.status()
-    return {**st.as_dict(), "lease": _bd_lease.get().as_dict(), "profile_key": hermes_home_key()}
+    return {**st.as_dict(), "lease": _lease_view(_bd_lease.get()), "profile_key": hermes_home_key()}
 
 
 def _install_lease_listener() -> None:
@@ -41,7 +54,7 @@ def _install_lease_listener() -> None:
     from tools.bot_desktop import lease as _bd_lease
 
     def _on_change(profile_key: str, lease) -> None:
-        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": lease.as_dict()})
+        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _lease_view(lease)})
     _bd_lease.on_change(_on_change)
     _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
 
@@ -95,18 +108,39 @@ def _(rid, params: dict) -> dict:
         return _err(rid, _DISPLAY_ERR, str(e))
 
 
+# viewer ids minted per connection (keyed by the transport that asked), so a reconnecting pane can
+# keep its identity — and its lease — while nobody can claim an id minted for another connection.
+_minted_viewer_ids: "weakref.WeakKeyDictionary[object, set[str]]" = weakref.WeakKeyDictionary()
+
+
+def _mint_viewer_id(requested: str) -> str:
+    """Server-minted viewer identity. ``requested`` is honoured only when THIS connection minted it
+    earlier; anything else (including a holder id read off display.status) gets a fresh id."""
+    import secrets
+    try:
+        mine = _minted_viewer_ids.setdefault(current_transport(), set())
+    except TypeError:  # stdio / slotted transports cannot be weakly referenced: always mint
+        mine = set()
+    if requested in mine:
+        return requested
+    viewer_id = secrets.token_urlsafe(16)
+    mine.add(viewer_id)
+    return viewer_id
+
+
 @method("display.observe")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Mint a single-use, 30 s ticket for ``/api/display/ws``. The ticket carries the profile home so
-    the bridge dials THIS profile's RFB socket, and the viewer id so the lease can name the holder."""
+    the bridge dials THIS profile's RFB socket, and a server-minted viewer id (returned to the caller,
+    who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
     from hermes_constants import get_hermes_home
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tools.bot_desktop import runtime as _bd_runtime
     try:
         if _bd_runtime.rfb_socket_path() is None:
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
-        viewer_id = str(params.get("viewer_id") or "").strip() or f"viewer-{rid}"
+        viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
                              extra={"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id})
         return _ok(rid, {"ticket": ticket, "path": "/api/display/ws", "viewer_id": viewer_id,

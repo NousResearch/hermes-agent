@@ -44,3 +44,11 @@ jobs:
       - name: System Node and npm compatibility (Windows PowerShell 5.1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-node-compatibility.ps1
+
+      - name: Computer Use driver provisioning gate (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-computer-use.ps1
+
+      - name: Computer Use driver provisioning gate (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-computer-use.ps1

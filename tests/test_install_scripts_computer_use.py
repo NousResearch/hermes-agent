@@ -31,8 +31,11 @@ class TestInstallSh:
         """The upstream installer serializes on a lock with a 600s stale
         window; a ceiling below that reintroduces the self-perpetuating
         wedge (#58762). Must stay >= 660."""
-        text = INSTALL_SH.read_text()
-        assert "run_with_timeout 660 /bin/bash -c" in text
+        text = INSTALL_SH.read_text(encoding="utf-8")
+        # The env prefix keeps the upstream installer out of ~/.bashrc and off telemetry
+        # (#104413); the 660s ceiling is the part that must never shrink.
+        assert ("run_with_timeout 660 env CUA_DRIVER_RS_NO_MODIFY_PATH=1 "
+                "CUA_DRIVER_RS_TELEMETRY_ENABLED=0 /bin/bash -c") in text
 
     def test_install_is_best_effort(self) -> None:
         text = INSTALL_SH.read_text()

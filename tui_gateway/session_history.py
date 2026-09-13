@@ -250,7 +250,13 @@ def _coerce_seed_history(value: Any) -> list[dict]:
             continue
         content = item.get("text") if item.get("content") is None else item.get("content")
         if isinstance(content, str) and content.strip():
-            history.append({"role": item["role"], "content": content})
+            row = {"role": item["role"], "content": content}
+            # "hidden" is the one display_kind a seeding client may author: model-facing scaffolding the
+            # renderer must not paint (a guided-chat runbook). Every other kind is stamped by the gateway
+            # at turn time, so it is not accepted from the wire.
+            if item.get("display_kind") == "hidden":
+                row["display_kind"] = "hidden"
+            history.append(row)
     return history
 
 

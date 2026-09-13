@@ -188,7 +188,50 @@ def _todo_state_from_history(history) -> dict | None:
         return None
 
 
+def _connector_tool_lifecycle(name: str, args: dict) -> bool:
+    from tools.tool_gateway.names import is_connector_name
+
+    if name == "manage_connections" or is_connector_name(name):
+        return True
+    if name != "tool_call" or not isinstance(args, dict):
+        return False
+    calls = args.get("calls") if isinstance(args.get("calls"), list) else [args]
+    return any(isinstance(call, dict) and (call.get("name") == "manage_connections"
+               or is_connector_name(call.get("name"))) for call in calls)
+
+
+def _connector_lifecycle_is_stale(sid: str, name: str, args: dict) -> bool:
+    if not _connector_tool_lifecycle(name, args):
+        return False
+    owner = _current_runtime_session_record.get()
+    return owner is not None and (_sessions.get(sid) is not owner or owner.get("_finalized", False))
+
+
+def _emit_tool_lifecycle(event, sid, name, args, payload):
+    if not _connector_tool_lifecycle(name, args):
+        return _emit(event, sid, payload)
+    from tui_gateway.connector_payload import connector_ui_payload
+    from tui_gateway.event_replay import _stamp_event
+
+    payload = connector_ui_payload(payload)
+    # Capture the owner after projection so id reuse cannot redirect its link,
+    # then release the session lock before potentially blocking transport I/O.
+    with _sessions_lock:
+        if _connector_lifecycle_is_stale(sid, name, args):
+            return
+        transport = (_sessions.get(sid) or {}).get("transport")
+        if transport is None:
+            transport = current_transport() or _stdio_transport
+    frame = _event_frame(event, sid, payload)
+    _stamp_event(frame)
+    from tui_gateway.hosted_room_member_activity import project_room_member_activity
+    project_room_member_activity(frame, _sessions)
+    transport.write(frame)
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
+    if _connector_lifecycle_is_stale(sid, name, args):
+        return
     session = _sessions.get(sid)
     if session is not None:
         with contextlib.suppress(Exception):
@@ -197,7 +240,8 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
-    if _tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name):
+    if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
+            or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
         # Full args (not just the 80-char `context` preview) so the desktop's expanded tool row is complete
         # while the tool runs. args.todos may be a partial merge — tool.complete is the truth.
@@ -205,10 +249,12 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             payload["args"] = args
         if _session_verbose(sid) and (args_text := _tool_args_text(args)):
             payload["args_text"] = args_text
-        _emit("tool.start", sid, payload)
+        _emit_tool_lifecycle("tool.start", sid, name, args, payload)
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
+    if _connector_lifecycle_is_stale(sid, name, args):
+        return
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
     session = _sessions.get(sid)
     snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
@@ -236,8 +282,8 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
             payload["inline_diff"] = "\n".join(rendered)
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
-            or name in _TODO_TOOL_NAMES):
-        _emit("tool.complete", sid, payload)
+            or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
+        _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
     if todo_state is not None:

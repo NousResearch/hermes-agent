@@ -20,6 +20,7 @@ from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_retry_state import TurnRetryState
+from agent.usage_pricing import normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -60,6 +61,27 @@ _CEILING_NO_TEXT = (
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
     "→ Lower reasoning effort: `/reasoning low` or `/reasoning none`\n→ Or raise max_tokens for this model"
 )
+# Below this many free tokens the prompt itself filled the window: a continuation nudge +
+# fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).
+_MIN_CONTINUATION_HEADROOM = 512
+_WINDOW_FILLED = (
+    "⚠️ **Context window full.** The prompt used {prompt:,} of this model's {ctx:,}-token "
+    "context window, leaving no room to answer in. This is a context-window limit, not an "
+    "output-length limit.\n\nTo fix this:\n→ Compress the conversation with `/compress` or start "
+    "a new session\n→ Or raise the model's context window (e.g. Ollama `num_ctx`)"
+)
+
+
+def _prompt_filled_window(agent: Any, response: Any) -> Optional[tuple[int, int]]:
+    """``(prompt_tokens, context_length)`` when this response's usage shows the prompt left
+    less than ``_MIN_CONTINUATION_HEADROOM`` in the window compression resolves for the
+    model; ``None`` (keep continuing) when either number is unknown."""
+    ctx = int(getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0)
+    usage = getattr(response, "usage", None)
+    if not (ctx and usage):
+        return None
+    prompt = normalize_usage(usage, provider=agent.provider, api_mode=agent.api_mode).prompt_tokens
+    return (prompt, ctx) if prompt and ctx - prompt < _MIN_CONTINUATION_HEADROOM else None
 
 
 def normalize_response_for_agent(agent: Any, response: Any) -> Any:
@@ -125,6 +147,7 @@ class _Trunc(TruncationVerdict):
     current_turn_user_idx: Any
     action: str = "fallthrough"
     result: Optional[Dict[str, Any]] = None
+    window_filled: Optional[tuple[int, int]] = None  # (prompt_tokens, context_length)
 
     def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> TruncationVerdict:
         self.action, self.result = action, result
@@ -230,7 +253,8 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         append_message(messages, interim_msg)
         st.truncated_response_parts.append(_interim_content)
 
-    if n < 4:
+    filled = st.window_filled
+    if n < 4 and filled is None:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
         if st.is_stub and _dropped_tools:
             agent._vprint(
@@ -253,6 +277,8 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     # The one-shot reasoning-off override must not leak into the next turn.
     agent._ephemeral_reasoning_off = False
     agent._vprint(
+        f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
+        if filled is not None else
         f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
         + ("keeping the partial response received so far." if partial_response
            else "no visible text was produced."),
@@ -272,6 +298,12 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             "role": "assistant", "content": partial_response, "finish_reason": "length"
         })
     agent._session_messages = messages
+    if filled is not None:
+        notice = _WINDOW_FILLED.format(prompt=filled[0], ctx=filled[1])
+        return st.end_turn(
+            f"{partial_response}\n\n{notice}" if partial_response else notice,
+            f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
+        )
     return st.end_turn(
         partial_response or _CEILING_NO_TEXT,
         "Response remained truncated after 4 continuation attempts",
@@ -335,9 +367,13 @@ def recover_from_truncation(
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
         compression_attempts=compression_attempts,
     )
+    st.window_filled = _prompt_filled_window(agent, response)
     agent._vprint(
         f"{agent.log_prefix}⚠️  Response truncated — stream ended before completion"
         if st.is_stub else
+        f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - the prompt filled the "
+        f"context window ({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens)"
+        if st.window_filled else
         f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens",
         force=True,
     )

@@ -10,7 +10,6 @@ Lives here, not in tool dispatch, so hits sit *after* every safety check and ski
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -18,6 +17,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -183,11 +183,9 @@ def _save_index(index: dict) -> None:
         if len(index) > _INDEX_MAX_ENTRIES:
             newest = sorted(index.items(), key=lambda kv: kv[1].get("fetched_at", 0), reverse=True)
             index = dict(newest[:_INDEX_MAX_ENTRIES])
-        # Per-process tmp name: CLI, gateway, cron, and subagents all write this index; a shared tmp name
-        # would let concurrent writers truncate each other. os.replace is atomic: worst case is a lost insert.
-        tmp = path.with_suffix(f".tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(index), encoding="utf-8")
-        tmp.replace(path)
+        # CLI, gateway, cron, and subagents all write this index; the replace is atomic, so the worst case
+        # under concurrent writers is a lost insert, never a truncated index.
+        atomic_json_write(path, index, indent=None)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to save web extract cache index: %s", exc)
 

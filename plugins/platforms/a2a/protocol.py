@@ -65,7 +65,8 @@ def _hermes_home() -> Path:
 
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,
                      streaming: bool = False, push_notifications: bool = False, auth_required: bool = False,
-                     tenant: str = "") -> dict:
+                     tenant: str = "", extensions: Optional[list[dict]] = None,
+                     input_modes: Optional[list[str]] = None, output_modes: Optional[list[str]] = None) -> dict:
     """A2A v1.0 Agent Card. ``tenant`` is the optional multi-tenancy routing key on
     AgentInterface; when present, clients MUST echo it in request params."""
     iface: dict[str, Any] = {"url": url, "protocolBinding": "JSONRPC", "protocolVersion": PROTOCOL_VERSION, **({"tenant": tenant} if tenant else {})}
@@ -78,8 +79,12 @@ def build_agent_card(*, name: str, url: str, description: str, skills: Optional[
         "supportedInterfaces": [iface],
         "capabilities": {"streaming": streaming, "pushNotifications": push_notifications,
                          "stateTransitionHistory": False, "extendedAgentCard": False},
-        "defaultInputModes": ["text/plain"], "defaultOutputModes": ["text/plain"], "skills": skills or [],
+        "defaultInputModes": input_modes or ["text/plain"], "defaultOutputModes": output_modes or ["text/plain"],
+        "skills": skills or [],
     }
+    if extensions:
+        card["extensions"] = extensions
+        card["capabilities"]["extensions"] = extensions
     if auth_required:
         card["securitySchemes"] = {"bearer": {"type": "http", "scheme": "bearer"}}
         card["security"] = [{"bearer": []}]
@@ -92,8 +97,10 @@ def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") ->
     if not isinstance(toolsets, dict):
         toolsets = {ts: [] for ts in set(toolsets or [])}
     skills = [{"id": f"toolset.{name}", "name": name, "description": f"Hermes '{name}' capabilities",
-               "tags": [name] + [str(t) for t in (toolsets[name] or [])][:10]} for name in sorted(toolsets)]
-    return skills or [{"id": "general", "name": "general", "description": "General-purpose conversational agent", "tags": ["general"]}]
+               "tags": [name] + [str(t) for t in (toolsets[name] or [])][:10],
+               "inputModes": ["text/plain"], "outputModes": ["text/plain"]} for name in sorted(toolsets)]
+    return skills or [{"id": "general", "name": "general", "description": "General-purpose conversational agent",
+                       "tags": ["general"], "inputModes": ["text/plain"], "outputModes": ["text/plain"]}]
 
 
 def jsonrpc_result(req_id: Any, result: Any) -> dict:
@@ -186,7 +193,10 @@ def extract_text(message_or_params: dict) -> str:
 def extract_context_id(params: dict) -> str:
     """v1.0 puts contextId inside the Message; tolerate legacy top-level."""
     msg = params.get("message") or {}
-    return (str(msg.get("contextId") or "") if isinstance(msg, dict) else "") or str(params.get("contextId") or "")
+    value = (msg.get("contextId") if isinstance(msg, dict) else None) or params.get("contextId") or ""
+    if not isinstance(value, str) or len(value) > 200:
+        raise ValueError("invalid contextId")
+    return value
 
 
 def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *, created_at: str = "") -> dict:
@@ -200,6 +210,18 @@ def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", 
     return task
 
 
+def task_reference_ids(params: dict) -> list[str]:
+    """A2A v1.0 request correlation, kept in caller order for task polling."""
+    message = params.get("message") if isinstance(params, dict) else None
+    values = message.get("referenceTaskIds", []) if isinstance(message, dict) else []
+    if (not isinstance(values, list) or len(values) > 20
+            or any(not isinstance(value, str) or not value or len(value) > 200 for value in values)):
+        raise ValueError("invalid referenceTaskIds")
+    if len(set(values)) != len(values):
+        raise ValueError("invalid referenceTaskIds")
+    return list(values)
+
+
 def status_update(task_id: str, context_id: str, state: str, text: str = "") -> dict:
     """v1.0 StreamResponse with a statusUpdate member."""
     status: dict[str, Any] = {"state": state, "timestamp": now_iso()}
@@ -211,6 +233,12 @@ def status_update(task_id: str, context_id: str, state: str, text: str = "") -> 
 def artifact_update(task_id: str, context_id: str, text: str) -> dict:
     """v1.0 StreamResponse with an artifactUpdate member."""
     artifact = {"artifactId": uuid.uuid4().hex, "parts": [text_part(text)]}
+    return {"artifactUpdate": {"taskId": task_id, "contextId": context_id, "artifact": artifact}}
+
+
+def structured_artifact_update(task_id: str, context_id: str, result: dict, artifact_id: str) -> dict:
+    """A profile terminal artifact update containing its authoritative JSON DataPart."""
+    artifact = {"artifactId": artifact_id, "parts": [data_part(result)]}
     return {"artifactUpdate": {"taskId": task_id, "contextId": context_id, "artifact": artifact}}
 
 
@@ -328,9 +356,11 @@ class TaskStore:
         return {"configId": rec.get("push_config_id") or "", "taskId": rec["task_id"],
                 "createdAt": rec.get("created_iso", ""), "pushNotificationConfig": {"url": rec.get("push_url") or ""}}
 
-    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "") -> dict:
+    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "",
+               reference_task_ids: Optional[list[str]] = None) -> dict:
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
-               "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+               "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": "",
+               "reference_task_ids": list(reference_task_ids or [])}
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
@@ -339,6 +369,16 @@ class TaskStore:
         with self._lock:
             if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:
                 rec["state"] = state
+
+    def set_orphan_timeout(self, task_id: str, seconds: int) -> None:
+        with self._lock:
+            if rec := self._tasks.get(task_id):
+                rec["orphan_timeout"] = seconds
+
+    def set_profile_skill(self, task_id: str, skill: str) -> None:
+        with self._lock:
+            if rec := self._tasks.get(task_id):
+                rec["profile_skill"] = skill
 
     def set_push_config(self, task_id: str, url: str, agent_slug: str = "", tenant: str = "") -> Optional[dict]:
         """Attach a push notification config; returns the stored config or None."""
@@ -374,13 +414,16 @@ class TaskStore:
         with self._lock:
             return dict(rec) if (rec := self._scoped(task_id, agent_slug, tenant)) else None
 
-    def complete(self, task_id: str, state: str, reply: str = "") -> Optional[dict]:
+    def complete(self, task_id: str, state: str, reply: str = "", result_data: Optional[dict] = None) -> Optional[dict]:
         """Transition a task to a terminal state. Idempotent."""
         with self._lock:
             rec = self._tasks.get(task_id)
             if not rec or rec["state"] in TERMINAL_STATES:
                 return None
             rec.update(state=state, reply=reply, completed_at=time.time())
+            if result_data is not None:
+                rec["result_data"] = result_data
+                rec.setdefault("result_artifact_id", "artifact-" + uuid.uuid4().hex)
             watchers = self._watchers.pop(task_id, [])
             self._trim_locked()
             out = dict(rec)
@@ -414,11 +457,18 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(self, timeout_seconds: int = 300, result_factory=None) -> list[str]:
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
-                     if rec["state"] not in TERMINAL_STATES and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+                     if rec["state"] not in TERMINAL_STATES
+                     and time.time() - rec["created_at"] > rec.get("orphan_timeout", timeout_seconds)]
+        failed = []
+        for tid in stale:
+            rec = self.get(tid)
+            result = result_factory(rec) if rec and result_factory else None
+            if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]", result):
+                failed.append(tid)
+        return failed
 
     def _trim_locked(self) -> None:
         terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
@@ -430,6 +480,8 @@ class TaskStore:
         """Render a stored record as an A2A v1.0 Task."""
         task = build_task(rec["task_id"], rec["context_id"], rec["state"], rec.get("reply", ""),
                           created_at=rec.get("created_iso", ""))
+        if result_data := rec.get("result_data"):
+            task["artifacts"] = [{"artifactId": rec["result_artifact_id"], "parts": [data_part(result_data)]}]
         if not include_artifacts:
             task.pop("artifacts", None)
         return task
@@ -512,6 +564,16 @@ def message_with_parts(role: str, parts: list[dict], context_id: str = "") -> di
     if context_id:
         msg["contextId"] = context_id
     return msg
+
+
+# Profile helpers keep structured A2A messages explicit without changing the
+# tolerant generic text parser above.
+json_data_part = data_part
+message_with_parts_v1 = message_with_parts
+
+
+def structured_message(role: str, invocation: dict, context_id: str = "") -> dict:
+    return message_with_parts(role, [data_part(invocation)], context_id)
 
 def stream_message(message: dict) -> dict:
     """v1.0 StreamResponse with a message member."""

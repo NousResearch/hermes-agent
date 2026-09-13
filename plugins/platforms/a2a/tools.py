@@ -9,13 +9,14 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 from gateway.platforms._shared import coerce_port as _coerce_int
 
-from . import protocol, security
+from . import contract, protocol, security
 
 logger = logging.getLogger(__name__)
 
@@ -52,30 +53,40 @@ def _auth_header(auth: dict) -> dict:
     return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
 
 
-def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None,
+               follow_redirects: bool = True) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    opener = urllib.request.urlopen if follow_redirects else urllib.request.build_opener(_NoRedirect()).open
+    with opener(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
-    return _http_json(url, headers, timeout, "GET")
+def _http_get_json(url: str, headers: dict, timeout: int, follow_redirects: bool = True) -> dict:
+    return _http_json(url, headers, timeout, "GET", follow_redirects=follow_redirects)
 
 
-def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
+def _http_post_json(url: str, body: dict, headers: dict, timeout: int, follow_redirects: bool = True) -> dict:
     hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
-    return _http_json(url, hdrs, timeout, "POST", json.dumps(body).encode("utf-8"))
+    return _http_json(url, hdrs, timeout, "POST", json.dumps(body).encode("utf-8"), follow_redirects)
 
 
-def _fetch_card(base_url: str, headers: dict, timeout: int) -> dict:
+def _fetch_card(base_url: str, headers: dict, timeout: int, follow_redirects: bool = True) -> dict:
     """GET the v1.0 agent-card.json; on 404 fall back to the v0.2 agent.json alias."""
     base = base_url.rstrip("/")
+    get = (lambda url: _http_get_json(url, headers, timeout)) if follow_redirects else (
+        lambda url: _http_get_json(url, headers, timeout, False)
+    )
     try:
-        return _http_get_json(base + "/.well-known/agent-card.json", headers, timeout)
+        return get(base + "/.well-known/agent-card.json")
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
-    return _http_get_json(base + "/.well-known/agent.json", headers, timeout)
+    return get(base + "/.well-known/agent.json")
 
 
 def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
@@ -93,6 +104,25 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     if isinstance(card, dict) and isinstance(card.get("url"), str) and card["url"]:
         return card["url"]
     return base_url.rstrip("/")
+
+
+def _profile_rpc_url(base_url: str, interface_url: str) -> str:
+    """Resolve a profile endpoint without forwarding bearer credentials cross-origin."""
+    base = urllib.parse.urlsplit(base_url)
+    if base.scheme not in {"http", "https"} or not base.hostname or base.username or base.password or base.fragment:
+        raise ValueError("configured peer URL is not a safe HTTP(S) origin")
+    target = urllib.parse.urlsplit(urllib.parse.urljoin(base_url.rstrip("/") + "/", interface_url))
+    if (target.scheme not in {"http", "https"} or not target.hostname or target.username or target.password
+            or target.fragment):
+        raise ValueError("profile JSON-RPC endpoint is not a safe HTTP(S) URL")
+    try:
+        base_port = base.port or (443 if base.scheme == "https" else 80)
+        target_port = target.port or (443 if target.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("profile JSON-RPC endpoint has an invalid port") from exc
+    if (target.scheme, target.hostname.lower(), target_port) != (base.scheme, base.hostname.lower(), base_port):
+        raise ValueError("profile JSON-RPC endpoint must remain on the configured peer origin")
+    return urllib.parse.urlunsplit(target)
 
 
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
@@ -141,6 +171,96 @@ def _reply_text_from_result(result: Any) -> str:
         if txt:
             return txt
     return protocol.extract_text((result.get("status", {}) or {}).get("message") or result)
+
+
+def _send_profile_invocation(agent_label: str, peer: dict, skill: str, input_data: dict) -> dict:
+    """Call a peer's Hermes/Yeoman profile; structured calls never fall back to text."""
+    headers = _auth_header(peer.get("auth", {}) or {})
+    timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    card = _fetch_card(peer["url"], headers, min(timeout, 30), False)
+    if card.get("version") != "1.0.0":
+        raise ValueError(f"Peer '{agent_label}' does not advertise A2A card version 1.0.0")
+    extensions = list(((card.get("capabilities") or {}).get("extensions") or [])) + list(card.get("extensions") or [])
+    if not any(isinstance(ext, dict) and ext.get("uri") == contract.PROFILE_URI and ext.get("required") is True
+               for ext in extensions):
+        raise ValueError(f"Peer '{agent_label}' does not advertise the Hermes/Yeoman A2A profile")
+    descriptor = next((item for item in card.get("skills", []) or []
+                       if isinstance(item, dict) and item.get("id") == skill), None)
+    if descriptor is None:
+        raise ValueError(f"Peer '{agent_label}' does not advertise contract skill '{skill}'")
+    if contract.JSON_MEDIA_TYPE not in descriptor.get("inputModes", []) or contract.JSON_MEDIA_TYPE not in descriptor.get("outputModes", []):
+        raise ValueError(f"Peer '{agent_label}' does not advertise JSON modes for contract skill '{skill}'")
+    for mode_key in ("defaultInputModes", "defaultOutputModes"):
+        if (modes := card.get(mode_key)) is not None and contract.JSON_MEDIA_TYPE not in modes:
+            raise ValueError(f"Peer '{agent_label}' does not advertise {contract.JSON_MEDIA_TYPE} in {mode_key}")
+    try:
+        contract.validate_skill_request(skill, input_data)
+    except contract.ContractViolation as exc:
+        raise ValueError("invalid profile input") from exc
+    invocation = {"skill": skill, "input": input_data}
+    context_id = protocol.new_context_id()
+    body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
+            "params": {"message": protocol.structured_message(protocol.ROLE_USER, invocation, context_id)}}
+    iface = _select_jsonrpc_interface(card)
+    if not iface or str(iface.get("protocolVersion") or "") not in {"1.0", "1.0.0"}:
+        raise ValueError(f"Peer '{agent_label}' does not advertise an A2A 1.0 JSON-RPC interface")
+    rpc_url = _profile_rpc_url(peer["url"], str(iface["url"]))
+    if tenant := str(iface.get("tenant") if iface else peer.get("tenant") or ""):
+        body["params"]["tenant"] = tenant
+    security.audit("outbound", agent_label, body["id"], f"profile skill={skill}")
+    protocol.persist_message(context_id, "user", f"profile skill={skill} task={body['id']}", body["id"])
+    response = _http_post_json(rpc_url, body, headers, timeout, False)
+    if not isinstance(response, dict) or response.get("jsonrpc") != "2.0" or response.get("id") != body["id"]:
+        raise ValueError(f"Peer '{agent_label}' returned a mismatched JSON-RPC response")
+    has_result, has_error = "result" in response, "error" in response
+    if has_result == has_error or set(response) != ({"jsonrpc", "id", "result"} if has_result else {"jsonrpc", "id", "error"}):
+        raise ValueError(f"Peer '{agent_label}' returned an invalid JSON-RPC envelope")
+    if has_error:
+        error = response["error"]
+        if (not isinstance(error, dict) or set(error) != {"code", "message"} or isinstance(error["code"], bool)
+                or not isinstance(error["code"], int) or not isinstance(error["message"], str)):
+            raise ValueError(f"Peer '{agent_label}' returned an invalid JSON-RPC error")
+        raise ValueError(f"Peer '{agent_label}' returned an error: {error['message']}")
+    task = protocol.unwrap_send_message_response(response.get("result", {}))
+    if not isinstance(task, dict) or not task.get("id") or task.get("contextId") != context_id:
+        raise ValueError(f"Peer '{agent_label}' returned a task with mismatched correlation")
+    reference_task_ids = task.get("referenceTaskIds") or []
+    if reference_task_ids:
+        raise ValueError(f"Peer '{agent_label}' returned unexpected reference task correlation")
+    state = (task.get("status") or {}).get("state", "")
+    known_states = protocol.TERMINAL_STATES | {protocol.STATE_SUBMITTED, protocol.STATE_WORKING, protocol.STATE_INPUT_REQUIRED}
+    if state not in known_states:
+        raise ValueError(f"Peer '{agent_label}' returned an unknown task state")
+    if state not in protocol.TERMINAL_STATES:
+        if state != protocol.STATE_WORKING or skill != "research.deep":
+            raise ValueError(f"Peer '{agent_label}' returned an unsupported non-terminal profile task")
+        result = {"skill": skill, "status": "in_progress",
+                  "correlation": {"task_id": task["id"], "context_id": context_id}}
+        contract.validate_result(result)
+        return {"result": result, "task_id": task.get("id", ""), "context_id": task.get("contextId", context_id),
+                "state": state}
+    artifacts = task.get("artifacts") or []
+    if len(artifacts) != 1 or not isinstance(artifacts[0], dict):
+        raise ValueError(f"Peer '{agent_label}' returned no single structured profile artifact")
+    parts = artifacts[0].get("parts") or []
+    if len(parts) != 1 or not isinstance(parts[0], dict) or parts[0].get("mediaType") != contract.JSON_MEDIA_TYPE or "data" not in parts[0]:
+        raise ValueError(f"Peer '{agent_label}' returned no single structured profile result")
+    result = parts[0]["data"]
+    contract.validate_result(result)
+    if result.get("skill") != skill:
+        raise ValueError(f"Peer '{agent_label}' returned a result for the wrong profile skill")
+    expected_status = {protocol.STATE_COMPLETED: "completed", protocol.STATE_REJECTED: "rejected",
+                       protocol.STATE_FAILED: "failed", protocol.STATE_CANCELED: "failed"}[state]
+    if result.get("status") != expected_status:
+        raise ValueError(f"Peer '{agent_label}' returned a result with mismatched task state")
+    if expected_status == "completed" and not isinstance(result.get("output"), dict):
+        raise ValueError(f"Peer '{agent_label}' returned a completed result without output")
+    if expected_status != "completed" and result.get("output") is not None:
+        raise ValueError(f"Peer '{agent_label}' returned a failed result with output")
+    correlation = result.get("correlation") or {}
+    if correlation.get("task_id") != task["id"] or correlation.get("context_id") != context_id or correlation.get("reference_task_ids", []) != reference_task_ids:
+        raise ValueError(f"Peer '{agent_label}' returned a result with mismatched correlation")
+    return {"result": result, "context_id": task.get("contextId", context_id), "state": state}
 
 
 _AUTH_ERR = "Error: peer '{agent}' rejected auth (HTTP {code}). Check the configured token."
@@ -197,6 +317,24 @@ def a2a_call(args: dict, **_: Any) -> str:
     if state == protocol.STATE_INPUT_REQUIRED:
         body += f"\n\n(The peer needs more input — answer by calling a2a_call again with context_id '{reply_ctx}'.)"
     return f"{header}\n{body}"
+
+
+def a2a_skill_call(args: dict, **_: Any) -> str:
+    """Send a strict Hermes/Yeoman structured profile invocation to a peer."""
+    agent = str(args.get("agent") or "").strip()
+    skill = str(args.get("skill") or "").strip()
+    input_data = args.get("input")
+    if not agent or not skill or not isinstance(input_data, dict):
+        return "Error: 'agent', 'skill', and object 'input' are required."
+    peer = _resolve_peer(agent)
+    if not peer or not peer.get("url"):
+        return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
+    try:
+        return json.dumps(_send_profile_invocation(agent, peer, skill, input_data), ensure_ascii=False)
+    except contract.ContractViolation:
+        return f"Error: profile call to '{agent}' failed — invalid profile input."
+    except Exception as e:
+        return f"Error: profile call to '{agent}' failed — {e}."
 
 
 def a2a_list(args: dict | None = None, **_: Any) -> str:
@@ -306,10 +444,16 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                  "Send a natural-language task to a remote A2A agent and return its reply. The agent is a peer "
                  "(any A2A-compliant framework), not a sub-agent you control. Pass 'context_id' from a previous "
                  "reply to continue a multi-turn exchange.",
-                 {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
+                  {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
                   "message": _str("The task / message to send the peer, in natural language."),
                   "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
                  ["agent", "message"]),
+    "a2a_skill_call": (a2a_skill_call,
+                       "Send a validated Hermes/Yeoman A2A profile skill invocation to a peer.",
+                       {"agent": _str("Configured peer name or a full http(s):// URL."),
+                        "skill": _str("Advertised Hermes/Yeoman profile skill id."),
+                        "input": {"type": "object", "description": "Validated profile skill input."}},
+                       ["agent", "skill", "input"]),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,
                     "Recall a persisted A2A conversation transcript by context_id (survives restarts and "

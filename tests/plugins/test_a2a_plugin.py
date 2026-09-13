@@ -1323,6 +1323,9 @@ class TestMultiAgentRouting:
     def test_path_routed_agent_card_uses_prefix_and_canonical_path(self, monkeypatch):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
+        from tools.registry import registry
+
+        monkeypatch.setattr(registry, "get_definitions", lambda _names, quiet=True: {"web_search": object()})
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
@@ -1343,7 +1346,9 @@ class TestMultiAgentRouting:
         assert card["name"] == "Research Agent"
         assert card["supportedInterfaces"][0]["url"] == "http://agents.example.com/research/"
         assert card["supportedInterfaces"][0]["tenant"] == "research"
-        assert {s["name"] for s in card["skills"]} == {"research", "web"}
+        ids = {s["id"] for s in card["skills"]}
+        assert {s["name"] for s in card["skills"] if s["id"].startswith("toolset.")} == {"research", "web"}
+        assert {"conversation", "search.web", "research.deep"} <= ids
 
     def test_tenant_routing_selects_agent_without_path_prefix(self):
         from plugins.platforms.a2a.adapter import A2AAdapter

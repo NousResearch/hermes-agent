@@ -53,3 +53,19 @@ def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
         "message",
         "context_id",
     }
+
+
+def test_a2a_skill_call_schema_round_trips_through_tool_describe(monkeypatch):
+    registry = ToolRegistry()
+    monkeypatch.setattr(a2a_tools, "_load_config", lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}})
+
+    class _Context:
+        def register_tool(self, name, toolset, schema, handler, **kwargs):
+            registry.register(name=name, toolset=toolset, schema=schema, handler=handler, **kwargs)
+
+    a2a_tools.register_tools(_Context())
+    definitions = registry.get_definitions({"a2a_skill_call"})
+    monkeypatch.setattr(tool_search, "is_deferrable_tool_name", lambda name, defer_tools=None: name == "a2a_skill_call")
+    described = json.loads(tool_search.dispatch_tool_describe({"names": ["a2a_skill_call"]}, current_tool_defs=definitions))["tools"]["a2a_skill_call"]
+    assert described["parameters"]["required"] == ["agent", "skill", "input"]
+    assert set(described["parameters"]["properties"]) == {"agent", "skill", "input"}

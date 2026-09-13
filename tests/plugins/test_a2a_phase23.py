@@ -537,12 +537,16 @@ class TestDynamicAgentCards:
                             lambda: ["webz", "termz"])
         monkeypatch.setattr(registry, "get_tool_names_for_toolset",
                             lambda ts: {"webz": ["web_search"], "termz": ["terminal"]}[ts])
+        monkeypatch.setattr(registry, "get_definitions", lambda _names, quiet=True: {"web_search": object()})
 
         adapter = A2AAdapter(PlatformConfig(enabled=True))
         card = adapter._build_card()
-        by_name = {s["name"]: s for s in card["skills"]}
+        by_name = {s["name"]: s for s in card["skills"] if s["id"].startswith("toolset.")}
         assert set(by_name) == {"webz", "termz"}
         assert "web_search" in by_name["webz"]["tags"]
+        assert by_name["webz"]["inputModes"] == ["text/plain"]
+        assert by_name["webz"]["outputModes"] == ["text/plain"]
+        assert {s["id"] for s in card["skills"]} >= {"conversation", "search.web", "research.deep"}
 
     def test_advertised_toolsets_restrict_card(self, monkeypatch):
         from tools.registry import registry
@@ -552,11 +556,13 @@ class TestDynamicAgentCards:
         monkeypatch.setattr(registry, "get_registered_toolset_names",
                             lambda: ["webz", "termz", "secretz"])
         monkeypatch.setattr(registry, "get_tool_names_for_toolset", lambda ts: [])
+        monkeypatch.setattr(registry, "get_definitions", lambda _names, quiet=True: {})
         monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "webz")
 
         adapter = A2AAdapter(PlatformConfig(enabled=True))
         card = adapter._build_card()
-        assert [s["name"] for s in card["skills"]] == ["webz"]
+        assert [s["name"] for s in card["skills"] if s["id"].startswith("toolset.")] == ["webz"]
+        assert {s["id"] for s in card["skills"]} == {"toolset.webz", "conversation"}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

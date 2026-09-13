@@ -28,7 +28,7 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.config import Platform
 from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
 
-from . import protocol, security
+from . import contract, protocol, security
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +280,9 @@ class A2AAdapter(BasePlatformAdapter):
         self._pending: Dict[str, tuple[str, Future]] = {}
         self._pending_order: Dict[str, deque[str]] = {}
         self._pending_lock = threading.Lock()
+        # (peer, agent, tenant, skill, key) -> (canonical invocation, task id).
+        self._profile_idempotency: Dict[tuple[str, str, str, str, str], tuple[str, str]] = {}
+        self._profile_idempotency_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -334,7 +337,11 @@ class A2AAdapter(BasePlatformAdapter):
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
+                for tid in self.tasks.fail_orphans(
+                        _ORPHAN_TIMEOUT,
+                        lambda rec: self._profile_error(rec.get("profile_skill", ""), "PROCESSING_FAILED",
+                                                        "Agent processing failed.", rec, protocol.STATE_FAILED)
+                        if rec and rec.get("profile_skill") else None):
                     logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
                     protocol.metrics.tasks_failed += 1
             except Exception:
@@ -425,12 +432,35 @@ class A2AAdapter(BasePlatformAdapter):
     def _build_card(self, public_url: Optional[str] = None, agent: Optional[dict] = None) -> dict:
         # Per-request public URL beats the bind host so peers behind a reverse proxy can call back.
         agent = agent or self._agents[""]
+        generic_skills = self._advertised_skills(agent)
+        profile_skills = contract.advertised_skills()
+        if not self._web_search_is_available(agent):
+            profile_skills = [skill for skill in profile_skills if skill["id"] == "conversation"]
+        skills = list({skill["id"]: skill for skill in generic_skills + profile_skills}.values())
         return protocol.build_agent_card(
             name=agent.get("name") or self.agent_name, url=_join_url(self._base_url(public_url), agent.get("path", "")),
-            description=agent.get("description") or _DEFAULT_DESCRIPTION, skills=self._advertised_skills(agent),
+            description=agent.get("description") or _DEFAULT_DESCRIPTION, skills=skills,
             streaming=bool(agent.get("local", True)), push_notifications=True,
             auth_required=not self._security_context.localhost_only(), tenant=str(agent.get("tenant") or ""),
+            extensions=[{"uri": contract.PROFILE_URI, "required": True}],
+            input_modes=["text/plain", contract.JSON_MEDIA_TYPE], output_modes=["text/plain", contract.JSON_MEDIA_TYPE],
         )
+
+    def _web_search_is_available(self, agent: Optional[dict] = None) -> bool:
+        """Only advertise profile web skills when policy and the live registry allow them."""
+        try:
+            from tools.registry import registry as tool_registry
+            if not tool_registry.get_definitions({"web_search"}, quiet=True):
+                return False
+            configured = (agent or {}).get("advertised_toolsets") if agent else self._advertised_toolsets
+            if not configured:
+                return True
+            allowed = {str(name) for name in configured}
+            if allowed.intersection({"web_search", "web", "research"}):
+                return True
+            return any("web_search" in tool_registry.get_tool_names_for_toolset(name) for name in allowed)
+        except Exception:
+            return False
 
     def _advertised_skills(self, agent: Optional[dict] = None) -> list[dict]:
         """Agent Card skills from the live tool registry, restricted by ``advertised_toolsets``;
@@ -485,40 +515,149 @@ class A2AAdapter(BasePlatformAdapter):
         with self._profile_session_locks_guard:
             return self._profile_session_locks.setdefault(key, threading.Lock())
 
-    def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
+    def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "", result_data: Optional[dict] = None) -> tuple[dict, None]:
         """Complete a task immediately (rejected / not ready) and build its terminal Task."""
-        self.tasks.complete(rec["task_id"], state, stored_reply)
+        self.tasks.complete(rec["task_id"], state, stored_reply or text, result_data)
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
-        return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
+        return protocol.TaskStore.to_task(self.tasks.get(rec["task_id"]) or rec), None
+
+    @staticmethod
+    def _profile_error(skill: str, code: str, message: str, rec: dict, task_state: str = protocol.STATE_FAILED) -> dict:
+        profile_skill = skill if re.fullmatch(r"conversation|[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+", skill or "") else "conversation"
+        return contract.result_for_error(profile_skill, code, message, task_id=rec["task_id"],
+                                         context_id=rec["context_id"], reference_task_ids=rec.get("reference_task_ids"),
+                                         status="rejected" if task_state == protocol.STATE_REJECTED else "failed")
 
     def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
         """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
-        text = protocol.extract_text(params)
-        context_id = protocol.extract_context_id(params) or protocol.new_context_id()
+        message = params.get("message") if isinstance(params.get("message"), dict) else {}
+        try:
+            context_id = protocol.extract_context_id(params) or protocol.new_context_id()
+            reference_task_ids = protocol.task_reference_ids(params)
+        except ValueError:
+            context_id = protocol.new_context_id()
+            rec = self.tasks.create(protocol.new_task_id(), context_id, peer, *self._scope_for_agent(agent))
+            error = "Invalid A2A task correlation."
+            return self._end_task(rec, protocol.STATE_REJECTED, error,
+                                  result_data=self._profile_error("conversation", "INVALID_CONTRACT", error, rec,
+                                                                  protocol.STATE_REJECTED))
+        try:
+            invocation = contract.extract_invocation(message)
+        except contract.ContractViolation:
+            rec = self.tasks.create(protocol.new_task_id(), context_id, peer, *self._scope_for_agent(agent),
+                                    reference_task_ids=reference_task_ids)
+            parts = message.get("parts", [])
+            parts = parts if isinstance(parts, list) else []
+            requested_skill = next((part.get("data", {}).get("skill", "") for part in parts
+                                    if isinstance(part, dict) and isinstance(part.get("data"), dict)), "")
+            profile_skill = (requested_skill if isinstance(requested_skill, str)
+                             and re.fullmatch(r"conversation|[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+", requested_skill)
+                             else "conversation")
+            self.tasks.set_profile_skill(rec["task_id"], profile_skill)
+            message = "Invalid structured A2A profile request."
+            return self._end_task(rec, protocol.STATE_REJECTED, message,
+                                  result_data=self._profile_error(profile_skill, "INVALID_CONTRACT", message, rec,
+                                                                  protocol.STATE_REJECTED))
+        text = protocol.extract_text(params) if invocation is None else ""
         task_id = protocol.new_task_id()
+        skill = str(invocation["skill"]) if invocation else ""
+        scope = self._scope_for_agent(agent)
+        if skill == "research.deep":
+            idempotency_key = str(invocation["input"]["idempotency_key"])
+            canonical = json.dumps(invocation, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            index_key = (peer, scope[0], scope[1], skill, idempotency_key)
+            with self._profile_idempotency_lock:
+                existing = self._profile_idempotency.get(index_key)
+                if existing:
+                    previous_canonical, previous_task_id = existing
+                    if previous_canonical == canonical and (previous := self.tasks.get(previous_task_id, *scope)):
+                        return protocol.TaskStore.to_task(previous), None
+                    rec = self.tasks.create(task_id, context_id, peer, *scope,
+                                            reference_task_ids=reference_task_ids)
+                    self.tasks.set_profile_skill(task_id, skill)
+                    message = "Idempotency key was already used with a different request."
+                    return self._end_task(
+                        rec, protocol.STATE_REJECTED, message,
+                        result_data=self._profile_error(skill, "IDEMPOTENCY_CONFLICT", message, rec,
+                                                        protocol.STATE_REJECTED),
+                    )
+                rec = self.tasks.create(task_id, context_id, peer, *scope,
+                                        reference_task_ids=reference_task_ids)
+                self._profile_idempotency[index_key] = (canonical, task_id)
+        else:
+            rec = self.tasks.create(task_id, context_id, peer, *scope,
+                                    reference_task_ids=reference_task_ids)
         turn = self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
-        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
+        if skill:
+            self.tasks.set_profile_skill(task_id, skill)
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
             return self._end_task(rec, protocol.STATE_REJECTED, f"Anti-loop protection: context {context_id} exceeded "
-                                  f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.")
+                                  f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.",
+                                  result_data=self._profile_error(skill, "ANTI_LOOP", "Task rejected by anti-loop protection.", rec,
+                                                                  protocol.STATE_REJECTED) if skill else None)
+        if invocation and skill not in {"conversation", "search.web", "research.deep"}:
+            message = "Requested profile skill is unavailable."
+            return self._end_task(rec, protocol.STATE_REJECTED, message,
+                                  result_data=self._profile_error(skill, "SKILL_NOT_AVAILABLE", message, rec,
+                                                                  protocol.STATE_REJECTED))
+        if skill in {"search.web", "research.deep"} and not self._web_search_is_available(agent):
+            message = "Requested profile skill is unavailable."
+            return self._end_task(rec, protocol.STATE_REJECTED, message,
+                                  result_data=self._profile_error(skill, "SKILL_NOT_AVAILABLE", message, rec,
+                                                                  protocol.STATE_REJECTED))
+        if invocation:
+            input_data = invocation["input"]
+            if skill == "conversation":
+                text = input_data["text"]
+            elif skill == "search.web":
+                limits = []
+                if input_data.get("max_results"):
+                    limits.append(f"at most {input_data['max_results']} results")
+                if input_data.get("domains"):
+                    limits.append("restricted to: " + ", ".join(input_data["domains"]))
+                if input_data.get("recency_days"):
+                    limits.append(f"published within {input_data['recency_days']} days")
+                if input_data.get("language"):
+                    limits.append(f"language: {input_data['language']}")
+                text = ("Use Hermes' real web-search capability for this request; do not answer from memory. "
+                        f"Query: {input_data['query']}. " + ("Constraints: " + "; ".join(limits) + ". " if limits else "")
+                        + "Return a concise answer with source URLs.")
+            else:
+                scope = f" Scope: {input_data['scope']}." if input_data.get("scope") else ""
+                constraints = []
+                if input_data.get("output_format"):
+                    constraints.append(f"output format: {input_data['output_format']}")
+                if input_data.get("max_sources"):
+                    constraints.append(f"at most {input_data['max_sources']} sources")
+                text = ("Conduct this as a deep-research task using Hermes' real research and web capabilities; "
+                        "do not merely describe how to research it. "
+                        f"Question: {input_data['question']}.{scope} "
+                        + ("Constraints: " + "; ".join(constraints) + ". " if constraints else "")
+                        + "Return a report with sources.")
         if not text:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         framed = security.wrap_inbound(peer, text)
-        security.audit("inbound", peer, task_id, text)
-        protocol.persist_message(context_id, "user", text, task_id)
+        security.audit("inbound", peer, task_id, f"profile skill={skill}" if invocation else text)
+        protocol.persist_message(context_id, "user", f"profile skill={skill} task={task_id}" if skill else text, task_id)
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
             reply, state = self._forward_to_profile(agent, peer, context_id, framed)
-            self._record_outcome(task_id, context_id, peer, state, reply)
-            return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
+            result_data = (contract.result_for_reply(skill, reply, task_id=task_id, context_id=context_id,
+                                                     reference_task_ids=reference_task_ids)
+                           if skill and state == protocol.STATE_COMPLETED else
+                           self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec) if skill else None)
+            self._record_outcome(task_id, context_id, peer, state, reply, result_data=result_data,
+                                 audit_summary=f"profile skill={skill}" if skill else None)
+            return protocol.TaskStore.to_task(self.tasks.get(task_id) or rec), None
         if self._loop is None or self._message_handler is None:
-            return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
+            return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.",
+                                  result_data=self._profile_error(skill, "PROCESSING_FAILED", "Agent gateway not ready.", rec) if skill else None)
         fut = self._add_pending(task_id, context_id)
         event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
                              source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
@@ -527,9 +666,22 @@ class A2AAdapter(BasePlatformAdapter):
         except Exception as e:
             self._pop_pending(task_id)
             msg = security.redact_outbound(f"Dispatch failed: {e}")
-            return self._end_task(rec, protocol.STATE_FAILED, msg, stored_reply=msg)
+            return self._end_task(rec, protocol.STATE_FAILED, msg, stored_reply=msg,
+                                  result_data=self._profile_error(skill, "PROCESSING_FAILED", "Agent dispatch failed.", rec) if skill else None)
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
-        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
+        pending = {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut,
+                   "created_iso": rec["created_iso"], "started": time.time(), "skill": skill, "invocation": invocation,
+                   "reference_task_ids": reference_task_ids}
+        if skill == "research.deep":
+            timeout = int(invocation["input"].get("max_duration_seconds", 86400))
+            self.tasks.set_orphan_timeout(task_id, timeout)
+            pending["deadline"] = pending["started"] + timeout
+            _daemon_thread(lambda: self._background_finalize(pending), f"a2a-research-{task_id}")
+            return protocol.TaskStore.to_task(self.tasks.get(task_id) or rec), None
+        return None, pending
+
+    def _background_finalize(self, pending: dict) -> None:
+        self._finalize_task(pending, *self._await_reply(pending))
 
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
@@ -568,10 +720,11 @@ class A2AAdapter(BasePlatformAdapter):
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
-                        started: Optional[float] = None) -> None:
+                        started: Optional[float] = None, result_data: Optional[dict] = None,
+                        audit_summary: Optional[str] = None) -> None:
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
-        protocol.persist_message(context_id, "agent", reply, task_id)
-        security.audit("outbound", peer, task_id, reply)
+        protocol.persist_message(context_id, "agent", audit_summary or reply, task_id)
+        security.audit("outbound", peer, task_id, audit_summary or reply)
         m = protocol.metrics
         if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
             m.outbound_total, m.tasks_completed = m.outbound_total + 1, m.tasks_completed + 1
@@ -579,7 +732,7 @@ class A2AAdapter(BasePlatformAdapter):
                 m.record_latency(time.time() - started)
         else:
             m.tasks_failed += 1
-        self.tasks.complete(task_id, state, reply)
+        self.tasks.complete(task_id, state, reply, result_data)
         self._send_push_notification(task_id, context_id, reply, state)
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
@@ -591,7 +744,23 @@ class A2AAdapter(BasePlatformAdapter):
         stripped = reply.lstrip()
         if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
             state, reply = protocol.STATE_INPUT_REQUIRED, stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()
-        self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"])
+        result_data = None
+        if skill := pending.get("skill"):
+            rec = {"task_id": task_id, "context_id": context_id,
+                   "reference_task_ids": pending.get("reference_task_ids", [])}
+            if state == protocol.STATE_COMPLETED:
+                try:
+                    result_data = contract.result_for_reply(
+                        skill, reply, task_id=task_id, context_id=context_id,
+                        reference_task_ids=pending.get("reference_task_ids"),
+                    )
+                except contract.ContractViolation:
+                    state, reply = protocol.STATE_FAILED, "[agent produced no valid profile result]"
+                    result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
+            else:
+                result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
+        self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"], result_data=result_data,
+                             audit_summary=f"profile skill={skill}" if skill else None)
         return state, reply
 
     @staticmethod
@@ -613,14 +782,14 @@ class A2AAdapter(BasePlatformAdapter):
                 return on_timeout
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
+        return self._await_future(pending["future"], pending.get("deadline", pending["started"] + _reply_timeout()), keepalive,
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
+            task = protocol.TaskStore.to_task(self.tasks.get(pending["task_id"], *self._scope_for_agent(agent)) or {})
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
     @staticmethod
@@ -643,9 +812,15 @@ class A2AAdapter(BasePlatformAdapter):
     def _emit_terminal(self, handler, task_id: str, context_id: str, state: str, reply: str, req_id: Any = None) -> None:
         """Emit the final artifact/status events and the closure marker. ``req_id`` threads into the
         JSON-RPC SSE envelope (§9.4)."""
-        completed = bool(reply) and state == protocol.STATE_COMPLETED
-        events = ([protocol.artifact_update(task_id, context_id, reply)] if completed else []) + [
-            protocol.status_update(task_id, context_id, state, "" if completed else reply)]
+        rec = self.tasks.get(task_id) or {}
+        if result_data := rec.get("result_data"):
+            events = [protocol.structured_artifact_update(
+                task_id, context_id, result_data, rec.get("result_artifact_id") or "artifact-" + task_id
+            ), protocol.status_update(task_id, context_id, state)]
+        else:
+            completed = bool(reply) and state == protocol.STATE_COMPLETED
+            events = ([protocol.artifact_update(task_id, context_id, reply)] if completed else []) + [
+                protocol.status_update(task_id, context_id, state, "" if completed else reply)]
         for ev in events:
             self._sse_write(handler, protocol.sse_data(ev, req_id))
         self._sse_write(handler, protocol.sse_done())
@@ -711,7 +886,9 @@ class A2AAdapter(BasePlatformAdapter):
             return error
         if rec["state"] in protocol.TERMINAL_STATES:
             return _err(req_id, protocol.ERR_TASK_NOT_CANCELABLE, f"task {task_id} already {rec['state']}")
-        self.tasks.complete(task_id, protocol.STATE_CANCELED, "")
+        result_data = (self._profile_error(rec["profile_skill"], "PROCESSING_FAILED", "Task canceled.", rec,
+                                           protocol.STATE_CANCELED) if rec.get("profile_skill") else None)
+        self.tasks.complete(task_id, protocol.STATE_CANCELED, "", result_data)
         self._turns.reset(rec["context_id"])
         self._resolve_task(task_id, protocol.STATE_CANCELED, "")
         rec = self.tasks.get(task_id, *self._scope_for_agent(agent)) or rec

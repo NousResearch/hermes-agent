@@ -7,6 +7,7 @@ splits sessions via parent_session_id chains; sessions are source-tagged
 
 import asyncio
 import atexit
+import errno
 import hashlib
 import json
 import logging
@@ -226,13 +227,15 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     the process umask (commonly 0644 under 0022). Read-only SessionDB
     attachments never call this helper and remain observational.
 
-    Existing files are tightened with ``chmod(2)`` on the path: opening the
+    Existing files are tightened without ever (re)opening them: opening the
     file and closing that descriptor would drop every POSIX ``fcntl`` lock the
     process holds on its inode — including the locks of an already-open SQLite
     connection to the same database. A lock-losing close in one process lets a
     sibling's connection take the shared-memory DMS exclusively at its own
     close, checkpoint, and unlink the sidecars while long-lived holders
     (gateway, desktop ``hermes serve``) keep using the deleted inodes.
+    Symlinked state paths fail closed with ``ELOOP`` before the caller's
+    ``sqlite3.connect()`` can follow them (#109857).
     """
     if os.name == "nt":
         return
@@ -271,11 +274,36 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(st.st_mode):
-            # Refuse a planted symlink exactly like O_NOFOLLOW would.
-            continue
+            # Fail closed exactly like the O_NOFOLLOW create above: silently
+            # skipping the link lets the caller's sqlite3.connect() follow it
+            # and operate on whatever it points at (#109857).
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
         if not stat.S_ISREG(st.st_mode):
             continue
-        os.chmod(path, 0o600)
+        _chmod_pinned_inode(path, 0o600)
+
+
+def _chmod_pinned_inode(path: Path, mode: int) -> None:
+    """Tighten ``path`` without following a link swapped in after the lstat().
+
+    A bare chmod(2) on the path re-resolves the name, so a replacement symlink
+    racing between validation and chmod could change the mode of an unrelated
+    target (#109857). On Linux the validated inode is pinned with an O_PATH
+    descriptor and reached through ``/proc/self/fd/<fd>``; an O_PATH descriptor
+    holds no POSIX locks, so closing it stays lock-neutral for live SQLite
+    connections. Platforms without O_PATH (macOS/BSD) use the no-follow chmod,
+    which applies to the link itself, never to a swapped-in target.
+    """
+    if hasattr(os, "O_PATH"):
+        fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return
+            os.chmod(f"/proc/self/fd/{fd}", mode)
+        finally:
+            os.close(fd)
+    else:
+        os.chmod(path, mode, follow_symlinks=False)
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).

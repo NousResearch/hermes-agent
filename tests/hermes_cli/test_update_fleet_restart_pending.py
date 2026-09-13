@@ -220,6 +220,8 @@ def test_verified_successor_fulfills_exact_marker_generation(monkeypatch):
         "hermes_cli.update_receipt._socket_identity",
         lambda _home: (os.getpid(), {"profile": "default", "code_sha": sha}),
     )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [os.getpid()])
+    monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda: [])
 
     assert update_cmd._pending_fleet_restart_needed() is False
     assert marker.read_bytes() == original
@@ -318,6 +320,8 @@ def test_multiple_profiles_require_identity_matched_successors(monkeypatch):
             {"profile": "default" if home == homes[0][1] else "work", "code_sha": sha},
         ),
     )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [os.getpid()])
+    monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda: [])
 
     assert update_cmd._pending_fleet_restart_needed() is False
 
@@ -362,7 +366,7 @@ def test_unidentified_gateway_keeps_marker_pending(monkeypatch):
 
 
 @pytest.mark.parametrize(("inventory_complete", "pending"), [(True, False), (None, True)])
-def test_empty_worklist_requires_completed_inventory(inventory_complete, pending):
+def test_empty_worklist_requires_completed_inventory(monkeypatch, inventory_complete, pending):
     marker = update_cmd._fleet_restart_pending_marker_path()
     marker.write_text(_marker_body(started=1, expected_sha="abc123"), encoding="utf-8")
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
@@ -376,6 +380,9 @@ def test_empty_worklist_requires_completed_inventory(inventory_complete, pending
         "post_update": {"sha": "abc123"},
         "plan": plan,
     }), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda: [])
 
     assert update_cmd._pending_fleet_restart_needed() is pending
 

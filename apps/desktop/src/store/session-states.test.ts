@@ -11,7 +11,7 @@ import {
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $activeSessionId, $connection, $selectedStoredSessionId, setSessions } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
@@ -330,6 +330,30 @@ describe('SessionTile workspace scope', () => {
       })
     ])
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
+  })
+
+  it('splits a Bot chat loaded in MAIN instead of silently no-oping the drop', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:connection-a::alpha' }
+
+    $selectedStoredSessionId.set('bot-chat')
+    // A real open records the bot scope on the MAIN chat (which has no tile
+    // to carry it). The drag handler then commits the drop with NO explicit
+    // scope — the tab it drags is the workspace pane itself.
+    setSessionTileWorkspaceScope('bot-chat', scope)
+    openSessionTile('bot-chat', 'right', 'workspace', undefined)
+
+    // The minted tile registers its pane (watchSessionTiles) and the drop
+    // hint's reveal adopts it — here, the tree that adoption produces.
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { id: 'workspace-group' }))
+
+    expect(focusOpenSession('bot-chat', scope)).toBe('tile')
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:connection-a::alpha'
+      })
+    ])
   })
 
   it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
@@ -1267,6 +1291,26 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(knownOwnerForSession('stored-2')).toBe('loki')
+  })
+
+  // A tile promoted into MAIN (⌘W on the workspace tab, its tab dragged out of
+  // main) loses its tile and its evicted mirror entry in the same tick, while
+  // the resume has already made its runtime the active one. The composer's
+  // control read for that runtime must still find the stored-id owner hint
+  // instead of failing closed with "Session controls unavailable" (#108369).
+  it('translates the active runtime through the selected stored id when no tile or mirror binds it', () => {
+    setSessionOwnerHint('stored-main', { connectionId: 'local', profile: 'alpha' })
+    $sessionTiles.set([])
+    $sessionStates.set({})
+    $selectedStoredSessionId.set('stored-main')
+    $activeSessionId.set('rt-main')
+
+    expect(knownOwnerForSession('rt-main')).toEqual({ connectionId: 'local', profile: 'alpha' })
+    // Only MAIN's own runtime gets this rung: an unrelated runtime id stays unknown.
+    expect(knownOwnerForSession('rt-other')).toBeUndefined()
+
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
   })
 
   it('keeps a session row connection owner when profiles share the same name', () => {

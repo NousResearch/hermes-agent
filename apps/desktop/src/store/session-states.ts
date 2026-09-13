@@ -272,6 +272,10 @@ export function foregroundSessionScopes(): Set<string> {
   for (const tile of $sessionTiles.get()) {
     addRuntimeScope(tile.runtimeId)
     addRouteScope(tile.ownerRoute)
+
+    if (!tile.ownerRoute && tile.ownerProfile) {
+      scopes.add(normalizeProfileKey(tile.ownerProfile))
+    }
   }
 
   // Create → foreground holds. A hold whose scope the rungs above already
@@ -769,6 +773,8 @@ export interface SessionTile {
   workspaceMode?: WorkspaceMode
   /** Exact opaque owner key for Bot Mode tabs. */
   workspaceOwnerKey?: string
+  /** Legacy profile-pool owner when no registry connection identifies the route. */
+  ownerProfile?: string
   /** Credential-free exact route used to resume this tab after relaunch. */
   ownerRoute?: SessionOwnerRoute
   /** Stable title for hidden relationship chats absent from the Sessions list. */
@@ -776,6 +782,7 @@ export interface SessionTile {
 }
 
 export interface SessionTileWorkspaceScope {
+  ownerProfile?: string
   ownerRoute?: SessionOwnerRoute
   workspaceMode: WorkspaceMode
   workspaceOwnerKey?: string
@@ -801,6 +808,7 @@ type StoredTile = Pick<
   | 'anchor'
   | 'before'
   | 'dir'
+  | 'ownerProfile'
   | 'ownerRoute'
   | 'storedSessionId'
   | 'workspaceMode'
@@ -812,6 +820,7 @@ const toStored = (t: SessionTile): StoredTile => ({
   anchor: t.anchor,
   before: t.before,
   dir: t.dir,
+  ...(t.ownerProfile ? { ownerProfile: t.ownerProfile } : {}),
   ...(t.ownerRoute ? { ownerRoute: t.ownerRoute } : {}),
   storedSessionId: t.storedSessionId,
   ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
@@ -830,6 +839,7 @@ function parseTileList(value: unknown): StoredTile[] {
             anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
+            ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
             ownerRoute:
               raw.ownerRoute &&
               typeof raw.ownerRoute.connectionId === 'string' &&
@@ -968,6 +978,12 @@ export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRout
   return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
 }
 
+function sessionTileOwner(storedSessionId: string): SessionOwnerScope {
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  return tile?.ownerRoute ?? tile?.ownerProfile
+}
+
 /**
  * Gateway keep-set scopes for currently open tiles. Bot chats (and any other
  * owner-routed tile) hold a secondary socket even while chrome stays on the
@@ -984,6 +1000,10 @@ export function openTileGatewayScopes(): Set<string> {
     const route = tile.ownerRoute
 
     if (!route) {
+      if (tile.ownerProfile) {
+        scopes.add(normalizeProfileKey(tile.ownerProfile))
+      }
+
       continue
     }
 
@@ -1033,7 +1053,7 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
   const storedSessionId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
 
   return (
-    sessionTileOwnerRoute(storedSessionId) ??
+    sessionTileOwner(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
     knownSessionOwner(ownerLookupSessionRows(), storedSessionId) ??
     sessionOwnerByRuntimeId.get(sessionId)
@@ -1126,7 +1146,18 @@ export function storedSessionIdForRuntimeId(sessionId: string): null | string {
   // Without this rung such ids fell straight to the ambient socket.
   const mirrored = $sessionStates.get()[sessionId]?.storedSessionId?.trim()
 
-  return mirrored || null
+  if (mirrored) {
+    return mirrored
+  }
+
+  // Main's own binding. A tile promoted into main (⌘W on the workspace tab,
+  // a tab dragged out of main) loses its tile AND its evicted mirror entry in
+  // the same tick, while the resume sets the runtime active before the view
+  // republishes the mirror. The composer's control read lands in that gap
+  // and, with nothing to translate, never reaches the stored-id hint.
+  const selected = $selectedStoredSessionId.get()
+
+  return sessionId === $activeSessionId.get() && selected ? selected : null
 }
 
 const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
@@ -1196,12 +1227,14 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   // plain re-open can't unpin the owning socket. Bot scopes stay authoritative
   // both ways: they always name their route explicitly.
   const ownerRoute = scope.workspaceMode === 'bots' ? scope.ownerRoute : (scope.ownerRoute ?? tile?.ownerRoute)
+  const ownerProfile = scope.workspaceMode === 'bots' ? undefined : (scope.ownerProfile ?? tile?.ownerProfile)
   const workspaceTabTitle = scope.workspaceMode === 'bots' ? scope.workspaceTabTitle : undefined
 
   if (
     !tile ||
     ((tile.workspaceMode ?? 'sessions') === scope.workspaceMode &&
       tile.workspaceOwnerKey === workspaceOwnerKey &&
+      tile.ownerProfile === ownerProfile &&
       tile.ownerRoute?.connectionId === ownerRoute?.connectionId &&
       tile.ownerRoute?.profile === ownerRoute?.profile &&
       tile.ownerRoute?.targetProfile === ownerRoute?.targetProfile &&
@@ -1211,6 +1244,7 @@ export function setSessionTileWorkspaceScope(storedSessionId: string, scope: Ses
   }
 
   patchSessionTile(storedSessionId, {
+    ownerProfile,
     ownerRoute,
     workspaceMode: scope.workspaceMode,
     workspaceOwnerKey,
@@ -1447,9 +1481,17 @@ export function openSessionTile(
   // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
   // not a re-scope: keep the workspace it lives in instead of re-bucketing it
   // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
-  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
-    workspaceMode: existing?.workspaceMode ?? 'sessions'
-  }
+  // A bot chat dragged out of MAIN has no tile (Bot Mode has no main/tile
+  // distinction) and no explicit scope — the tab it rides on is the bot
+  // workspace itself. Left on the sessions fallback, the "loaded in MAIN never
+  // opens as a tile" guard below swallowed the drop silently. The remembered
+  // bot-chat scope is the discriminator: restore it so the drop mints a real
+  // tile, which the drop hint's reveal then adopts and fronts. An existing-tile
+  // move keeps the tile's own scope.
+  const rememberedBotScope = !explicitScope && !existing ? $botChatScopes.get()[storedSessionId] : undefined
+
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ??
+    rememberedBotScope ?? { workspaceMode: existing?.workspaceMode ?? 'sessions' }
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
@@ -1484,6 +1526,7 @@ export function openSessionTile(
         // draft runtime is otherwise orphan-reaped the moment the pruner
         // closes the unpinned socket (the resume/reclaim flicker loop,
         // #93892 shape).
+        ownerProfile: workspaceScope.ownerProfile,
         ownerRoute: workspaceScope.ownerRoute,
         storedSessionId,
         workspaceMode: workspaceScope.workspaceMode,

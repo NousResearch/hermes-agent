@@ -509,6 +509,24 @@ def _apply_synchronous_pragma(conn: sqlite3.Connection, raw_value: Any, *, db_la
         conn.execute(f"PRAGMA synchronous={level}")
 
 
+def disable_close_time_wal_reset(conn: sqlite3.Connection) -> bool:
+    """Arm ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`` so ``sqlite3_close`` does not unlink ``-wal``/``-shm``.
+
+    Python 3.12+ only (``Connection.setconfig``). Returns True when the flag is armed.
+    A PASSIVE checkpoint may already have run; the close-time reset is what strands a
+    sibling process on a deleted generation (#109727, Herder/TUI tab close).
+    """
+    flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+    setconfig = getattr(conn, "setconfig", None)
+    if flag is None or setconfig is None:
+        return False
+    try:
+        setconfig(flag, True)
+    except Exception:
+        return False
+    return True
+
+
 def apply_database_pragmas(conn: sqlite3.Connection, *, db_label: str = "state.db") -> None:
     """Apply optional performance and WAL-sizing PRAGMAs from ``config.yaml``.
 

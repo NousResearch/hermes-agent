@@ -56,6 +56,7 @@ from hermes_state_messages import SessionMessagesMixin
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
+    disable_close_time_wal_reset,
 )
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
@@ -471,6 +472,7 @@ class SessionDB(
         if conn is None:
             return
         try:
+            disable_close_time_wal_reset(conn)
             conn.close()
         except Exception:
             logger.debug("Could not close a SessionDB connection", exc_info=True)
@@ -478,6 +480,7 @@ class SessionDB(
     def _close_conn_logged(self, conn, label: str) -> None:
         """Close *conn*; a failing close leaks a tracked fd: logged at WARNING, never swallowed."""
         try:
+            disable_close_time_wal_reset(conn)
             conn.close()
         except Exception as exc:
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
@@ -1212,27 +1215,25 @@ class SessionDB(
         <3.12 has no setconfig, so a lost-generation handle is retired unclosed
         instead (see close()): closing its last descriptor could both run that
         checkpoint and discard committed data present only in an unlinked WAL."""
-        flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         conn = self._conn
-        setconfig = getattr(conn, "setconfig", None)
-        if flag is None or setconfig is None:
-            # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
-            # getattr: __init__ binds no retirement capability when either half is missing,
-            # and close() must agree with that decision or the lost handle would neither
-            # setconfig nor pin.
+        if conn is None:
             return False
-        try:
-            setconfig(flag, True)
-        except Exception:
-            # No retention capability is bound on this runtime, so close() will let SQLite run the
-            # checkpoint over the newer generation: say so where an operator can see it.
-            logger.error(
-                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; "
-                "closing it may checkpoint retired frames over the newer generation.",
-                self.db_path, exc_info=True,
-            )
+        if disable_close_time_wal_reset(conn):
+            return True
+        # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
+        # getattr: __init__ binds no retirement capability when either half is missing,
+        # and close() must agree with that decision or the lost handle would neither
+        # setconfig nor pin.
+        if not _close_time_checkpoint_configurable() or getattr(conn, "setconfig", None) is None:
             return False
-        return True
+        # No retention capability is bound on this runtime, so close() will let SQLite run the
+        # checkpoint over the newer generation: say so where an operator can see it.
+        logger.error(
+            "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; "
+            "closing it may checkpoint retired frames over the newer generation.",
+            self.db_path,
+        )
+        return False
 
     def _pin_connection(self, conn) -> None:
         """Retain the exact quarantined connection past GC and interpreter teardown (once per handle).
@@ -1402,6 +1403,24 @@ class SessionDB(
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
                 if retire_without_close:
+                    self._pin_connection(self._conn)
+                    self._conn = None
+                elif (
+                    not generation_lost
+                    and quarantine_reason is None
+                    and not self.read_only
+                    and self._retire_connection is not None
+                    and not disable_close_time_wal_reset(self._conn)
+                    and bool(self._foreign_state_db_holders())
+                ):
+                    # Python <3.12 cannot arm NO_CKPT_ON_CLOSE. sqlite3_close would
+                    # unlink -wal/-shm under the sibling (Herder/TUI tab close, #109727).
+                    logger.warning(
+                        "Keeping the writer connection for %s open: another process still "
+                        "holds state.db and this runtime cannot disable SQLite's close-time "
+                        "WAL reset.",
+                        self.db_path,
+                    )
                     self._pin_connection(self._conn)
                     self._conn = None
                 else:

@@ -354,10 +354,15 @@ class SessionMaintenanceMixin:
             # process; a TRUNCATE reset here would race a live gateway writer.
             self._try_checkpoint("PASSIVE", "WAL checkpoint (PASSIVE) before VACUUM failed: %s")
             self._conn.execute("VACUUM")
-            # VACUUM rewrites every page THROUGH the WAL; without this TRUNCATE a 3 GB DB leaves a 3 GB -wal.
-            self._try_checkpoint("TRUNCATE", "WAL checkpoint (TRUNCATE) after VACUUM failed: %s")
-            # TRUNCATE may replace the WAL inode; adopt the new sidecars so the
-            # write-path generation guard does not halt this connection.
+            # VACUUM rewrites every page THROUGH the WAL; a TRUNCATE checkpoint here would
+            # replace the WAL inode and orphan any other live writer (gateway, cron) that
+            # still holds the deleted generation — they then hit DeletedWalGenerationError
+            # while replacement sidecars already exist at the path (#109740). Use PASSIVE
+            # so the inode stays stable; the WAL will be reused/truncated lazily by future
+            # checkpoints, avoiding a 3 GB high-water-mark only at the cost of transient disk
+            # slack instead of cross-process split-brain.
+            self._try_checkpoint("PASSIVE", "WAL checkpoint (PASSIVE) after VACUUM failed: %s")
+            # Generation unchanged with PASSIVE; refresh identity for the no-op case anyway.
             self._record_db_file_identity()
         return optimized
 

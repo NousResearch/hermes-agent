@@ -137,15 +137,15 @@ class TestVacuumUsesPassive:
     """Manual vacuum paths must checkpoint PASSIVE, never TRUNCATE."""
 
     def test_vacuum_uses_passive_before_vacuum(self, db):
-        """SessionDB.vacuum() checkpoints PASSIVE before VACUUM.
+        """SessionDB.vacuum() checkpoints PASSIVE before and after VACUUM.
 
-        A TRUNCATE checkpoint AFTER the VACUUM is expected: VACUUM rewrites
-        every page through the WAL, so without it a 3 GB database leaves a
-        3 GB state.db-wal behind and `sessions optimize` becomes a net disk
-        LOSS. The #45383 tearing concern is about truncating while another
-        writer is mid-transaction — the pre-VACUUM checkpoint stays PASSIVE
-        for that reason; the post-VACUUM truncate runs under the same
-        exclusive-lock window the VACUUM itself required.
+        Previously a TRUNCATE checkpoint after VACUUM was expected to reclaim
+        the 3 GB WAL high-water-mark, but TRUNCATE replaces the WAL inode and
+        orphans any other live writer (gateway, cron) that still holds the
+        deleted generation — they then hit DeletedWalGenerationError while
+        replacement sidecars already exist at the path (#109740). Use PASSIVE
+        both before and after so the inode stays stable; transient disk slack
+        is cheaper than cross-process split-brain.
         """
         real_conn = db._conn
         tracking_conn = TrackingConnection(real_conn)
@@ -161,13 +161,14 @@ class TestVacuumUsesPassive:
         vacuum_calls = [
             c for c in tracking_conn.execute_calls if c.strip().upper() == "VACUUM"
         ]
-        assert passive_calls == ["PRAGMA wal_checkpoint(PASSIVE)"]
+        assert passive_calls == ["PRAGMA wal_checkpoint(PASSIVE)", "PRAGMA wal_checkpoint(PASSIVE)"]
         assert vacuum_calls == ["VACUUM"]
-        assert truncate_calls == ["PRAGMA wal_checkpoint(TRUNCATE)"]
+        assert truncate_calls == []
         vacuum_index = tracking_conn.execute_calls.index(vacuum_calls[0])
-        assert tracking_conn.execute_calls.index(passive_calls[0]) < vacuum_index
-        # TRUNCATE must come only AFTER the VACUUM (never before it).
-        assert tracking_conn.execute_calls.index(truncate_calls[0]) > vacuum_index
+        # PASSIVE checkpoints must bracket VACUUM (one before, one after)
+        passive_indices = [i for i, c in enumerate(tracking_conn.execute_calls) if "wal_checkpoint(PASSIVE)" in c]
+        assert len(passive_indices) == 2
+        assert passive_indices[0] < vacuum_index < passive_indices[1]
 
     def test_optimize_storage_uses_passive_after_vacuum(self, db):
         """optimize_fts_storage() checkpoints PASSIVE after its VACUUM."""

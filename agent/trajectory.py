@@ -2,6 +2,7 @@
 
 import json
 import gzip
+import io
 import logging
 import os
 from datetime import datetime
@@ -41,28 +42,38 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: boo
     entry = {"conversations": trajectory, "timestamp": datetime.now().isoformat(), "model": model, "completed": completed}
     try:
         line = json.dumps(entry, ensure_ascii=False) + "\n"  # serialize before taking the lock
-        opener = gzip.open if str(filename).endswith(".gz") else open
-        f = opener(filename, "at", encoding="utf-8")
+        is_gzip = str(filename).endswith(".gz")
+        raw = open(filename, "ab") if is_gzip else None
+        f = io.TextIOWrapper(gzip.GzipFile(fileobj=raw, mode="ab"), encoding="utf-8") if raw is not None else open(filename, "a", encoding="utf-8")
+        lock_handle = raw or f
         locked = False
         try:
             # Gateway sessions and batch workers append to the SAME default file; without an
             # exclusive lock around write+flush, entries larger than one write() interleave and the
             # JSONL stops parsing (#12684). Gzip close writes the member trailer, so the handle must
             # remain locked through close/finalization as well.
-            _lock_append_handle(f, True)
+            # Lock the stable raw descriptor for gzip members. GzipFile may
+            # flush a header and move the logical wrapper position before the
+            # first write; Windows locking must never be based on that moving
+            # wrapper offset.
+            _lock_append_handle(lock_handle, True)
             locked = True
             f.write(line)
             f.flush()
             f.close()
+            if raw is not None:
+                raw.flush()
             locked = False  # close releases the OS handle lock after gzip finalization
         finally:
             if locked:
                 try:
-                    _lock_append_handle(f, False)
+                    _lock_append_handle(lock_handle, False)
                 except (OSError, ValueError):
                     pass
             if not f.closed:
                 f.close()
+            if raw is not None and not raw.closed:
+                raw.close()
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)

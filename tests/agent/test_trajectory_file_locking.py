@@ -59,6 +59,25 @@ def test_concurrent_gzip_appends_stay_decompressible(tmp_path):
 
 
 @pytest.mark.windows_only
+def test_concurrent_gzip_appends_are_serialized_on_windows(tmp_path):
+    """Windows must serialize gzip members through one stable raw descriptor lock."""
+    target = tmp_path / "windows-trajectory.jsonl.gz"
+    script = textwrap.dedent(f"""
+        import sys; sys.path.insert(0, {_REPO_ROOT!r})
+        from agent.trajectory import save_trajectory
+        save_trajectory([{{"from": "human", "value": "P" + sys.argv[1]}}],
+                        model="m", completed=True, filename={str(target)!r})
+    """)
+    procs = [subprocess.Popen([sys.executable, "-c", script, str(n)], stdin=subprocess.DEVNULL) for n in range(4)]
+    for process in procs:
+        assert process.wait(timeout=120) == 0
+
+    with gzip.open(target, "rt", encoding="utf-8") as stream:
+        entries = [json.loads(line) for line in stream]
+    assert {entry["conversations"][0]["value"] for entry in entries} == {f"P{n}" for n in range(4)}
+
+
+@pytest.mark.windows_only
 def test_default_gzip_trajectory_saves_on_windows(tmp_path, monkeypatch):
     """The default gzip path must work with Windows' file-locking API."""
     monkeypatch.chdir(tmp_path)

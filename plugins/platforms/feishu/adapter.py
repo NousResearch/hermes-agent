@@ -178,6 +178,10 @@ async def _read_limited_feishu_webhook_body(request: Any, max_bytes: int) -> byt
 
 
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+# Feishu rejects receive_id_type='thread_id' for ALL msg_types (99992402).
+# Non-text and text alike must be re-sent via the reply API anchored to a
+# message in the thread.
+_FEISHU_THREAD_ROUTE_INVALID_CODE = 99992402
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -1672,10 +1676,21 @@ class FeishuAdapter(BasePlatformAdapter):
                 "⚠️ Command Approval Required", "orange",
                 self._format_exec_approval(command, description, smart_denied), actions=actions,
             )
-            return await self._send_interactive_card(
+            result = await self._send_interactive_card(
                 chat_id, card, metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=session_key,
             )
+            if result.success:
+                # Remember the thread context so follow-up notices (e.g. the
+                # expired-approval hint) land back inside the topic instead of
+                # the main chat area.
+                _thread_meta = {
+                    k: v for k, v in (metadata or {}).items()
+                    if k in ("thread_id", "reply_to_message_id")
+                }
+                if _thread_meta:
+                    self._approval_state[approval_id]["thread_metadata"] = _thread_meta
+            return result
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
@@ -2248,6 +2263,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             _chat,
                             "⌛ That approval had already expired — the command "
                             "was not run (it timed out or was resolved elsewhere).",
+                            metadata=state.get("thread_metadata"),
                         )
                     except Exception:
                         logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
@@ -3614,7 +3630,42 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._run_blocking(self._client.im.v1.message.reply, request)
         if thread_id:
             # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
+            body = self._build_create_message_body(
+                receive_id=thread_id, msg_type=msg_type, content=payload, uuid_value=str(uuid.uuid4()),
+            )
+            request = self._build_create_message_request("thread_id", body)
+            response = await self._run_blocking(self._client.im.v1.message.create, request)
+            # Feishu's create API rejects receive_id_type='thread_id' with
+            # 99992402 for ALL message types — 'thread_id' is not one of the
+            # documented receive_id_type enum values. Re-send via the reply
+            # API anchored to a message in the thread so the message still
+            # lands inside the topic.
+            if (
+                not self._response_succeeded(response)
+                and getattr(response, "code", None) == _FEISHU_THREAD_ROUTE_INVALID_CODE
+            ):
+                logger.info(
+                    "[Feishu] %s send via thread_id rejected (99992402); retrying via reply API in thread",
+                    msg_type,
+                )
+                anchor_id = (metadata or {}).get("reply_to_message_id")
+                if not anchor_id:
+                    anchor_id = await self._fetch_last_message_in_thread(thread_id)
+                if anchor_id:
+                    reply_body = self._build_reply_message_body(
+                        content=payload,
+                        msg_type=msg_type,
+                        reply_in_thread=True,
+                        uuid_value=str(uuid.uuid4()),
+                    )
+                    reply_request = self._build_reply_message_request(anchor_id, reply_body)
+                    return await self._run_blocking(self._client.im.v1.message.reply, reply_request)
+                logger.warning(
+                    "[Feishu] No anchor message found in thread %s; cannot retry %s via reply API",
+                    thread_id,
+                    msg_type,
+                )
+            return response
         elif chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:

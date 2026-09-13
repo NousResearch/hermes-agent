@@ -162,6 +162,15 @@ export HERMES_HOME="$SANDBOX_ROOT/hermes-home"
 export HERMES_DESKTOP_USER_DATA_DIR="$SANDBOX_ROOT/user-data"
 export HERMES_DESKTOP_APP_NAME="$SANDBOX_NAME"
 
+# A dispatched Kanban worker carries absolute board paths that intentionally
+# outrank HERMES_HOME.  Letting those pins cross this boundary makes an
+# otherwise isolated rehearsal write to the worker's live board.  The sandbox
+# is a new process identity, so drop every board location, task lease, and
+# dispatcher setting — including future pins added under the same namespace.
+for kanban_var in "${!HERMES_KANBAN_@}"; do
+  unset "$kanban_var"
+done
+
 mkdir -p "$HERMES_HOME" "$HERMES_DESKTOP_USER_DATA_DIR"
 
 if [ -n "$SEED_DIR" ]; then

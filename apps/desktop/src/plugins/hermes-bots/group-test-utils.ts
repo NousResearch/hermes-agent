@@ -166,6 +166,11 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   }
 
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    if (method === 'groups.capabilities') {
+      return { driver: false, persistent_process: false }
+    }
+
     if (method === 'profiles.list') {
       return {
         profiles: [{ name: 'default', ui_meta: { ...uiMeta }, ui_meta_revisions: { ...uiMetaRevisions } }]
@@ -431,6 +436,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    gatewayActivationEpoch: () => 0,
     host,
     SkillsView: undefined,
     Streamdown: undefined,

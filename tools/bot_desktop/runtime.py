@@ -42,6 +42,27 @@ _DISPLAY_MIN, _DISPLAY_MAX = 20, 89
 _SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 _PACKAGE_MANAGER_BINARIES = {"apt": "apt-get", "dnf": "dnf", "pacman": "pacman"}
 
+# ``hermes_subprocess_env(inherit_credentials=False)`` intentionally preserves the standard AWS
+# credential chain for ordinary terminal children. A graphical desktop is a less trusted boundary:
+# Xfce applications and browser extensions must not inherit credentials or paths to credential files.
+_DESKTOP_AWS_CREDENTIAL_ENV = frozenset({
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+})
+
 # Binaries the launcher execs; the package hint is per distro family.
 REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd", "dbus-run-session",
                      "xauth", "xdpyinfo", "setxkbmap", "xprop")
@@ -336,7 +357,9 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     # settings, but do not expose provider, plugin, gateway, or internal Hermes credentials to them.
     from tools.environments.local import hermes_subprocess_env
     child_env = hermes_subprocess_env(inherit_credentials=False)
-    for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
+    for key in _DESKTOP_AWS_CREDENTIAL_ENV | {
+        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER",
+    }:
         child_env.pop(key, None)
     child_env.update({
         "HERMES_BD_PROFILE": _profile_name(),

@@ -101,6 +101,27 @@ def test_desktop_launcher_does_not_inherit_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
     monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+    aws_credentials = {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_ROLE_ARN",
+        "AWS_ROLE_SESSION_NAME",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    }
+    for key in aws_credentials:
+        monkeypatch.setenv(key, "aws-secret")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
     monkeypatch.setenv("BOT_DESKTOP_BENIGN", "keep-me")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(runtime.subprocess, "Popen", fake_popen)
@@ -114,6 +135,9 @@ def test_desktop_launcher_does_not_inherit_credentials(tmp_path, monkeypatch):
     assert "OPENAI_API_KEY" not in captured
     assert "ANTHROPIC_API_KEY" not in captured
     assert "GITHUB_TOKEN" not in captured
+    assert aws_credentials.isdisjoint(captured)
+    assert captured["AWS_REGION"] == "us-east-1"
+    assert captured["AWS_DEFAULT_REGION"] == "us-west-2"
 
 
 _FAKE_LAUNCHER = """#!/usr/bin/env bash

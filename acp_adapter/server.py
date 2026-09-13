@@ -613,7 +613,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not (state and state.cancel_event):
             return
         with state.runtime_lock:
-            if state.is_running and state.current_prompt_text:
+            if not state.is_running or state.cancel_event.is_set():
+                return
+            if state.current_prompt_text:
                 state.interrupted_prompt_text = state.current_prompt_text
             # Cancel + hard-stop under the lock so no other prompt mistakes this turn for
             # redirectable work.
@@ -806,33 +808,76 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
             return PromptResponse(stop_reason="end_turn")
 
-        logger.info("Prompt on session %s: %s", session_id, user_text[:100])
-        conn, loop = self._conn, asyncio.get_running_loop()
-        if state.cancel_event:
-            state.cancel_event.clear()
-        cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
-
-        def _run_agent() -> dict:
-            return self._run_agent_turn(
-                state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
-                loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
-            )
-
+        failed = False
         try:
-            # ACP `session_id` is the stable handle; agent.session_id is the internal head that
-            # compression may rotate — snapshot it to detect rotation after the turn.
+            logger.info("Prompt on session %s: %s", session_id, user_text[:100])
+            conn, loop = self._conn, asyncio.get_running_loop()
+            if state.cancel_event:
+                state.cancel_event.clear()
+            cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
+
+            def _run_agent() -> dict:
+                return self._run_agent_turn(
+                    state=state, session_id=session_id, user_text=user_text, user_content=user_content, conn=conn,
+                    loop=loop, approval_cb=cbs.approval_cb, edit_approval_requester=cbs.edit_approval_requester,
+                )
+
+            # Compression may rotate the internal head during this turn.
             pre_turn_hermes_id = getattr(state.agent, "session_id", None)
-            # Fresh context copy: concurrent sessions on the shared executor must not share ContextVars.
             ctx = contextvars.copy_context()
-            result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
-        except Exception:
-            logger.exception("Executor error for session %s", session_id)
+            worker = loop.run_in_executor(_executor, ctx.run, _run_agent)
+            request_cancelled = False
+            while True:
+                try:
+                    # Cancelling the waiter cannot stop its executor thread.
+                    result = await asyncio.shield(worker)
+                    break
+                except asyncio.CancelledError:
+                    request_cancelled = True
+                    await self.cancel(session_id)
+                    if worker.cancelled():
+                        raise
+            response = await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+            if request_cancelled:
+                raise asyncio.CancelledError
+            return response
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            # Callback setup, executor and finalization failures share cleanup.
+            # The worker has settled before another prompt may acquire ownership.
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
-            return PromptResponse(stop_reason="end_turn")
+            try:
+                await self._drain_queued_prompts(state, session_id)
+            except (Exception, asyncio.CancelledError):
+                if not failed:
+                    raise
+                # Keep the original request's exception, not a later queued failure.
+                logger.exception("Queued turn failed after request failure in session %s", session_id)
 
-        return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+    async def _drain_queued_prompts(self, state: SessionState, session_id: str) -> None:
+        echo_cancelled = False
+        while True:
+            with state.runtime_lock:
+                if not state.queued_prompts:
+                    break
+                next_prompt = state.queued_prompts.pop(0)
+            if self._conn:
+                try:
+                    await self._conn.session_update(session_id, acp.update_user_message_text(next_prompt))
+                except asyncio.CancelledError:
+                    # This echo owns no runtime work; drain the accepted prompt
+                    # before propagating cancellation of the containing request.
+                    echo_cancelled = True
+                except Exception:
+                    # A failed display update must not discard accepted queued work.
+                    logger.debug("Could not echo queued ACP prompt for %s", session_id, exc_info=True)
+            await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
+        if echo_cancelled:
+            raise asyncio.CancelledError
 
     def _wire_turn_callbacks(
         self, state: SessionState, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
@@ -877,7 +922,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, state: SessionState, session_id: str, conn: Any, result: dict, pre_turn_hermes_id: Any,
         streamed_message: bool,
     ) -> PromptResponse:
-        """Persist, emit provenance/final text, drain queued prompts, report usage."""
+        """Persist and report final output while this request still owns the turn."""
         # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844);
         # only a result without the key leaves the history untouched.
         if "messages" in result and isinstance(result["messages"], list):
@@ -905,19 +950,6 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
         if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
             await conn.session_update(session_id, acp.update_agent_message_text(final_response))
-
-        # Go idle before draining so recursive prompt() calls can acquire the session.
-        with state.runtime_lock:
-            state.is_running = False
-            state.current_prompt_text = ""
-        while True:
-            with state.runtime_lock:
-                if not state.queued_prompts:
-                    break
-                next_prompt = state.queued_prompts.pop(0)
-            if conn:
-                await conn.session_update(session_id, acp.update_user_message_text(next_prompt))
-            await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
 
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):

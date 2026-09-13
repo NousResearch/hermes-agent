@@ -152,3 +152,46 @@ def test_hindsight_retain_shaping_still_reads_the_process_env_for_a_single_profi
     assert provider._retain_tags == ["solo-tag"]
     assert provider._retain_source == "solo-source"
     assert provider._retain_user_prefix == "Operator"
+
+
+def test_hindsight_isolation_values_fail_loud_while_shaping_degrades(secondary_profile):
+    """The split this provider deliberately keeps, so a later refactor cannot quietly widen it.
+
+    ``langfuse._secret`` / ``azure_identity_adapter._scoped_env`` were changed to raise rather than
+    fall back, because swallowing ``UnscopedSecretError`` hides the spawn-site bug the exception
+    exists to surface. Hindsight follows that contract for everything that decides WHERE data goes:
+    ``mode``, ``apiKey`` and the ``bankId`` partition read through bare ``get_secret``, so a
+    scopeless multiplexed read raises — and in ``_load_config`` it raises on ``HINDSIGHT_MODE``
+    before any shaping value is reached.
+
+    Presentation shaping is deliberately NOT in that class: a speaker prefix that cannot be
+    resolved must not cost the whole memory provider (``MemoryManager._each_provider`` logs an
+    ``initialize`` failure at WARNING and drops the provider for the session). It degrades to the
+    provider's own default instead — never to ``os.environ``, which is the default profile's.
+    """
+    import plugins.memory.hindsight as hindsight
+    from plugins.memory.hindsight.settings import _DEFAULT_RETAIN_SOURCE
+
+    # Scope present but WITHOUT the isolation keys -> resolves to the provider's own partition.
+    assert hindsight._load_config()["banks"]["hermes"]["bankId"] == "hermes"  # not "bank-default"
+
+    # No scope at all under multiplex == a spawn-site bug: the isolation read must fail loud.
+    token = secret_scope.set_secret_scope(None)
+    try:
+        # Name the offending key, not just "something raised": HINDSIGHT_MODE is the FIRST
+        # isolation read, so routing it through the shaping helper would shift the failure to
+        # HINDSIGHT_API_KEY and a bare pytest.raises would still pass.
+        with pytest.raises(secret_scope.UnscopedSecretError) as excinfo:
+            hindsight._load_config()
+        assert "HINDSIGHT_MODE" in str(excinfo.value)
+
+        # ...while shaping degrades to the provider's default rather than raising or reading
+        # the default profile's environ ("source-default" / "UserDefault" are set there).
+        provider = hindsight.HindsightMemoryProvider()
+        provider._apply_retain_settings({})
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+    assert provider._retain_source == _DEFAULT_RETAIN_SOURCE
+    assert (provider._retain_user_prefix, provider._retain_assistant_prefix) == ("User", "Assistant")
+    assert provider._retain_tags == []

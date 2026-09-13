@@ -77,6 +77,89 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
     assert pool.select() is None
 
 
+def test_sync_codex_entry_from_auth_store__matches_manual_entry_by_account_id(
+    tmp_path, monkeypatch
+):
+    # Arrange
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    account_a_access = _jwt_with_claims({
+        "https://api.openai.com/auth": {"chatgpt_account_id": "account-a"},
+    })
+    account_b_old_access = _jwt_with_claims({
+        "https://api.openai.com/auth": {"chatgpt_account_id": "account-b"},
+        "generation": "old",
+    })
+    account_b_new_access = _jwt_with_claims({
+        "https://api.openai.com/auth": {"chatgpt_account_id": "account-b"},
+        "generation": "new",
+    })
+    pool_entries = [
+        {
+            "id": "account-a",
+            "label": "account-a",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "manual:device_code",
+            "access_token": account_a_access,
+            "refresh_token": "account-a-refresh",
+        },
+        {
+            "id": "account-b",
+            "label": "account-b",
+            "auth_type": "oauth",
+            "priority": 1,
+            "source": "manual:device_code",
+            "access_token": account_b_old_access,
+            "refresh_token": "account-b-old-refresh",
+        },
+    ]
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": account_b_new_access,
+                        "refresh_token": "account-b-new-refresh",
+                    },
+                },
+            },
+            "credential_pool": {"openai-codex": pool_entries},
+        },
+    )
+
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    credentials = [
+        PooledCredential.from_dict("openai-codex", entry)
+        for entry in pool_entries
+    ]
+    pool = CredentialPool("openai-codex", credentials)
+
+    # Act
+    account_a = pool._sync_entry_from_auth_store(credentials[0])
+    account_b = pool._sync_entry_from_auth_store(credentials[1])
+
+    # Assert
+    assert account_a.access_token == account_a_access
+    assert account_a.refresh_token == "account-a-refresh"
+    assert account_b.access_token == account_b_new_access
+    assert account_b.refresh_token == "account-b-new-refresh"
+
+    stored = json.loads(
+        (tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8")
+    )
+    stored_by_id = {
+        entry["id"]: entry
+        for entry in stored["credential_pool"]["openai-codex"]
+    }
+    assert stored_by_id["account-a"]["access_token"] == account_a_access
+    assert stored_by_id["account-a"]["refresh_token"] == "account-a-refresh"
+    assert stored_by_id["account-b"]["access_token"] == account_b_new_access
+    assert stored_by_id["account-b"]["refresh_token"] == "account-b-new-refresh"
+
+
 
 
 def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeypatch):

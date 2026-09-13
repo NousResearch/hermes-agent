@@ -303,6 +303,17 @@ def label_from_token(token: str, fallback: str) -> str:
     return fallback
 
 
+def _codex_chatgpt_account_id(token: Any) -> Optional[str]:
+    claims = _decode_jwt_claims(token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if not isinstance(auth_claims, dict):
+        return None
+    account_id = auth_claims.get("chatgpt_account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        return None
+    return account_id.strip()
+
+
 def _next_priority(entries: List[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 
@@ -1224,7 +1235,9 @@ class CredentialPool(CredentialPoolAdminMixin):
         a ``last_error_reset_at`` hours in the future; without this sync every
         request fails with "no available entries" despite fresh credentials on
         disk. Only singleton-seeded entries apply — env/API-key rows have no
-        auth.json shadow.
+        auth.json shadow. A Codex ``manual:device_code`` entry may belong to an
+        independent account, so it adopts singleton tokens only when both
+        access tokens identify the same ChatGPT account.
         """
         spec = _TOKENS_SINGLETON_PROVIDERS.get(self.provider)
         if spec is None:
@@ -1242,6 +1255,11 @@ class CredentialPool(CredentialPoolAdminMixin):
                 return entry
             store_access = tokens.get("access_token", "")
             store_refresh = tokens.get("refresh_token", "")
+            if is_codex and entry.source == SOURCE_MANUAL_DEVICE_CODE:
+                entry_account_id = _codex_chatgpt_account_id(entry.access_token)
+                store_account_id = _codex_chatgpt_account_id(store_access)
+                if not entry_account_id or entry_account_id != store_account_id:
+                    return entry
             entry_refresh = entry.refresh_token or ""
             # Adopt when either side differs: a fresh refresh_token from
             # another process means our pair is consumed/stale.

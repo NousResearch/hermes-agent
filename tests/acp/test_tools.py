@@ -206,6 +206,19 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-fail", "execute_code", '{"output": "bad", "returncode": 2}')
         assert result.status == "failed"
 
+    def test_build_tool_complete_keeps_unknown_error_payload_conservative(self):
+        result = build_tool_complete(
+            "tc-diagnostic", "plugin_diagnostic", '{"error": "diagnostic"}'
+        )
+        assert result.status == "completed"
+        wrapped = build_tool_complete(
+            "tc-wrapped-diagnostic",
+            "tool_call",
+            '{"error": "diagnostic"}',
+            function_args={"name": "plugin_diagnostic", "arguments": {}},
+        )
+        assert wrapped.status == "completed"
+
 
 
 

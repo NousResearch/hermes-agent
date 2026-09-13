@@ -2,14 +2,16 @@
 
 import asyncio
 import gc
+import json
 import warnings
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import acp
-from acp.schema import AgentPlanUpdate
+from acp.schema import AgentPlanUpdate, ToolCallProgress, ToolCallStart
 
 from acp_adapter.events import (
     _build_plan_update_from_todo_result,
@@ -19,6 +21,7 @@ from acp_adapter.events import (
     make_thinking_cb,
     make_tool_progress_cb,
 )
+from tools.mcp_tool_handlers import _render_call_tool_result
 
 
 @pytest.fixture()
@@ -108,6 +111,61 @@ class TestToolProgressCallback:
 
 
 class TestStepCallback:
+    @pytest.mark.parametrize("error_field", ["isError", "is_error"])
+    @pytest.mark.parametrize("deferred", [False, True])
+    @pytest.mark.parametrize(
+        ("is_error", "expected_status"),
+        [(True, "failed"), (False, "completed")],
+    )
+    def test_mcp_result_status_survives_real_callback_join(
+        self, mock_conn, event_loop_fixture, error_field, deferred, is_error, expected_status
+    ):
+        tool_name = "mcp__public_research__public_web_search"
+        tool_call_ids = {}
+        tool_call_meta = {}
+        progress_cb = make_tool_progress_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+        )
+        step_cb = make_step_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+        )
+        rendered = _render_call_tool_result(
+            SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        text=(
+                            "dependency unavailable"
+                            if is_error
+                            else "research result explaining error handling"
+                        )
+                    )
+                ],
+                **{error_field: is_error},
+            ),
+            "public_research",
+        )
+        completion_name = "tool_call" if deferred else tool_name
+        completion_args = (
+            json.dumps({"name": tool_name, "arguments": {"query": "fixture"}})
+            if deferred
+            else json.dumps({"query": "fixture"})
+        )
+
+        with patch("acp_adapter.events._send_update") as send_update:
+            progress_cb("tool.started", tool_name, None, {"query": "fixture"})
+            step_cb(
+                1,
+                [{"name": completion_name, "arguments": completion_args, "result": rendered}],
+            )
+
+        start, completion = [call.args[3] for call in send_update.call_args_list]
+        assert isinstance(start, ToolCallStart)
+        assert isinstance(completion, ToolCallProgress)
+        assert completion.tool_call_id == start.tool_call_id
+        assert completion.status == expected_status
+        assert tool_call_ids == {}
+        assert tool_call_meta == {}
+
     def test_completes_tracked_tool_calls(self, mock_conn, event_loop_fixture):
         """Step callback should mark tracked tools as completed."""
         tool_call_ids = {"terminal": "tc-abc123"}

@@ -1227,6 +1227,47 @@ def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypat
         )
 
 
+def test_find_windows_gateway_services_skips_transient_service_states(
+    monkeypatch,
+):
+    """A service mid-transition (stop_pending etc.) is skipped, not fatal."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class TransientService:
+        def as_dict(self):
+            return {"name": "BcastDVRUserService_74d1b7", "pid": 0, "status": "stop_pending"}
+
+    class RunningService:
+        def as_dict(self):
+            return {"name": "HermesGateway", "pid": 100, "status": "running"}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            return [FakeProcess(100)]
+
+        def children(self, recursive=False):
+            return [FakeProcess(300)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [TransientService(), RunningService()],
+        Process=FakeProcess,
+    )
+
+    result = gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    )
+
+    assert [service.name for service in result] == ["HermesGateway"]
+
+
 def test_find_windows_gateway_services_fails_closed_on_service_access_error(
     monkeypatch,
 ):

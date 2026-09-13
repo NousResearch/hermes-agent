@@ -12,10 +12,11 @@ cannot drive).
 Key differences vs the CLI backend:
 
 * No browser-use CLI install needed — the subprocess is the Hermes Python
-  interpreter (``sys.executable``) running a stdlib-only runtime.
+  interpreter (``sys.executable``).
 * Sessions are resolved in-process via ``tools.browser_camofox._get_session``
   so managed persistence, identity overrides and tab adoption behave exactly
   like the built-in Camofox tools.
+* Calls sharing a task identity are serialized so tab bookkeeping cannot race.
 * Tabs survive across calls on the server; the runtime prints
   ``CAMOFOX_TAB_ID=<id>`` lines that we parse back into the in-memory
   session cache so the next call starts from the live tab.
@@ -26,6 +27,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+from contextlib import contextmanager
 import subprocess
 import sys
 import time
@@ -33,9 +36,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
-
-# Imported lazily to avoid a circular import (browser_use_cli imports this
-# module's browser_exec only at call time).
 from tools.browser_use_cli import (  # noqa: E402
     _DEFAULT_TIMEOUT_S,
     _MAX_TIMEOUT_S,
@@ -43,6 +43,7 @@ from tools.browser_use_cli import (  # noqa: E402
     _base_subprocess_env,
     _find_screenshot,
     _native_screenshot_result,
+    _run_cli_killing_process_group,
     _workspace_dir,
 )
 from tools.registry import tool_error, tool_result  # noqa: E402
@@ -50,6 +51,28 @@ from tools.registry import tool_error, tool_result  # noqa: E402
 _STDERR_CAP_CHARS = 4000
 _TAB_ID_RE = None  # compiled lazily below
 _SCREENSHOT_RE = None  # compiled lazily below
+_TASK_LOCKS_GUARD = threading.Lock()
+_TASK_LOCKS: dict[str, tuple[threading.Lock, int]] = {}
+
+
+@contextmanager
+def _serialized_task(task_id: Optional[str]):
+    """Serialize one task without retaining locks after its last caller exits."""
+    key = str(task_id or "default")
+    with _TASK_LOCKS_GUARD:
+        lock, users = _TASK_LOCKS.get(key, (threading.Lock(), 0))
+        _TASK_LOCKS[key] = (lock, users + 1)
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _TASK_LOCKS_GUARD:
+            current_lock, users = _TASK_LOCKS[key]
+            if users == 1:
+                del _TASK_LOCKS[key]
+            else:
+                _TASK_LOCKS[key] = (current_lock, users - 1)
 
 
 def _tab_id_re():
@@ -90,31 +113,46 @@ def _marked_screenshot(stdout: str, since: float) -> Optional[str]:
 
 def _runtime_wrapper() -> str:
     """Python -c wrapper that imports the runtime helpers and execs stdin."""
-    runtime_dir = Path(__file__).resolve().parent.as_posix()
+    package_root = Path(__file__).resolve().parent.parent.as_posix()
     return (
         "import sys\n"
-        f"sys.path.insert(0, {runtime_dir!r})\n"
-        "from browser_camofox_runtime import *\n"
+        f"sys.path.insert(0, {package_root!r})\n"
+        "from tools.browser_camofox_runtime import *\n"
         "exec(compile(sys.stdin.read(), '<browser-exec>', 'exec'))\n"
     )
 
 
 def _resolve_session_env(task_id: Optional[str]) -> Optional[Dict[str, str]]:
-    """Resolve the Camofox session in-process and build the subprocess env."""
+    """Resolve Camofox session and effective navigation settings for the child."""
     from agent.secret_scope import get_secret
-    from tools.browser_camofox import _get_session, get_camofox_url
+    from tools.browser_camofox import (
+        _env_or_cfg,
+        _flag,
+        _get_camofox_config,
+        _get_session,
+        get_camofox_url,
+    )
 
     base_url = get_camofox_url()
     if not base_url:
         return None
     session = _get_session(task_id)
-    return {
+    camofox_cfg = _get_camofox_config()
+    env = {
         "CAMOFOX_URL": base_url,
         "CAMOFOX_API_KEY": (get_secret("CAMOFOX_API_KEY", "") or ""),
         "BH_USER_ID": str(session.get("user_id") or ""),
         "BH_SESSION_KEY": str(session.get("session_key") or ""),
         "BH_TAB_ID": str(session.get("tab_id") or ""),
     }
+    if _flag("CAMOFOX_REWRITE_LOOPBACK_URLS", camofox_cfg, "rewrite_loopback_urls"):
+        env["CAMOFOX_REWRITE_LOOPBACK_URLS"] = "true"
+    alias = _env_or_cfg(
+        "CAMOFOX_LOOPBACK_HOST_ALIAS", camofox_cfg, "loopback_host_alias"
+    )
+    if alias:
+        env["CAMOFOX_LOOPBACK_HOST_ALIAS"] = alias
+    return env
 
 
 def _update_session_tab(task_id: Optional[str], tab_id: str) -> None:
@@ -148,17 +186,26 @@ def browser_exec(
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
 ):
-    """Run Python code through the Camofox exec runtime, return its output.
+    """Run terminal-equivalent Python through the task's Camofox session."""
+    if session:
+        return tool_error(
+            "Camofox exec mode does not support the browser-use `session` argument. "
+            "Calls are already namespaced by task_id; omit `session`."
+        )
+    with _serialized_task(task_id):
+        return _browser_exec_unlocked(code, timeout_s=timeout_s, task_id=task_id)
 
-    Mirrors ``tools.browser_use_cli.browser_exec`` — same result shape, same
-    screenshot detection, same workspace semantics. The ``session`` argument
-    is accepted for schema parity; Camofox sessions are keyed by the resolved
-    task identity, not by a daemon name.
-    """
+
+def _browser_exec_unlocked(
+    code: str,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    task_id: Optional[str] = None,
+):
+    """Execute one already-serialized Camofox call."""
     if not code or not code.strip():
         return tool_error(
             "No code provided. Pass Python that uses the pre-imported helpers, "
-            "e.g. new_tab(\"https://example.com\") then print(page_info())."
+            'e.g. new_tab("https://example.com") then print(page_info()).'
         )
 
     from tools.browser_use_cli import _blocked_url_in_code
@@ -184,18 +231,6 @@ def browser_exec(
     except (TypeError, ValueError):
         timeout = _DEFAULT_TIMEOUT_S
 
-    popen_extra: dict = {}
-    if os.name == "nt":
-        try:
-            from hermes_cli._subprocess_compat import windows_hide_flags
-
-            popen_extra["creationflags"] = windows_hide_flags()
-            _si = subprocess.STARTUPINFO()
-            _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            popen_extra["startupinfo"] = _si
-        except Exception as e:
-            logger.debug("Windows hide-flags unavailable: %s", e)
-
     # Credential-scrubbed env, exactly like the CLI backend: the model's code
     # runs inside this subprocess, so inheriting os.environ wholesale would
     # hand it every provider key / gateway token in the parent process.
@@ -204,14 +239,8 @@ def browser_exec(
 
     started = time.time()
     try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _runtime_wrapper()],
-            input=code,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=proc_env,
-            **popen_extra,
+        proc = _run_cli_killing_process_group(
+            [sys.executable, "-c", _runtime_wrapper()], code, proc_env, timeout
         )
     except subprocess.TimeoutExpired:
         return tool_error(
@@ -226,15 +255,22 @@ def browser_exec(
 
     raw_stdout = proc.stdout or ""
     safe_stdout = _redact_camofox_secret(raw_stdout)
+    from tools.browser_tool_snapshot import _redact_browser_output
+    from tools.code_execution_tool import _truncate_stdout_text
+
+    safe_stdout = _redact_browser_output(safe_stdout)
+
+    safe_stdout, output_metadata = _truncate_stdout_text(safe_stdout)
     result: Dict[str, Any] = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
         "output": safe_stdout,
+        **output_metadata,
     }
     if workspace:
         result["workspace"] = workspace
 
-    stderr = _redact_camofox_secret((proc.stderr or "").strip())
+    stderr = _redact_browser_output(_redact_camofox_secret((proc.stderr or "").strip()))
     if stderr:
         if len(stderr) > _STDERR_CAP_CHARS:
             stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
@@ -280,7 +316,7 @@ CAMOFOX_HELPERS_DIGEST = (
     "a bare '() => {...}' returns the function itself, uncalled), "
     "fill_input(selector, text) types into inputs by CSS selector, "
     "type_into_ref(ref, text) types into a snapshot ref, click_ref(ref) "
-    "clicks a snapshot ref (PREFERRED over coordinates — refs are stable), "
+    "clicks a ref from the latest snapshot (PREFERRED over coordinates), "
     "click_selector(selector) clicks by CSS selector, click_at_xy(x, y) "
     "clicks viewport coordinates (fallback), press_key(key) sends a "
     "keyboard key, scroll_page(direction, amount) scrolls, "
@@ -317,7 +353,7 @@ CAMOFOX_DESCRIPTION_HEADER = (
     "— do not spend a call per action — but for long extractions prefer "
     "several medium calls that append to workspace files over one giant "
     "call, so progress survives timeouts. Tabs opened by this backend share "
-    "the Camofox profile (cookies persist per configured identity). The "
-    "`session` argument is accepted for schema parity and ignored in "
-    "Camofox mode — tabs are keyed to the task identity."
+    "the Camofox profile (cookies persist per configured task identity). "
+    "Camofox mode does not expose the Browser Use `session` argument; task_id "
+    "is the namespace used for tab state and cleanup."
 )

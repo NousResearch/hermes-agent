@@ -14,6 +14,7 @@ Covers the Camofox side of the ``browser_exec`` surface:
 import json
 import os
 import re
+import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 import tools.browser_camofox as camofox_mod
+import tools.browser_camofox_exec as camofox_exec_mod
 import tools.browser_use_cli as bu_cli
 
 
@@ -93,6 +95,7 @@ class _FakeCamofoxHandler(BaseHTTPRequestHandler):
             ]
             return self._send_json(200, {"tabs": tabs})
         if tab_id is not None and path == "stats":
+            srv.stats_requests += 1
             if srv.stats_error_code:
                 return self._send_json(srv.stats_error_code, {"error": "forced error"})
             tab = self._tab(tab_id)
@@ -100,6 +103,10 @@ class _FakeCamofoxHandler(BaseHTTPRequestHandler):
                 return
             return self._send_json(200, {"ok": True, "url": "https://example.com/"})
         if tab_id is not None and path == "snapshot":
+            if srv.snapshot_error_code:
+                return self._send_json(
+                    srv.snapshot_error_code, {"error": "forced snapshot error"}
+                )
             tab = self._tab(tab_id)
             if tab is None:
                 return
@@ -134,27 +141,42 @@ class _FakeCamofoxHandler(BaseHTTPRequestHandler):
             # "about:blank") is rejected; omitting the key opens a blank tab.
             url = body.get("url", "")
             if url and not url.startswith(("http://", "https://")):
-                return self._send_json(
-                    400, {"error": f"Blocked URL scheme: {url}"}
-                )
+                return self._send_json(400, {"error": f"Blocked URL scheme: {url}"})
             srv.counter += 1
             tid = f"t{srv.counter}"
             srv.tabs[tid] = {
                 "userId": body.get("userId", ""),
                 "listItemId": body.get("listItemId", ""),
+                "url": body.get("url", ""),
                 "dead": False,
             }
             return self._send_json(
                 200,
                 {"ok": True, "tabId": tid, "url": body.get("url", ""), "title": "Fake"},
             )
-        if tab_id is not None and path in ("navigate", "wait", "click", "type", "press", "scroll", "evaluate"):
+        if tab_id is not None and path in (
+            "navigate",
+            "wait",
+            "click",
+            "type",
+            "press",
+            "scroll",
+            "evaluate",
+        ):
             tab = self._tab(tab_id)
             if tab is None:
                 return
             if path == "evaluate":
+                if srv.evaluate_error_code:
+                    return self._send_json(
+                        srv.evaluate_error_code, {"error": "forced evaluate error"}
+                    )
                 return self._send_json(200, {"ok": True, "result": srv.evaluate_result})
-            return self._send_json(200, {"ok": True, "url": "https://example.com/"})
+            if path == "wait":
+                return self._send_json(200, {"ok": True, "ready": srv.wait_ready})
+            if path == "navigate":
+                tab["url"] = body.get("url", "")
+            return self._send_json(200, {"ok": True, "url": tab.get("url", "")})
         self._send_json(404, {"error": f"unknown POST {self.path}"})
 
     def do_DELETE(self):
@@ -169,6 +191,10 @@ class FakeCamofoxServer:
         self.refs_count = 2
         self.evaluate_result = "eval-result-42"
         self.stats_error_code = None  # when set, /stats answers this status
+        self.stats_requests = 0
+        self.snapshot_error_code = None
+        self.evaluate_error_code = None
+        self.wait_ready = True
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeCamofoxHandler)
         self.httpd.camofox = self
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
@@ -213,7 +239,9 @@ def camofox_mode(monkeypatch, camofox_server):
         "hermes_cli.config.read_raw_config",
         lambda: {"browser": {"backend": "camofox"}},
     )
-    monkeypatch.setattr("tools.browser_camofox.get_camofox_url", lambda: camofox_server.url)
+    monkeypatch.setattr(
+        "tools.browser_camofox.get_camofox_url", lambda: camofox_server.url
+    )
     return camofox_server
 
 
@@ -227,13 +255,17 @@ def _exec(code: str, task_id: str = "task-e2e-1") -> dict:
 
 
 class TestModeDetection:
-    def test_camofox_backend_enables_exec_without_cli(self, monkeypatch, camofox_server):
+    def test_camofox_backend_enables_exec_without_cli(
+        self, monkeypatch, camofox_server
+    ):
         """backend=camofox activates browser_exec even with no browser-use CLI."""
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"backend": "camofox"}},
         )
-        monkeypatch.setattr("tools.browser_camofox.get_camofox_url", lambda: camofox_server.url)
+        monkeypatch.setattr(
+            "tools.browser_camofox.get_camofox_url", lambda: camofox_server.url
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is True
 
@@ -246,20 +278,26 @@ class TestModeDetection:
         monkeypatch.setattr("tools.browser_camofox.get_camofox_url", lambda: "")
         assert bu_cli.is_browser_use_cli_mode() is False
 
-    def test_browser_use_backend_with_camofox_stays_builtin(self, monkeypatch, camofox_server):
+    def test_browser_use_backend_with_camofox_stays_builtin(
+        self, monkeypatch, camofox_server
+    ):
         """Explicit browser-use backend cannot drive Camoufox (no CDP)."""
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"backend": "browser-use"}},
         )
-        monkeypatch.setattr("tools.browser_camofox.get_camofox_url", lambda: camofox_server.url)
+        monkeypatch.setattr(
+            "tools.browser_camofox.get_camofox_url", lambda: camofox_server.url
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_default_with_camofox_keeps_builtin(self, monkeypatch, camofox_server):
         """Backend unset + Camofox configured: built-in tools stay (old default)."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
-        monkeypatch.setattr("tools.browser_camofox.get_camofox_url", lambda: camofox_server.url)
+        monkeypatch.setattr(
+            "tools.browser_camofox.get_camofox_url", lambda: camofox_server.url
+        )
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
         assert bu_cli.is_browser_use_cli_mode() is False
 
@@ -272,7 +310,7 @@ class TestModeDetection:
 class TestExecE2E:
     def test_navigate_and_snapshot(self, camofox_mode):
         result = _exec(
-            "new_tab('https://example.com')\nprint(page_info())", task_id="e2e-nav"
+            "new_tab('http://127.0.0.1:8080')\nprint(page_info())", task_id="e2e-nav"
         )
         assert result["success"] is True, result
         assert "Hello Camofox" in result["output"]
@@ -287,7 +325,7 @@ class TestExecE2E:
 
     def test_interaction_helpers(self, camofox_mode):
         result = _exec(
-            "new_tab('https://example.com')\n"
+            "new_tab('http://127.0.0.1:8080')\n"
             "click_ref('e1')\n"
             "fill_input('#search', 'camofox')\n"
             "press_key('Enter')\n"
@@ -308,7 +346,10 @@ class TestExecE2E:
 
     def test_tab_recovery_on_404(self, camofox_mode):
         """A garbage-collected tab is recreated; the cache follows."""
-        first = _exec("new_tab('https://example.com')\nprint(page_info())", task_id="e2e-recover")
+        first = _exec(
+            "new_tab('http://127.0.0.1:8080')\nprint(page_info())",
+            task_id="e2e-recover",
+        )
         assert first["success"] is True, first
         assert camofox_mod._sessions["e2e-recover"]["tab_id"] == "t1"
 
@@ -320,7 +361,9 @@ class TestExecE2E:
 
     def test_non_gone_errors_do_not_recreate(self, camofox_mode):
         """A 401 (bad API key) must propagate, not silently recreate the tab."""
-        first = _exec("new_tab('https://example.com')\nprint(page_info())", task_id="e2e-401")
+        first = _exec(
+            "new_tab('http://127.0.0.1:8080')\nprint(page_info())", task_id="e2e-401"
+        )
         assert first["success"] is True, first
         assert camofox_mod._sessions["e2e-401"]["tab_id"] == "t1"
 
@@ -332,6 +375,18 @@ class TestExecE2E:
         assert camofox_mod._sessions["e2e-401"]["tab_id"] == "t1"
         assert "CAMOFOX_TAB_ID=t2" not in second.get("output", "")
 
+    def test_inherited_tab_is_validated_once_per_exec(self, camofox_mode):
+        first = _exec("new_tab('http://127.0.0.1:8080')", task_id="e2e-stats")
+        assert first["success"] is True, first
+        before = camofox_mode.stats_requests
+
+        second = _exec(
+            "print(page_info())\nprint(get_links())\nclick_ref('e1')",
+            task_id="e2e-stats",
+        )
+        assert second["success"] is True, second
+        assert camofox_mode.stats_requests == before + 1
+
     def test_clear_error_without_server(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
@@ -342,31 +397,64 @@ class TestExecE2E:
         assert result.get("success") is not True
         assert "CAMOFOX_URL" in result.get("error", "")
 
-    def test_blocked_url_rejected(self, camofox_mode):
-        result = _exec("new_tab('http://169.254.169.254/latest/meta-data')", task_id="e2e-blocked")
+    def test_always_blocked_metadata_url_rejected(self, camofox_mode):
+        result = _exec(
+            "url = 'http://' + '169.254.169.254/latest/meta-data'\nnew_tab(url)",
+            task_id="e2e-blocked",
+        )
         assert result.get("success") is not True
+        assert "cloud metadata" in result.get("stderr", "")
 
-    def test_runtime_rejects_private_and_non_http_navigation(self, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://127.0.0.1:9377")
-        monkeypatch.setenv("BH_USER_ID", "test-user")
-        from tools.browser_camofox_runtime import _validate_navigation_url
+    def test_dynamic_private_navigation_allowed_by_existing_policy(
+        self, camofox_mode, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"backend": "camofox", "allow_private_urls": True}},
+        )
+        result = _exec(
+            "host = '127.0.0.1'\nurl = f'http://{host}:8080/app'\nprint(new_tab(url))",
+            task_id="e2e-private",
+        )
+        assert result["success"] is True, result
+        assert camofox_mode.tabs["t1"]["url"] == "http://127.0.0.1:8080/app"
 
-        with pytest.raises(ValueError, match="private or loopback"):
-            _validate_navigation_url("http://127.0.0.1:8080/admin")
-        with pytest.raises(ValueError, match="http or https"):
-            _validate_navigation_url("file:///etc/passwd")
+    def test_loopback_rewrite_uses_existing_camofox_setting(
+        self, camofox_mode, monkeypatch
+    ):
+        monkeypatch.setenv("CAMOFOX_REWRITE_LOOPBACK_URLS", "true")
+        result = _exec(
+            "url = 'http://127.0.0.1:3000/app'\nprint(new_tab(url))",
+            task_id="e2e-rewrite",
+        )
+        assert result["success"] is True, result
+        assert camofox_mode.tabs["t1"]["url"] == "http://host.docker.internal:3000/app"
 
-    def test_runtime_accepts_public_https_navigation(self, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://127.0.0.1:9377")
-        monkeypatch.setenv("BH_USER_ID", "test-user")
-        from tools.browser_camofox_runtime import _validate_navigation_url
+    def test_snapshot_wait_and_eval_server_failures_are_not_success(self, camofox_mode):
+        first = _exec("new_tab('http://127.0.0.1:8080')", task_id="e2e-errors")
+        assert first["success"] is True, first
 
-        _validate_navigation_url("https://example.com/path")
+        camofox_mode.snapshot_error_code = 500
+        snapshot = _exec("print(page_info())", task_id="e2e-errors")
+        assert snapshot["success"] is False
+        assert "HTTP 500" in snapshot.get("stderr", "")
+
+        camofox_mode.snapshot_error_code = None
+        camofox_mode.wait_ready = False
+        wait = _exec("print(wait_for_load())", task_id="e2e-errors")
+        assert wait["success"] is False
+        assert "did not reach ready state" in wait.get("stderr", "")
+
+        camofox_mode.wait_ready = True
+        camofox_mode.evaluate_error_code = 503
+        evaluated = _exec("print(js('document.title'))", task_id="e2e-errors")
+        assert evaluated["success"] is False
+        assert "HTTP 503" in evaluated.get("stderr", "")
 
     def test_last_tab_id_wins(self, camofox_mode):
         """Two new_tab() calls in one script: the cache must follow the LAST."""
         result = _exec(
-            "new_tab('https://example.com')\nnew_tab('https://example.org')",
+            "new_tab('http://127.0.0.1:8080')\nnew_tab('http://127.0.0.1:8081')",
             task_id="e2e-two-tabs",
         )
         assert result["success"] is True, result
@@ -385,6 +473,69 @@ class TestExecE2E:
         assert "KEY=absent" in result["output"]
         assert "sk-should-not-leak" not in result["output"]
 
+    def test_camofox_key_is_redacted_from_stdout_and_stderr(
+        self, camofox_mode, monkeypatch
+    ):
+        secret = "camofox-secret-value-123"
+        monkeypatch.setenv("CAMOFOX_API_KEY", secret)
+        result = _exec(
+            "import os, sys\n"
+            "print(os.environ['CAMOFOX_API_KEY'])\n"
+            "print(os.environ['CAMOFOX_API_KEY'], file=sys.stderr)",
+            task_id="e2e-redact",
+        )
+        assert result["success"] is True, result
+        assert secret not in json.dumps(result)
+        assert "[REDACTED_CAMOFOX_API_KEY]" in result["output"]
+
+    def test_stdout_is_bounded_with_recovery_metadata(self, camofox_mode):
+        result = _exec("print('x' * 60000)", task_id="e2e-output-cap")
+        assert result["success"] is True, result
+        assert result["stdout_truncated"] is True
+        assert result["stdout_bytes_total"] > result["stdout_bytes_captured"]
+        assert result.get("stdout_spill_path")
+
+    def test_nonempty_session_argument_is_rejected(self, camofox_mode):
+        result = json.loads(
+            bu_cli.browser_exec("print('x')", session="named", task_id="e2e-session")
+        )
+        assert "success" not in result
+        assert "does not support" in result["error"]
+
+    def test_same_task_calls_are_serialized_and_lock_is_released(self, monkeypatch):
+        active = 0
+        max_active = 0
+        state_lock = threading.Lock()
+
+        def fake_exec(code, timeout_s, task_id):
+            nonlocal active, max_active
+            with state_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with state_lock:
+                active -= 1
+            return code
+
+        monkeypatch.setattr(camofox_exec_mod, "_browser_exec_unlocked", fake_exec)
+        results = []
+        threads = [
+            threading.Thread(
+                target=lambda value=value: results.append(
+                    camofox_exec_mod.browser_exec(value, task_id="same-task")
+                )
+            )
+            for value in ("first", "second")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert sorted(results) == ["first", "second"]
+        assert max_active == 1
+        assert camofox_exec_mod._TASK_LOCKS == {}
+
     def test_agent_helpers_auto_imported(self, camofox_mode, monkeypatch, tmp_path):
         """The description promises agent_helpers.py is auto-imported."""
         monkeypatch.setenv("BH_AGENT_WORKSPACE", str(tmp_path))
@@ -395,6 +546,36 @@ class TestExecE2E:
         assert result["success"] is True, result
         assert "helper-ran" in result["output"]
 
+    def test_agent_helpers_cannot_replace_runtime_helpers(
+        self, camofox_mode, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("BH_AGENT_WORKSPACE", str(tmp_path))
+        (tmp_path / "agent_helpers.py").write_text(
+            "def new_tab(url):\n    raise RuntimeError('replaced')\n"
+            "def custom_helper():\n    return 'custom'\n",
+            encoding="utf-8",
+        )
+        result = _exec(
+            "new_tab('http://127.0.0.1:8080')\nprint(custom_helper())",
+            task_id="e2e-helper-collision",
+        )
+        assert result["success"] is True, result
+        assert "custom" in result["output"]
+        assert "ignored reserved helper name: new_tab" in result["stderr"]
+
+    def test_screenshot_uses_multimodal_tool_envelope(self, camofox_mode, monkeypatch):
+        monkeypatch.setattr(
+            "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *args, **kwargs: "data:image/jpeg;base64,abc",
+        )
+        result = bu_cli.browser_exec("capture_screenshot()", task_id="e2e-native-shot")
+        assert isinstance(result, dict) and result["_multimodal"] is True
+        assert [part["type"] for part in result["content"]] == ["text", "image_url"]
+        assert result["meta"]["screenshot_path"]
+
 
 # ---------------------------------------------------------------------------
 # Schema/description
@@ -402,7 +583,9 @@ class TestExecE2E:
 
 
 class TestSchema:
-    def test_camofox_description_when_backend_camofox(self, monkeypatch, camofox_server):
+    def test_camofox_description_when_backend_camofox(
+        self, monkeypatch, camofox_server
+    ):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
             lambda: {"browser": {"backend": "camofox"}},
@@ -410,6 +593,7 @@ class TestSchema:
         overrides = bu_cli._dynamic_schema_overrides()
         assert "Camofox backend" in overrides["description"]
         assert "click_ref" in overrides["description"]
+        assert "session" not in overrides["parameters"]["properties"]
 
     def test_cli_description_when_backend_browser_use(self, monkeypatch):
         monkeypatch.setattr(

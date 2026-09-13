@@ -1,14 +1,14 @@
 """Camofox exec-mode runtime — pre-imported helpers for browser_exec.
 
-This module is NOT imported by the Hermes process. It is executed in a
-fresh Python subprocess (``sys.executable -c <wrapper>``) with the model's
-``code`` piped on stdin, mirroring how the Browser Use CLI 3.0 harness
-runs. Keeping it stdlib-only (urllib, json) means the subprocess has no
-dependency on the Hermes venv, config, or secret store.
+This module runs in a fresh Python subprocess (``sys.executable -c <wrapper>``)
+with the model's ``code`` piped on stdin, mirroring the Browser Use CLI 3.0
+harness. It imports Hermes' existing browser policy and Camofox settings, but
+does not provide an OS sandbox: ``browser_exec`` remains terminal-equivalent
+model-written Python and is exposed only where the terminal tool is available.
 
-The parent (``tools/browser_camofox_exec.py``) resolves the Camofox
-session in-process — honoring managed persistence, identity overrides and
-tab adoption — and hands it to us through environment variables:
+The parent (``tools/browser_camofox_exec.py``) resolves the Camofox session
+in-process — honoring managed persistence, identity overrides and tab adoption
+— and hands it to us through environment variables:
 
     CAMOFOX_URL           Camofox server base URL (required)
     CAMOFOX_API_KEY       optional Bearer token (CAMOFOX_API_KEY secret)
@@ -28,10 +28,8 @@ starts from the new tab.
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
-import socket
 import sys
 import time
 import urllib.error
@@ -45,6 +43,7 @@ _USER_ID = os.environ.get("BH_USER_ID", "") or ""
 _SESSION_KEY = os.environ.get("BH_SESSION_KEY", "") or ""
 _TAB_ID = os.environ.get("BH_TAB_ID", "") or ""
 _WORKSPACE = os.environ.get("BH_AGENT_WORKSPACE", "") or ""
+_TAB_VALIDATED = False
 
 if not _BASE_URL:
     raise RuntimeError(
@@ -105,33 +104,36 @@ def _request(
 
 
 def _tab() -> str:
-    """Return a live tab id, creating one when needed (or on 404)."""
-    global _TAB_ID
-    if _TAB_ID:
+    """Return a live tab id, validating an inherited id once per exec."""
+    global _TAB_ID, _TAB_VALIDATED
+    if _TAB_ID and not _TAB_VALIDATED:
         try:
-            _request("GET", f"/tabs/{_TAB_ID}/stats", params={"userId": _USER_ID}, timeout=10)
-            print(f"CAMOFOX_TAB_ID={_TAB_ID}")
-            return _TAB_ID
+            _request(
+                "GET", f"/tabs/{_TAB_ID}/stats", params={"userId": _USER_ID}, timeout=10
+            )
+            _TAB_VALIDATED = True
         except CamofoxHTTPError as exc:
             # A 404 (tab gone) or 410 (the real Camofox server's response
-            # for a GC'd/restarted tab: "Tab no longer exists (browser was
-            # restarted)") means "recreate". Anything else — 401, 5xx, or a
-            # connection error — must surface: silently opening a fresh tab
-            # would throw away the live page and hide the real failure.
+            # for a GC'd/restarted tab) means "recreate". Authentication,
+            # server, and connection failures must surface.
             if exc.code not in (404, 410):
                 raise
+            _TAB_ID = ""
+    if _TAB_ID:
+        print(f"CAMOFOX_TAB_ID={_TAB_ID}")
+        return _TAB_ID
     data = _request(
         "POST",
         "/tabs",
-        # No explicit url: the real server rejects the "about:" scheme
-        # (HTTP 400 "Blocked URL scheme"), while omitting the key opens a
-        # native blank page. new_tab() always passes a real http(s) URL.
+        # No explicit url: the real server rejects the "about:" scheme,
+        # while omitting the key opens a native blank page.
         body={"userId": _USER_ID, "listItemId": _SESSION_KEY},
     )
     tab_id = str(data.get("tabId") or "")
     if not tab_id:
         raise RuntimeError(f"Camofox /tabs returned no tabId: {data!r}")
     _TAB_ID = tab_id
+    _TAB_VALIDATED = True
     print(f"CAMOFOX_TAB_ID={tab_id}")
     return tab_id
 
@@ -141,54 +143,58 @@ def ensure_real_tab() -> dict:
     return {"ok": True, "tab_id": _tab()}
 
 
-def _validate_navigation_url(url: str) -> None:
-    """Reject non-web and private destinations before sending them to Camofox."""
-    parsed = urllib.parse.urlsplit(str(url))
+def _prepare_navigation_url(url: str) -> str:
+    """Apply the same URL policy and loopback rewrite as built-in Camofox."""
+    from tools.browser_camofox import _rewrite_loopback_url_for_camofox
+    from tools.browser_tool import evaluate_url_safety
+    from tools.url_safety import normalize_url_for_request
+
+    normalized = normalize_url_for_request(str(url))
+    parsed = urllib.parse.urlsplit(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("navigation URL must use http or https")
-    host = parsed.hostname
-    try:
-        addresses = [ipaddress.ip_address(host)]
-    except ValueError:
-        try:
-            addresses = [
-                ipaddress.ip_address(info[4][0])
-                for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-            ]
-        except OSError as exc:
-            raise ValueError(f"could not resolve navigation host: {host}") from exc
-    if any(address.is_private or address.is_loopback or address.is_link_local for address in addresses):
-        raise ValueError(f"private or loopback navigation is blocked: {host}")
+    error = evaluate_url_safety(normalized)
+    if error:
+        raise ValueError(str(error.get("error") or "Blocked: unsafe URL"))
+    rewritten, _ = _rewrite_loopback_url_for_camofox(normalized)
+    return rewritten
+
+
+def _validate_navigation_url(url: str) -> None:
+    """Compatibility validator used by tests and external helper code."""
+    _prepare_navigation_url(url)
 
 
 def new_tab(url: str) -> dict:
     """Open a URL in a fresh tab (first navigation of a session)."""
-    global _TAB_ID
-    _validate_navigation_url(url)
+    global _TAB_ID, _TAB_VALIDATED
+    requested_url = str(url)
+    browser_url = _prepare_navigation_url(requested_url)
     data = _request(
         "POST",
         "/tabs",
-        body={"userId": _USER_ID, "listItemId": _SESSION_KEY, "url": url},
+        body={"userId": _USER_ID, "listItemId": _SESSION_KEY, "url": browser_url},
         timeout=60,
     )
     tab_id = str(data.get("tabId") or "")
     if not tab_id:
         raise RuntimeError(f"Camofox /tabs returned no tabId: {data!r}")
     _TAB_ID = tab_id
+    _TAB_VALIDATED = True
     print(f"CAMOFOX_TAB_ID={tab_id}")
-    return {"url": data.get("url", url), "title": data.get("title", "")}
+    return {"url": data.get("url", browser_url), "title": data.get("title", "")}
 
 
 def goto_url(url: str) -> dict:
     """Navigate the current tab to a URL."""
-    _validate_navigation_url(url)
+    browser_url = _prepare_navigation_url(str(url))
     data = _request(
         "POST",
         f"/tabs/{_tab()}/navigate",
-        body={"userId": _USER_ID, "url": url},
+        body={"userId": _USER_ID, "url": browser_url},
         timeout=60,
     )
-    return {"url": data.get("url", url), "title": data.get("title", "")}
+    return {"url": data.get("url", browser_url), "title": data.get("title", "")}
 
 
 def wait_for_load(timeout: int = 10000, wait_for_network: bool = True) -> dict:
@@ -196,42 +202,49 @@ def wait_for_load(timeout: int = 10000, wait_for_network: bool = True) -> dict:
     data = _request(
         "POST",
         f"/tabs/{_tab()}/wait",
-        body={"userId": _USER_ID, "timeout": timeout, "waitForNetwork": wait_for_network},
+        body={
+            "userId": _USER_ID,
+            "timeout": timeout,
+            "waitForNetwork": wait_for_network,
+        },
         timeout=max(timeout / 1000 + 10, 30),
     )
-    return {"ok": True, "ready": bool(data.get("ready"))}
+    if not isinstance(data, dict) or data.get("ready") is not True:
+        raise RuntimeError(f"Camofox wait did not reach ready state: {data!r}")
+    return {"ok": True, "ready": True}
 
 
 def page_info() -> str:
-    """Summarize the current page: URL plus the accessibility snapshot."""
+    """Summarize the current page; snapshot or evaluate failures propagate."""
     tab = _tab()
-    try:
-        snap = _request(
-            "GET", f"/tabs/{tab}/snapshot", params={"userId": _USER_ID}, timeout=30
-        )
-        snapshot_text = str(snap.get("snapshot") or "")
-        refs = snap.get("refsCount", 0)
-    except RuntimeError:
-        snapshot_text, refs = "", 0
-    try:
-        url = js("location.href")
-    except RuntimeError:
-        url = ""
-    return (
-        f"URL: {url}\n"
-        f"Element refs: {refs}\n"
-        + (snapshot_text if snapshot_text else "(no snapshot available)")
+    snap = _request(
+        "GET", f"/tabs/{tab}/snapshot", params={"userId": _USER_ID}, timeout=30
+    )
+    if not isinstance(snap, dict) or "snapshot" not in snap:
+        raise RuntimeError(f"Camofox snapshot returned an invalid response: {snap!r}")
+    snapshot_text = str(snap.get("snapshot") or "")
+    refs = snap.get("refsCount", 0)
+    url = js("location.href")
+    return f"URL: {url}\nElement refs: {refs}\n" + (
+        snapshot_text if snapshot_text else "(empty snapshot)"
     )
 
 
 def js(expr: str):
-    """Evaluate a JavaScript expression in the page and return its value."""
+    """Evaluate JavaScript under Hermes' configured browser eval policy."""
+    from tools.browser_tool_eval_policy import _enforce_browser_eval_policy
+
+    policy_error = _enforce_browser_eval_policy(expr)
+    if policy_error:
+        raise ValueError(policy_error)
     data = _request(
         "POST",
         f"/tabs/{_tab()}/evaluate",
         body={"userId": _USER_ID, "expression": expr},
         timeout=60,
     )
+    if not isinstance(data, dict) or data.get("ok") is False or data.get("error"):
+        raise RuntimeError(f"Camofox evaluate failed: {data!r}")
     return data.get("result")
 
 
@@ -437,14 +450,7 @@ __all__ = [
 
 
 def _load_agent_helpers() -> None:
-    """Auto-import ``agent_helpers.py`` from the workspace, as promised.
-
-    The tool description tells the model it can "define reusable functions in
-    agent_helpers.py there — the harness auto-imports it into every call"
-    (the Browser Use CLI harness does). Without this, the model writes the
-    file and every helper silently vanishes on the next call. Names are
-    appended to ``__all__`` so the wrapper's ``import *`` re-exports them.
-    """
+    """Auto-import non-conflicting names from workspace ``agent_helpers.py``."""
     if not _WORKSPACE:
         return
     helpers = Path(_WORKSPACE) / "agent_helpers.py"
@@ -460,12 +466,18 @@ def _load_agent_helpers() -> None:
     exported = getattr(agent_helpers, "__all__", None) or [
         name for name in vars(agent_helpers) if not name.startswith("_")
     ]
+    reserved = set(__all__)
     for name in exported:
         if not hasattr(agent_helpers, name):
             continue
+        if name in reserved:
+            print(
+                f"agent_helpers.py ignored reserved helper name: {name}",
+                file=sys.stderr,
+            )
+            continue
         globals()[name] = getattr(agent_helpers, name)
-        if name not in __all__:
-            __all__.append(name)
+        __all__.append(name)
 
 
 _load_agent_helpers()

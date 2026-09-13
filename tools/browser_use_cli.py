@@ -786,10 +786,15 @@ def _dynamic_schema_overrides() -> dict:
             CAMOFOX_HELPERS_DIGEST,
         )
 
-        overrides: dict = {
-            "description": CAMOFOX_DESCRIPTION_HEADER + CAMOFOX_HELPERS_DIGEST,
+        properties = {
+            name: value
+            for name, value in BROWSER_EXEC_SCHEMA["parameters"]["properties"].items()
+            if name != "session"
         }
-        return overrides
+        return {
+            "description": CAMOFOX_DESCRIPTION_HEADER + CAMOFOX_HELPERS_DIGEST,
+            "parameters": {**BROWSER_EXEC_SCHEMA["parameters"], "properties": properties},
+        }
 
     overrides: dict = {"description": _description_header() + _HELPERS_DIGEST}
     # ``local`` exists ONLY when the user consented to real-profile browsing — everyone

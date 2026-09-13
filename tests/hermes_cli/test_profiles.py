@@ -207,6 +207,111 @@ class TestCreateProfile:
 
 
 
+    def test_clone_config_copies_source_skills(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "custom" / "installed-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "skills"
+            / "custom"
+            / "installed-skill"
+            / "SKILL.md"
+        ).read_text() == "---\nname: installed-skill\n---\n"
+
+    def test_clone_config_skills_with_external_symlink_does_not_chmod_target(
+        self, profile_env
+    ):
+        """Regression: the skills tree is cloned with ``symlinks=True`` so a
+        skill that is itself a symlink to something outside the profile (a
+        shared/vendored skill directory, a dev checkout) is copied as a
+        symlink rather than traversed into. The post-copy writable-mode
+        repair must not follow that symlink and chmod the external target —
+        doing so would mutate a file the clone has no business touching.
+        """
+        import os
+        import stat
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+
+        # An external skill directory living outside any profile, locked
+        # down read-only (e.g. a Nix-store-backed shared skill mount).
+        external_target = tmp_path / "external-shared-skill"
+        external_target.mkdir(parents=True)
+        (external_target / "SKILL.md").write_text("---\nname: shared\n---\n")
+        os.chmod(external_target / "SKILL.md", 0o444)
+        os.chmod(external_target, 0o555)
+
+        skills_dir = default_home / "skills" / "custom"
+        skills_dir.mkdir(parents=True)
+        link_path = skills_dir / "linked-skill"
+        link_path.symlink_to(external_target, target_is_directory=True)
+
+        try:
+            profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+            cloned_link = profile_dir / "skills" / "custom" / "linked-skill"
+            assert cloned_link.is_symlink(), (
+                "symlinks=True must copy the symlink itself, not its target's "
+                "contents"
+            )
+
+            # The external target's mode bits must be untouched by the
+            # clone's writable-mode repair sweep.
+            assert stat.S_IMODE(os.stat(external_target).st_mode) == 0o555
+            assert (
+                stat.S_IMODE(os.stat(external_target / "SKILL.md").st_mode)
+                == 0o444
+            )
+        finally:
+            os.chmod(external_target / "SKILL.md", 0o644)
+            os.chmod(external_target, 0o755)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_clone_config_makes_readonly_copied_files_writable(self, profile_env):
+        """A clone must not perpetuate read-only config or memory files from its source."""
+        import stat
+
+        default_home = profile_env / ".hermes"
+        config = default_home / "config.yaml"
+        memory = default_home / "memories" / "MEMORY.md"
+        memory.parent.mkdir(exist_ok=True)
+        config.write_text("model: test\n")
+        memory.write_text("memory\n")
+        os.chmod(config, 0o444)
+        os.chmod(memory, 0o444)
+
+        try:
+            profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+            cloned_config = profile_dir / "config.yaml"
+            cloned_memory = profile_dir / "memories" / "MEMORY.md"
+            assert stat.S_IMODE(cloned_config.stat().st_mode) & stat.S_IWUSR
+            assert stat.S_IMODE(cloned_memory.stat().st_mode) & stat.S_IWUSR
+            with cloned_config.open("a") as handle:
+                handle.write("updated: true\n")
+            with cloned_memory.open("a") as handle:
+                handle.write("updated\n")
+        finally:
+            os.chmod(config, 0o644)
+            os.chmod(memory, 0o644)
+
+    def test_clone_config_missing_files_skipped(self, profile_env):
+        """Clone config gracefully skips files that don't exist in source."""
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        # No error; optional files just not copied
+        assert not (profile_dir / "config.yaml").exists()
+        # .env is always seeded (placeholder) so the profile has its own
+        # credentials file even when the clone source lacked one.
+        assert (profile_dir / ".env").exists()
+        # SOUL.md is always seeded with the default even when clone source lacks it
+        assert (profile_dir / "SOUL.md").exists()
 
 
 # ===================================================================

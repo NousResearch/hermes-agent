@@ -368,3 +368,121 @@ def test_agent_job_provider_classification_unchanged(error, expected):
 
     job = {"name": "daily-digest", "no_agent": False}
     assert expected in _summarize_cron_failure_for_delivery(job, error)
+
+
+def test_a_routed_profile_script_receives_its_own_profile_env(hermes_env, monkeypatch):
+    """A no_agent script fired for a SIBLING profile sees that profile's .env values — via the
+    installed scope, never by copying them into the parent's os.environ (#107692 review)."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+
+    monkeypatch.setenv("CUSTOM_CRON_VALUE", "launch")
+    monkeypatch.delenv("ROUTED_ONLY_VALUE", raising=False)
+    script = hermes_env / "scripts" / "probe_env.sh"
+    script.write_text('#!/bin/bash\necho "${CUSTOM_CRON_VALUE}|${ROUTED_ONLY_VALUE}"\n')
+
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope(
+        {"CUSTOM_CRON_VALUE": "routed", "ROUTED_ONLY_VALUE": "routed-only"})
+    try:
+        ok, output = _run_job_script("probe_env.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+
+    assert ok, output
+    assert output.strip() == "routed|routed-only"
+    assert os.environ["CUSTOM_CRON_VALUE"] == "launch"  # the parent process was not mutated
+
+
+def test_a_routed_profile_script_never_receives_a_launch_profile_only_value(hermes_env, monkeypatch):
+    """Negative control for the overlay above (#107695 review): a name the LAUNCH profile's .env
+    defines and the routed scope does not must reach the routed child UNSET — not with the launch
+    value. The secret scrub only knows classified names, so a custom or unclassified secret would
+    otherwise cross the profile boundary; the launch profile's dotenv residue is dropped first."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    (launch / ".env").write_text("LAUNCH_ONLY_VALUE=launch-only\nCUSTOM_CRON_VALUE=launch\n", encoding="utf-8")
+    monkeypatch.setenv("LAUNCH_ONLY_VALUE", "launch-only")
+    monkeypatch.setenv("CUSTOM_CRON_VALUE", "launch")
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    # Under the routed home override the runner resolves scripts against THAT profile's scripts dir.
+    script = routed / "scripts" / "probe_launch_only.sh"
+    script.write_text('#!/bin/bash\necho "${CUSTOM_CRON_VALUE}|${LAUNCH_ONLY_VALUE:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope({"CUSTOM_CRON_VALUE": "routed"})
+    try:
+        ok, output = _run_job_script("probe_launch_only.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "routed|<unset>"
+    assert os.environ["LAUNCH_ONLY_VALUE"] == "launch-only"  # the parent process was not mutated
+
+
+def test_a_routed_profile_script_never_receives_a_launch_external_source_value(hermes_env, monkeypatch):
+    """External secret sources (vault, 1Password, ...) write their names into the shared
+    ``os.environ`` too, and ``strip_launch_profile_env`` only knows dotenv- and terminal-owned
+    names. A name the LAUNCH profile's source supplied must still reach the routed child unset
+    (#107695 review); a name the ROUTED profile's own source supplies must come through."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LAUNCH_VAULT_ONLY", "launch-vault-value")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "LAUNCH_VAULT_ONLY", "vault")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "ROUTED_VAULT_ONLY", "vault")
+    script = routed / "scripts" / "probe_vault.sh"
+    script.write_text('#!/bin/bash\necho "${LAUNCH_VAULT_ONLY:-<unset>}|${ROUTED_VAULT_ONLY:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope({"ROUTED_VAULT_ONLY": "routed-vault-value"})
+    try:
+        ok, output = _run_job_script("probe_vault.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "<unset>|routed-vault-value"
+    assert os.environ["LAUNCH_VAULT_ONLY"] == "launch-vault-value"  # parent untouched
+
+
+def test_single_profile_child_keeps_its_own_external_source_value(hermes_env, monkeypatch):
+    """No multiplexing: os.environ IS this profile's environment, so the source-name strip must not
+    run at all — the child keeps its own vault value even if the per-home snapshot were missing."""
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+
+    monkeypatch.setenv("OWN_VAULT_KEY", "own-vault-value")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "OWN_VAULT_KEY", "vault")
+    script = hermes_env / "scripts" / "probe_own_vault.sh"
+    script.write_text('#!/bin/bash\necho "${OWN_VAULT_KEY:-<unset>}"\n')
+
+    assert secret_scope.is_multiplex_active() is False
+    ok, output = _run_job_script("probe_own_vault.sh")
+
+    assert ok, output
+    assert output.strip() == "own-vault-value"

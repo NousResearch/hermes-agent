@@ -349,7 +349,33 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        env = build_subprocess_env()
+        # A routed profile's script (desktop multi-profile ticker, multiplex gateway) must see ITS
+        # profile's .env + vault values — the process env holds the launch profile's. Drop the
+        # launch profile's dotenv-owned residue first (a name only the launch .env defines must
+        # come through UNSET, not with the launch value — the scrub only knows classified secrets),
+        # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
+        # passthrough rules as any other. No-op outside multiplex or for the launch profile's own
+        # fires; the parent process is never mutated.
+        from agent.secret_scope import _is_global_env, current_secret_scope, is_multiplex_active
+        from hermes_cli.env_loader import secret_source_names
+        from tools.environments.local import strip_launch_profile_env
+        base = strip_launch_profile_env(dict(os.environ))
+        # strip_launch_profile_env only knows dotenv- and terminal-config-owned names. External
+        # secret sources (vault, 1Password, ...) also write their names into the shared os.environ,
+        # tracked in secret_source_names(), and a name the LAUNCH profile's source supplied is not
+        # this profile's to see. Drop them; the overlay below puts back exactly the ones the routed
+        # profile's own sources supply (build_profile_secret_scope folds get_secret_source_values in).
+        # Guarded like strip_launch_profile_env itself: with no multiplexing there is no other
+        # profile to leak from -- os.environ IS this profile's environment -- so a single-profile
+        # child keeps byte-identical env even if a source's per-home snapshot is ever missing.
+        if is_multiplex_active():
+            for name in secret_source_names():
+                if not _is_global_env(name):
+                    base.pop(name, None)
+        scope = current_secret_scope()
+        if scope:
+            base.update(scope)
+        env = build_subprocess_env(base=base)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

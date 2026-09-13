@@ -675,3 +675,87 @@ def test_home_scoped_reset_preserves_sibling_snapshot(tmp_path, monkeypatch, _fr
     assert env_loader.get_secret_source_values(home) == {}
     assert env_loader.get_secret_source_values(sibling) == {"GLM_API_KEY": "vault-b"}
     assert str(sibling.resolve()) in env_loader._APPLIED_HOMES
+
+
+def test_profile_scope_carries_vault_secrets_only_when_hydrated_first(tmp_path, monkeypatch):
+    """``build_profile_secret_scope`` only READS the per-home source map, so hydration must run
+    BEFORE the scope is frozen — the order ``gateway/run.py`` and the external cron worker use.
+
+    This is load-bearing once the process-global dotenv write is suppressed for a scoped home:
+    a vault-backed secret then has no other route into the run.
+    """
+    from pathlib import Path
+
+    from agent.secret_scope import build_profile_secret_scope
+    from agent.secret_sources import registry as reg_module
+
+    home = tmp_path / "routed"
+    home.mkdir()
+    (home / ".env").write_text("BWS_ACCESS_TOKEN=0.test-token\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: true\n    project_id: p\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+
+    import agent.secret_sources.bitwarden as bw_module
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets",
+                        lambda **_kw: ({"VAULT_ONLY_KEY": "from-vault"}, []))
+    reg_module._reset_registry_for_tests()
+    env_loader._APPLIED_HOMES.discard(str(home.resolve()))
+
+    # Frozen before hydration: the vault value cannot be in the scope.
+    assert "VAULT_ONLY_KEY" not in build_profile_secret_scope(home)
+
+    # Hydrated first — as run_one_job now does — the scope carries it.
+    env_loader.hydrate_profile_secret_sources(home)
+    assert build_profile_secret_scope(home).get("VAULT_ONLY_KEY") == "from-vault"
+
+
+def test_a_plugin_source_discovered_mid_fire_reaches_the_installed_scope(tmp_path, monkeypatch):
+    """A routed cron fire freezes its scope before its first agent build discovers plugin secret
+    sources; under multiplex semantics the post-discovery reload is hydrate-only, so without an
+    in-place refresh THIS fire never saw the plugin credential (#107692 review)."""
+    import os
+
+    from agent import secret_scope
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import SECRET_SOURCE_API_VERSION, FetchResult, SecretSource
+    from hermes_cli.plugins import PluginManager
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    class _LateVault(SecretSource):
+        api_version = SECRET_SOURCE_API_VERSION
+        shape = "bulk"
+        name = "latevault"
+
+        def is_enabled(self, cfg: dict) -> bool:
+            return True
+
+        def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+            return FetchResult(secrets={"PLUGIN_ONLY_KEY": "from-plugin"})
+
+    launch, home = tmp_path / "launch", tmp_path / "launch" / "profiles" / "ops"
+    home.mkdir(parents=True)
+    (home / ".env").write_text("XAI_API_KEY=routed\n", encoding="utf-8")
+    (home / "config.yaml").write_text("secrets:\n  latevault:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("PLUGIN_ONLY_KEY", raising=False)
+    reg_module._reset_registry_for_tests()
+    env_loader.reset_secret_source_cache()
+
+    context_token = secret_scope.set_multiplex_context(True)
+    home_token = set_hermes_home_override(str(home))
+    scope_token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+    try:
+        assert secret_scope.get_secret("PLUGIN_ONLY_KEY") is None  # frozen before the plugin existed
+        assert reg_module.register_source(_LateVault())  # discovery registers the source...
+        PluginManager(scope_key=str(home))._refresh_secret_sources_after_discovery()  # ...and re-pulls
+        assert secret_scope.get_secret("PLUGIN_ONLY_KEY") == "from-plugin"
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reg_module._reset_registry_for_tests()
+    assert "PLUGIN_ONLY_KEY" not in os.environ

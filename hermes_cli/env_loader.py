@@ -337,6 +337,8 @@ def load_hermes_dotenv(
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
     # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
     # startup loads keep the normal path; external sources still refresh against the profile mapping.
+    # (``is_multiplex_active()`` is also true, context-locally, for a routed cron fire in the desktop
+    # backend — see ``cron.scheduler_provider._profile_cron_scope``.)
     from agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home_override
 

@@ -689,6 +689,11 @@ class TestE2EMessagesRead:
         })
         assert attachments["attachments"] == [{"type": "media", "path": "/tmp/evidence.png"}]
 
+        legacy_attachments = _run_tool(server=mcp_server_e2e[0], name="attachments_fetch", args={
+            "session_key": "agent:main:telegram:dm:123456", "message_id": "298830",
+        })
+        assert legacy_attachments["attachments"] == attachments["attachments"]
+
     def test_read_with_limit(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(server, "messages_read",

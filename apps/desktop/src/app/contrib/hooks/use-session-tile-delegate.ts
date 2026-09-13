@@ -7,7 +7,7 @@ import {
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
-import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -17,7 +17,12 @@ import {
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
+import {
+  $sessionTiles,
+  publishSessionState,
+  sessionTileOwnerRoute,
+  setSessionTileDelegate
+} from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
@@ -25,6 +30,7 @@ import { singleFlightSessionResume } from '../../session/hooks/use-prompt-action
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import {
   chatMessageArraysEquivalent,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   resolveSessionOwner
 } from '../../session/hooks/use-session-actions/utils'
@@ -35,7 +41,8 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResponse['messages'] | undefined
+  prefetchMessages: SessionResumeResponse['messages'] | undefined,
+  streamId?: null | string
 ): ChatMessage[] {
   const prefetched = toChatMessages(prefetchMessages ?? [])
 
@@ -45,7 +52,64 @@ function mergeTileTranscript(
 
   const persisted = graftRefreshedTailOntoBackfill(prefetched, previous)
 
-  return reconcileResumeMessages(persisted, previous)
+  // The known stream belongs to this turn even when its text repeats an older
+  // answer; the generic reconnect reconciler only has text/ordinal heuristics.
+  const stream = previous.find(message => message.id === streamId)
+
+  const merged = preserveLocalPendingTurnMessages(
+    reconcileResumeMessages(persisted, previous),
+    stream ? previous.filter(message => message !== stream) : previous
+  )
+
+  if (!stream) {
+    return merged
+  }
+
+  // Compaction shifts global assistant ordinals. Anchor this turn at its user
+  // row instead; an older answer sharing the stream's prefix is not a match.
+  const beforeStream = previous.slice(0, previous.indexOf(stream))
+  const user = beforeStream.findLast(message => message.role === 'user')
+
+  let anchor = user
+    ? persisted.findIndex(
+        message => message.id === user.id || (user.rowId !== undefined && message.rowId === user.rowId)
+      )
+    : -1
+
+  if (user && anchor < 0) {
+    const matches = persisted.filter(
+      message => message.role === 'user' && chatMessageText(message) === chatMessageText(user)
+    )
+
+    anchor = matches.length === 1 ? persisted.indexOf(matches[0]) : -1
+  }
+
+  const turn = anchor < 0 ? [] : persisted.slice(anchor + 1)
+  const nextUser = turn.findIndex(message => message.role === 'user')
+
+  const ordinal = user
+    ? beforeStream.slice(beforeStream.indexOf(user) + 1).filter(message => message.role === 'assistant').length
+    : 0
+
+  const counterpart =
+    persisted.find(
+      message => message.id === stream.id || (stream.rowId !== undefined && message.rowId === stream.rowId)
+    ) ?? (nextUser < 0 ? turn : turn.slice(0, nextUser)).filter(message => message.role === 'assistant')[ordinal]
+
+  const localText = chatMessageText(stream)
+  const storedText = counterpart ? chatMessageText(counterpart) : ''
+
+  if (!counterpart || !(storedText.startsWith(localText) || localText.startsWith(storedText))) {
+    return [...merged, stream]
+  }
+
+  // Keep the stream id for subsequent deltas, but use REST's fuller answer.
+  const reply =
+    storedText.length > localText.length
+      ? { ...reconcileResumeMessages([counterpart], [stream])[0], id: stream.id }
+      : stream
+
+  return merged.map((message, index) => (index === persisted.indexOf(counterpart) ? reply : message))
 }
 
 interface SessionTileDelegateParams {
@@ -203,7 +267,12 @@ export function useSessionTileDelegate({
         )
       },
       resumeTile: async (storedSessionId, options) => {
-        const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        // A retained tile can still own its runtime after the primary view drops
+        // its reverse lookup. Reconnect invalidates both bindings.
+        const existing =
+          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const refreshTranscript = options?.refreshTranscript === true
 
@@ -245,13 +314,16 @@ export function useSessionTileDelegate({
 
         if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
           const prefetch = await prefetchPromise
-          const merged = mergeTileTranscript(cached.messages, prefetch?.messages)
+          // Deltas and completion may land while REST is in flight.
+          updateSessionState(
+            existing,
+            state => {
+              const merged = mergeTileTranscript(state.messages, prefetch?.messages, state.streamId ?? cached.streamId)
 
-          if (!chatMessageArraysEquivalent(cached.messages, merged)) {
-            updateSessionState(existing, state => ({ ...state, messages: merged }), storedSessionId)
-          } else {
-            publishSessionState(existing, cached)
-          }
+              return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
+            },
+            storedSessionId
+          )
 
           return existing
         }

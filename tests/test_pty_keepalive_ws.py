@@ -9,13 +9,17 @@ import hermes_cli.web_server_chat as _web_server_chat
 class FakeBridge:
     def __init__(self):
         self.alive = True
+        self.accept_input = True
         self.written = bytearray()
 
     def read(self, timeout):
         return b""        # idle forever
 
-    def write(self, data):
+    async def write(self, data):
+        if not self.accept_input:
+            return False
         self.written.extend(data)
+        return True
 
     def resize(self, cols, rows):
         pass
@@ -68,6 +72,25 @@ async def test_attach_token_reuses_same_session(pty_keepalive_harness):
         ws2.send_bytes(b"again")
     assert len(pty_keepalive_harness) == 1                # reattached, did not respawn
     assert bytes(pty_keepalive_harness.bridges[0].written) == b"hi\x0cagain"
+
+
+@pytest.mark.asyncio
+async def test_stalled_input_closes_only_the_keepalive_socket(
+    pty_keepalive_harness,
+):
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?attach=TOK1") as ws:
+        bridge = pty_keepalive_harness.bridges[0]
+        bridge.accept_input = False
+        ws.send_bytes(b"input")
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            ws.receive_bytes()
+
+    assert exc_info.value.code == 1013
+    assert web_server.PTY_REGISTRY._sessions["TOK1"].alive is False
 
 
 @pytest.mark.asyncio

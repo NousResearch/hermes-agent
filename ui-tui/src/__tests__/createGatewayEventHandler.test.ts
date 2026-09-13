@@ -67,6 +67,31 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
+    patchUiState({ sid: 'focused' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+    onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
+    onEvent({
+      session_id: 'focused',
+      payload: { request_id: 'approval', command: 'test' },
+      type: 'approval.request'
+    } as any)
+    const busyOverlay = getOverlayState().approval
+    expect(getUiState().busy).toBe(true)
+    expect(busyOverlay).not.toBeNull()
+    const snapshot = { model: 'test', skills: {}, tools: {} }
+    onEvent({ session_id: 'other', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: snapshot, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: true }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(true)
+    expect(getOverlayState().approval).toEqual(busyOverlay)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().status).toBe('ready')
+    expect(getOverlayState().approval).toBeNull()
+    expect(getTurnState().tools).toEqual([])
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

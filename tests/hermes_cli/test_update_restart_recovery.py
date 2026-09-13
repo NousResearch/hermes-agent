@@ -252,6 +252,13 @@ def test_service_matching_is_exact_for_overlapping_profile_names():
     assert not update_cmd._gateway_service_matches_profile(
         "default", "ai.hermes.gateway-foo"
     )
+    # Scope-qualified identities the restart phase may record.
+    assert update_cmd._gateway_service_matches_profile(
+        "default", "gui/501/ai.hermes.gateway"
+    )
+    assert update_cmd._gateway_service_matches_profile(
+        "foo", "user/hermes-gateway-foo.service"
+    )
 
 
 def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):

@@ -13,7 +13,7 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from gateway.config import GatewayConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionStore
 

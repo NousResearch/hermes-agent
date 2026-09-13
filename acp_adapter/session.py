@@ -293,8 +293,11 @@ class SessionManager:
 
         try:
             if db.get_session(state.session_id) is None:
+                if not state.history:
+                    # Empty editor probes stay ephemeral; copied fork history persists.
+                    return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
-                                  model_config={"cwd": state.cwd})
+                                  model_config=session_meta)
             else:
                 try:
                     db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)

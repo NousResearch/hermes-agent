@@ -478,7 +478,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
 
     # Backfill dataflow metadata for records written before these fields existed
     # so graph/API consumers can read them unconditionally.
-    for df_field in ("inputs", "outputs", "side_effects"):
+    for df_field in ("inputs", "outputs", "side_effects", "source_files"):
         value = normalized.get(df_field)
         normalized[df_field] = value if isinstance(value, list) else []
 
@@ -1639,6 +1639,181 @@ _DELIVER_SIDE_EFFECT_SCHEME = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Source files (the code a job runs)
+#
+# A job's dataflow says what it reads and writes; its *source files* say which
+# code does the reading and writing. Two are known mechanically — `script` and
+# `monitor_script` — and the rest is agentic: a prompt that says "run
+# ~/.hermes/scripts/ingest.py" or "use the classifier in indexing/x402.py"
+# names code the mechanism can't see, so the creating agent declares it in
+# `source_files`. `build_cron_graph` merges both layers onto the cron node
+# (`source_files`) and resolves each path onto the file-browser roots
+# (`tui_gateway.files_browse`) so Portal can open the file in place with
+# `files.read`.
+#
+# Deliberately NOT part of the graph commitment: `cron/changesets.py` and
+# Portal's `CronGraphDigest` hash the node row independently and must agree
+# byte-for-byte, so growing that row is a coordinated change, not a side effect
+# of adding metadata here.
+def _normalize_source_files(values: Any, *, field_name: str = "source_files") -> List[str]:
+    """Normalize a declared source-file list to sorted, deduped path strings.
+
+    Accepts a single string or a list; ``None``/empty → ``[]``. Entries are
+    filesystem paths, not typed refs: absolute, ``~``-relative, or relative
+    (relative resolves under ``HERMES_HOME/scripts/``, mirroring ``script``). A
+    leading ``file:`` scheme is tolerated and stripped so an agent that reaches
+    for the dataflow vocabulary isn't rejected for it. Only shape is enforced —
+    existence is *reported* by the graph (``exists``), never required at write
+    time, because a job is routinely declared before its script is committed.
+    """
+    if values is None:
+        return []
+    if isinstance(values, str):
+        raw: List[Any] = [values]
+    elif isinstance(values, (list, tuple)):
+        raw = list(values)
+    else:
+        raise ValueError(
+            f"{field_name} must be a string or list of path strings, got "
+            f"{type(values).__name__}."
+        )
+
+    seen: Set[str] = set()
+    out: List[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError(
+                f"{field_name} entries must be path strings, got {type(item).__name__}."
+            )
+        text = item.strip()
+        if text.lower().startswith("file:"):
+            text = text[5:].strip()
+        if not text:
+            continue
+        if "\x00" in text:
+            raise ValueError(f"{field_name} entry contains a NUL byte and cannot name a file.")
+        if "://" in text:
+            raise ValueError(
+                f"{field_name} entry '{text}' is a URL — source files are filesystem "
+                "paths; declare remote reads under `inputs` instead."
+            )
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
+    return sorted(out)
+
+
+def _resolve_source_file_path(raw: str) -> Optional[Path]:
+    """The absolute path a source-file value names, by the scheduler's rule for
+    ``script``: absolute and ``~`` paths as-is, anything relative under
+    ``HERMES_HOME/scripts/``. ``None`` when the value can't be a path (NUL byte,
+    unexpandable ``~``) — same ingestion contract as ``cron.lifecycle_guard``.
+    """
+    if not raw or "\x00" in raw:
+        return None
+    try:
+        path = Path(raw).expanduser()
+    except (ValueError, RuntimeError, OSError):
+        return None
+    if not path.is_absolute():
+        path = get_hermes_home() / "scripts" / path
+    try:
+        return path.resolve()
+    except (RuntimeError, OSError):
+        return path
+
+
+def _source_file_roots() -> Dict[str, Path]:
+    """The browse roots a source file can be opened under, name → absolute path.
+
+    Sourced from the file browser so the two agree by construction; when that
+    module isn't importable (a stripped CLI install) the data home alone is
+    offered, which is where relative scripts live anyway.
+    """
+    try:
+        from tui_gateway.files_browse import file_roots
+
+        return {name: Path(root).resolve() for name, root in file_roots().items()}
+    except Exception:
+        try:
+            return {"hermes": get_hermes_home().resolve()}
+        except Exception:
+            return {}
+
+
+def _browse_root_for(path: Path, roots: Dict[str, Path]) -> Tuple[Optional[str], Optional[str]]:
+    """``(root name, relative posix path)`` of the browse root containing ``path``.
+
+    Prefers the *deepest* root when roots nest — the repo checkout routinely
+    lives inside ``~/.hermes`` — so a repo file is addressed as ``repo:…`` rather
+    than ``hermes:hermes-agent/…``. ``(None, None)`` when no root contains it:
+    the file is still listed on the node, just not openable from the client.
+    """
+    best: Optional[Tuple[str, Path, Path]] = None
+    for name, root in roots.items():
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if best is None or len(root.parts) > len(best[1].parts):
+            best = (name, root, rel)
+    if best is None:
+        return None, None
+    return best[0], best[2].as_posix()
+
+
+def job_source_files(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Every source file a job runs or declares, resolved for the graph.
+
+    Mechanical first (``script`` → role ``script``, ``monitor_script`` →
+    ``monitor``), then the declared ``source_files`` (``declared``); deduped on
+    the resolved path with the mechanical role winning, since a declared entry
+    that is also the job's script is one file with the stronger claim. Each
+    entry carries the absolute ``path``, the value as ``declared``, its
+    ``role``, the browse ``root`` + ``rel`` path it can be read under (or
+    ``None``), and whether it ``exists`` on this host right now.
+    """
+    candidates: List[Tuple[str, str]] = []
+    if job.get("script"):
+        candidates.append((str(job["script"]), "script"))
+    if job.get("monitor_script"):
+        candidates.append((str(job["monitor_script"]), "monitor"))
+    for raw in job.get("source_files") or []:
+        if isinstance(raw, str) and raw.strip():
+            candidates.append((raw, "declared"))
+    if not candidates:
+        return []
+
+    roots = _source_file_roots()
+    entries: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for raw, role in candidates:
+        resolved = _resolve_source_file_path(raw)
+        if resolved is None:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        root_name, rel = _browse_root_for(resolved, roots)
+        try:
+            exists = resolved.is_file()
+        except OSError:
+            exists = False
+        entries.append(
+            {
+                "path": key,
+                "declared": raw,
+                "role": role,
+                "root": root_name,
+                "rel": rel,
+                "exists": exists,
+            }
+        )
+    return entries
+
+
 def _normalize_resource_list(
     values: Any,
     *,
@@ -2113,6 +2288,11 @@ def build_cron_graph(
                 "uses_llm": not bool(job.get("no_agent")),
                 "last_status": job.get("last_status"),
                 "deliver": job.get("deliver"),
+                # The code behind the node — mechanical script fields merged
+                # with the declared list, each resolved onto a browse root so
+                # the client can open it. Node metadata, not nodes: a script is
+                # what a job *is made of*, not something it exchanges data with.
+                "source_files": job_source_files(job),
             }
         )
 
@@ -2276,6 +2456,7 @@ def create_job(
     inputs: Optional[Union[str, List[str]]] = None,
     outputs: Optional[Union[str, List[str]]] = None,
     side_effects: Optional[Union[str, List[str]]] = None,
+    source_files: Optional[Union[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -2341,6 +2522,12 @@ def create_job(
         side_effects: Optional typed refs for terminal actions the job performs
                 (schemes: telegram/slack/email/notify/pr/github/webhook) — graph
                 sink leaves, not edges. See the dataflow metadata block above.
+        source_files: Optional paths to the code this job runs or relies on
+                beyond ``script`` / ``monitor_script`` (which are picked up
+                mechanically) — e.g. a module the prompt tells the agent to
+                execute. Absolute, ``~``, or relative to ~/.hermes/scripts/.
+                Shown on the job's graph node so the file can be opened from
+                Portal. See the source-files block above.
 
     Returns:
         The created job dict
@@ -2413,6 +2600,7 @@ def create_job(
     )
     _validate_dataflow_shape(deliver, normalized_side_effects)
     _validate_dataflow_context(context_from, normalized_inputs)
+    normalized_source_files = _normalize_source_files(source_files)
 
     prompt_text = _coerce_job_text(prompt)
 
@@ -2474,6 +2662,9 @@ def create_job(
         "inputs": normalized_inputs,
         "outputs": normalized_outputs,
         "side_effects": normalized_side_effects,
+        # Code the job runs beyond `script` / `monitor_script`; see the
+        # source-files block near job_source_files.
+        "source_files": normalized_source_files,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -2656,6 +2847,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 )
             if "inputs" in updates:
                 _validate_candidate_dataflow(updated, jobs)
+            if "source_files" in updates:
+                updated["source_files"] = _normalize_source_files(updates["source_files"])
 
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(

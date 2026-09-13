@@ -756,3 +756,255 @@ class TestCronGraphRPC:
         assert captured["rid"] == 7
         assert set(captured["result"].keys()) == {"nodes", "edges"}
         assert any(n["kind"] == "cron" for n in captured["result"]["nodes"])
+
+
+class TestSourceFiles:
+    """`source_files`: the code behind a job, declared + mechanical, on its node."""
+
+    def test_normalization_dedupes_sorts_and_strips_file_scheme(self):
+        from cron.jobs import _normalize_source_files
+
+        out = _normalize_source_files(
+            ["ingest.py", " file:indexing/x.py ", "ingest.py", "", "~/.hermes/scripts/a.sh"]
+        )
+        assert out == ["indexing/x.py", "ingest.py", "~/.hermes/scripts/a.sh"]
+        assert _normalize_source_files("one.py") == ["one.py"]
+        assert _normalize_source_files(None) == []
+        assert _normalize_source_files([]) == []
+
+    def test_normalization_rejects_non_paths(self):
+        from cron.jobs import _normalize_source_files
+
+        with pytest.raises(ValueError, match="URL"):
+            _normalize_source_files(["https://example.com/x.py"])
+        with pytest.raises(ValueError, match="NUL"):
+            _normalize_source_files(["bad\x00.py"])
+        with pytest.raises(ValueError, match="path strings"):
+            _normalize_source_files([42])
+        with pytest.raises(ValueError, match="string or list"):
+            _normalize_source_files({"a": 1})
+
+    def test_create_stores_and_update_normalizes(self, cron_env):
+        from cron.jobs import create_job, get_job, update_job
+
+        job = create_job(prompt="x", schedule="every 1h", source_files=["b.py", "a.py"])
+        assert job["source_files"] == ["a.py", "b.py"]
+
+        update_job(job["id"], {"source_files": " file:c.py "})
+        assert get_job(job["id"])["source_files"] == ["c.py"]
+
+        update_job(job["id"], {"source_files": []})
+        assert get_job(job["id"])["source_files"] == []
+
+    def test_legacy_record_backfills_empty_list(self, cron_env):
+        import json
+
+        from cron.jobs import JOBS_FILE, create_job, get_job
+
+        job = create_job(prompt="x", schedule="every 1h")
+        data = json.loads(JOBS_FILE.read_text())
+        for record in data["jobs"]:
+            record.pop("source_files", None)
+        JOBS_FILE.write_text(json.dumps(data))
+
+        assert get_job(job["id"])["source_files"] == []
+
+    def test_graph_node_merges_script_fields_with_declared(self, cron_env, monkeypatch):
+        import os
+
+        import cron.jobs as jobs_mod
+        from cron.jobs import build_cron_graph, create_job
+
+        scripts = cron_env / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "w.sh").write_text("echo hi\n")
+        os.chmod(scripts / "w.sh", 0o755)
+        (scripts / "helper.py").write_text("print(1)\n")
+        # Pin the browse roots so the assertion doesn't depend on where this
+        # checkout lives; the nested `repo` root exercises deepest-root wins.
+        repo = cron_env / "hermes-agent"
+        (repo / "indexing").mkdir(parents=True)
+        (repo / "indexing" / "x.py").write_text("pass\n")
+        monkeypatch.setattr(
+            jobs_mod, "_source_file_roots", lambda: {"hermes": cron_env, "repo": repo}
+        )
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            no_agent=True,
+            script="w.sh",
+            source_files=["w.sh", "helper.py", str(repo / "indexing" / "x.py"), "/tmp/elsewhere/gone.py"],
+        )
+        node = next(n for n in build_cron_graph()["nodes"] if n["id"] == job["id"])
+        files = node["source_files"]
+
+        by_path = {entry["path"]: entry for entry in files}
+        # The script comes first with the mechanical role, and the declared
+        # duplicate of it collapsed into that one entry.
+        assert files[0]["role"] == "script"
+        assert files[0]["declared"] == "w.sh"
+        assert files[0]["root"] == "hermes"
+        assert files[0]["rel"] == "scripts/w.sh"
+        assert files[0]["exists"] is True
+        assert sum(1 for e in files if e["path"].endswith("/scripts/w.sh")) == 1
+
+        helper = by_path[str((scripts / "helper.py").resolve())]
+        assert helper["role"] == "declared"
+        assert helper["root"] == "hermes"
+        assert helper["rel"] == "scripts/helper.py"
+
+        nested = by_path[str((repo / "indexing" / "x.py").resolve())]
+        assert nested["root"] == "repo"  # deepest containing root, not hermes
+        assert nested["rel"] == "indexing/x.py"
+
+        outside = next(e for e in files if e["declared"] == "/tmp/elsewhere/gone.py")
+        assert outside["root"] is None
+        assert outside["rel"] is None
+        assert outside["exists"] is False
+
+    def test_monitor_script_has_its_own_role(self, cron_env):
+        import os
+
+        from cron.jobs import build_cron_graph, create_job
+
+        scripts = cron_env / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "probe.sh").write_text("echo x\n")
+        os.chmod(scripts / "probe.sh", 0o755)
+        job = create_job(prompt="watch", schedule="every 1h", monitor_script="probe.sh")
+        node = next(n for n in build_cron_graph()["nodes"] if n["id"] == job["id"])
+        assert [e["role"] for e in node["source_files"]] == ["monitor"]
+
+    def test_job_without_code_has_empty_list(self, cron_env):
+        from cron.jobs import build_cron_graph, create_job
+
+        job = create_job(prompt="x", schedule="every 1h")
+        node = next(n for n in build_cron_graph()["nodes"] if n["id"] == job["id"])
+        assert node["source_files"] == []
+
+    def test_default_roots_come_from_the_file_browser(self, cron_env):
+        from cron.jobs import _source_file_roots
+
+        roots = _source_file_roots()
+        assert "repo" in roots
+        assert all(root.is_absolute() for root in roots.values())
+
+    def test_source_files_stay_out_of_the_commitment(self, cron_env):
+        # Portal hashes the node row with the same fields as cron/changesets.py;
+        # neither includes source_files, so declaring code must not move the digest.
+        from cron.changesets import configuration_digest
+        from cron.jobs import build_cron_graph, create_job, update_job
+
+        job = create_job(prompt="x", schedule="every 1h")
+        before = configuration_digest(build_cron_graph())
+        update_job(job["id"], {"source_files": ["a.py"]})
+        assert configuration_digest(build_cron_graph()) == before
+
+    def test_tool_list_reports_declared_files(self, cron_env):
+        import json
+
+        from tools.cronjob_tools import cronjob
+
+        created = json.loads(cronjob(action="create", prompt="x", schedule="every 1h", source_files=["a.py"]))
+        assert created["success"] is True
+        listed = json.loads(cronjob(action="list"))
+        assert listed["jobs"][0]["source_files"] == ["a.py"]
+
+        updated = json.loads(cronjob(action="update", job_id=created["job"]["job_id"], source_files=["b.py"]))
+        assert updated["success"] is True
+        assert json.loads(cronjob(action="list"))["jobs"][0]["source_files"] == ["b.py"]
+
+
+def _cron_manage_handler():
+    """The registered `cron.manage` handler with `_ok`/`_err` stubbed to return
+    plain dicts, so a test can assert on either envelope."""
+    import tui_gateway.methods_tools as mt
+
+    handler = dict(mt._registry._pending)["cron.manage"]
+    handler.__globals__["_ok"] = lambda rid, result: {"rid": rid, "result": result}
+    handler.__globals__["_err"] = lambda rid, code, msg: {"rid": rid, "error": {"code": code, "message": msg}}
+    handler.__globals__.setdefault("logger", __import__("logging").getLogger("t"))
+    # The server rebinds handler globals at install time (that's where `json`
+    # comes from in production); a direct invocation has to supply it.
+    handler.__globals__.setdefault("json", __import__("json"))
+    return handler
+
+
+class TestCronManageRPC:
+    """The person-facing door: describe / history / update, which `list` alone
+    can't stand in for (it caps the prompt at a 100-char preview)."""
+
+    def test_describe_returns_the_full_prompt(self, cron_env):
+        from cron.jobs import create_job
+
+        long_prompt = "p" * 240
+        job = create_job(prompt=long_prompt, schedule="every 1h", source_files=["a.py"])
+        out = _cron_manage_handler()(1, {"action": "describe", "name": job["id"]})
+
+        detail = out["result"]["job"]
+        assert out["result"]["success"] is True
+        assert detail["job_id"] == job["id"]
+        assert detail["prompt"] == long_prompt
+        assert detail["prompt_preview"].endswith("...")
+        assert detail["source_files"] == ["a.py"]
+        assert detail["source_files_resolved"][0]["declared"] == "a.py"
+
+    def test_describe_unknown_job_is_a_not_found_error(self, cron_env):
+        out = _cron_manage_handler()(2, {"action": "describe", "name": "nope"})
+        assert out["error"]["code"] == 4404
+
+    def test_describe_requires_a_name(self, cron_env):
+        out = _cron_manage_handler()(3, {"action": "describe"})
+        assert out["error"]["code"] == 4001
+
+    def test_update_prompt_persists(self, cron_env):
+        from cron.jobs import create_job, get_job
+
+        job = create_job(prompt="old", schedule="every 1h")
+        out = _cron_manage_handler()(4, {"action": "update", "name": job["id"], "prompt": "new prompt text"})
+        assert out["result"]["success"] is True
+        assert get_job(job["id"])["prompt"] == "new prompt text"
+
+    def test_update_renames_via_job_name(self, cron_env):
+        from cron.jobs import create_job, get_job
+
+        job = create_job(prompt="x", schedule="every 1h", name="db-backup")
+        _cron_manage_handler()(5, {"action": "update", "name": job["id"], "job_name": "infra/db-backup"})
+        assert get_job(job["id"])["name"] == "infra/db-backup"
+
+    def test_update_source_files_and_rejects_empty_update(self, cron_env):
+        from cron.jobs import create_job, get_job
+
+        job = create_job(prompt="x", schedule="every 1h")
+        _cron_manage_handler()(6, {"action": "update", "name": job["id"], "source_files": ["z.py"]})
+        assert get_job(job["id"])["source_files"] == ["z.py"]
+
+        out = _cron_manage_handler()(7, {"action": "update", "name": job["id"]})
+        assert out["error"]["code"] == 4001
+
+    def test_update_failure_surfaces_as_error(self, cron_env):
+        out = _cron_manage_handler()(8, {"action": "update", "name": "missing", "prompt": "x"})
+        assert out["error"]["code"] == 4017
+
+    def test_history_returns_ledger_envelope(self, cron_env):
+        from cron.executions import create_execution, finish_execution, mark_execution_running
+        from cron.jobs import create_job
+
+        job = create_job(prompt="x", schedule="every 1h", name="collector")
+        execution = create_execution(job["id"], source="test")
+        mark_execution_running(execution["id"])
+        finish_execution(execution["id"], success=True)
+
+        out = _cron_manage_handler()(9, {"action": "history", "name": job["id"], "limit": 5})
+        result = out["result"]
+        assert result["success"] is True
+        assert result["job_id"] == job["id"]
+        assert result["job_name"] == "collector"
+        assert result["count"] == 1
+        assert result["runs"][0]["status"] == "completed"
+        assert result["runs"][0]["claimed_at"]
+
+    def test_unknown_action_still_rejected(self, cron_env):
+        out = _cron_manage_handler()(10, {"action": "explode", "name": "x"})
+        assert out["error"]["code"] == 4016

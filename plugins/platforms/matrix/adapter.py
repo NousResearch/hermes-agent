@@ -39,7 +39,8 @@ from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
+    get_scoped_secret as _get_scoped_secret, send_error
 )
 
 try:
@@ -319,10 +320,8 @@ MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
 
 def _resolve_max_message_length(config) -> int:
     """Resolve outbound chunk size from config, env, or plugin registry."""
-    raw = (getattr(config, "extra", {}) or {}).get("max_message_length")
-    if raw is None:
-        raw = _get_scoped_secret("MATRIX_MAX_MESSAGE_LENGTH")
-    if raw is None:
+    raw = _extra_or_secret(getattr(config, "extra", None), "max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", None)
+    if raw is None or not str(raw).strip():
         with suppress(Exception):
             from gateway.platform_registry import platform_registry
             entry = platform_registry.get("matrix")
@@ -477,12 +476,9 @@ def _csv_set(raw: Any) -> Set[str]:
 
 
 def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
-    """Resolve a room/user list from config.extra[key], else the env var."""
-    raw = config.extra.get(key)
-    if raw is None or (not isinstance(raw, list) and not str(raw).strip()):
-        # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
-        raw = _get_scoped_secret(env_name, "").strip()
-    return _csv_set(raw)
+    """Resolve a room/user list from config.extra[key] (blank = unset), else the scoped env var —
+    under multiplex os.environ is the DEFAULT profile's room/user list."""
+    return _csv_set(_extra_or_secret(config.extra, key, env_name))
 
 
 def _recovery_key_output_path() -> Optional[Path]:
@@ -871,10 +867,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
-        """``config.extra[key]`` (YAML-bridged, per profile) else the env var, true/1/yes semantics."""
-        configured = config.extra.get(key)
-        if configured is None:
-            return _env_truthy(env_name, default)
+        """``config.extra[key]`` (YAML-bridged, per profile; blank = unset) else the env var, true/1/yes."""
+        configured = _extra_or_secret(config.extra, key, env_name, default)
         return configured if isinstance(configured, bool) else str(configured).lower() in ("true", "1", "yes")
 
     @staticmethod

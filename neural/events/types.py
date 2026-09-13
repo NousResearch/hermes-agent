@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -20,8 +21,8 @@ class NeuralEvent:
     """An observation flowing through the neural bus.
 
     Events are immutable so consumers cannot silently alter history after it
-    has been published. Payloads are treated as caller-owned data; the neural
-    layer does not mutate them.
+    has been published. Payloads are copied at construction time so each event
+    retains an isolated snapshot of caller-owned data.
     """
 
     source: str
@@ -38,6 +39,7 @@ class NeuralEvent:
             raise ValueError("source must not be empty")
         if not self.event_type:
             raise ValueError("event_type must not be empty")
+        object.__setattr__(self, "payload", deepcopy(self.payload))
         object.__setattr__(self, "importance", _unit_interval(self.importance, "importance"))
         object.__setattr__(self, "confidence", _unit_interval(self.confidence, "confidence"))
 

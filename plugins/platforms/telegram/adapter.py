@@ -139,7 +139,7 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
-from gateway.authz_mixin import _coerce_allow_set
+from .authz_mixin import TelegramAuthorizationMixin
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, classify_send_error,
@@ -367,7 +367,7 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(TelegramAuthorizationMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     MAX_MESSAGE_LENGTH = 4096
@@ -743,73 +743,6 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
 
-    def _is_callback_user_authorized(
-        self, user_id: str, *, chat_id: Optional[str] = None, chat_type: Optional[str] = None,
-        thread_id: Optional[str] = None, user_name: Optional[str] = None) -> bool:
-        """Return whether a Telegram inline-button caller may perform gated actions."""
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            return False
-        normalized_chat_type = self._normalize_chat_type(chat_type, is_forum=thread_id is not None)
-        # Preferred: the auth callback GatewayRunner injects (set_authorization_check) → full
-        # _is_user_authorized chain; also works for a multiplexed adapter whose _message_handler is a
-        # profile closure. getattr tolerates partially-constructed adapters (object.__new__ in tests).
-        if getattr(self, "_authorization_check", None) is not None:
-            injected = self._is_sender_authorized(
-                normalized_user_id, chat_type=normalized_chat_type, chat_id=str(chat_id or normalized_user_id),
-                thread_id=str(thread_id) if thread_id is not None else None)
-            if injected is not None:
-                return injected
-        auth_fn = self._legacy_runner_auth_fn()
-        if auth_fn is not None:
-            try:
-                from gateway.session import SessionSource
-                source = SessionSource(
-                    platform=Platform.TELEGRAM, chat_id=str(chat_id or normalized_user_id), chat_type=normalized_chat_type,
-                    user_id=normalized_user_id, user_name=str(user_name).strip() if user_name else None,
-                    thread_id=str(thread_id) if thread_id is not None else None)
-                return bool(auth_fn(source))
-            except Exception:
-                logger.debug(
-                    "[Telegram] Falling back to env-only callback auth for user %s", normalized_user_id, exc_info=True)
-        decision = self._env_allowlist_decision(normalized_user_id)
-        if decision is None:
-            # Fail-closed: no allowlist means deny unless GATEWAY_ALLOW_ALL_USERS is set.
-            # The runner auth path in _is_user_authorized() handles GATEWAY_ALLOW_ALL_USERS; this fallback
-            # must not silently allow everyone (fixes #24457).
-            return _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
-        return decision
-
-    def _source_from_message_for_auth(self, message: Message):
-        """Build the SessionSource the gateway auth path expects; identity comes from ``from_user``,
-        falling back to ``sender_chat`` for channel posts so an unauthorized channel can't inject."""
-        from gateway.session import SessionSource
-        user = getattr(message, "from_user", None)
-        chat = getattr(message, "chat", None)
-        user_id = str(getattr(user, "id", "")).strip() or None
-        # Carry is_bot so the runner's ``*_ALLOW_BOTS`` branch is reachable, as in build_source.
-        is_bot = bool(getattr(user, "is_bot", False)) if user is not None else False
-        user_name = str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip() or None
-        if not user_id:  # channel post — authorize the sender chat instead
-            sender_chat = getattr(message, "sender_chat", None)
-            if sender_chat is not None:
-                user_id = str(getattr(sender_chat, "id", "")).strip() or None
-                if not user_name:
-                    user_name = str(getattr(sender_chat, "title", "") or "").strip() or None
-        chat_id = str(getattr(chat, "id", "")).strip() or user_id
-        thread_id_raw = getattr(message, "message_thread_id", None)
-        is_topic_message = bool(getattr(message, "is_topic_message", False))
-        is_forum_group = getattr(chat, "is_forum", False) is True
-        chat_type = self._normalize_chat_type(
-            getattr(chat, "type", "dm"), is_forum=thread_id_raw is not None and (is_topic_message or is_forum_group))
-        thread_id = None
-        if thread_id_raw is not None and (
-            (chat_type == "forum" and (is_topic_message or is_forum_group)) or (chat_type == "dm" and is_topic_message)):
-            thread_id = str(thread_id_raw)
-        return SessionSource(
-            platform=Platform.TELEGRAM, chat_id=chat_id or "", chat_type=chat_type, user_id=user_id,
-            user_name=user_name, thread_id=thread_id, is_bot=is_bot)
-
     def _source_from_reaction_for_auth(self, update):
         """SessionSource for a ``message_reaction`` update's actor (``user`` or ``actor_chat``).
 
@@ -830,13 +763,6 @@ class TelegramAdapter(BasePlatformAdapter):
         return self.build_source(
             chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name, thread_id=None, message_id=str(message_id))
 
-    def _telegram_auth_env_configured(self) -> bool:
-        """Return True when Telegram auth env vars make an early decision safe."""
-        keys = (
-            "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS",
-            "TELEGRAM_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS")
-        return any(_scoped_gate_env(key).strip() for key in keys)
-
     def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
         """True when an unauthorized DM must still reach gateway pairing (``unauthorized_dm_behavior``
         resolves to ``pair``, incl. an allowlist plus an explicit platform override)."""
@@ -853,60 +779,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.debug("[Telegram] Failed to resolve unauthorized DM behavior; falling back to adapter-local override", exc_info=True)
         extra = getattr(getattr(self, "config", None), "extra", None) or {}
         return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair"
-
-    def _is_user_authorized_from_message(self, message: Message) -> bool:
-        """Intake auth prefilter, run BEFORE batching/event construction/group observation.
-
-        Only rejects when it can make the same context-aware decision the runner would; unknown DMs pass through when
-        there is no allowlist or pairing is the unauthorized-DM behavior."""
-        source = self._source_from_message_for_auth(message)
-        user_id = source.user_id
-        # No identity → service message or channel post without sender_chat; defer to message gating.
-        if not user_id:
-            return True
-        authorized: Optional[bool] = None
-        # Adapter-level allow_from (DMs) / group_allow_from (groups) are the sole authority if set.
-        adapter_allow_from = self.config.extra.get(
-            "group_allow_from" if (source.chat_type or "") in ("group", "forum", "channel") else "allow_from")
-        if adapter_allow_from is not None:
-            allowed = _coerce_allow_set(adapter_allow_from)
-            authorized = user_id in allowed or "*" in allowed
-        # Instance-level override only (tests): the class method _is_callback_user_authorized is for
-        # inline buttons and must not become a user-id-only shortcut for real messages.
-        if authorized is None:
-            callback_auth = self.__dict__.get("_is_callback_user_authorized")
-            if callable(callback_auth):
-                with contextlib.suppress(Exception):
-                    authorized = bool(callback_auth(
-                        user_id, chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id,
-                        user_name=source.user_name))
-        if authorized is None:
-            # Runner's full auth chain; prefer the set_authorization_check callback (survives multiplex
-            # handler wrapping, unlike bound-handler __self__).
-            auth_fn = self._legacy_runner_auth_fn()
-            has_callback = getattr(self, "_authorization_check", None) is not None
-            if has_callback or auth_fn is not None:
-                # No allowlist → unknown DMs must reach pairing, not be default-denied here.
-                if not self._telegram_auth_env_configured():
-                    return True
-                decision = self._is_sender_authorized(
-                    user_id, chat_type=source.chat_type, chat_id=source.chat_id, is_bot=source.is_bot,
-                    thread_id=source.thread_id) if has_callback else None
-                if decision is not None:
-                    authorized = decision
-                elif auth_fn is not None:
-                    try:
-                        authorized = bool(auth_fn(source))
-                    except Exception:
-                        logger.debug("[Telegram] Falling back to env-only auth for user %s", user_id, exc_info=True)
-        if authorized is None:
-            authorized = self._env_allowlist_decision(user_id)
-            if authorized is None:
-                return True
-        if authorized:
-            return True
-        # Unauthorized DM the gateway would pair: forward so pairing can run.
-        return self._should_pass_unauthorized_dm_for_pairing(source)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:

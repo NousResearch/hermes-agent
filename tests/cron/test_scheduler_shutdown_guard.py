@@ -103,6 +103,9 @@ class TestStandaloneDeliverySkipsDuringShutdown:
             result = _deliver_result(job, "daily report body")
 
         send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs["metadata"] == {
+            "hermes_cron_delivery": {"subject": "model-governor"}
+        }
         assert result is None
 
 

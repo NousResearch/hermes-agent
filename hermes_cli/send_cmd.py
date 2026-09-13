@@ -52,6 +52,13 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
     return (sys.stdin.read() or None) if not sys.stdin.isatty() else None
 
 
+def _invalid_whatsapp_mentions(mentions: list[str]) -> list[str]:
+    """Return mention values that cannot identify a WhatsApp participant."""
+    from gateway.whatsapp_identity import normalize_whatsapp_mention_jid
+
+    return [mention for mention in mentions if not normalize_whatsapp_mention_jid(mention)]
+
+
 def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     """Print the ``send_message_tool`` JSON result in the requested format; return the exit code.
     Unknown / unexpected shapes are failures so scripts notice."""
@@ -206,6 +213,15 @@ def cmd_send(args: argparse.Namespace) -> None:
             "  hermes send --to discord:#ops --file report.md\n"
             "  hermes send --list      # list available targets",
             _USAGE_EXIT)
+    mentions = list(getattr(args, "mentions", None) or [])
+    if mentions and target.split(":", 1)[0].strip().lower() != "whatsapp":
+        _fail("hermes send: --mention is only supported for WhatsApp targets.", _USAGE_EXIT)
+    invalid_mentions = _invalid_whatsapp_mentions(mentions) if mentions else []
+    if invalid_mentions:
+        _fail(
+            "hermes send: invalid --mention value(s): "
+            f"{', '.join(invalid_mentions)}. Use a phone number or participant JID.",
+            _USAGE_EXIT)
     message = _read_message_body(getattr(args, "message", None), getattr(args, "file", None))
     if message is None or not message.strip():
         _fail(
@@ -223,7 +239,10 @@ def cmd_send(args: argparse.Namespace) -> None:
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
-    result = send_message_tool({"action": "send", "target": target, "message": message})
+    tool_args = {"action": "send", "target": target, "message": message}
+    if mentions:
+        tool_args["mentions"] = mentions
+    result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 
@@ -239,6 +258,9 @@ _SEND_ARGUMENTS = (
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
     (("-s", "--subject"), dict(metavar="LINE", default=None, help="Prepend a subject/header line before the message body.")),
+    (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
+        "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
+        "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
@@ -264,6 +286,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
             "  hermes send --to discord:#ops --file /tmp/report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
+            "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
             "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"

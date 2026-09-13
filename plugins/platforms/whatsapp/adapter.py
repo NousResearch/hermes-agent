@@ -172,7 +172,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
@@ -882,7 +882,25 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document" if force_document else "audio" if is_voice else _WA_EXT_MEDIA_TYPE.get(os.path.splitext(file_path)[1].lower(), "document")
 
 
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, caption=None):
+def _normalize_outbound_mentions(mentions: Any) -> list[str]:
+    """Normalize valid outbound phone numbers and participant JIDs, preserving order."""
+    if not isinstance(mentions, (list, tuple)):
+        return []
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for candidate in mentions:
+        if not isinstance(candidate, str):
+            continue
+        jid = normalize_whatsapp_mention_jid(candidate)
+        if not jid or jid in seen:
+            continue
+        seen.add(jid)
+        normalized.append(jid)
+    return normalized
+
+
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
+                           caption=None, mentions=None):
     """Out-of-process delivery via the bridge HTTP API (standalone_sender_fn: cron apart from the gateway); ``caption`` rides on the media bubble."""
     try:
         import aiohttp
@@ -894,8 +912,28 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         media = media_files or []
         # A caption only applies to a single media file — never repeat it across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
+        pending_mentions = _normalize_outbound_mentions(mentions)
+
+        def _mention_first_payload(payload):
+            nonlocal pending_mentions
+            if pending_mentions:
+                payload["mentions"] = pending_mentions
+                pending_mentions = []
+            return payload
+
         last_message_id = None
         async with aiohttp.ClientSession() as session:
+            if pending_mentions:
+                async with session.get(
+                    f"http://localhost:{bridge_port}/health",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    health = await resp.json() if resp.status == 200 else {}
+                if not (health.get("capabilities") or {}).get("outboundMentions"):
+                    return {"error": (
+                        "WhatsApp bridge does not support native mentions; "
+                        "restart it from the same Hermes version.")}
+
             async def _post(path, payload, total, error_label=None):
                 """``(messageId, None)`` on 200, else ``(None, error_dict)`` (body read only when labelled)."""
                 url = f"http://localhost:{bridge_port}/{path}"
@@ -905,7 +943,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     return None, {} if error_label is None else {"error": f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}"}
             # 1) Text first (skipped when media-only or when the text rides as the caption).
             if (message or "").strip() and not media_caption:
-                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
+                payload = _mention_first_payload({"chatId": normalized_chat_id, "message": message})
+                last_message_id, err = await _post("send", payload, 30, "bridge")
                 if err:
                     return err
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).
@@ -914,13 +953,15 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     # In caption mode the words would vanish with the missing file — deliver the caption as a plain message.
                     if media_caption:
                         try:
-                            await _post("send", {"chatId": normalized_chat_id, "message": media_caption}, 30)
+                            payload = _mention_first_payload({"chatId": normalized_chat_id, "message": media_caption})
+                            await _post("send", payload, 30)
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
                     return {"error": f"WhatsApp media file not found: {media_path}"}
                 media_type = _bridge_media_type(media_path, is_voice, force_document)
                 payload: Dict[str, Any] = {"chatId": normalized_chat_id, "filePath": media_path, "mediaType": media_type}
                 payload.update({k: v for k, v in (("fileName", os.path.basename(media_path) if media_type == "document" else None), ("caption", media_caption)) if v})
+                payload = _mention_first_payload(payload)
                 mid, err = await _post("send-media", payload, 120, "media")
                 if err:
                     return err

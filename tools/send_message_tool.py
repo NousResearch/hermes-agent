@@ -16,7 +16,8 @@ from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
+    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin,
+    _send_whatsapp_with_mentions, _send_yuanbao)
 from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
@@ -254,11 +255,13 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+        mention_args = ({"mentions": args["mentions"]}
+                        if platform_name == "whatsapp" and args.get("mentions") else {})
         # Only custom plugin handlers receive the complete typed request.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
-                                              **handler_args))
+                                              **mention_args, **handler_args))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -587,7 +590,8 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
+                            force_document=False, mentions=None, args=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -604,6 +608,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    if platform_name == "whatsapp" and mentions:
+        return await _send_whatsapp_with_mentions(
+            pconfig, chat_id, message, chunks, media_files, thread_id=thread_id,
+            max_len=max_len, force_document=force_document, mentions=mentions)
     if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document)

@@ -193,8 +193,21 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
         return []
     holders: List[Tuple[int, str]] = []
     watched = _watched_sqlite_sidecar_paths(db_path)
+    # Self-skip for the refuse path (env HERMES_WAL_GUARD_SKIP_SELF=1): connections halted by
+    # this process are retired unclosed by design on Python < 3.12 (no setconfig; closing would
+    # checkpoint retired frames onto the newer generation). Those descriptors are dead — never
+    # read or written again — yet counting this PID as a holder makes the process permanently
+    # refuse itself after its first halt (observed in production: FATAL every 5-10 minutes,
+    # restart only resets the cycle). The WAL minted by the refuse path belongs to brand-new
+    # connections, so there is no dual-WAL hazard; a still-active old connection holding a
+    # deleted sidecar has its writes caught by the halt path (_wal_generation_was_lost) and
+    # cannot land frames on the newer generation.
+    _skip_self = os.environ.get("HERMES_WAL_GUARD_SKIP_SELF") == "1"
+    _self_pid = os.getpid()
     try:
         for pid, target, fd_path in _iter_proc_fd_targets():
+            if _skip_self and pid == _self_pid:
+                continue
             canonical = _canonical_sqlite_path(target)
             if (" (deleted)" in target and canonical in watched
                     and _fd_is_truly_unlinked(fd_path, watched[canonical])):

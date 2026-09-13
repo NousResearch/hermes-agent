@@ -37,14 +37,8 @@ function currentPathValue(env = process.env, platform = process.platform) {
 }
 
 function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
-  // Defensive dedup: case-insensitive + trailing-separator strip. Without
-  // this, ``C:\Foo\`` and ``c:\foo`` and ``C:\Foo`` all look distinct to a
-  // Set and the PATH can accumulate trailing-backslash and case variants
-  // until downstream MSYS translation explodes the snapshot to 70+ entries
-  // (verified 2026-09-11). See issue #108508.
-  const norm = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase()
-  const seen = new Set<string>()
-  const ordered: string[] = []
+  const seen = new Set()
+  const ordered = []
 
   for (const entry of entries) {
     if (!entry) {
@@ -54,15 +48,11 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
     const parts = Array.isArray(entry) ? entry : String(entry).split(delimiter)
 
     for (const part of parts) {
-      if (!part) {
-        continue
-      }
-      const key = norm(part)
-      if (seen.has(key)) {
+      if (!part || seen.has(part)) {
         continue
       }
 
-      seen.add(key)
+      seen.add(part)
       ordered.push(part)
     }
   }

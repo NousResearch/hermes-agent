@@ -222,6 +222,7 @@ def stream_current(
     request: dict[str, Any], stream_factory: Callable[[dict[str, Any]], Any], *, name: str, model_name: str,
     finalizer: Callable[[], Any], metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False, completed_response_predicate: Callable[[Any], bool] | None = None,
+    terminal_chunk_predicate: Callable[[Any], bool] | None = None,
 ) -> Any:
     """Run a provider stream under the inherited Hermes turn when present.
     With ``completed_response_predicate`` set, a factory that ignores ``stream=True`` and returns a
@@ -243,7 +244,7 @@ def stream_current(
     managed = stream(
         request, stream_factory, session_id=session_id, name=name, model_name=model_name,
         finalizer=finalizer, metadata=metadata, defer_logical_completion=defer_logical_completion,
-        completed_response_predicate=completed_response_predicate,
+        completed_response_predicate=completed_response_predicate, terminal_chunk_predicate=terminal_chunk_predicate,
     )
     if completed_response_predicate is not None:
         # Relay may defer the provider callback until the first pull; prime once (a real first chunk is buffered).
@@ -281,6 +282,7 @@ class ManagedLlmStream(Iterator[Any]):
         on_stream_created: Callable[[Any], None] | None = None, on_chunk: Callable[[Any], None] | None = None,
         chunk_adapter: Callable[[Any], Any] | None = None, accept_chunk: Callable[[Any], bool] | None = None,
         completed_response_predicate: Callable[[Any], bool] | None = None,
+        terminal_chunk_predicate: Callable[[Any], bool] | None = None,
         metadata: dict[str, Any] | None = None, defer_logical_completion: bool = False,
     ) -> None:
         self._defer_logical_completion = defer_logical_completion
@@ -290,6 +292,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._on_chunk, self._chunk_adapter, self._accept_chunk = on_chunk, chunk_adapter or _namespace, accept_chunk
         self._stream_factory, self._on_stream_created, self._finalizer = stream_factory, on_stream_created, finalizer
         self._completed_response_predicate = completed_response_predicate
+        self._terminal_chunk_predicate = terminal_chunk_predicate
         self._raw_chunks: list[tuple[Any, Any]] = []
         self._prefetched_chunks: list[Any] = []
         attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
@@ -335,6 +338,10 @@ class ManagedLlmStream(Iterator[Any]):
                 encoded_chunk = _jsonable(chunk)
                 self._raw_chunks.append((encoded_chunk, chunk))
                 yield encoded_chunk
+                if self._terminal_chunk_predicate is not None and run_callback(
+                    self._terminal_chunk_predicate, chunk
+                ):
+                    break
             self._provider_completed = True
         except BaseException as exc:
             self._callback_error = exc

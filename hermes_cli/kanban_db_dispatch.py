@@ -1135,8 +1135,9 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
+    (PR URL in a recent comment; re-spawning risks a duplicate PR unless the
+    latest review verdict requested changes on this same task). The review lane
+    skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
@@ -1204,6 +1205,18 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # A changes-requested handoff is the one safe ready-lane exception: the
+    # dispatcher reuses this task's assignee/workspace, so recovery stays a
+    # single writer on the existing PR instead of creating duplicate work.
+    latest_review_verdict = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? "
+        "AND kind IN ('review_requested', 'changes_requested') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest_review_verdict and latest_review_verdict["kind"] == "changes_requested":
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

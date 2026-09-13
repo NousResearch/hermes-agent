@@ -478,6 +478,54 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_changes_requested_reuses_existing_pr_workspace(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reviewer rejection must resume the same task despite its open PR URL."""
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+    workspace = kanban_home / "existing-worktree"
+    workspace.mkdir()
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="repair existing PR",
+            assignee="implementer",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        kb.add_comment(conn, task_id, author="implementer", body=pr_comment)
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="PR ready",
+            reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id)
+        assert review is not None
+        changed, assignee = kb.request_changes(
+            conn,
+            task_id,
+            reason="Fix the failing invariant.",
+            expected_run_id=review.current_run_id,
+        )
+        assert changed is True
+        assert assignee == "implementer"
+
+        assert kbd.check_respawn_guard(conn, task_id) is None
+        result = kbd.dispatch_once(conn, dry_run=True)
+
+    spawned = [row for row in result.spawned if row[0] == task_id]
+    assert len(spawned) == 1
+    assert spawned[0][:2] == (task_id, "implementer")
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

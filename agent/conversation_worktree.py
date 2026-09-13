@@ -553,8 +553,14 @@ class ConversationWorktreeManager:
         record = self._db.get_conversation_worktree(root_session_id)
         if record is None:
             return None
-        source, source_common_dir = self._source_repository_identity()
-        path, branch = self._expected_identity(root_session_id)
+        source_common_dir = Path(record.repo_common_dir).resolve()
+        source = source_common_dir.parent
+        path = Path(record.worktree_path).resolve()
+        branch = record.branch
+        if not source.is_dir() or not source_common_dir.is_dir():
+            raise ConversationWorktreeError(
+                "durable conversation repository identity is unavailable", phase="identity"
+            )
         if self._is_within(path, source):
             raise ConversationWorktreeError(
                 "worktree_root must not create conversation worktrees inside source_worktree",
@@ -564,13 +570,21 @@ class ConversationWorktreeManager:
             record = self._db.get_conversation_worktree(root_session_id)
             if record is None:
                 return None
-            return self._resolve_ready_binding_locked(
+            self._validate_worktree_root_ownership(
                 source,
                 source_common_dir,
-                record,
-                path=path,
-                branch=branch,
+                expected_path=path,
+                existing=record,
+                worktree_root=path.parent,
             )
+            binding = self._validated_ready_binding(
+                record,
+                source_common_dir=source_common_dir,
+                expected_path=path,
+                expected_branch=branch,
+            )
+            self._ensure_git_worktree_locked(source, record)
+            return binding
 
     def _resolve_ready_binding_locked(
         self,
@@ -632,7 +646,12 @@ class ConversationWorktreeManager:
             return CleanupResult(False, verdict)
 
         try:
-            source, source_common_dir = self._source_repository_identity()
+            source_common_dir = Path(record.repo_common_dir).resolve()
+            source = source_common_dir.parent
+            if not source.is_dir() or not source_common_dir.is_dir():
+                raise ConversationWorktreeError(
+                    "durable conversation repository identity is unavailable", phase="identity"
+                )
             with self._repository_lock(source_common_dir):
                 with self._root_lock(source_common_dir, root_session_id):
                     current = self._db.get_conversation_worktree(root_session_id)
@@ -644,7 +663,6 @@ class ConversationWorktreeManager:
                             current,
                             active_session_bound=active_session_bound,
                             root_liveness=root_liveness,
-                            source_identity=(source, source_common_dir),
                         )
                         if not verdict.allowed:
                             return CleanupResult(False, verdict)
@@ -729,7 +747,6 @@ class ConversationWorktreeManager:
         *,
         active_session_bound: bool,
         root_liveness: str = "inactive",
-        source_identity: tuple[Path, Path] | None = None,
     ) -> CleanupVerdict:
         reasons: list[str] = []
 
@@ -738,8 +755,9 @@ class ConversationWorktreeManager:
                 reasons.append(reason)
 
         try:
-            source, source_common_dir = source_identity or self._source_repository_identity()
-            expected_path, expected_branch = self._expected_identity(record.root_session_id)
+            source_common_dir = Path(record.repo_common_dir).resolve()
+            source = source_common_dir.parent
+            expected_path, expected_branch = Path(record.worktree_path).resolve(), record.branch
             if (
                 record.state not in {"ready", "retained"}
                 or Path(record.worktree_path).resolve() != expected_path.resolve()
@@ -983,6 +1001,7 @@ class ConversationWorktreeManager:
         *,
         expected_path: Path,
         existing: ConversationWorktreeRecord | None,
+        worktree_root: Path | None = None,
     ) -> None:
         """Refuse a configured output root owned by a different repository.
 
@@ -991,8 +1010,11 @@ class ConversationWorktreeManager:
         existing ancestor and let Git discover its common directory from there;
         only a same-common-dir owner is compatible with the configured source.
         """
-        root = self._policy.worktree_root
-        assert root is not None  # policy was validated by _expected_identity
+        root = worktree_root or self._policy.worktree_root
+        if root is None:
+            raise ConversationWorktreeError(
+                "worktree_root is unavailable for durable binding", phase="policy"
+            )
         nearest = root.resolve()
         while not nearest.exists() and nearest != nearest.parent:
             nearest = nearest.parent
@@ -1308,15 +1330,25 @@ class ConversationWorktreeManager:
             )
 
     def _validated_ready_binding(
-        self, record: ConversationWorktreeRecord
+        self,
+        record: ConversationWorktreeRecord,
+        *,
+        source_common_dir: Path | None = None,
+        expected_path: Path | None = None,
+        expected_branch: str | None = None,
     ) -> ConversationWorktreeBinding:
         if record.state != "ready":
             raise ConversationWorktreeError(
                 f"conversation worktree is not ready (state {record.state!r})",
                 phase="recovery",
             )
-        _, source_common_dir = self._source_repository_identity()
-        path, branch = self._expected_identity(record.root_session_id)
+        if source_common_dir is None:
+            _, source_common_dir = self._source_repository_identity()
+        path, branch = (
+            (expected_path, expected_branch)
+            if expected_path is not None and expected_branch is not None
+            else self._expected_identity(record.root_session_id)
+        )
         self._validate_record_identity(
             record,
             path=path,

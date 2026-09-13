@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+from dataclasses import replace
 import hashlib
 import importlib
 import inspect  # noqa: F401  (split modules)
@@ -495,7 +496,9 @@ def _remove_failed_conversation_worktree(session: dict, binding, db) -> None:
             session.pop("conversation_root_lease", None)
     try:
         manager, _, owns_db = _conversation_worktree_manager(
-            profile_home=session.get("profile_home"), db=db
+            profile_home=session.get("profile_home"),
+            db=db,
+            session_cwd=session.get("cwd"),
         )
         remover = getattr(manager, "remove_after_explicit_request", None)
         if callable(remover):
@@ -525,7 +528,82 @@ def _remove_failed_conversation_worktree(session: dict, binding, db) -> None:
         )
 
 
-def _conversation_worktree_manager(*, profile_home=None, db=None):
+def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
+    """Use the session's repository when it differs from the configured default.
+
+    The desktop sends the selected project root as ``cwd``.  Conversation
+    isolation is lazy, so this is the last boundary where that project
+    identity must be carried into worktree creation.  Keep the configured
+    root for its repository to preserve existing bindings; give another
+    repository a deterministic child root so repositories can never share a
+    worktree namespace.
+    """
+    if not policy.enabled or not session_cwd or policy.source_worktree is None:
+        return policy
+    source = git_probe.repo_root(str(session_cwd))
+    if not source:
+        candidate = Path(session_cwd).expanduser().resolve()
+        while candidate != candidate.parent:
+            if (candidate / ".git").exists():
+                from agent.conversation_worktree import ConversationWorktreeError
+                raise ConversationWorktreeError(
+                    "selected session repository could not be identified", phase="identity"
+                )
+            candidate = candidate.parent
+        return policy
+    source_path = Path(source).resolve()
+    configured_path = policy.source_worktree.resolve()
+    if source_path == configured_path:
+        return policy
+
+    configured_common = git_probe.common_repo_root(str(configured_path))
+    selected_common = git_probe.common_repo_root(str(source_path))
+    if not configured_common or not selected_common:
+        from agent.conversation_worktree import ConversationWorktreeError
+        raise ConversationWorktreeError(
+            "selected session repository common identity could not be established",
+            phase="identity",
+        )
+    same_repository = Path(configured_common).resolve() == Path(selected_common).resolve()
+    if same_repository and source_path == configured_path:
+        return policy
+    if policy.worktree_root is None:
+        return policy
+
+    selected_common_path = Path(selected_common).resolve()
+    suffix = hashlib.sha256(str(selected_common_path).encode()).hexdigest()[:12]
+    namespace = f"{selected_common_path.name}-{suffix}"
+    configured_root = policy.worktree_root.resolve()
+    repository_worktrees = {configured_path, selected_common_path}
+    for common_path in (Path(configured_common).resolve(), selected_common_path):
+        listing = git_probe.run_git(str(common_path), "worktree", "list", "--porcelain")
+        repository_worktrees.update(
+            Path(line.removeprefix("worktree ")).resolve()
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        )
+    if not any(configured_root.is_relative_to(worktree) for worktree in repository_worktrees):
+        worktree_root = policy.worktree_root / namespace
+    else:
+        # A conventional ``<repo>/.worktrees`` root is valid for its own
+        # repository, but cannot host a different repository's checkout. Keep
+        # alternate-project roots in the Hermes home, outside either repo.
+        worktree_root = get_hermes_home() / "conversation-worktrees" / namespace
+    logger.warning(
+        "conversation_worktree.project_source_override session_cwd=%s "
+        "configured_source=%s selected_source=%s worktree_root=%s",
+        session_cwd,
+        configured_path,
+        source_path,
+        worktree_root,
+    )
+    # Keep the selected checkout as the manager source so its HEAD becomes the
+    # immutable conversation base.  ``selected_common`` remains the durable
+    # repository namespace and ownership identity used above.
+    return replace(policy, source_worktree=source_path, worktree_root=worktree_root)
+
+
+def _conversation_worktree_manager(*, profile_home=None, db=None, session_cwd=None):
     """Construct the policy-governed manager against the owning profile DB."""
     owns_db = False
     home_token = set_hermes_home_override(str(profile_home)) if profile_home else None
@@ -533,6 +611,7 @@ def _conversation_worktree_manager(*, profile_home=None, db=None):
         from agent.conversation_worktree import ConversationWorktreeError, ConversationWorktreeManager
         from agent.conversation_worktree_policy import resolve_conversation_worktree_policy
         policy = resolve_conversation_worktree_policy(_load_cfg())
+        policy = _conversation_worktree_policy_for_session(policy, session_cwd)
         if not policy.enabled:
             return None, db, owns_db
         if db is None:
@@ -554,12 +633,16 @@ def _conversation_worktree_manager(*, profile_home=None, db=None):
             reset_hermes_home_override(home_token)
 
 
-def _bind_new_interactive_conversation_worktree(root_session_id: str, *, profile_home=None, db=None):
+def _bind_new_interactive_conversation_worktree(
+    root_session_id: str, *, profile_home=None, db=None, session_cwd=None
+):
     """Create/recover one worktree for a brand-new interactive root only."""
     manager = owned_db = None
     owns_db = False
     try:
-        manager, owned_db, owns_db = _conversation_worktree_manager(profile_home=profile_home, db=db)
+        manager, owned_db, owns_db = _conversation_worktree_manager(
+            profile_home=profile_home, db=db, session_cwd=session_cwd
+        )
         return None if manager is None else manager.bind_new_root_session(
             root_session_id, conversation_kind="interactive")
     finally:
@@ -568,12 +651,16 @@ def _bind_new_interactive_conversation_worktree(root_session_id: str, *, profile
                 owned_db.close()
 
 
-def _resolve_existing_conversation_worktree(root_session_id: str, *, profile_home=None, db=None):
+def _resolve_existing_conversation_worktree(
+    root_session_id: str, *, profile_home=None, db=None, session_cwd=None
+):
     """Resolve a ready binding without ever creating a worktree on resume."""
     manager = owned_db = None
     owns_db = False
     try:
-        manager, owned_db, owns_db = _conversation_worktree_manager(profile_home=profile_home, db=db)
+        manager, owned_db, owns_db = _conversation_worktree_manager(
+            profile_home=profile_home, db=db, session_cwd=session_cwd
+        )
         return None if manager is None else manager.resolve_existing_session(root_session_id)
     finally:
         if owns_db and owned_db is not None:
@@ -581,9 +668,14 @@ def _resolve_existing_conversation_worktree(root_session_id: str, *, profile_hom
                 owned_db.close()
 
 
-def _bind_conversation_worktree_for_new_root(root_session_id: str, *, profile_home=None, db=None):
+def _bind_conversation_worktree_for_new_root(
+    root_session_id: str, *, profile_home=None, db=None, session_cwd=None
+):
     """Named seam for root boundaries; distinct from continuation lookup."""
-    return _bind_new_interactive_conversation_worktree(root_session_id, profile_home=profile_home, db=db)
+    kwargs = {"profile_home": profile_home, "db": db}
+    if session_cwd:
+        kwargs["session_cwd"] = session_cwd
+    return _bind_new_interactive_conversation_worktree(root_session_id, **kwargs)
 
 
 def _bind_conversation_worktree_on_submit(session: dict) -> None:
@@ -599,7 +691,11 @@ def _bind_conversation_worktree_on_submit(session: dict) -> None:
     prior_explicit_cwd = bool(session.get("explicit_cwd"))
     with _session_db(session) as db:
         binding = _bind_conversation_worktree_for_new_root(
-            key, profile_home=session.get("profile_home"), db=db)
+            key,
+            profile_home=session.get("profile_home"),
+            db=db,
+            session_cwd=prior_cwd,
+        )
         if binding is None:
             return
         metadata = _conversation_worktree_metadata(binding)
@@ -611,7 +707,9 @@ def _bind_conversation_worktree_on_submit(session: dict) -> None:
         session["explicit_cwd"] = True
         _register_session_cwd(session)
         if db is not None:
-            common_root = git_probe.common_repo_root(metadata["path"]) or str(binding.repo_common_dir)
+            common_root = git_probe.common_repo_root(metadata["path"])
+            if not common_root:
+                common_root = str(binding.repo_common_dir)
             try:
                 db.update_session_cwd(
                     key, metadata["path"], metadata.get("branch", ""),
@@ -634,7 +732,13 @@ def _resolve_conversation_worktree_for_resume(session_id: str, *, profile_home=N
     while current and current not in seen:
         seen.add(current)
         try:
-            binding = _resolve_existing_conversation_worktree(current, profile_home=profile_home, db=db)
+            session_cwd = None
+            if db is not None and hasattr(db, "get_session"):
+                session_cwd = (db.get_session(current) or {}).get("cwd")
+            kwargs = {"profile_home": profile_home, "db": db}
+            if session_cwd:
+                kwargs["session_cwd"] = session_cwd
+            binding = _resolve_existing_conversation_worktree(current, **kwargs)
         except Exception as exc:
             from agent.conversation_worktree import ConversationWorktreeError
 
@@ -643,7 +747,9 @@ def _resolve_conversation_worktree_for_resume(session_id: str, *, profile_home=N
             record = db.get_conversation_worktree(current) if db is not None else None
             if record is None or record.state != "creation_failed":
                 raise
-            manager, _, _ = _conversation_worktree_manager(profile_home=profile_home, db=db)
+            manager, _, _ = _conversation_worktree_manager(
+                profile_home=profile_home, db=db, session_cwd=session_cwd
+            )
             binding = manager.bind_new_root_session(current, conversation_kind="interactive")
         if binding is not None:
             return binding

@@ -101,7 +101,7 @@ def repo_root(cwd: str) -> str:
 def common_repo_root(cwd: str) -> str:
     """The MAIN (common) repo root for ``cwd``, folding linked worktrees: ``--show-toplevel`` is a
     linked worktree's OWN root; the parent of the shared ``--git-common-dir`` is the one true root
-    (fallback: toplevel). Normalized to git's forward-slash spelling so it compares equal to
+    (an unavailable common-dir probe fails closed). Normalized to git's forward-slash spelling so it compares equal to
     :func:`repo_root` (native ``\\`` on Windows made the main checkout look like a worktree)."""
     # Checking the (warmed, negative-cached) toplevel first spares every non-repo cwd a second
     # `git` spawn the parallel warm can't absorb.
@@ -114,7 +114,7 @@ def common_repo_root(cwd: str) -> str:
             gitdir = os.path.realpath(gitdir)
             if os.path.basename(gitdir) == ".git":
                 return os.path.dirname(gitdir).replace(os.sep, "/")
-        return repo_root(cwd)
+        return ""
 
     return _cache.resolve(f"common:{cwd}", _probe)
 
@@ -125,7 +125,8 @@ def resolve(cwd: str) -> dict | None:
     worktree_root = repo_root(cwd)
     if not worktree_root:
         return None
-    return {"repo_root": common_repo_root(cwd) or worktree_root, "worktree_root": worktree_root}
+    common_root = common_repo_root(cwd)
+    return {"repo_root": common_root or worktree_root, "worktree_root": worktree_root}
 
 
 def warm_roots(cwds: Iterable[str], max_workers: int = _WARM_WORKERS) -> None:

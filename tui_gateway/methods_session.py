@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -865,9 +866,14 @@ def _(rid, params: dict) -> dict:
         if (_resolve_session_source(_str_param(params, "source") or None) in {"desktop", "tui"}
                 and (ctx.found or {}).get("source") not in {"tool", "kanban"}):
             try:
-                manager, _, _ = _conversation_worktree_manager(profile_home=ctx.profile_home, db=ctx.db)
+                manager, _, _ = _conversation_worktree_manager(
+                    profile_home=ctx.profile_home, db=ctx.db, session_cwd=ctx.recorded_cwd
+                )
                 binding = (_resolve_conversation_worktree_for_resume(
-                    ctx.target, profile_home=ctx.profile_home, db=ctx.db) if manager is not None else None)
+                    ctx.target,
+                    profile_home=ctx.profile_home,
+                    db=ctx.db,
+                ) if manager is not None else None)
                 if binding is not None:
                     ctx.conversation_worktree = _conversation_worktree_metadata(binding)
                     ctx.conversation_root_lease = _acquire_conversation_root_lease(
@@ -1096,9 +1102,17 @@ def _(rid, params: dict) -> dict:
                 current = str(row.get("parent_session_id") or "").strip()
             if root_session_id is None:
                 return _err(rid, 4007, "conversation worktree binding not found")
+            binding_record = db.get_conversation_worktree(root_session_id)
+            if binding_record is None:
+                return _err(rid, 5036, "conversation worktree binding disappeared")
+            session_row = db.get_session(root_session_id) or {}
+            # The session cwd is mutable (project workspace switches); cleanup
+            # must resolve the durable binding's repository identity instead.
+            binding_cwd = str(Path(binding_record.repo_common_dir).resolve().parent)
             manager, _owned_db, owns_db = _conversation_worktree_manager(
                 profile_home=profile_home,
                 db=db,
+                session_cwd=binding_cwd,
             )
             if owns_db:
                 return _err(rid, 5036, "conversation worktree database ownership mismatch")
@@ -2171,7 +2185,11 @@ def _(rid, params: dict, session: dict) -> dict:
         try:
             if source in {"desktop", "tui"}:
                 binding = _bind_conversation_worktree_for_new_root(
-                    new_key, profile_home=session.get("profile_home"), db=db)
+                    new_key,
+                    profile_home=session.get("profile_home"),
+                    db=db,
+                    session_cwd=_session_cwd(session),
+                )
                 if binding is not None:
                     conversation_worktree = _conversation_worktree_metadata(binding)
                     conversation_root_lease = _acquire_conversation_root_lease(binding, surface=source)

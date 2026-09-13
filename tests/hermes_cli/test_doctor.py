@@ -582,6 +582,93 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
     assert "model.provider 'custom' is not a recognised provider" not in out
 
 
+def test_run_doctor_rejects_disabled_custom_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: my-custom\n  default: local-model\n"
+        "providers:\n  my-custom:\n    api: http://localhost:8000/v1\n    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'my-custom' is unknown" in out
+
+
+def test_run_doctor_rejects_disabled_builtin_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  default: claude-test\n"
+        "providers:\n  anthropic:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert "model.provider 'anthropic' is unknown" in buf.getvalue()
+
+
+def test_run_doctor_accepts_llamacpp_alias_before_local_server_is_running(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: llamacpp\n"
+        "  default: local-model\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+    from hermes_cli.local_runtime import endpoint
+    monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint", lambda wait_for_boot_s=0: None)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'llamacpp' is not a recognised provider" not in out
+    assert "model.provider 'llamacpp' is unknown" not in out
+
+
 def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -1105,6 +1192,73 @@ class TestGitHubTokenCheck:
 
         assert "No GITHUB_TOKEN" in out
         assert "60 req/hr" in out
+
+
+    def test_dedicated_hermes_bot_token_shows_ok_without_shared_token(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+        monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_LOGIN", "mrkillbobbot")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token configured (mrkillbobbot)" in out
+        assert "No GITHUB_TOKEN" in out
+        assert "bot-secret" not in out
+
+
+    def test_dedicated_hermes_bot_token_without_login_does_not_claim_ready(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+        monkeypatch.delenv("HERMES_GITHUB_BOT_LOGIN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token is incomplete" in out
+        assert "Dedicated Hermes GitHub automation token configured (mrkillbobbot)" not in out
+        assert "No GITHUB_TOKEN" in out
+
+    def test_dedicated_hermes_bot_token_reports_configured_login(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_LOGIN", "automation-account")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token configured (automation-account)" in out
+        assert "configured (mrkillbobbot)" not in out
 
 
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):

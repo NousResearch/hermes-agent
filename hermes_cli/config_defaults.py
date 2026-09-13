@@ -33,7 +33,12 @@ DEFAULT_CONFIG = {
         "journal_size_limit": None,
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
-    "runtime": {"nofile_soft_limit": 4096},
+    "runtime": {
+        "nofile_soft_limit": 4096,
+        # Temporary operator posture for protected remote LLM egress. Keep the
+        # identity/guarded-work classification active; this only gates dispatch.
+        "llm_egress_enforcement": "enabled",
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
     # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the

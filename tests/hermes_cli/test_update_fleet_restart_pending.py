@@ -773,6 +773,7 @@ def test_pending_restart_rejects_unsupported_receipt_runtime(monkeypatch, kind):
 
 @pytest.mark.parametrize("kind", ["serve", "dashboard"])
 def test_pending_restart_accepts_gone_recorded_runtime(monkeypatch, kind):
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [])
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)

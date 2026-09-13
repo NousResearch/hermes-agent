@@ -12,6 +12,7 @@ re-reads them on every ``load_pool()``, so a failed write here is a failed refre
 import base64
 import contextlib
 import functools
+import getpass
 import hashlib
 import json
 import logging
@@ -41,6 +42,10 @@ _OAUTH_TOKEN_URLS = [
 _OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+# Claude Code's macOS Keychain entry (generic password). Hermes reads it
+# (_read_claude_code_credentials_from_keychain) and, since #98334, mirrors the
+# refresh write into it so the two stores stop diverging on a single-use rotation.
+_CLAUDE_CODE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -214,27 +219,41 @@ def _claude_oauth_record(data: Any, source: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
-    """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
+def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
+    """Raw ``{"claudeAiOauth": {...}, ...}`` payload from the macOS Keychain, or None.
+
+    Returns the full entry (not the normalised credential record) so a refresh
+    write can merge the rotated token triple over the existing metadata
+    (``subscriptionType`` / ``rateLimitTier`` / ``scopes``) instead of clobbering it.
+    """
     if platform.system() != "Darwin":
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
         return None
     if result.returncode != 0:
-        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        logger.debug("Keychain: no entry found for %r", _CLAUDE_CODE_KEYCHAIN_SERVICE)
         return None
     raw = result.stdout.strip()
+    if not raw:
+        return None
     try:
-        return _claude_oauth_record(json.loads(raw), "macos_keychain") if raw else None
+        payload = json.loads(raw)
     except json.JSONDecodeError:
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+    """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
+    payload = _read_claude_code_keychain_payload()
+    return _claude_oauth_record(payload, "macos_keychain") if payload else None
 
 
 def claude_code_credentials_path() -> Path:
@@ -389,6 +408,68 @@ def _write_claude_code_credentials(
         oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
     existing["claudeAiOauth"] = oauth_data
     _commit_private_json(cred_path, existing, "credentials")
+    _mirror_claude_code_credentials_to_keychain(access_token, refresh_token, expires_at_ms)
+
+
+def _merge_keychain_credential_payload(
+    existing_payload: Dict[str, Any], access_token: str, refresh_token: str, expires_at_ms: int
+) -> Dict[str, Any]:
+    """Rotate the ``claudeAiOauth`` token triple over the existing Keychain payload,
+    preserving its metadata (``subscriptionType`` / ``rateLimitTier`` / ``scopes``).
+
+    Pure and host-agnostic so the merge semantics are unit-testable without a Keychain.
+    """
+    merged = dict(existing_payload)
+    oauth = dict(existing_payload.get("claudeAiOauth") or {})
+    oauth.update({"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms})
+    merged["claudeAiOauth"] = oauth
+    return merged
+
+
+def _mirror_claude_code_credentials_to_keychain(
+    access_token: str, refresh_token: str, expires_at_ms: int
+) -> None:
+    """Mirror a committed refresh into the macOS Keychain when an entry already exists.
+
+    On Darwin the Keychain is Claude Code's authoritative store, but Hermes historically
+    only wrote ``~/.claude/.credentials.json``. Because the refresh token is single-use and
+    rotating, that left the Keychain holding an already-invalidated token, which Claude Code
+    then spent into ``invalid_grant`` and discarded (``Login: Expired``). Mirror the rotated
+    pair back with ``security add-generic-password -U`` so both stores agree.
+
+    Fail-soft: a Keychain mirror failure is logged, never raised. The file commit has already
+    succeeded and the resolver still resolves from it; only the secondary store stays stale.
+    No-op off Darwin and when no entry exists (we never create one the user has not).
+    """
+    if platform.system() != "Darwin":
+        return
+    try:
+        existing = _read_claude_code_keychain_payload()
+        if not existing:
+            return
+        payload = _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms)
+        encoded = json.dumps(payload)
+        # The bare ``-w`` (no value) tells ``security`` to read the password from
+        # stdin, so the live secret never lands on argv (process-table visible).
+        result = subprocess.run(
+            [
+                "security", "add-generic-password", "-U",
+                "-a", getpass.getuser(),
+                "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE,
+                "-w",
+            ],
+            input=encoded,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.debug("Keychain mirror skipped (%s)", e)
+        return
+    if result.returncode != 0:
+        logger.debug("Keychain mirror failed (rc=%s): %s", result.returncode, (result.stderr or "").strip()[:200])
 
 
 # ── Resolution ──

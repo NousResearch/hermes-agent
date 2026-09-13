@@ -48,7 +48,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
+import { $focusedStoredSessionId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -418,6 +418,11 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
+
+  const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
+    activeSessionId ? (states[activeSessionId]?.storedSessionId ?? null) : null
+  )
+
   const storedId = useStore(view.$storedId)
   // Multi-pane dimming: only the focused surface paints at full strength, so
   // two sessions side by side read as "this one, and that one over there".
@@ -511,7 +516,14 @@ const ChatViewContent = memo(function ChatViewContent({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
+  const routeSessionMismatch = isPrimary
+    ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions, {
+        activeRuntimeId: activeSessionId,
+        contextSwitching: Boolean(gatewaySwapTarget),
+        messagesEmpty,
+        transcriptStoredSessionId
+      })
+    : false
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state. The Appearance toggle

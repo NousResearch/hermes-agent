@@ -1,5 +1,6 @@
 """Shared utility functions for hermes-agent."""
 
+import copy
 import errno
 import json
 import logging
@@ -313,10 +314,12 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
     # See #91607.
     from hermes_cli.config import _greedy_literal_match, _split_key_path
+    from hermes_cli.settings_lock import check_config_write
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     yaml_rt, config = _roundtrip_load(path)
+    before = copy.deepcopy(config)  # the document as loaded, for the settings-lock diff
     current = config
     keys = _split_key_path(key_path)
     i = 0
@@ -332,6 +335,7 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
             current[seg] = next_value
         current = next_value
         i += consumed
+    check_config_write(path, before, config)  # operator settings lock, against the loaded document
     _roundtrip_dump(path, yaml_rt, config)
 
 
@@ -352,10 +356,14 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     from ruamel.yaml.comments import CommentedMap
     from ruamel.yaml.scalarstring import DoubleQuotedScalarString
     from hermes_cli.config import require_readable_config_before_write
+    from hermes_cli.settings_lock import check_config_write
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    require_readable_config_before_write(path)
+    before = require_readable_config_before_write(path)
+    # Operator settings lock: ``new_state`` IS the resulting document (keys missing from it are
+    # deleted below), so the diff against the file on disk is exact.
+    check_config_write(path, before, new_state)
     yaml_rt, existing = _roundtrip_load(path)
 
     def _merge(dst: CommentedMap, src: dict) -> None:

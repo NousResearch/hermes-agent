@@ -375,5 +375,55 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": False, "error": str(e)})
 
 
+# ── operator settings lock
+#
+# The lock itself is enforced in ``hermes_cli.config.save_config`` — every writer funnels there,
+# so these doors only read status and open/close the unlock window. Nothing here can change a
+# locked setting; that still goes through a normal ``config.set`` once a window is open.
+
+
+@method("config.lock.status")
+def _(rid, params: dict) -> dict:
+    """Is the lock on, what is locked, is a window open — what the desktop's lock pill reads."""
+    del params
+    from hermes_cli.settings_lock import describe
+
+    return _ok(rid, describe())
+
+
+@method("config.unlock")
+def _(rid, params: dict) -> dict:
+    """Verify the operator password (when one is set) and open a time-boxed unlock window.
+
+    The password arrives over the local gateway socket and is never logged or persisted — only
+    compared against the stored scrypt hash.
+    """
+    from hermes_cli.settings_lock import (begin_unlock, describe, has_password, lock_spec,
+                                          verify_password)
+
+    status = describe()
+    if not status["enabled"]:
+        return _err(rid, 4004, "settings are not locked")
+    spec = lock_spec()
+    if has_password(spec) and not verify_password(str(params.get("password") or ""), spec.get("password")):
+        return _err(rid, 4003, "incorrect password")
+    minutes = params.get("minutes")
+    try:
+        seconds = max(6.0, float(minutes) * 60) if minutes is not None else 900.0
+    except (TypeError, ValueError):
+        seconds = 900.0
+    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds)})
+
+
+@method("config.relock")
+def _(rid, params: dict) -> dict:
+    """Close an open unlock window immediately."""
+    del params
+    from hermes_cli.settings_lock import end_unlock
+
+    end_unlock()
+    return _ok(rid, {"ok": True})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

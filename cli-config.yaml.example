@@ -1990,6 +1990,31 @@ updates:
 
 
 # =============================================================================
+# Settings Lock
+# =============================================================================
+# Named config paths that no writer may change until an unlock window is open.
+# Every shipped writer is refused alike: `hermes config set`, the desktop's
+# config.set and model switch, the gateway slash commands, the credential
+# lifecycle, `hermes auth`, `hermes agent import`, the update-time restores.
+# Read from the SHARED ROOT config.yaml only, never a profile's, so a profile
+# cannot unlock itself. The stanza protects itself: `settings_lock.*` is always
+# locked while enabled.
+#
+#   hermes config lock approvals.mode yolo     # prompts for a password, stores only its hash
+#   hermes config unlock --minutes 5           # opens a time-boxed window (password if set)
+#   hermes config relock                       # closes it early
+#
+# Not a security boundary against anyone who can edit this file directly: they
+# can change a locked value or delete the stanza in one line. Back it with file
+# ownership if that is the threat.
+#
+# settings_lock:
+#   enabled: true
+#   keys: [approvals.mode, yolo, providers.*]     # exact dotted paths, or `prefix.*`
+#   password: "scrypt$16384$8$1$<salt>$<hash>"    # written by `hermes config lock`; optional (--no-password)
+
+
+# =============================================================================
 # Web Dashboard
 # =============================================================================
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.

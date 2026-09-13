@@ -68,6 +68,7 @@ import {
 import type { StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
+import { useSettingsLockStatusbarItem } from '../settings-lock-menu'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
@@ -301,6 +302,7 @@ export function useStatusbarItems({
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
+  const settingsLockItem = useSettingsLockStatusbarItem(requestGateway, gatewayState === 'open')
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(
@@ -659,6 +661,10 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleApprovalMode
       },
       {
+        ...settingsLockItem,
+        hidden: settingsLockItem.hidden || gatewayState !== 'open'
+      },
+      {
         actionId: 'view.showTerminal',
         className: `w-7 justify-center px-0${terminalShowing ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
@@ -674,6 +680,7 @@ export function useStatusbarItems({
     ],
     [
       approvalModeItem,
+      settingsLockItem,
       backendVersionItem,
       busy,
       cacheHit,

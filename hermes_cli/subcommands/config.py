@@ -38,4 +38,19 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
+    config_lock = config_subparsers.add_parser(
+        "lock", help="Lock named settings so no writer can change them until unlocked")
+    config_lock.add_argument("keys", nargs="*",
+                             help="Config paths to lock (e.g. approvals.mode yolo providers.*). Omit to show status.")
+    config_lock.add_argument("--no-password", action="store_true",
+                             help="Lock without a password: unlocking then needs only `hermes config unlock`")
+    config_lock.add_argument("--clear", action="store_true", help="Remove the lock entirely (needs it unlocked)")
+
+    config_unlock = config_subparsers.add_parser(
+        "unlock", help="Open a time-boxed window in which locked settings may be changed")
+    config_unlock.add_argument("--minutes", type=float, default=15.0,
+                               help="Length of the unlock window in minutes (default: 15)")
+
+    config_subparsers.add_parser("relock", help="Close an open unlock window immediately")
+
     config_parser.set_defaults(func=cmd_config)

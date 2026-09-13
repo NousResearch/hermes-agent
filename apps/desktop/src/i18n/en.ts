@@ -3473,6 +3473,23 @@ export const en: Translations = {
       off: 'Off',
       offDescription: 'Run without approval prompts'
     },
+    settingsLock: {
+      title: 'Settings lock',
+      locked: 'Locked',
+      unlocked: 'Unlocked',
+      ariaLabel: (state: string) => `Settings lock: ${state}`,
+      lockedDescription: 'These settings cannot be changed by this app, the CLI, or an agent until you unlock them.',
+      unlockedDescription: 'Locked settings can be changed until the window closes.',
+      unusable: 'The lock is enabled but names nothing to lock. Every config write is refused until settings_lock is fixed in the root config.yaml.',
+      passwordLabel: 'Password',
+      passwordPlaceholder: 'Unlock password',
+      unlock: 'Unlock for 15 min',
+      relock: 'Lock now',
+      wrongPassword: 'Incorrect password.',
+      remaining: (left: string) => `Unlocked — ${left} left`,
+      lockedPaths: 'Locked paths',
+      setupHint: 'Set one up with: hermes config lock approvals.mode yolo'
+    },
     statusbar: {
       unknown: 'unknown',
       restart: 'restart',

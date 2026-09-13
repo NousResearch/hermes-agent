@@ -10,6 +10,21 @@ from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
+def _windows_extended_path(value: str) -> str:
+    """Return an absolute Windows path in the extended-length namespace."""
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def _filesystem_path(path: os.PathLike[str] | str) -> str:
+    """Return a filesystem path that supports deep trees on Windows."""
+    value = os.fspath(path)
+    return _windows_extended_path(os.path.abspath(value)) if os.name == "nt" else value
+
+
 def normalize_archive_parts(member_name: str) -> list[str]:
     """Return safe path parts for an archive member, or raise ``ValueError``.
 
@@ -57,19 +72,20 @@ def safe_extract_targz(archive: Path, destination: Path) -> None:
     with tarfile.open(archive, "r:gz") as tf:
         for member in tf.getmembers():
             target = destination.joinpath(*normalize_archive_parts(member.name))
+            fs_target = Path(_filesystem_path(target))
             if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
+                fs_target.mkdir(parents=True, exist_ok=True)
                 continue
             if not member.isfile():
                 raise ValueError(f"Unsupported archive member type: {member.name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
+            fs_target.parent.mkdir(parents=True, exist_ok=True)
             extracted = tf.extractfile(member)
             if extracted is None:
                 raise ValueError(f"Cannot read archive member: {member.name}")
-            with extracted, open(target, "wb") as dst:
+            with extracted, open(fs_target, "wb") as dst:
                 shutil.copyfileobj(extracted, dst)
             with suppress(OSError):
-                os.chmod(target, member.mode & 0o777)
+                os.chmod(fs_target, member.mode & 0o777)
 
 
 def archive_root_dirs(archive: Path) -> set[str]:

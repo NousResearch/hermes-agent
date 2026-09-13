@@ -1,4 +1,4 @@
-"""Tests for the shared tar.gz writer (``hermes_cli.archive_safe.make_targz``).
+"""Tests for the shared safe tar.gz helpers.
 
 ``make_targz`` backs both ``hermes profile export`` and ``hermes kanban
 export``. The contract pinned down here: a failure partway through writing
@@ -9,6 +9,8 @@ guarantee the desktop gateway-download path already has.
 
 from __future__ import annotations
 
+import io
+import shutil
 import sys
 import tarfile
 from pathlib import Path
@@ -19,7 +21,12 @@ _WORKTREE = Path(__file__).resolve().parents[2]
 if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
-from hermes_cli.archive_safe import make_targz
+from hermes_cli.archive_safe import (
+    _filesystem_path,
+    _windows_extended_path,
+    make_targz,
+    safe_extract_targz,
+)
 
 
 def _stage_source(tmp_path: Path) -> None:
@@ -75,3 +82,40 @@ def test_make_targz_overwrites_existing_file_on_success(tmp_path):
 
     with tarfile.open(archive_path, "r:gz") as tf:
         assert "src/inner/file.txt" in {m.name for m in tf.getmembers()}
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (r"C:\profiles\worker", r"\\?\C:\profiles\worker"),
+        (r"\\server\share\worker", r"\\?\UNC\server\share\worker"),
+        (r"\\?\C:\profiles\worker", r"\\?\C:\profiles\worker"),
+        (r"\\?\UNC\server\share\worker", r"\\?\UNC\server\share\worker"),
+    ],
+)
+def test_windows_extended_path_handles_drive_unc_and_existing_prefix(path, expected):
+    assert _windows_extended_path(path) == expected
+
+
+@pytest.mark.windows_only
+def test_safe_extract_targz_supports_deep_windows_paths(tmp_path):
+    archive = tmp_path / "deep.tar.gz"
+    destination = tmp_path / "extract"
+    parts = ["profile"]
+    while len(str(destination.joinpath(*parts, "payload.txt"))) < 300:
+        parts.append("segment-" + "x" * 24)
+    member_name = "/".join([*parts, "payload.txt"])
+    payload = b"deep profile payload"
+
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo(member_name)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    target = destination.joinpath(*parts, "payload.txt")
+    try:
+        safe_extract_targz(archive, destination)
+        with open(_filesystem_path(target), "rb") as extracted:
+            assert extracted.read() == payload
+    finally:
+        shutil.rmtree(_filesystem_path(destination), ignore_errors=True)

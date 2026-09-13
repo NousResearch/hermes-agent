@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -1198,6 +1199,137 @@ def test_complete_can_retry_after_phantom_rejection(kanban_home):
         conn.close()
 
 
+def test_complete_prose_scan_flags_nonexistent_ids(kanban_home):
+    """Unknown task ids remain advisory diagnostics after cross-board lookup."""
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+        assert kb.complete_task(
+            conn, parent, summary="also saw t_abcd1234ffff failing in CI",
+        ) is True
+        events = list(conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id=? ORDER BY id",
+            (parent,),
+        ))
+        payloads = [
+            json.loads(row["payload"])
+            for row in events
+            if row["kind"] == "suspected_hallucinated_references"
+        ]
+        assert payloads == [{
+            "phantom_refs": ["t_abcd1234ffff"],
+            "source": "completion_summary",
+        }]
+    finally:
+        conn.close()
+
+
+def test_complete_prose_scan_ignores_cross_board_ids(kanban_home):
+    """Summaries may link valid handoffs stored on another active board."""
+    kb.create_board("other-board")
+    other_conn = kb.connect(board="other-board")
+    conn = kb.connect()
+    try:
+        other = kb.create_task(other_conn, title="other", assignee="x")
+        parent = kb.create_task(conn, title="parent", assignee="x")
+
+        assert kb.complete_task(conn, parent, summary=f"depended on {other}") is True
+        kinds = [
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        other_conn.close()
+        conn.close()
+
+
+def test_complete_prose_scan_ignores_archived_cross_board_ids(kanban_home):
+    """Archived boards remain valid sources for historical handoff ids."""
+    kb.create_board("historic-board")
+    historic_conn = kb.connect(board="historic-board")
+    try:
+        historic = kb.create_task(historic_conn, title="historic", assignee="x")
+    finally:
+        historic_conn.close()
+    kb.remove_board("historic-board")
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+
+        assert kb.complete_task(conn, parent, summary=f"depended on {historic}") is True
+        kinds = [
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id=? ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert "suspected_hallucinated_references" not in kinds
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("placement", ["active", "archived"])
+def test_complete_prose_scan_ignores_cross_board_db_symlink_outside_kanban_root(
+    kanban_home, tmp_path, placement,
+):
+    """Cross-board lookup must not follow active or archived DB symlinks out of root."""
+    outside_db = tmp_path / "outside" / "kanban.db"
+    outside_db.parent.mkdir()
+    outside_conn = kbc.connect(outside_db)
+    try:
+        outside_task = kb.create_task(outside_conn, title="outside", assignee="x")
+    finally:
+        outside_conn.close()
+
+    root = kb.boards_root()
+    if placement == "active":
+        root.mkdir(parents=True, exist_ok=True)
+        link = root / "outside-board"
+    else:
+        link = root / "_archived" / "outside-board"
+        link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside_db.parent, target_is_directory=True)
+    assert link.is_dir()
+    assert (link / "kanban.db").is_file()
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="x")
+
+        assert kb.complete_task(conn, parent, summary=f"depended on {outside_task}") is True
+        payloads = [
+            json.loads(row["payload"])
+            for row in conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? "
+                "AND kind='suspected_hallucinated_references' ORDER BY id",
+                (parent,),
+            )
+        ]
+        assert payloads == [{
+            "phantom_refs": [outside_task],
+            "source": "completion_summary",
+        }]
+    finally:
+        conn.close()
+
+
+def test_cross_board_corrupt_in_root_db_error_propagates(kanban_home):
+    """A corrupt discovered board is an error, not an absent cross-board source."""
+    kb.create_board("corrupt-board")
+    (kb.board_dir("corrupt-board") / "kanban.db").write_bytes(b"not a sqlite database")
+
+    conn = kbc.connect()
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="file is not a database"):
+            kb._scan_prose_for_phantom_ids(conn, "referenced t_abcd1234ffff")
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

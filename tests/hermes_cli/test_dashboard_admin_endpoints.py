@@ -483,6 +483,44 @@ class TestSystemStatsEndpoint:
         # psutil flag tells the UI whether the richer metrics are populated.
         assert "psutil" in s
 
+    def test_stats_arch_falls_back_to_env_when_machine_is_empty(self, monkeypatch):
+        """``platform.machine()`` passes PROCESSOR_ARCHITECTURE through on Windows, so a backend
+        started with a curated environment reported ``arch: ""`` on the System page."""
+        import platform
+
+        monkeypatch.setattr(platform, "machine", lambda: "")
+        monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "ARM64")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        # ARCHITEW6432 wins: it is the native architecture when a 32-bit process runs on 64-bit.
+        assert r.json()["arch"] == "ARM64"
+
+    def test_stats_arch_uses_machine_when_present(self, monkeypatch):
+        import platform
+
+        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        assert r.json()["arch"] == "x86_64"
+
+    def test_stats_arch_is_never_empty(self, monkeypatch):
+        import platform
+
+        monkeypatch.setattr(platform, "machine", lambda: "")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
+
+        r = self.client.get("/api/system/stats")
+
+        assert r.status_code == 200
+        assert r.json()["arch"] == "unknown"
+
 
 class TestCuratorEndpoints:
     @pytest.fixture(autouse=True)

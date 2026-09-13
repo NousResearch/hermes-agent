@@ -482,6 +482,26 @@ async def get_status(profile: Optional[str] = None):
             status_scope.__exit__(*sys.exc_info())
 
 
+def _system_architecture() -> str:
+    """Host CPU architecture for display, never empty.
+
+    On Windows ``platform.machine()`` is a passthrough of ``PROCESSOR_ARCHITECTURE``, so a process
+    spawned with a curated environment — which is how the Desktop launches its backend — reports
+    ``""`` and ``/api/system/stats`` rendered ``arch: ""``. Fall back to the environment the way
+    the rest of the tree does (``hermes_cli/main_desktop.py``, ``hermes_constants.py``), preferring
+    ``PROCESSOR_ARCHITEW6432``: it is the only one of the two that reports the *native*
+    architecture when a 32-bit process runs on 64-bit Windows. Never return an empty value, so a
+    consumer can tell "unknown" from "absent".
+    """
+    import platform as _platform
+
+    machine = (_platform.machine() or "").strip()
+    if machine:
+        return machine
+    env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE")
+    return (env_arch or "").strip() or "unknown"
+
+
 @router.get("/api/system/stats")
 async def get_system_stats():
     """Host + process system stats for the System page (stdlib identity; psutil CPU/memory/
@@ -492,7 +512,7 @@ async def get_system_stats():
         **_display_system_platform(
             system=_platform.system(), release=_platform.release(), version=_platform.version(),
             platform_label=_platform.platform()),
-        "arch": _platform.machine(), "hostname": _platform.node(),
+        "arch": _system_architecture(), "hostname": _platform.node(),
         "python_version": _platform.python_version(),
         "python_impl": _platform.python_implementation(),
         "hermes_version": __version__, "cpu_count": os.cpu_count()}

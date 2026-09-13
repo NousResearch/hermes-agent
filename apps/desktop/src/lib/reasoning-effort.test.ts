@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isInheritedEffortSelection,
-  isReasoningEffort,
   isThinkingEnabled,
   reasoningEffortLabel,
   resolveReasoningEffort

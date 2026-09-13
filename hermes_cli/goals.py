@@ -17,6 +17,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -295,12 +296,25 @@ LANDING_STATES: Tuple[str, ...] = (
 )
 _LANDING_STATE_SET = frozenset(LANDING_STATES)
 
+# REGRESSION_OBSERVED is terminal negative evidence: a valid ChangeReceipt.state that never
+# fulfills, but NOT a valid declared landing requirement — nothing may be "required" to regress.
+REQUIRED_LANDING_STATES: Tuple[str, ...] = tuple(
+    s for s in LANDING_STATES if s != "REGRESSION_OBSERVED"
+)
+_REQUIRED_LANDING_STATE_SET = frozenset(REQUIRED_LANDING_STATES)
+
 # Canonical capability tags accepted in GoalToolConstraints.denied_capabilities; the registry
 # owns the canonical list (B1), and `unknown` is a first-class entry that may be denied explicitly.
 _TOOL_CAPABILITY_SET = frozenset(TOOL_CAPABILITIES)
 
 # Change receipts are a bounded audit tail — keep only the newest ones on both load and append.
 MAX_CHANGE_RECEIPTS = 32
+
+# These states only count as landed in the *current* mutation generation when a verification
+# receipt (``verification_generation > 0``) exists in that generation: deploying/loading is a
+# mutation, but accepting it live requires independent verification on top of it.
+_VERIFIED_LANDING_STATES = frozenset({"DEPLOYED", "LOADED", "LIVE_ACCEPTED"})
+_LANDING_STATE_INDEX = {state: i for i, state in enumerate(LANDING_STATES)}
 
 
 @dataclass
@@ -321,10 +335,18 @@ class GoalLanding:
 
     def _coerce_and_validate(self) -> None:
         """Canonical rules shared by ``__post_init__`` and ``from_dict`` (which constructs via ``cls``)."""
+        if self.targets is None:
+            self.targets = []
         if not isinstance(self.targets, list):
             raise ValueError("landing targets must be an array")
-        state = str(self.required_state or "PLANNED").strip().upper()
-        if state not in _LANDING_STATE_SET:
+        state = self.required_state
+        if state is None:
+            state = "PLANNED"
+        if not isinstance(state, str):
+            raise ValueError("landing required_state must be a string")
+        state = state.strip().upper()
+        # REGRESSION_OBSERVED is terminal negative evidence — never a declared requirement.
+        if state not in _REQUIRED_LANDING_STATE_SET:
             raise ValueError(f"invalid landing required_state: {state!r}")
         targets: List[str] = []
         for raw in self.targets:
@@ -355,6 +377,19 @@ class GoalLanding:
             and not self.restart_required
         )
 
+    def effective_required_state(self) -> str:
+        """Minimum state receipts must prove: LOADED floor when a restart is required.
+
+        A restart must (re)load the deliverable before it can count as landed, so a declared
+        state below LOADED (e.g. COMMITTED) is raised to LOADED; a declared LOADED or higher
+        stays as declared. No restart → effective == declared.
+        """
+        if not self.restart_required:
+            return self.required_state
+        if _LANDING_STATE_INDEX.get(self.required_state, -1) >= _LANDING_STATE_INDEX["LOADED"]:
+            return self.required_state
+        return "LOADED"
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "required_state": self.required_state,
@@ -373,10 +408,18 @@ class GoalLanding:
         if unknown:
             raise ValueError(f"unknown goal landing key(s): {sorted(unknown)}")
         # Value validation/normalization is owned by __post_init__ so direct
-        # construction and from_dict can never diverge.
+        # construction and from_dict can never diverge. Only a missing/None key means
+        # "empty"/default; explicit falsy values ("", 0, False, {}) pass through unchanged so
+        # the shared validator rejects them instead of being silently coerced away.
+        raw_required = data.get("required_state")
+        if raw_required is None:
+            raw_required = "PLANNED"
+        raw_targets = data.get("targets")
+        if raw_targets is None:
+            raw_targets = []
         return cls(
-            required_state=data.get("required_state") or "PLANNED",
-            targets=data.get("targets") or [],
+            required_state=raw_required,
+            targets=raw_targets,
             live_probe=data.get("live_probe"),
             restart_required=data.get("restart_required", False),
         )
@@ -456,6 +499,107 @@ class ChangeReceipt:
             verification_generation=data.get("verification_generation", 0),
             runtime_issued=data.get("runtime_issued", False),
         )
+
+
+# ── Landing freshness evaluation (runtime-issued receipts only) ──────
+
+
+def _landing_state_rank(state: str) -> int:
+    """Fulfillment rank of a landing state; REGRESSION_OBSERVED (and anything unknown) never qualifies."""
+    if state == "REGRESSION_OBSERVED":
+        return -1
+    return _LANDING_STATE_INDEX.get(state, -1)
+
+
+def _receipt_freshness(
+    receipt: ChangeReceipt,
+    *,
+    current_gen: int,
+    baseline: Optional[ChangeReceipt],
+    zero_gen_latest: Optional[float],
+) -> str:
+    """``fresh`` / ``unverified`` / ``stale`` for one runtime receipt against its target's generation.
+
+    Current-generation receipts are fresh unless their state needs a verification receipt
+    (DEPLOYED/LOADED/LIVE_ACCEPTED must carry ``verification_generation > 0``). Zero-generation
+    legacy/fallback receipts are ordered by ``issued_at`` against the latest mutation receipt — an
+    issuance path that never tracked generations still proves it happened after the last deploy.
+    Any receipt from an older retained generation is stale: a new mutation supersedes it.
+    """
+    if receipt.mutation_generation == current_gen and current_gen > 0:
+        if receipt.state in _VERIFIED_LANDING_STATES:
+            return "fresh" if receipt.verification_generation > 0 else "unverified"
+        return "fresh"
+    if receipt.mutation_generation == 0:
+        if baseline is not None:
+            return "fresh" if receipt.issued_at >= baseline.issued_at else "stale"
+        return "fresh" if zero_gen_latest is not None and receipt.issued_at >= zero_gen_latest else "stale"
+    return "stale"
+
+
+def _evaluate_landing_target(receipts: List[ChangeReceipt], target: str, required_state: str) -> Dict[str, Any]:
+    """Per-target landing status from runtime-issued receipts only; deterministic, no LLM.
+
+    Only ``runtime_issued`` receipts are evidence. A target is fulfilled when a *fresh* runtime
+    receipt has state rank >= ``required_state`` rank; freshness comes from generation equality
+    (plus ``verification_generation > 0`` for DEPLOYED/LOADED/LIVE_ACCEPTED) or, for zero-generation
+    fallback receipts, ``issued_at`` ordering against the latest mutation receipt. ``receipt_ids``
+    lists the matching (fresh + state-qualified) receipts for the target.
+    """
+    runtime = [r for r in receipts if r.runtime_issued and r.target == target]
+    if not runtime:
+        return {"target": target, "fulfilled": False, "observed_state": None,
+                "reason": "no-runtime-issued-receipts", "receipt_ids": []}
+
+    current_gen = max(r.mutation_generation for r in runtime)
+    # The receipt that created the current generation is the ordering baseline for zero-generation
+    # fallback receipts; it is normally the unique (mutation_generation == current_gen, verification_generation == 0).
+    baseline: Optional[ChangeReceipt] = None
+    if current_gen > 0:
+        baseline = max(
+            (r for r in runtime if r.mutation_generation == current_gen and r.verification_generation == 0),
+            key=lambda r: r.issued_at,
+            default=None,
+        )
+        if baseline is None:
+            baseline = max(
+                (r for r in runtime if r.mutation_generation == current_gen),
+                key=lambda r: r.issued_at,
+                default=None,
+            )
+    zero_gen_latest = max((r.issued_at for r in runtime if r.mutation_generation == 0), default=None)
+    freshness = {
+        r.receipt_id: _receipt_freshness(r, current_gen=current_gen, baseline=baseline, zero_gen_latest=zero_gen_latest)
+        for r in runtime
+    }
+
+    required_rank = _landing_state_rank(required_state)
+    fresh_all = [r for r in runtime if freshness[r.receipt_id] == "fresh"]
+    if fresh_all:
+        best_fresh = max(fresh_all, key=lambda r: (_landing_state_rank(r.state), r.issued_at))
+        if _landing_state_rank(best_fresh.state) >= required_rank:
+            matching = [r for r in fresh_all if _landing_state_rank(r.state) >= required_rank]
+            return {"target": target, "fulfilled": True, "observed_state": best_fresh.state,
+                    "reason": "fulfilled", "receipt_ids": [r.receipt_id for r in matching]}
+        return {"target": target, "fulfilled": False, "observed_state": best_fresh.state,
+                "reason": "insufficient-state", "receipt_ids": []}
+
+    qualified = [r for r in runtime if _landing_state_rank(r.state) >= required_rank]
+    if qualified:
+        best = max(qualified, key=lambda r: (_landing_state_rank(r.state), r.issued_at))
+        reason = "unverified" if freshness[best.receipt_id] == "unverified" else "stale"
+        return {"target": target, "fulfilled": False, "observed_state": best.state,
+                "reason": reason, "receipt_ids": []}
+
+    best = max(runtime, key=lambda r: (_landing_state_rank(r.state), r.issued_at))
+    return {"target": target, "fulfilled": False, "observed_state": best.state,
+            "reason": "insufficient-state", "receipt_ids": []}
+
+
+def _empty_landing_status(reason: str) -> Dict[str, Any]:
+    """Fulfilled-without-receipts status for a goal with no landing contract."""
+    return {"fulfilled": True, "required_state": "PLANNED", "effective_required_state": "PLANNED",
+            "restart_required": False, "reason": reason, "targets": [], "receipt_ids": []}
 
 
 @dataclass
@@ -807,6 +951,52 @@ class GoalState:
         self.receipts.append(receipt)
         if len(self.receipts) > MAX_CHANGE_RECEIPTS:
             del self.receipts[: len(self.receipts) - MAX_CHANGE_RECEIPTS]
+
+    def latest_mutation_generation(self, target: str) -> int:
+        """Highest mutation generation among retained runtime-issued receipts for ``target``; 0 when none."""
+        return max(
+            (r.mutation_generation for r in self.receipts if r.runtime_issued and r.target == target),
+            default=0,
+        )
+
+    def evaluate_landing(self, landing: Optional[GoalLanding] = None) -> Dict[str, Any]:
+        """Deterministic landing fulfillment from runtime-issued change receipts (no LLM involved).
+
+        Every declared target needs a *fresh* runtime receipt whose state rank is at least the
+        effective required state — ``landing.required_state``, or LOADED when
+        ``landing.restart_required`` raises a lower declared state (a restart must (re)load the
+        deliverable). Only ``runtime_issued`` receipts count as evidence, and a new mutation
+        stales older receipts of the same target. An empty or absent landing is fulfilled without
+        receipts. Returns a structured status with ``fulfilled``, declared ``required_state``,
+        ``effective_required_state``, ``restart_required``, per-target observed state/reason, and
+        matching receipt ids.
+        """
+        if landing is None:
+            landing = self.contract.landing if self.contract is not None else None
+        if landing is None or landing.is_empty():
+            return _empty_landing_status("no-landing")
+        effective = landing.effective_required_state()
+        if not landing.targets:
+            return {"fulfilled": True, "required_state": landing.required_state,
+                    "effective_required_state": effective,
+                    "restart_required": landing.restart_required, "reason": "no-declared-targets",
+                    "targets": [], "receipt_ids": []}
+        target_statuses: List[Dict[str, Any]] = []
+        matching: List[str] = []
+        for target in landing.targets:
+            target_status = _evaluate_landing_target(self.receipts, target, effective)
+            target_statuses.append(target_status)
+            matching.extend(target_status["receipt_ids"])
+        fulfilled = all(status["fulfilled"] for status in target_statuses)
+        return {
+            "fulfilled": fulfilled,
+            "required_state": landing.required_state,
+            "effective_required_state": effective,
+            "restart_required": landing.restart_required,
+            "reason": "fulfilled" if fulfilled else "unfulfilled",
+            "targets": target_statuses,
+            "receipt_ids": matching,
+        }
 
     def render_subgoals_block(self) -> str:
         """Numbered ``- N. text`` block; empty when there are no subgoals."""
@@ -1612,6 +1802,56 @@ class GoalManager:
         if self._state is None:
             return "(no active goal)"
         return self._state.render_subgoals_block() or "(no subgoals — use /subgoal <text> to add criteria)"
+
+    # --- runtime change receipts + deterministic landing status --------
+
+    def issue_change_receipt(
+        self, *, target, scope, source_reference, state, mutation=False, issued_at=None,
+    ) -> ChangeReceipt:
+        """Emit a runtime-only landing receipt for the goal's bounded audit tail.
+
+        The caller may only name the evidence (``target`` / ``scope`` / ``source_reference`` /
+        ``state``) and its mode: ``mutation=True`` opens a fresh generation (from the maximum
+        retained runtime receipt generation + 1, ``verification_generation=0``), while
+        ``mutation=False`` binds to the current generation and advances its verification
+        generation. Receipt id, ``runtime_issued`` and both generations are assigned here — no
+        caller parameter can influence them. The receipt is persisted through
+        ``GoalState.add_receipt`` (bounded tail) and returned. Requires an active or paused goal.
+        """
+        state_obj = self._require_goal()
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("change receipt target must be a non-empty string")
+        target = target.strip()
+        runtime = [r for r in state_obj.receipts if r.runtime_issued and r.target == target]
+        if mutation:
+            mutation_generation = max((r.mutation_generation for r in runtime), default=0) + 1
+            verification_generation = 0
+        else:
+            mutation_generation = max((r.mutation_generation for r in runtime), default=0)
+            verification_generation = max(
+                (r.verification_generation for r in runtime if r.mutation_generation == mutation_generation),
+                default=0,
+            ) + 1
+        receipt = ChangeReceipt(
+            receipt_id=str(uuid.uuid4()),
+            target=target,
+            scope=scope,
+            source_reference=source_reference,
+            state=state,
+            issued_at=time.time() if issued_at is None else issued_at,
+            mutation_generation=mutation_generation,
+            verification_generation=verification_generation,
+            runtime_issued=True,
+        )
+        state_obj.add_receipt(receipt)
+        self._save()
+        return receipt
+
+    def landing_status(self) -> Dict[str, Any]:
+        """Structured, deterministic landing status from runtime receipts (see ``GoalState.evaluate_landing``)."""
+        if self._state is None:
+            return _empty_landing_status("no-goal")
+        return self._state.evaluate_landing()
 
     # --- /goal gate quality gates ---------------------------------------
 

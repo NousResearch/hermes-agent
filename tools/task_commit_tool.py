@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Optional
 
-from hermes_cli.goals import GoalContract, GoalLanding, GoalManager, GoalToolConstraints, LANDING_STATES
+from hermes_cli.goals import (
+    GoalContract, GoalLanding, GoalManager, GoalToolConstraints, REQUIRED_LANDING_STATES,
+)
 from tools.registry import registry
 
 
@@ -58,14 +60,21 @@ TASK_COMMIT_SCHEMA = {
                 "type": ["object", "null"],
                 "properties": {
                     "required_state": {
-                        "type": "string",
-                        "enum": list(LANDING_STATES),
-                        "description": "The deployment state the deliverable must reach before the goal counts as landed.",
+                        "type": ["string", "null"],
+                        "enum": [None] + list(REQUIRED_LANDING_STATES),
+                        "description": (
+                            "The deployment state the deliverable must reach before the goal counts as landed. "
+                            "Never REGRESSION_OBSERVED — that is terminal negative evidence, not a requirement. "
+                            "Null means the GoalLanding default PLANNED."
+                        ),
                     },
                     "targets": {
-                        "type": "array",
+                        "type": ["array", "null"],
                         "items": {"type": "string"},
-                        "description": "Concrete landing targets (URLs, hosts, release tags). Must be non-empty.",
+                        "description": (
+                            "Concrete landing targets (URLs, hosts, release tags). Must be non-empty when "
+                            "provided; null means the GoalLanding default [] (no targets declared)."
+                        ),
                     },
                     "live_probe": {
                         "type": ["string", "null"],
@@ -157,13 +166,15 @@ def _items(value: Any, field: str) -> Optional[list[str]]:
 
 def _landing(value: Any) -> Optional[GoalLanding]:
     """Admit a typed landing object; reject unknown keys, invalid states, and empty/non-string
-    targets. Shell/command keys are unknown keys here — execution is never admitted."""
+    targets. Shell/command keys are unknown keys here — execution is never admitted.
+    ``targets: null`` falls back to the GoalLanding default ``[]``; an explicit empty array or
+    falsy non-null value is still rejected, never silently coerced away."""
     if value is None:
         return None
     if not isinstance(value, dict):
         raise ValueError("landing must be an object or null")
     landing = GoalLanding.from_dict(value)
-    if not landing.targets:
+    if value.get("targets") is not None and not landing.targets:
         raise ValueError("landing targets cannot be empty")
     return landing
 

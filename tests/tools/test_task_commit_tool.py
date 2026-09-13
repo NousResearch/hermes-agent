@@ -11,7 +11,7 @@ import pytest
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from hermes_cli import goals
-from hermes_cli.goals import GoalContract, GoalManager, is_stale_goal_event
+from hermes_cli.goals import GoalContract, GoalManager, REQUIRED_LANDING_STATES, is_stale_goal_event
 from tools.registry import registry
 from tools.task_commit_tool import TASK_COMMIT_SCHEMA, task_commit
 from tools.delegate_tool_toolsets import DELEGATE_BLOCKED_TOOLS
@@ -530,6 +530,85 @@ def test_29_inline_executor_persists_landing():
     assert landing.required_state == "LIVE_ACCEPTED"
     assert landing.targets == ["https://example.com/health"]
     assert landing.restart_required is True
+
+
+def test_29b_landing_rejects_falsy_targets_not_coerced():
+    for bad in ("", 0, False, {}):
+        result = call(
+            "landing-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            landing={"required_state": "COMMITTED", "targets": bad},
+        )
+        assert not result["success"], repr(bad)
+        assert "landing" in result["error"], repr(bad)
+
+
+def test_29c_landing_rejects_falsy_required_state_not_coerced():
+    for bad in ("", 0, False, {}):
+        result = call(
+            "landing-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            landing={"required_state": bad, "targets": ["a"]},
+        )
+        assert not result["success"], repr(bad)
+        assert "landing" in result["error"], repr(bad)
+
+
+def test_29d_landing_rejects_regression_observed_required_state():
+    result = call(
+        "landing-bad", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        landing={"required_state": "REGRESSION_OBSERVED", "targets": ["a"]},
+    )
+    assert not result["success"]
+    assert "landing" in result["error"]
+
+
+def test_29e_landing_schema_required_state_excludes_regression_observed():
+    enum = TASK_COMMIT_SCHEMA["parameters"]["properties"]["landing"]["properties"]["required_state"]["enum"]
+    assert "REGRESSION_OBSERVED" not in enum
+    assert "LOADED" in enum and "COMMITTED" in enum
+
+
+def test_29f_landing_schema_permits_null_nested_defaults():
+    landing_props = TASK_COMMIT_SCHEMA["parameters"]["properties"]["landing"]["properties"]
+    assert landing_props["required_state"]["type"] == ["string", "null"]
+    assert landing_props["targets"]["type"] == ["array", "null"]
+    # Null is admitted on top of the full declared-state enum; non-null values are unchanged.
+    assert landing_props["required_state"]["enum"] == [None] + list(REQUIRED_LANDING_STATES)
+
+
+def test_29g_landing_nested_none_persists_as_defaults():
+    result = call(
+        "landing-null-defaults", operation="create",
+        objective="Ship it", outcome="Live", verification="Probe",
+        landing={"required_state": None, "targets": None},
+    )
+    assert result["success"] and result["result"] == "created"
+    landing = GoalManager("landing-null-defaults").state.contract.landing
+    assert landing is not None
+    assert landing.required_state == "PLANNED"
+    assert landing.targets == []
+    snapshot_landing = result["goal"]["contract"]["landing"]
+    assert snapshot_landing["required_state"] == "PLANNED"
+    assert snapshot_landing["targets"] == []
+
+
+def test_29h_landing_amend_nested_none_replaces_with_defaults():
+    call(
+        "landing-null-amend", operation="create",
+        objective="Ship it", outcome="Live", verification="Probe",
+        landing={"required_state": "DEPLOYED", "targets": ["prod"]},
+    )
+    result = call(
+        "landing-null-amend", operation="amend",
+        landing={"required_state": None, "targets": None},
+    )
+    assert result["success"] and result["result"] == "amended"
+    landing = GoalManager("landing-null-amend").state.contract.landing
+    assert landing is not None
+    assert landing.required_state == "PLANNED"
+    assert landing.targets == []
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -1030,6 +1030,51 @@ class TestGoalLanding:
         assert landing.targets == ["a"]
         assert landing.live_probe == "curl"
 
+    def test_missing_or_none_keys_default_like_absent(self):
+        from hermes_cli.goals import GoalLanding
+
+        for data in ({}, {"required_state": None, "targets": None}):
+            landing = GoalLanding.from_dict(data)
+            assert landing.required_state == "PLANNED"
+            assert landing.targets == []
+            assert landing.live_probe is None
+            assert landing.restart_required is False
+        assert GoalLanding(required_state=None, targets=None).required_state == "PLANNED"
+        assert GoalLanding(required_state=None, targets=None).targets == []
+
+    def test_explicit_falsy_targets_rejected_not_coerced(self):
+        from hermes_cli.goals import GoalLanding
+
+        for bad in ("", 0, False, {}):
+            with pytest.raises(ValueError):
+                GoalLanding.from_dict({"required_state": "COMMITTED", "targets": bad})
+
+    def test_explicit_falsy_required_state_rejected_not_coerced(self):
+        from hermes_cli.goals import GoalLanding
+
+        for bad in ("", 0, False, {}):
+            with pytest.raises(ValueError):
+                GoalLanding.from_dict({"required_state": bad})
+            with pytest.raises(ValueError):
+                GoalLanding(required_state=bad)
+
+    def test_regression_observed_rejected_as_required_state(self):
+        from hermes_cli.goals import GoalLanding
+
+        with pytest.raises(ValueError):
+            GoalLanding(required_state="REGRESSION_OBSERVED")
+        with pytest.raises(ValueError):
+            GoalLanding.from_dict({"required_state": "regression_observed ", "targets": ["a"]})
+
+    def test_regression_observed_still_valid_receipt_state(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        receipt = ChangeReceipt(
+            receipt_id="rc-reg", target="prod", scope="s", source_reference="s",
+            state="REGRESSION_OBSERVED", issued_at=1.0,
+        )
+        assert receipt.state == "REGRESSION_OBSERVED"
+
 
 class TestChangeReceipt:
     def test_receipt_roundtrips_through_goal_state(self):
@@ -1130,6 +1175,353 @@ class TestChangeReceipt:
         restored = GoalState.from_json(GoalState(goal="g", receipts=receipts).to_json())
         assert len(restored.receipts) == MAX_CHANGE_RECEIPTS
         assert restored.receipts[0].receipt_id == "rc-8"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Runtime change receipts: issuance, generations, deterministic landing
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestIssueChangeReceipt:
+
+    def test_runtime_issuance_marker_and_opaque_id(self, hermes_home):
+        import inspect
+        import uuid
+
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="rc-issue")
+        mgr.set("land it")
+        r1 = mgr.issue_change_receipt(
+            target="prod", scope="deploy", source_reference="sha-1", state="COMMITTED", mutation=True,
+        )
+        r2 = mgr.issue_change_receipt(
+            target="prod", scope="deploy", source_reference="sha-2", state="COMMITTED", mutation=True,
+        )
+        assert r1.runtime_issued is True
+        assert r2.runtime_issued is True
+        # Opaque, unique receipt ids the caller cannot influence.
+        assert r1.receipt_id != r2.receipt_id
+        uuid.UUID(r1.receipt_id)
+        uuid.UUID(r2.receipt_id)
+        # Caller fields are not parameters: no way to set receipt_id / runtime_issued / generations.
+        assert set(inspect.signature(mgr.issue_change_receipt).parameters) == {
+            "target", "scope", "source_reference", "state", "mutation", "issued_at",
+        }
+
+    def test_generation_increment_and_verification_generation(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="rc-gen")
+        mgr.set("land it")
+        m1 = mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        assert (m1.mutation_generation, m1.verification_generation) == (1, 0)
+        v1 = mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="COMMITTED")
+        assert (v1.mutation_generation, v1.verification_generation) == (1, 1)
+        v2 = mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="COMMITTED")
+        assert (v2.mutation_generation, v2.verification_generation) == (1, 2)
+        m2 = mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="DEPLOYED", mutation=True)
+        assert (m2.mutation_generation, m2.verification_generation) == (2, 0)
+        assert mgr.state.latest_mutation_generation("prod") == 2
+
+    def test_generations_are_per_target(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="rc-multi")
+        mgr.set("land it")
+        a1 = mgr.issue_change_receipt(target="svc-a", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        b1 = mgr.issue_change_receipt(target="svc-b", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        a2 = mgr.issue_change_receipt(target="svc-a", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        assert (a1.mutation_generation, a2.mutation_generation, b1.mutation_generation) == (1, 2, 1)
+        assert mgr.state.latest_mutation_generation("svc-a") == 2
+        assert mgr.state.latest_mutation_generation("svc-b") == 1
+        assert mgr.state.latest_mutation_generation("other") == 0
+
+    def test_bounded_retention_and_reload_persistence(self, hermes_home):
+        from hermes_cli.goals import GoalManager, MAX_CHANGE_RECEIPTS
+
+        mgr = GoalManager(session_id="rc-bound")
+        mgr.set("land it")
+        for i in range(40):
+            mgr.issue_change_receipt(
+                target="prod", scope="deploy", source_reference=f"sha-{i}", state="COMMITTED", mutation=True,
+            )
+        assert len(mgr.state.receipts) == MAX_CHANGE_RECEIPTS
+        reloaded = GoalManager(session_id="rc-bound")
+        assert len(reloaded.state.receipts) == MAX_CHANGE_RECEIPTS
+        assert all(r.runtime_issued for r in reloaded.state.receipts)
+        assert reloaded.state.latest_mutation_generation("prod") == 40
+
+    def test_reload_persistence_of_generations_and_landing(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        GoalManager(session_id="rc-reload").set(
+            "land it", contract=GoalContract(landing=GoalLanding(required_state="COMMITTED", targets=["prod"]))
+        )
+        mgr = GoalManager(session_id="rc-reload")
+        mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="COMMITTED")
+        reloaded = GoalManager(session_id="rc-reload")
+        assert len(reloaded.state.receipts) == 2
+        assert reloaded.state.latest_mutation_generation("prod") == 1
+        status = reloaded.landing_status()
+        assert status["fulfilled"] is True
+        assert status["required_state"] == "COMMITTED"
+        assert len(status["receipt_ids"]) == 2
+
+
+class TestLandingStatus:
+
+    def _state(self, required_state="COMMITTED", targets=("prod",), restart_required=False):
+        from hermes_cli.goals import GoalState, GoalContract, GoalLanding
+
+        return GoalState(
+            goal="g",
+            contract=GoalContract(landing=GoalLanding(
+                required_state=required_state, targets=list(targets), restart_required=restart_required,
+            )),
+        )
+
+    def test_empty_or_absent_landing_is_fulfilled(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        assert GoalManager(session_id="rc-none").landing_status()["fulfilled"] is True
+        mgr = GoalManager(session_id="rc-no-contract")
+        mgr.set("plain goal")
+        status = mgr.landing_status()
+        assert status["fulfilled"] is True
+        assert status["reason"] == "no-landing"
+        assert status["receipt_ids"] == []
+        assert status["targets"] == []
+
+    def test_every_declared_target_required(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-all")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(
+            required_state="COMMITTED", targets=["svc-a", "svc-b"],
+        )))
+        mgr.issue_change_receipt(target="svc-a", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        status = mgr.landing_status()
+        assert status["fulfilled"] is False
+        reasons = {t["target"]: t["reason"] for t in status["targets"]}
+        assert reasons["svc-a"] == "fulfilled"
+        assert reasons["svc-b"] == "no-runtime-issued-receipts"
+        mgr.issue_change_receipt(target="svc-b", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        status = mgr.landing_status()
+        assert status["fulfilled"] is True
+        assert sorted(status["receipt_ids"]) == sorted(rid for t in status["targets"] for rid in t["receipt_ids"])
+
+    def test_state_rank_required(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-rank")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(required_state="COMMITTED", targets=["prod"])))
+        mgr.issue_change_receipt(target="prod", scope="write", source_reference="s", state="WRITTEN", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="write", source_reference="s", state="WRITTEN")
+        status = mgr.landing_status()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "insufficient-state"
+        assert status["targets"][0]["observed_state"] == "WRITTEN"
+        mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="COMMITTED")
+        assert mgr.landing_status()["fulfilled"] is True
+
+    def test_new_mutation_stales_older_receipts(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-stale-deploy")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(required_state="DEPLOYED", targets=["prod"])))
+        mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="DEPLOYED", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="DEPLOYED")
+        assert mgr.landing_status()["fulfilled"] is True
+        # A later mutation regresses the workspace: the old DEPLOYED evidence is now stale.
+        mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        status = mgr.landing_status()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "insufficient-state"
+        assert status["targets"][0]["observed_state"] == "COMMITTED"
+
+        # Older COMMITTED evidence from a superseded generation never counts as matching.
+        mgr2 = GoalManager(session_id="rc-stale-staged")
+        mgr2.set("land it", contract=GoalContract(landing=GoalLanding(required_state="STAGED", targets=["prod"])))
+        first = mgr2.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        second = mgr2.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="STAGED", mutation=True)
+        status = mgr2.landing_status()
+        assert status["fulfilled"] is True
+        assert status["receipt_ids"] == [second.receipt_id]
+        assert first.receipt_id not in status["receipt_ids"]
+
+    def test_restart_required_needs_fresh_verified_load(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-restart")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(
+            required_state="LOADED", targets=["prod"], restart_required=True,
+        )))
+        # A LOADED mutation alone is NOT fresh evidence of a restart — still unverified.
+        mgr.issue_change_receipt(target="prod", scope="load", source_reference="s", state="LOADED", mutation=True)
+        status = mgr.landing_status()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "unverified"
+        assert status["targets"][0]["observed_state"] == "LOADED"
+        # A verification receipt in the same generation is the restart proof.
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="LOADED")
+        assert mgr.landing_status()["fulfilled"] is True
+
+    def test_live_accepted_restart_only_fresh_live_receipt_fulfills(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-live-restart")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(
+            required_state="LIVE_ACCEPTED", targets=["prod"], restart_required=True,
+        )))
+        mgr.issue_change_receipt(target="prod", scope="load", source_reference="s", state="LIVE_ACCEPTED", mutation=True)
+        assert mgr.landing_status()["fulfilled"] is False
+        # A verified LOADED receipt is still below LIVE_ACCEPTED.
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="LOADED")
+        status = mgr.landing_status()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "insufficient-state"
+        assert status["targets"][0]["observed_state"] == "LOADED"
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="LIVE_ACCEPTED")
+        assert mgr.landing_status()["fulfilled"] is True
+
+    def test_restart_imposes_effective_loaded_minimum(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-restart-floor")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(
+            required_state="COMMITTED", targets=["prod"], restart_required=True,
+        )))
+        # Fresh COMMITTED evidence is below the effective LOADED floor: a restart must (re)load.
+        mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="COMMITTED")
+        status = mgr.landing_status()
+        assert status["fulfilled"] is False
+        assert status["required_state"] == "COMMITTED"
+        assert status["effective_required_state"] == "LOADED"
+        assert status["targets"][0]["reason"] == "insufficient-state"
+        assert status["targets"][0]["observed_state"] == "COMMITTED"
+        # A fresh verified LOADED receipt (the restart proof) fulfills despite declared COMMITTED.
+        mgr.issue_change_receipt(target="prod", scope="load", source_reference="s", state="LOADED", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="LOADED")
+        status = mgr.landing_status()
+        assert status["fulfilled"] is True
+        assert status["effective_required_state"] == "LOADED"
+        # A later unverified LOADED mutation alone is not a fresh verified restart proof.
+        mgr.issue_change_receipt(target="prod", scope="load", source_reference="s", state="LOADED", mutation=True)
+        assert mgr.landing_status()["fulfilled"] is False
+
+    def test_no_restart_effective_equals_declared(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-no-restart-eff")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(
+            required_state="COMMITTED", targets=["prod"], restart_required=False,
+        )))
+        mgr.issue_change_receipt(target="prod", scope="deploy", source_reference="s", state="COMMITTED", mutation=True)
+        mgr.issue_change_receipt(target="prod", scope="verify", source_reference="s", state="COMMITTED")
+        status = mgr.landing_status()
+        assert status["fulfilled"] is True
+        assert status["required_state"] == "COMMITTED"
+        assert status["effective_required_state"] == "COMMITTED"
+
+    def test_declared_loaded_with_restart_keeps_effective_loaded(self, hermes_home):
+        from hermes_cli.goals import GoalManager, GoalContract, GoalLanding
+
+        mgr = GoalManager(session_id="rc-restart-loaded")
+        mgr.set("land it", contract=GoalContract(landing=GoalLanding(
+            required_state="LOADED", targets=["prod"], restart_required=True,
+        )))
+        status = mgr.landing_status()
+        assert status["effective_required_state"] == "LOADED"
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "no-runtime-issued-receipts"
+
+    def test_zero_generation_issued_at_fallback(self):
+        from hermes_cli.goals import GoalState, GoalContract, GoalLanding, ChangeReceipt
+
+        state = self._state()
+        state.add_receipt(ChangeReceipt(
+            receipt_id="zero-1", target="prod", scope="deploy", source_reference="s",
+            state="COMMITTED", issued_at=100.0, runtime_issued=True,
+        ))
+        assert state.evaluate_landing()["fulfilled"] is True
+        # A later mutation supersedes a zero-generation receipt issued before it.
+        state.add_receipt(ChangeReceipt(
+            receipt_id="mut-1", target="prod", scope="deploy", source_reference="s",
+            state="WRITTEN", issued_at=101.0, mutation_generation=1, runtime_issued=True,
+        ))
+        status = state.evaluate_landing()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "insufficient-state"
+        assert status["targets"][0]["observed_state"] == "WRITTEN"
+        # A zero-generation receipt issued AFTER the latest mutation is fresh again.
+        state.add_receipt(ChangeReceipt(
+            receipt_id="zero-2", target="prod", scope="deploy", source_reference="s",
+            state="COMMITTED", issued_at=102.0, runtime_issued=True,
+        ))
+        status = state.evaluate_landing()
+        assert status["fulfilled"] is True
+        assert status["receipt_ids"] == ["zero-2"]
+
+    def test_runtime_issued_false_receipts_never_count(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        state = self._state()
+        state.add_receipt(ChangeReceipt(
+            receipt_id="legacy", target="prod", scope="deploy", source_reference="s",
+            state="COMMITTED", issued_at=1.0, mutation_generation=1, verification_generation=1,
+        ))
+        status = state.evaluate_landing()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "no-runtime-issued-receipts"
+        state.add_receipt(ChangeReceipt(
+            receipt_id="runtime", target="prod", scope="deploy", source_reference="s",
+            state="COMMITTED", issued_at=2.0, mutation_generation=1, verification_generation=1,
+            runtime_issued=True,
+        ))
+        assert state.evaluate_landing()["fulfilled"] is True
+
+    def test_regression_observed_never_fulfills(self):
+        from hermes_cli.goals import ChangeReceipt
+
+        state = self._state(required_state="DEPLOYED")
+        state.add_receipt(ChangeReceipt(
+            receipt_id="reg", target="prod", scope="observe", source_reference="s",
+            state="REGRESSION_OBSERVED", issued_at=10.0, mutation_generation=1, runtime_issued=True,
+        ))
+        status = state.evaluate_landing()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "insufficient-state"
+        assert status["targets"][0]["observed_state"] == "REGRESSION_OBSERVED"
+        state.add_receipt(ChangeReceipt(
+            receipt_id="deployed", target="prod", scope="verify", source_reference="s",
+            state="DEPLOYED", issued_at=11.0, mutation_generation=1, verification_generation=1,
+            runtime_issued=True,
+        ))
+        assert state.evaluate_landing()["fulfilled"] is True
+
+    def test_old_goal_json_loads_and_evaluates(self):
+        """Backward compatibility: pre-receipt JSON loads and never auto-fulfills via legacy rows."""
+        from hermes_cli.goals import GoalState, GoalContract, GoalLanding
+
+        raw = json.dumps({
+            "goal": "g",
+            "status": "active",
+            "receipts": [{
+                "receipt_id": "old-1", "target": "prod", "scope": "s",
+                "source_reference": "s", "state": "DEPLOYED", "issued_at": 9.0,
+            }],
+        })
+        state = GoalState.from_json(raw)
+        assert state.receipts[0].runtime_issued is False
+        assert state.latest_mutation_generation("prod") == 0
+        state.contract = GoalContract(landing=GoalLanding(required_state="DEPLOYED", targets=["prod"]))
+        status = state.evaluate_landing()
+        assert status["fulfilled"] is False
+        assert status["targets"][0]["reason"] == "no-runtime-issued-receipts"
 
 
 class TestGoalToolConstraints:

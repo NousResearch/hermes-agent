@@ -480,33 +480,80 @@ class TestConfiguredDeleteNeverApplied:
         assert "never applied" in out
         # The remediation must name the offline step; the setting alone will not convert it.
         assert "PRAGMA journal_mode=DELETE" in out
-        # ...and the COMPLETE holder set. `hermes gateway stop` alone is the current profile's
-        # gateway only; the dashboard / `hermes serve` are separate processes on their own
-        # lifecycle and are database holders too — that gateway+dashboard pair IS the topology
-        # in #100896. A hint naming only the gateway lets the operator run the PRAGMA while the
-        # dashboard still holds the file, leaving the conversion unapplied (review finding).
-        assert "gateway stop --all" in out
-        assert "dashboard --stop" in out
-        # ...and that those two are NOT presented as sufficient: `--stop` signals PIDs, so a
-        # supervised dashboard respawns and a Desktop-owned backend is excluded outright
-        # (dashboard_procs._kill_stale_dashboard_processes passes _exclude_pids_from_env()).
-        assert "systemctl --user stop hermes-dashboard" in out
-        assert "s6-svc" in out
-        assert "HERMES_DESKTOP_CHILD_PID" in out
-        # `gateway stop --all` is NOT owner-level for sibling profiles: _cmd_stop stops only the active
-        # profile's installed service (_stop_installed_service -> get_service_name(), per-profile
-        # `hermes-gateway-<profile>`) and kill_gateway_processes(all_profiles=True) merely signals the
-        # rest, whose units carry Restart=always / KeepAlive and respawn them (review finding). The
-        # hint must say so and give the per-profile owner command, not claim --all covers every profile.
-        assert "(every profile's gateway)" not in out
-        assert "Restart=always" in out
-        assert "-p <profile> gateway stop" in out
-        # ...and two supported dashboard owners the previous text omitted: a system-scope unit
-        # (`systemctl --user` cannot stop it; #100896's field report) and the repo's own Compose
-        # layout, where `dashboard` is a separate `restart: unless-stopped` container so s6-svc
-        # does not reach it (docker-compose.yml / docker-compose.windows.yml).
-        assert "sudo systemctl stop hermes-dashboard" in out
-        assert "docker compose stop gateway dashboard" in out
+        # ...and the holders that ACTUALLY hold it, enumerated at runtime rather than a catalogue of
+        # stop commands (#110054). Three review rounds kept finding supported owners the list missed —
+        # system-scope systemd, a Compose dashboard container, hermes-serve, the NixOS / Home Manager
+        # `hermes-agent` + `hermes-backend` units, Windows SCM vs scheduled task — because that list can
+        # never be complete. `foreign_state_db_holders` reports what holds the file on THIS machine and
+        # never opens the database, so the guidance is owner-agnostic and cannot go stale.
+        assert "no other process holds this database" in out
+        assert "PRAGMA journal_mode=DELETE" in out
+        # No stop-command catalogue: naming a subset of owners is what made the hint wrong.
+        for stale in ("gateway stop --all", "systemctl --user stop hermes-dashboard", "s6-svc",
+                      "docker compose stop", "Restart=always", "-p <profile> gateway stop"):
+            assert stale not in out, stale
+
+    def test_wal_on_disk_with_delete_configured_names_the_live_holders(self, tmp_path, capsys, monkeypatch):
+        """A held database names the holding pids and says to stop them through their OWNER.
+
+        Signalling a pid is never enough: every supported deployment supervises these processes
+        differently (systemd user/system, launchd, s6, a Compose container, the Nix modules'
+        `hermes-agent` / `hermes-backend`, a Windows task or SCM service, Desktop) and a supervised
+        process respawns before the PRAGMA runs (review findings on daa6999d35 / b2e5f4b3ca).
+        """
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                            lambda _p: [(4321, "/opt/hermes/bin/hermes"), (8765, "uninspectable holder: hermes serve")])
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "2 process(es) hold this database" in out
+        assert "pid 4321" in out and "pid 8765" in out
+        assert "through whatever supervises it" in out
+        assert "respawn" in out
+        assert "PRAGMA journal_mode=DELETE" in out
+
+    def test_wal_on_disk_with_delete_configured_never_calls_a_failed_scan_quiet(self, tmp_path, capsys, monkeypatch):
+        """A ``pid < 0`` row is a scan failure, not a holder — "cannot prove quiet" must not read as
+        "quiet". Same for Windows, where the scan short-circuits to an empty list."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                            lambda _p: [(-1, "open-file scan unavailable")])
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "cannot prove this database is quiet" in out
+        assert "open-file scan unavailable" in out
+        assert "no other process holds" not in out
+
+        # Windows: the scan returns [] because it cannot look, which must NOT read as quiet.
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p: [])
+        monkeypatch.setattr(doctor_platform.sys, "platform", "win32")
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+        win_out = capsys.readouterr().out
+        assert "cannot prove this database is quiet" in win_out
+        assert "no other process holds" not in win_out
+
+    def test_holder_scan_failure_never_breaks_the_doctor_run(self, tmp_path, capsys, monkeypatch):
+        """The scan is a diagnostic; if it raises, doctor still reports and still warns."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+
+        def _boom(_p):
+            raise OSError("procfs unavailable")
+
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", _boom)
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "despite database.journal_mode=delete" in out
+        assert "cannot prove this database is quiet" in out
+        assert "procfs unavailable" in out
 
     def test_rollback_on_disk_with_delete_configured_is_quiet(self, tmp_path, capsys, monkeypatch):
         """The setting DID apply — this is the healthy state and must not nag."""

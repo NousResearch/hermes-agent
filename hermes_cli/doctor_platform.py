@@ -89,6 +89,50 @@ def _format_db_size(db_path: Path) -> str:
         return "size unknown"
 
 
+def _report_conversion_holders(unapplied: "list[tuple[str, Path]]") -> None:
+    """Name the processes actually holding each unconverted database, per #110054.
+
+    Applying ``journal_mode=DELETE`` needs the file quiet, and this hint used to list the commands
+    that stop every owner. That list cannot stay complete: systemd (user AND system scope), launchd,
+    s6 inside the all-in-one image, a separate ``restart: unless-stopped`` Compose container, the
+    NixOS and Home Manager modules' own ``hermes-agent`` / ``hermes-backend`` units, a Windows
+    scheduled task or a real SCM service, ``hermes-serve`` in either scope, and Hermes Desktop are all
+    supported owners, and successive review rounds kept finding more. Report what holds the file HERE
+    — the scan is ``os.stat`` plus ``/proc`` or ``lsof`` and never opens the database — and let the
+    operator stop it through whatever supervises it. Signalling a pid is never enough on its own: a
+    supervised process respawns and reopens the database before the PRAGMA runs.
+    """
+    from hermes_state_holders import foreign_state_db_holders
+
+    scan_unavailable = sys.platform == "win32"  # foreign_state_db_holders short-circuits to [] there
+    for name, path in unapplied:
+        try:
+            holders = foreign_state_db_holders(path)
+        except Exception as exc:  # a diagnostic must never take doctor down
+            holders = [(-1, f"holder scan failed: {exc}")]
+        # ``pid < 0`` rows are scan failures, not holders: "cannot prove quiet" is not "quiet".
+        named = [(pid, detail) for pid, detail in holders if pid >= 0]
+        unprovable = [detail for pid, detail in holders if pid < 0]
+
+        if named:
+            listed = ", ".join(f"pid {pid} ({detail})" for pid, detail in named[:5])
+            more = f", and {len(named) - 5} more" if len(named) > 5 else ""
+            check_info(f"{name}: {len(named)} process(es) hold this database or its WAL right now — "
+                       f"{listed}{more}. Stop each through whatever supervises it (its systemd or "
+                       f"launchd unit, s6 or Compose service, Windows task or service, or Hermes "
+                       f"Desktop) — signalling the pid alone lets the supervisor respawn it — then run "
+                       f"a one-time offline `PRAGMA journal_mode=DELETE` on the file.")
+        elif unprovable or scan_unavailable:
+            why = unprovable[0] if unprovable else "holder enumeration is unavailable on this platform"
+            check_info(f"{name}: cannot prove this database is quiet ({why}). Stop every Hermes process "
+                       f"for this profile through its owner, confirm nothing holds the file, then run a "
+                       f"one-time offline `PRAGMA journal_mode=DELETE` on it.")
+        else:
+            check_info(f"{name}: no other process holds this database right now — run a one-time offline "
+                       f"`PRAGMA journal_mode=DELETE` on it. A gateway, dashboard, cron fire or Desktop "
+                       f"backend starting in between reopens it, so convert before anything restarts.")
+
+
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
     """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a
     configured ``delete`` that never took effect."""
@@ -117,7 +161,7 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             # where WAL is unsafe, and the runtime never downgrades a database that is already WAL
             # (a live downgrade under open connections can corrupt it). That refusal is only logged
             # once per process, so without this check the operator believes they are protected.
-            unapplied.append(name)
+            unapplied.append((name, path))
             check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
                        "(the setting never applied; an existing WAL database is never live-downgraded"
                        + (", and it is also exposed to the WAL-reset bug)" if vulnerable else ")"))
@@ -129,24 +173,7 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
         else:
             check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
     if unapplied:
-        check_info("To apply journal_mode=DELETE every process holding the database must be stopped "
-                   "first, then run a one-time offline `PRAGMA journal_mode=DELETE` on the file. Stop "
-                   "holders through their OWNER, not by signalling PIDs: a supervised process comes "
-                   "straight back. Gateways: on a host systemd/launchd install `hermes gateway stop --all` "
-                   "stops only THIS profile's installed service and merely signals the other profiles' "
-                   "gateways, whose own "
-                   "`hermes-gateway-<profile>` units (systemd `Restart=always`, launchd `KeepAlive`) "
-                   "respawn them; run `hermes -p <profile> gateway stop` for each profile in `hermes "
-                   "profile list` (add `--system` for system-scope units). Dashboard and `hermes serve` "
-                   "(a separate lifecycle, and a database holder too, #100896): `hermes dashboard --stop` "
-                   "for a manually started one; otherwise `systemctl --user stop hermes-dashboard` or "
-                   "`sudo systemctl stop hermes-dashboard` (user vs system scope), `s6-svc -d "
-                   "/run/service/dashboard` inside the all-in-one container, `docker compose stop "
-                   "gateway dashboard` for the Compose layout (the dashboard is its own "
-                   "`restart: unless-stopped` container there, so s6-svc does not reach it), or quit "
-                   "Hermes Desktop for a Desktop-owned backend (`HERMES_DESKTOP_CHILD_PID` is excluded "
-                   "from `--stop`). Then confirm nothing still holds the file before converting; a live "
-                   "holder leaves the setting unapplied.")
+        _report_conversion_holders(unapplied)
     if exposed:
         check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 

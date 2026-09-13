@@ -26,6 +26,15 @@ def _whatsapp_input() -> dict:
     }
 
 
+def test_peer_auth_can_reference_a_service_environment_secret(monkeypatch):
+    monkeypatch.setenv("YEOMAN_A2A_TOKEN", "test-secret")
+    assert tools._auth_header({"type": "bearer", "token_env": "YEOMAN_A2A_TOKEN"}) == {
+        "Authorization": "Bearer test-secret"
+    }
+    with pytest.raises(ValueError, match="environment variable"):
+        tools._auth_header({"type": "bearer", "token_env": "../../secret"})
+
+
 def test_structured_message_has_one_authoritative_data_part():
     invocation = {"skill": "whatsapp.send", "input": _whatsapp_input()}
     message = protocol.structured_message(protocol.ROLE_USER, invocation, context_id="ctx-test")

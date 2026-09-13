@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -50,7 +51,14 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    token = auth.get("token")
+    if not token and (token_env := auth.get("token_env")):
+        if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+            raise ValueError("invalid bearer token environment variable")
+        token = os.environ.get(token_env, "")
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

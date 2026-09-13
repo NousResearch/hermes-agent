@@ -78,6 +78,25 @@ function isLocale(value: string): value is Locale {
   return (SUPPORTED_LOCALES as string[]).includes(value);
 }
 
+export function resolveBrowserLocale(languages: readonly string[]): Locale | null {
+  for (const raw of languages) {
+    const normalized = raw.trim().toLowerCase().replace(/_/g, "-");
+    if (!normalized) continue;
+    if (isLocale(normalized)) return normalized;
+
+    // Chinese needs script/region-aware matching because the dashboard ships
+    // separate simplified (zh) and traditional (zh-hant) catalogs.
+    if (normalized.startsWith("zh-")) {
+      if (/^zh-(?:hant|tw|hk|mo)(?:-|$)/.test(normalized)) return "zh-hant";
+      if (/^zh-(?:hans|cn|sg)(?:-|$)/.test(normalized)) return "zh";
+    }
+
+    const base = normalized.split("-")[0];
+    if (isLocale(base)) return base;
+  }
+  return null;
+}
+
 function getInitialLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -85,6 +104,19 @@ function getInitialLocale(): Locale {
   } catch {
     // SSR or privacy mode
   }
+
+  try {
+    if (typeof navigator !== "undefined") {
+      const languages = navigator.languages?.length
+        ? navigator.languages
+        : [navigator.language];
+      const detected = resolveBrowserLocale(languages);
+      if (detected) return detected;
+    }
+  } catch {
+    // SSR, test environments, or restricted browser APIs
+  }
+
   return "en";
 }
 

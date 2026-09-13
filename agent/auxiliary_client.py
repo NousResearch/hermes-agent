@@ -5466,7 +5466,7 @@ def _get_cached_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
-    if client is not None:
+    if client is not None and not isinstance(client, _AuxProbeClientStub):
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 # FIFO safety-belt eviction. Do NOT close evicted clients: another caller may be

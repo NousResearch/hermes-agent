@@ -127,7 +127,9 @@ class TestFanoutStampsActivity:
         assert "MoA: 1 of 2 references complete" in agent.touches
         assert "MoA: 2 of 2 references complete" in agent.touches
 
-    def test_silent_fanout_stamps_nothing_until_completion(self, moa_config, monkeypatch):
+    def test_silent_fanout_stamps_nothing_until_completion(
+        self, moa_config, monkeypatch
+    ):
         """No chunks and no completions = no activity stamps: a wedged advisor turn
         must stay abortable by the watchdog (the fix adds progress, never fakes it)."""
         from agent import moa_loop
@@ -172,4 +174,7 @@ class TestFanoutStampsActivity:
             _SLOTS, [{"role": "user", "content": "hello"}]
         )
         assert len(outputs) == 2
-        assert all(not isinstance(text, str) or isinstance(text, str) for _lbl, text, _acct in outputs)
+        assert all(
+            not isinstance(text, str) or isinstance(text, str)
+            for _lbl, text, _acct in outputs
+        )

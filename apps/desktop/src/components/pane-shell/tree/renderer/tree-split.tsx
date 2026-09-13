@@ -686,7 +686,7 @@ export function TreeSplit({
 
   return (
     <div
-      className={cn('flex min-h-0 min-w-0 flex-1', horizontal ? 'flex-row' : 'flex-col')}
+      className={cn('flex min-h-0 min-w-0 flex-1 overflow-auto', horizontal ? 'flex-row' : 'flex-col')}
       data-tree-split={node.id}
       ref={containerRef}
     >

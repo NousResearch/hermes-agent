@@ -50,13 +50,21 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
       observer.observe(element)
     }
 
+    const onScroll = (event: Event) => {
+      if (event.target instanceof HTMLElement && ref.current && event.target.contains(ref.current)) {
+        measure()
+      }
+    }
+
     window.addEventListener('resize', measure)
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true })
 
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      window.removeEventListener('scroll', onScroll, true)
     }
-  }, [enabled, measure])
+  }, [enabled, measure, ref])
 
   return enabled && belowControls
 }

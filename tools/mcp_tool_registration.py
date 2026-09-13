@@ -381,18 +381,43 @@ def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
     the schema cache survives a token rotation). Two profiles pointing at the same URL with different
-    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
+    headers/env/auth are two identities; borrowing across them would call tools as the other user.
+    OAuth and mTLS inputs are included here as well, even though profile-owned credentials still
+    require an owner-scope check below."""
     from tools.mcp_schema_cache import config_fingerprint
 
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
+    auth_inputs = {
+        key: config.get(key)
+        for key in ("auth", "oauth", "client_cert", "client_key")
+        if config.get(key) is not None
+    }
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
-            (config.get("auth") or "").lower().strip())
+            _frozen(auth_inputs))
+
+
+def _profile_owned_auth(config: dict) -> bool:
+    """Whether a live MCP session can retain credentials owned by one profile."""
+    return ((config.get("auth") or "").lower().strip() == "oauth"
+            or config.get("client_cert") is not None or config.get("client_key") is not None)
 
 
 def _same_server_route(server: Any, config: dict) -> bool:
     return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
+
+
+def _connection_reusable_in_scope(name: str, server: Any, config: dict, scope: str) -> bool:
+    """Allow a profile to adopt only a connection safe for its scope.
+
+    Route/auth config equality is not enough for OAuth because the token store is under the
+    profile's ``HERMES_HOME``. The same applies to mTLS certificate material resolved from a
+    profile-owned path. The owner may reuse its own live session; peer scopes must connect alone.
+    """
+    if not _same_server_route(server, config):
+        return False
+    return not (_profile_owned_auth(config) and _core._server_scope_keys.get(name) != scope)
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -426,7 +451,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(name)
             config = servers.get(name)
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                    or getattr(server, "session", None) is None
+                    or not _connection_reusable_in_scope(name, server, config, scope)):
                 stale.append(name)
     for name in stale:
         _remove_server_scope(name, scope)
@@ -437,7 +463,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             continue
         with _core._lock:
             server = _core._servers.get(name)
-        if server is None or getattr(server, "session", None) is None or not _same_server_route(server, config):
+        if (server is None or getattr(server, "session", None) is None
+                or not _connection_reusable_in_scope(name, server, config, scope)):
             continue
         # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
         with _core._lock:

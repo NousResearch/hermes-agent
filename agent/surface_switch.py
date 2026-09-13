@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 from typing import Any, List
 
-from agent.message_content import flatten_message_text
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 
 logger = logging.getLogger("run_agent")
@@ -23,6 +22,7 @@ _SURFACE_SWITCH_NOTE_PREFIX = "[System: This conversation is now being answered 
 # Closes the surface name in the note; platform names are free-form for plugin platforms, so the
 # terminator (not ".") delimits the parse.
 _SURFACE_NAME_END = " — any earlier interface guidance"
+_SURFACE_SWITCH_METADATA_KEY = "_hermes_surface_switch"
 # Only the newest note matters, and the note is re-stamped on the switch turn, so a bounded tail
 # scan is enough; without a bound every turn of a never-switched session walks the whole transcript.
 _NOTE_SCAN_TAIL = 200
@@ -52,15 +52,15 @@ def _last_announced_surface(conversation_history: Any) -> str:
     is the last thing the model was told it runs on.  Reading it back is also what keeps a fresh
     AIAgent per turn (the gateway shape) from stacking one copy of the note per turn."""
     for msg in reversed((conversation_history or [])[-_NOTE_SCAN_TAIL:]):
-        # The note only ever lands on a user row: in its api_content sidecar, or as a text part
-        # when the content is a multimodal list (which cannot take the string sidecar).
+        # The generated note is recorded in display-only metadata on its user row. Never scan
+        # provider-visible text here: a user can quote the note marker verbatim.
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
-        sidecar = msg.get("api_content")
-        text = (sidecar if isinstance(sidecar, str) else "") + "\n" + flatten_message_text(msg.get("content"))
-        if _SURFACE_SWITCH_NOTE_PREFIX in text:
-            tail = text.rsplit(_SURFACE_SWITCH_NOTE_PREFIX, 1)[1]
-            return tail.split(_SURFACE_NAME_END, 1)[0].strip()
+        metadata = msg.get("display_metadata")
+        announcement = metadata.get(_SURFACE_SWITCH_METADATA_KEY) if isinstance(metadata, dict) else None
+        surface = announcement.get("surface") if isinstance(announcement, dict) else None
+        if isinstance(surface, str) and surface.strip():
+            return surface.strip()
     return ""
 
 
@@ -116,9 +116,19 @@ def stage_surface_switch_note(agent: Any, prompt: str, conversation_history: Any
         "capability.]"
     )
     agent._surface_switch_note = f"{note}\n{hint}" if hint else note
+    agent._surface_switch_metadata = {
+        _SURFACE_SWITCH_METADATA_KEY: {"surface": current},
+    }
     logger.info(
         "Session %s switched surface %s -> %s; keeping the stored system prompt and delivering "
         "the new surface guidance as a turn note (prefix cache preserved).",
         agent.session_id, told, current,
     )
     return True
+
+
+def take_surface_switch_metadata(agent: Any) -> dict:
+    """Pop the trusted display metadata for the staged note, if any."""
+    metadata = getattr(agent, "_surface_switch_metadata", None)
+    agent._surface_switch_metadata = None
+    return metadata if isinstance(metadata, dict) else {}

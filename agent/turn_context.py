@@ -24,6 +24,7 @@ from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
+from agent.surface_switch import take_surface_switch_metadata
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -716,10 +717,18 @@ def _merge_gateway_notes(
     ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
     surface-switch correction. Multimodal (list) content can't take the string sidecar —
     append a durable text part instead."""
+    _surface_note = consume_surface_switch_note(agent)
+    _surface_metadata = take_surface_switch_metadata(agent)
     _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent),
-                          consume_surface_switch_note(agent)) if part
+        part for part in (consume_gateway_turn_context_notes(agent), _surface_note) if part
     )
+    if _surface_note and _surface_metadata and 0 <= current_turn_user_idx < len(messages):
+        user_msg = messages[current_turn_user_idx]
+        if isinstance(user_msg, dict):
+            display_metadata = user_msg.get("display_metadata")
+            if not isinstance(display_metadata, dict):
+                display_metadata = {}
+            user_msg["display_metadata"] = {**display_metadata, **_surface_metadata}
     if not _turn_notes:
         return plugin_user_context
     _gw_turn_content = (

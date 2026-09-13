@@ -184,6 +184,41 @@ def test_scope_visibility_rejects_a_foreign_or_differently_authenticated_route(
     assert mcp_tool._server_tool_scopes["shared"] == {launch_scope}
 
 
+@pytest.mark.parametrize("auth_config", [
+    {"auth": "oauth", "oauth": {"client_id": "shared-client"}},
+    {"client_cert": "/profiles/default/client.pem", "client_key": "/profiles/default/client.key"},
+])
+def test_scope_visibility_rejects_profile_owned_auth_connection_even_when_config_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, auth_config: dict
+) -> None:
+    """Profile-owned OAuth and mTLS sessions never cross a multiplex registry scope.
+
+    Equal config cannot prove equal credentials: OAuth tokens live under each profile home,
+    and a live mTLS client can retain profile-owned certificate material. The owning scope
+    must continue to reuse its own connection, while a peer scope must connect independently.
+    """
+    from tools import mcp_tool
+    from tools import mcp_tool_registration as _mcp_registration
+
+    worker_scope = hermes_home_key(tmp_path / "worker")
+    launch_scope = hermes_home_key(tmp_path / "default")
+    live_config = {"url": "https://shared.example/mcp", **auth_config}
+    live_server = SimpleNamespace(session=object(), _config=live_config, _tools=[], tool_timeout=30)
+    monkeypatch.setattr(mcp_tool, "_servers", {"shared": live_server})
+    monkeypatch.setattr(mcp_tool, "_server_scope_keys", {"shared": launch_scope})
+    monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {"shared": {launch_scope}}, raising=False)
+    monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: worker_scope)
+
+    assert _mcp_registration._connection_reusable_in_scope(
+        "shared", live_server, live_config, launch_scope
+    )
+    assert not _mcp_registration._connection_reusable_in_scope(
+        "shared", live_server, live_config, worker_scope
+    )
+    assert _mcp_registration.register_connected_into_current_scope({"shared": live_config}) == 0
+    assert mcp_tool._server_tool_scopes["shared"] == {launch_scope}
+
+
 def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

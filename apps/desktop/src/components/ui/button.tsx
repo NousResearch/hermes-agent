@@ -2,6 +2,7 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { Slot } from 'radix-ui'
 import * as React from 'react'
 
+import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 // Text+icon actions underline the label on hover, not the glyph.
@@ -73,21 +74,47 @@ function Button({
   variant = 'default',
   size = 'default',
   asChild = false,
+  loading = false,
+  children,
+  disabled,
   ...props
 }: React.ComponentProps<'button'> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    /** Working. The label stays in flow but goes invisible and a spinner
+     *  sits over it, so the button keeps its exact width and height — a
+     *  label swapped for a glyph reflows every sibling on the row. */
+    loading?: boolean
   }) {
   const Comp = asChild ? Slot.Root : 'button'
 
   return (
     <Comp
-      className={cn(buttonVariants({ variant, size }), className)}
+      aria-busy={loading || undefined}
+      className={cn(buttonVariants({ variant, size }), loading && 'relative', className)}
       data-size={size}
       data-slot="button"
       data-variant={variant}
+      disabled={disabled || loading}
       {...props}
-    />
+    >
+      {loading ? (
+        <>
+          {/* Same flex + gap as the button itself, so the ghost label measures
+              exactly what the live one did. The spinner sits in a wrapper so
+              it is never a direct-child svg — the size variants' `has-[>svg]`
+              would otherwise switch to icon padding and shave the width. */}
+          <span aria-hidden className="invisible inline-flex items-center gap-[inherit]">
+            {children}
+          </span>
+          <span aria-hidden className="absolute inset-0 grid place-items-center">
+            <Loader2 className="animate-spin" />
+          </span>
+        </>
+      ) : (
+        children
+      )}
+    </Comp>
   )
 }
 

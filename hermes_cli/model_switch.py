@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -1135,19 +1135,36 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
 
 
 def _convert_vendor_colon_slug(st: _Switch) -> None:
-    """Step c: on an aggregator, ``vendor:model`` -> ``vendor/model``. Only without a slash: with
-    one, the colon is a variant tag (:free, :extended, :fast) that must be preserved."""
+    """Step c: ``vendor:model`` -> ``vendor/model``. Only without a slash: with one, the colon is
+    a variant tag (:free, :extended, :fast) that must be preserved.
+
+    On an aggregator every ``left:right`` is a slug. Elsewhere the colon is converted only when
+    ``left`` names a provider Hermes knows, so ``/model alibaba:qwen3.6-plus`` routes like
+    ``alibaba/qwen3.6-plus`` (#9748) while Ollama-style tags (``qwen3.5:4b``) stay intact."""
     raw_input = st.raw_input
     colon_pos = raw_input.find(":")
     cur_norm = str(st.current_provider).strip().lower()
-    if (
-        colon_pos > 0 and "/" not in raw_input and is_aggregator(st.current_provider)
-        and not cur_norm.startswith("custom") and cur_norm != "ollama"):
-        left = raw_input[:colon_pos].strip().lower()
-        right = raw_input[colon_pos + 1:].strip()
-        if left and right:
-            st.new_model = f"{left}/{right}"
-            logger.debug("Converted vendor:model '%s' to aggregator slug '%s'", raw_input, st.new_model)
+    if colon_pos <= 0 or "/" in raw_input or cur_norm.startswith("custom") or cur_norm == "ollama":
+        return
+    left = raw_input[:colon_pos].strip().lower()
+    right = raw_input[colon_pos + 1:].strip()
+    if not left or not right:
+        return
+    if not is_aggregator(st.current_provider) and not _names_known_provider(left, st):
+        return
+    st.new_model = f"{left}/{right}"
+    logger.debug("Converted vendor:model '%s' to slug '%s'", raw_input, st.new_model)
+
+
+def _names_known_provider(name: str, st: _Switch) -> bool:
+    """Whether ``name`` is a built-in provider id/alias or a provider the user configured."""
+    from hermes_cli.providers import get_provider
+    if resolve_provider_full(name, st.user_providers, st.custom_providers) is not None:
+        return True
+    try:
+        return get_provider(name, allow_network=False) is not None
+    except Exception:
+        return False
 
 
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
@@ -1220,6 +1237,14 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     # Steps d.5 / e only apply while the request is still unrouted on the current provider.
     if st.resolved_alias or resolved_in_current_catalog or st.target_provider != current_provider:
         return None
+    if current_provider == "nous":
+        # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
+        # Never hop to another provider on the user's behalf here (there is no key to hop to).
+        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
+            return st.fail(
+                f"{st.new_model} needs a Nous account or an API key. "
+                "Use /login to sign in, or /model to pick another provider.")
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed
@@ -1309,6 +1334,17 @@ def _creds_for_current_provider(st: _Switch) -> None:
             st.resolve_runtime(requested=st.current_provider)
         except Exception:
             pass
+        # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
+        # ``model.base_url``) re-resolve to the OpenRouter DEFAULT — a host the user never picked
+        # (#74143). Keep the session endpoint + key then; a config-backed custom URL still wins so
+        # key/endpoint rotation is not pinned to a stale session.
+        if (
+            st.current_provider in {"custom", "local"} and st.current_base_url
+            and (not st.base_url or base_url_host_matches(st.base_url, "openrouter.ai"))
+            and not base_url_host_matches(st.current_base_url, "openrouter.ai")
+        ):
+            st.base_url, st.api_key = st.current_base_url, st.current_api_key
+            st.api_mode = determine_api_mode(st.current_provider, st.base_url)
 
 
 def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1333,7 +1369,8 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
     # would otherwise 400 on tools+reasoning).
-    mandated_mode = host_mandated_api_mode(st.base_url)
+    from hermes_cli.providers import is_actual_route
+    mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
     if mandated_mode is not None:
         st.api_mode = mandated_mode
     st.api_mode = st.api_mode or determine_api_mode(st.target_provider, st.base_url)
@@ -1354,9 +1391,18 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
         headers = st.validation_headers or (
             _extra_headers_from_config(st.user_providers.get(st.target_provider))
             if st.user_providers and st.target_provider in st.user_providers else None)
+    # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
+    # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
+    # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
+    # branch and hard-rejected the very model the user selected.
+    validate_as = st.target_provider
+    if not validate_as.lower().startswith("custom"):
+        pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
+        if pdef is not None and pdef.source == "user-config":
+            validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(
-            st.new_model, st.target_provider, api_key=st.api_key, base_url=st.base_url,
+            st.new_model, validate_as, api_key=st.api_key, base_url=st.base_url,
             api_mode=st.api_mode or None, headers=headers)
     except Exception as e:
         validation = {"accepted": False, "persist": False, "recognized": False,
@@ -1369,7 +1415,6 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
                 validation.get("message", "Invalid model"),
                 new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
         validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
-    st.new_model = validation.get("corrected_model") or st.new_model
     st.validation = validation
     return None
 
@@ -1472,6 +1517,78 @@ def switch_model(
         if fail is not None:
             return fail
     return _build_switch_result(st)
+
+
+def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg: Any) -> dict[str, Any]:
+    """The ONE config.yaml shape a persisted model selection produces, as ``model.<key>`` -> value
+    (``None`` = clear). ``current_model_cfg`` is the on-disk ``model:`` block (raw).
+
+    base_url/api_mode are freshly resolved for the target route, so they are always synced —
+    ``None`` when the target has none — otherwise the OLD provider's endpoint/wire-protocol lingers
+    (#25106). A context pin is dropped only when its route identity changed (fail-closed).
+    Non-custom targets resolve credentials from env/auth.json/the pool, so an inline
+    ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
+    targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
+    provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
+    The dashboard re-adds an explicitly submitted key after this (``_apply_main_model_assignment``)."""
+    model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
+    updates: dict[str, Any] = {
+        "default": result.new_model, "provider": result.target_provider,
+        "base_url": result.base_url or None, "api_mode": result.api_mode or None,
+    }
+    if "context_length" in model_cfg:
+        from hermes_cli.route_identity import should_clear_context_pin
+        if should_clear_context_pin(
+                model_cfg.get("default") or model_cfg.get("model"), result.new_model,
+                model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
+            updates["context_length"] = None
+    target = str(result.target_provider or "").strip().lower()
+    if not target.startswith("custom") or _route_changed(model_cfg, result):
+        for key in ("api_key", "api"):
+            if key in model_cfg:
+                updates[key] = None
+    return updates
+
+
+def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
+    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
+        return True
+    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
+
+
+def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
+    """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
+    callers that save a whole config document they are already mutating."""
+    model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
+    for key, value in model_selection_config_updates(result, model_cfg).items():
+        if value is None:
+            model_cfg.pop(key, None)
+        else:
+            model_cfg[key] = value
+    return model_cfg
+
+
+def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
+    """Write a successful :func:`switch_model` result to ``config_path`` (default:
+    ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
+
+    Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
+    user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
+    cold-start disk I/O — async callers run this on a worker thread."""
+    from pathlib import Path
+    from hermes_cli.config import get_config_path, read_user_config_raw, warn_unpinned_cron_jobs_after_model_config_change
+    from utils import atomic_roundtrip_yaml_update
+    path = Path(config_path) if config_path else get_config_path()
+    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
+        atomic_roundtrip_yaml_update(path, f"model.{key}", value)
+        # Same unpinned-cron notice as `hermes config set` for every model switch.
+        warn_unpinned_cron_jobs_after_model_config_change(f"model.{key}", value)
+    try:  # owner-only: config files contain API keys
+        os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
 
 
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:

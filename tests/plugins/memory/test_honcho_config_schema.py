@@ -50,6 +50,8 @@ def test_declares_the_new_field_kinds():
 
     by_key = {f.key: f for f in provider.fields}
     assert by_key["saveMessages"].kind == KIND_BOOL
+    assert by_key["a2aSessions"].kind == KIND_BOOL
+    assert by_key["a2aSessions"].default == "true"
     assert by_key["dialecticMaxChars"].kind == KIND_NUMBER
     assert by_key["userPeerAliases"].kind == KIND_JSON
     assert by_key["recallMode"].allowed_values() == {"hybrid", "context", "tools"}

@@ -341,6 +341,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Última atividade:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · plano gratuito · nous/welcome · /login para entrar"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
@@ -386,7 +387,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_git_repo:            "✗ Não é um repositório git — não é possível atualizar."
     hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
     start_failed:            "✗ Falha ao iniciar a atualização: {error}"
-    starting:                "⚕ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
+    starting:                "☤ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
 
   usage:
     rate_limits:              "⏱️ **Limites de taxa:** {state}"

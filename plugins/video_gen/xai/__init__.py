@@ -13,7 +13,6 @@ import asyncio
 import base64
 import logging
 import mimetypes
-import os
 import uuid
 from contextlib import closing
 from pathlib import Path
@@ -66,10 +65,13 @@ def _xai_http(helper: str, fallback: Any, *args: Any, log: Optional[str] = None)
 
 
 def _resolve_xai_credentials() -> Tuple[str, str]:
-    """``(api_key, base_url)``: runtime xai-oauth pool entry → ``auth.json`` OAuth tokens → ``XAI_API_KEY`` (empty key = none; callers check)."""
+    """``(api_key, base_url)``: runtime xai-oauth pool entry → ``auth.json`` OAuth tokens → ``XAI_API_KEY``
+    (empty key = none; callers check). ``resolve_xai_http_credentials`` already applies the profile
+    secret scope to both fields, so a miss stays a miss: a raw ``os.getenv`` fallback here would hand a
+    multiplexed secondary the default profile's key after the scoped resolver correctly returned none."""
     creds = _xai_http("resolve_xai_http_credentials", {}, log="xAI credential resolver failed: %s") or {}
-    base_url = str(creds.get("base_url") or os.getenv("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL)
-    return str(creds.get("api_key") or os.getenv("XAI_API_KEY", "")).strip(), base_url.strip().rstrip("/")
+    base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL)
+    return str(creds.get("api_key") or "").strip(), base_url.strip().rstrip("/")
 
 
 def _xai_headers(api_key: str) -> Dict[str, str]:

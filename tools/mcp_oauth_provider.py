@@ -29,11 +29,23 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
+        self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+
+    async def _perform_authorization(self):
+        info = self.context.client_info
+        grants = getattr(info, "grant_types", None) or []
+        if (getattr(self, "_hermes_oauth_flow", "browser") == "device"
+                or ("urn:ietf:params:oauth:grant-type:device_code" in grants and "authorization_code" not in grants)):
+            from tools.mcp_oauth import OAuthNonInteractiveError
+            raise OAuthNonInteractiveError(
+                "MCP device authorization requires `hermes mcp login <server> --flow device`; "
+                "background reconnects cannot start a device login")
+        return await super()._perform_authorization()
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
@@ -95,6 +107,16 @@ class HermesProviderMixin:
             self._hermes_logger.warning("Invalid refresh response: %s", response.status_code)
             self.context.clear_tokens()
             return False
+        # RFC 6749 §6: a refresh response may omit refresh_token (AS does not rotate) and scope
+        # (unchanged). The SDK's own _handle_refresh_response carries both forward; this override
+        # must too, or every non-rotating refresh erases the stored refresh_token and the server
+        # dies at the NEXT expiry with a forced browser re-auth (#62333).
+        prior = self.context.current_tokens
+        if prior is not None:
+            if token_response.refresh_token is None:
+                token_response.refresh_token = prior.refresh_token
+            if token_response.scope is None:
+                token_response.scope = prior.scope
         await self._store_tokens(token_response)
         return True
 
@@ -127,4 +149,5 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
+        "oauth_flow": cfg.get("flow", "browser"),
         **mo.cimd_provider_kwargs(cfg)}

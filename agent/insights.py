@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
+from hermes_cli.timefmt import coerce_epoch
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
@@ -71,7 +72,7 @@ def _hour12(hr: int) -> str:
 
 
 def _day(ts: Any) -> str:
-    return datetime.fromtimestamp(ts).strftime("%b %d") if ts else "?"
+    return datetime.fromtimestamp(ts).strftime("%b %d") if ts and (ts := coerce_epoch(ts)) else "?"
 
 
 def _scoped(before: str, after: str = "", *, src: str = " AND s.source = ?") -> tuple[str, str]:
@@ -109,7 +110,7 @@ class InsightsEngine:
         " WHERE s.started_at >= ?"
     )
     _GET_TOOL_CALLS_ALL, _GET_TOOL_CALLS_WITH_SOURCE = _scoped(
-        "SELECT m.tool_calls" + _ASSISTANT_CALLS,
+        "SELECT m.session_id, m.tool_calls" + _ASSISTANT_CALLS,
         " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL",
     )
     _GET_SKILL_CALLS_ALL, _GET_SKILL_CALLS_WITH_SOURCE = _scoped(
@@ -119,14 +120,13 @@ class InsightsEngine:
         " OR instr(m.tool_calls, 'skill_manage') > 0)",
     )
     _GET_TOOL_NAMES_ALL, _GET_TOOL_NAMES_WITH_SOURCE = _scoped(
-        """SELECT m.tool_name, COUNT(*) as count
+        """SELECT m.session_id, m.tool_name, COUNT(*) as count
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?""",
         """
                      AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
+                   GROUP BY m.session_id, m.tool_name""",
     )
     _GET_MESSAGE_STATS_ALL, _GET_MESSAGE_STATS_WITH_SOURCE = _scoped(
         """SELECT
@@ -206,26 +206,34 @@ class InsightsEngine:
     # ------------------------------------------------------------------ SQL
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
-        return [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
+        # Coerce the two epoch columns once at load: one corrupt/TEXT cell must degrade to "unknown"
+        # for that session, never abort the whole report (#99959).
+        rows = [dict(row) for row in self._query("_GET_SESSIONS", cutoff, source)]
+        for row in rows:
+            for col in ("started_at", "ended_at"):
+                row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
+        return rows
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
         by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
-        where tool_name is not populated). Overlapping tools take the max."""
-        tool_counts = Counter()
+        where tool_name is not populated). The two views are reconciled PER
+        SESSION (max — they describe the same calls), then summed across
+        sessions: a global max dropped every call from a session that only
+        carried the other representation (#9814)."""
+        by_session_tool = Counter()
         for row in self._query("_GET_TOOL_NAMES", cutoff, source):
-            tool_counts[row["tool_name"]] += row["count"]
-        tool_calls_counts = Counter()
+            by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
+        calls_by_session_tool = Counter()
         for row in self._query("_GET_TOOL_CALLS", cutoff, source):
             try:
-                tool_calls_counts.update(filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"]))))
+                names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
+                calls_by_session_tool.update((row["session_id"], name) for name in names)
             except (TypeError, AttributeError):
                 continue
-        if tool_calls_counts and tool_counts:
-            tool_counts = Counter({tool: max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
-                                   for tool in set(tool_counts) | set(tool_calls_counts)})
-        elif tool_calls_counts:
-            tool_counts = tool_calls_counts
+        tool_counts = Counter()
+        for key in set(by_session_tool) | set(calls_by_session_tool):
+            tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
         return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
 
     def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
@@ -479,9 +487,9 @@ class InsightsEngine:
             "  ╚══════════════════════════════════════════════════════════╝",
             "",
         ]
-        if o.get("date_range_start") and o.get("date_range_end"):
-            start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%b %d, %Y")
-            end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%b %d, %Y")
+        if (start := coerce_epoch(o.get("date_range_start"))) is not None and (end := coerce_epoch(o.get("date_range_end"))) is not None:
+            start_str = datetime.fromtimestamp(start).strftime("%b %d, %Y")
+            end_str = datetime.fromtimestamp(end).strftime("%b %d, %Y")
             lines += [f"  Period: {start_str} — {end_str}", ""]
         lines += self._section("📋 Overview") + [
             f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}",

@@ -16,6 +16,7 @@ computed for.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -115,27 +116,35 @@ def test_genuine_crash_still_reclaims(conn):
     assert final["status"] in ("ready", "blocked", "todo")
 
 
+def _dead_pid() -> int:
+    """A pid that has already exited, portable across platforms (no ``true``)."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
 def test_account_crashes_rejects_task_reclaimed_between_reclaim_and_accounting(conn):
     """``_reclaim_dead_workers`` commits its reclaim txn, then
     ``_account_crashes`` runs failure accounting in a SEPARATE txn. A new
     worker that claims the task in between must not have its run's task row
-    clobbered by the old crash's stale error/counter."""
+    clobbered by the old crash's stale error/status — but the crash must
+    still count toward the unified consecutive-failures budget."""
     host = kb._claimer_id().split(":", 1)[0]
     tid = kb.create_task(conn, title="race", assignee="w")
 
     kb.claim_task(conn, tid, claimer=f"{host}:A")
-    dead = subprocess.Popen(["true"])
-    dead.wait()
-    kbd._set_worker_pid(conn, tid, dead.pid)
+    dead_pid = _dead_pid()
+    kbd._set_worker_pid(conn, tid, dead_pid)
     conn.execute("UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,))
     conn.execute("UPDATE task_runs SET started_at = started_at - 9999 WHERE task_id=?", (tid,))
     conn.commit()
-    kbd._record_worker_exit(dead.pid, 1 << 8)  # nonzero exit → crash
+    kbd._record_worker_exit(dead_pid, 1 << 8)  # nonzero exit → crash
 
     sweep = kbd._reclaim_dead_workers(conn)
     assert tid in sweep.crashed
 
-    # A new worker claims the task before the crash is accounted for.
+    # A new worker claims the task before the crash is accounted for, and is
+    # still running when accounting runs.
     kb.claim_task(conn, tid, claimer=f"{host}:B")
 
     kbd._account_crashes(conn, sweep.crash_details)
@@ -148,4 +157,112 @@ def test_account_crashes_rejects_task_reclaimed_between_reclaim_and_accounting(c
     assert final["last_failure_error"] is None, (
         "old run's crash accounting must not clobber the new run's task row"
     )
-    assert final["consecutive_failures"] == 0
+    assert final["consecutive_failures"] == 1, (
+        "the old crash must still count toward the unified failure budget"
+    )
+
+
+def test_account_crashes_still_counts_after_replacement_run_already_finished(conn):
+    """ABA case: the replacement run claimed between reclaim and accounting has
+    ALSO already finished (so ``current_run_id`` is NULL again) by the time
+    late accounting runs. A nullity check on ``current_run_id`` would treat
+    this as safe to overwrite; accounting must instead detect the later run
+    via ``task_runs`` and still only bump the counter."""
+    host = kb._claimer_id().split(":", 1)[0]
+    tid = kb.create_task(conn, title="aba", assignee="w")
+
+    kb.claim_task(conn, tid, claimer=f"{host}:A")
+    dead_pid = _dead_pid()
+    kbd._set_worker_pid(conn, tid, dead_pid)
+    conn.execute("UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,))
+    conn.execute("UPDATE task_runs SET started_at = started_at - 9999 WHERE task_id=?", (tid,))
+    conn.commit()
+    kbd._record_worker_exit(dead_pid, 1 << 8)  # nonzero exit → crash
+
+    sweep = kbd._reclaim_dead_workers(conn)
+    assert tid in sweep.crashed
+
+    # A new worker claims the task and finishes it before the old crash is
+    # accounted for — ``current_run_id`` is NULL again, same as right after
+    # the original reclaim.
+    kb.claim_task(conn, tid, claimer=f"{host}:B")
+    kb.complete_task(conn, tid, summary="done")
+
+    kbd._account_crashes(conn, sweep.crash_details)
+
+    final = conn.execute(
+        "SELECT last_failure_error, consecutive_failures, status FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert final["status"] == "done", "late accounting must not reopen the completed task"
+    assert final["last_failure_error"] is None
+    assert final["consecutive_failures"] == 1
+
+
+def test_record_task_failure_timeout_still_running_counts_without_clobbering(conn):
+    """Same CAS protection, exercised via the ``timed_out`` outcome that
+    ``enforce_max_runtime`` passes to ``_record_task_failure``."""
+    host = kb._claimer_id().split(":", 1)[0]
+    tid = kb.create_task(conn, title="timeout-race", assignee="w")
+
+    kb.claim_task(conn, tid, claimer=f"{host}:A")
+    old_run_id = kb._end_run(
+        conn, tid, outcome="timed_out", status="timed_out", error="elapsed 99s > limit 1s"
+    )
+    conn.execute(
+        "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, "
+        "worker_pid=NULL WHERE id=?",
+        (tid,),
+    )
+    conn.commit()
+
+    # A new worker claims the task before the timeout is accounted for, and
+    # is still running when accounting runs.
+    kb.claim_task(conn, tid, claimer=f"{host}:B")
+
+    kbd._record_task_failure(
+        conn, tid, error="elapsed 99s > limit 1s", outcome="timed_out",
+        release_claim=False, end_run=False, reclaimed_run_id=old_run_id,
+    )
+
+    final = conn.execute(
+        "SELECT last_failure_error, consecutive_failures, status FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert final["status"] == "running"
+    assert final["last_failure_error"] is None
+    assert final["consecutive_failures"] == 1
+
+
+def test_record_task_failure_timeout_still_counts_after_replacement_run_already_finished(conn):
+    """ABA case for the timeout path: the replacement run has also already
+    finished by the time late accounting runs."""
+    host = kb._claimer_id().split(":", 1)[0]
+    tid = kb.create_task(conn, title="timeout-aba", assignee="w")
+
+    kb.claim_task(conn, tid, claimer=f"{host}:A")
+    old_run_id = kb._end_run(
+        conn, tid, outcome="timed_out", status="timed_out", error="elapsed 99s > limit 1s"
+    )
+    conn.execute(
+        "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, "
+        "worker_pid=NULL WHERE id=?",
+        (tid,),
+    )
+    conn.commit()
+
+    kb.claim_task(conn, tid, claimer=f"{host}:B")
+    kb.complete_task(conn, tid, summary="done")
+
+    kbd._record_task_failure(
+        conn, tid, error="elapsed 99s > limit 1s", outcome="timed_out",
+        release_claim=False, end_run=False, reclaimed_run_id=old_run_id,
+    )
+
+    final = conn.execute(
+        "SELECT last_failure_error, consecutive_failures, status FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert final["status"] == "done"
+    assert final["last_failure_error"] is None
+    assert final["consecutive_failures"] == 1

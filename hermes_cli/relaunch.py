@@ -76,10 +76,17 @@ def resolve_hermes_bin() -> Optional[str]:
     def _has_python_shebang(p: str) -> bool:
         try:
             with open(p, "rb") as fh:
-                shebang = fh.readline(256).lower()
+                shebang = fh.readline(256)
         except OSError:
             return False
-        return shebang.startswith(b"#!") and b"python" in shebang
+        if not (shebang.startswith(b"#!") and b"python" in shebang.lower()):
+            return False
+        # A console script pinned to the running venv (``#!<venv>/bin/python``) keeps the venv
+        # and stays exec-able; only a shebang that resolves elsewhere (``env python3``, another
+        # interpreter) loses it.
+        from hermes_cli.linux_desktop_entry import _shebang_escapes_running_env
+
+        return _shebang_escapes_running_env(shebang.decode("utf-8", "replace"))
 
     def _is_unsafe_python_launcher(p: str) -> bool:
         if _is_windows:

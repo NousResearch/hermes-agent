@@ -257,6 +257,14 @@ class TestResolveHermesBinWindowsPyGuard:
 
         assert relaunch_mod.resolve_hermes_bin() is None
 
+        # A console script pinned to the running interpreter keeps the venv: still exec-able.
+        pinned = tmp_path / "pinned" / "hermes"
+        pinned.parent.mkdir()
+        pinned.write_text(f"#!{sys.executable}\n")
+        pinned.chmod(0o755)
+        monkeypatch.setattr(relaunch_mod.sys, "argv", [str(pinned), "chat"])
+        assert relaunch_mod.resolve_hermes_bin() == str(pinned)
+
     @pytest.mark.windows_only
     def test_windows_py_argv0_with_no_hermes_on_path_returns_none(self, monkeypatch, tmp_path):
         """Bulletproof fallback: if argv0 is .py on Windows AND hermes.exe

@@ -60,6 +60,20 @@ def _end_voice_chat(*, stop_loop: bool, stop_tts: bool) -> None:
             _tts_stream_stop(user_barge=False)
 
 
+def _stop_voice_for_session_switch() -> None:
+    """End voice mode on a real session switch (session.create / session.resume).
+
+    HERMES_VOICE is process-global runtime state, so without this the mode Session A enabled
+    survives into Session B: every B turn re-arms the full-duplex listener, and a VAD-only trip
+    (ambient noise, empty transcript) aborts B's unrelated text turn with nothing submitted
+    afterward (#106503). Desktop already resets voice on session switches (#61448); this is the
+    TUI-gateway counterpart. Like /voice off, no push event — clients refresh via voice status."""
+    if not (_voice_mode_enabled() or _voice_tts_enabled()):
+        return
+    logger.debug("voice: session switch ends voice mode left on by another session")
+    _end_voice_chat(stop_loop=True, stop_tts=True)
+
+
 def _tts_lease_async(lease: str, active: bool) -> None:
     """Acquire/release a TTS lease off the RPC thread (acquiring warms a local engine; must not
     block the toggle's reply). Best-effort."""

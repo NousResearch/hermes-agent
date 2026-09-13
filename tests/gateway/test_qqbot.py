@@ -340,6 +340,215 @@ class TestDispatchPayload:
 
 
 # ---------------------------------------------------------------------------
+# Group command compatibility and full-message mode
+# ---------------------------------------------------------------------------
+
+class TestQQGroupMessageModes:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(
+            app_id="a", client_secret="b", group_policy="open", **extra
+        ))
+
+    @staticmethod
+    def _payload(message_id="msg-1", content="hello", **extra):
+        payload = {
+            "id": message_id,
+            "group_openid": "group-1",
+            "content": content,
+            "timestamp": "2026-08-07T12:00:00+00:00",
+            "author": {"member_openid": "member-1", "username": "Alice"},
+        }
+        payload.update(extra)
+        return payload
+
+    @pytest.mark.asyncio
+    async def test_group_at_message_prefixes_sender_but_not_command(self):
+        adapter = self._make_adapter()
+        received = []
+
+        async def capture(event):
+            received.append(event)
+
+        adapter.handle_message = capture  # type: ignore[assignment]
+        await adapter._on_message(
+            "GROUP_AT_MESSAGE_CREATE", self._payload(content="hello")
+        )
+        await adapter._on_message(
+            "GROUP_AT_MESSAGE_CREATE", self._payload("msg-2", "/status")
+        )
+
+        assert [event.text for event in received] == ["[Alice|member-1]\nhello", "/status"]
+        assert received[0].source.user_id == "member-1"
+        assert received[0].metadata["shared_group_session"] is True
+        assert received[1].metadata["shared_group_session"] is False
+
+    @pytest.mark.asyncio
+    async def test_group_at_message_prefixes_owner_but_not_command(self):
+        adapter = self._make_adapter()
+        received = []
+
+        async def capture(event):
+            received.append(event)
+
+        adapter.handle_message = capture  # type: ignore[assignment]
+        await adapter._on_message(
+            "GROUP_AT_MESSAGE_CREATE",
+            self._payload(content="hello", author={
+                "member_openid": "owner-1", "username": "Alice", "member_role": "owner",
+            }),
+        )
+        await adapter._on_message(
+            "GROUP_AT_MESSAGE_CREATE",
+            self._payload("msg-2", "/status", author={
+                "member_openid": "owner-1", "username": "Alice", "member_role": "owner",
+            }),
+        )
+
+        assert [event.text for event in received] == ["[Owner: Alice|owner-1]\nhello", "/status"]
+
+    @pytest.mark.asyncio
+    async def test_full_group_message_is_cached_without_agent_turn(self):
+        adapter = self._make_adapter()
+        adapter.handle_message = mock.AsyncMock()
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", self._payload())
+
+        assert adapter.handle_message.await_count == 0
+        history = adapter._group_message_history["group-1"]
+        assert list(history) == [{
+            "message_id": "msg-1",
+            "sender_id": "member-1",
+            "sender_name": "Alice",
+            "timestamp": "2026-08-07T12:00:00+00:00",
+            "content": "hello",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_full_group_command_triggers_one_turn(self):
+        adapter = self._make_adapter()
+        adapter.handle_message = mock.AsyncMock()
+
+        await adapter._on_message(
+            "GROUP_MESSAGE_CREATE", self._payload(content="/status")
+        )
+
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args.args[0].text == "/status"
+
+    @pytest.mark.asyncio
+    async def test_full_group_bot_openid_mention_triggers_one_turn(self):
+        adapter = self._make_adapter(bot_openid="bot-1")
+        adapter.handle_message = mock.AsyncMock()
+        adapter._observe_full_group_message = mock.Mock()
+
+        await adapter._on_message(
+            "GROUP_MESSAGE_CREATE", self._payload(content="<@bot-1> test")
+        )
+
+        assert adapter.handle_message.await_count == 1
+        adapter._observe_full_group_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_full_group_bot_mention_is_removed_before_command_dispatch(self):
+        adapter = self._make_adapter(bot_openid="bot-1")
+        adapter.handle_message = mock.AsyncMock()
+
+        await adapter._on_message(
+            "GROUP_MESSAGE_CREATE", self._payload(content="<@bot-1> /status")
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/status"
+        assert event.is_command() is True
+
+    def test_full_group_message_is_persisted_as_observed_context(self):
+        adapter = self._make_adapter()
+        session = SimpleNamespace(session_id="session-1")
+        store = mock.Mock()
+        store.get_or_create_session.return_value = session
+        adapter._session_store = store
+
+        adapter._observe_full_group_message(
+            "group-1", "msg-1", "member-1", "Alice", "", "hello", "2026-08-07T12:00:00+00:00"
+        )
+
+        store.append_to_transcript.assert_called_once_with("session-1", {
+            "role": "user",
+            "content": "[Alice|member-1]\nhello",
+            "timestamp": "2026-08-07T12:00:00+00:00",
+            "message_id": "msg-1",
+            "observed": True,
+        })
+
+    def test_observed_attachment_info_uses_url_without_download(self):
+        adapter = self._make_adapter()
+
+        text = adapter._append_observed_attachment_info("hello", [{
+            "content_type": "image/jpeg", "filename": "photo.jpg",
+            "width": 960, "height": 960, "size": 1024 * 100,
+            "url": "https://cdn.example/photo.jpg",
+        }])
+
+        assert text == (
+            "hello\n[Attachment 1] Type: image/jpeg Filename: photo.jpg "
+            "Dimensions: 960x960 Size: 100.0KB URL: https://cdn.example/photo.jpg"
+        )
+
+    @pytest.mark.parametrize(("language", "expected"), [
+        ("zh", "群主: Alice"),
+        ("ru", "Владелец: Alice"),
+        ("ko", "소유자: Alice"),
+    ])
+    def test_group_labels_follow_configured_language(self, monkeypatch, language, expected):
+        from agent.i18n import reset_language_cache
+
+        monkeypatch.setenv("HERMES_LANGUAGE", language)
+        reset_language_cache()
+        try:
+            assert self._make_adapter()._group_sender_label(
+                {"username": "Alice", "member_role": "owner"}, "owner-1"
+            ) == expected
+        finally:
+            reset_language_cache()
+
+    @pytest.mark.asyncio
+    async def test_full_then_at_event_does_not_drop_or_duplicate_trigger(self):
+        adapter = self._make_adapter()
+        adapter.handle_message = mock.AsyncMock()
+        payload = self._payload(content="hello", mentions=[{"bot": True}])
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+        await adapter._on_message("GROUP_AT_MESSAGE_CREATE", payload)
+
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_at_then_full_event_does_not_duplicate_trigger(self):
+        adapter = self._make_adapter()
+        adapter.handle_message = mock.AsyncMock()
+        payload = self._payload(content="hello", mentions=[{"bot": True}])
+
+        await adapter._on_message("GROUP_AT_MESSAGE_CREATE", payload)
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        assert adapter.handle_message.await_count == 1
+
+    def test_observed_history_resolves_mention(self):
+        adapter = self._make_adapter()
+        adapter._remember_group_message(
+            group_openid="group-1", message_id="one", sender_id="member-2",
+            sender_name="Neon", content="not really", timestamp="t",
+        )
+
+        text = adapter._resolve_group_mentions(
+            "group-1", "<@member-2> said it", {}
+        )
+
+        assert text == "@Neon said it"
+
+
+# ---------------------------------------------------------------------------
 # READY / RESUMED handling
 # ---------------------------------------------------------------------------
 

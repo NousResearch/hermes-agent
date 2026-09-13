@@ -6,6 +6,17 @@
 # interpolation and identifiers keep working.  tests/agent/test_i18n.py asserts
 # key parity and placeholder parity against en.yaml.
 
+qqbot:
+  owner: "المالك"
+  administrator: "المسؤول"
+  unknown: "غير معروف"
+  attachment_label: "[المرفق {index}]"
+  attachment_type: "النوع: {value}"
+  attachment_filename: "اسم الملف: {value}"
+  attachment_dimensions: "الأبعاد: {width}x{height}"
+  attachment_size: "الحجم: {value}"
+  attachment_url: "الرابط: {value}"
+
 approval:
   dangerous_header: "⚠️  أمر خطير: {description}"
   choose_long:     "      [o] مرة  |  [s] الجلسة  |  [a] دائمًا  |  [d] رفض"

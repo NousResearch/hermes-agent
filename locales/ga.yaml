@@ -5,6 +5,17 @@
 # without good native equivalents (e.g. "session", "tokens", "API").
 # Where Irish has a settled term we use it; otherwise we keep the English.
 
+qqbot:
+  owner: "Úinéir"
+  administrator: "Riarthóir"
+  unknown: "anaithnid"
+  attachment_label: "[Ceangaltán {index}]"
+  attachment_type: "Cineál: {value}"
+  attachment_filename: "Ainm comhaid: {value}"
+  attachment_dimensions: "Toisí: {width}x{height}"
+  attachment_size: "Méid: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
   choose_long:     "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"

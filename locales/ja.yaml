@@ -1,6 +1,17 @@
 # Hermes 静的メッセージカタログ -- 日本語
 # See locales/en.yaml for the source of truth; keep keys in sync.
 
+qqbot:
+  owner: "所有者"
+  administrator: "管理者"
+  unknown: "不明"
+  attachment_label: "[添付ファイル {index}]"
+  attachment_type: "種類: {value}"
+  attachment_filename: "ファイル名: {value}"
+  attachment_dimensions: "寸法: {width}x{height}"
+  attachment_size: "サイズ: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  危険なコマンド: {description}"
   choose_long:     "      [o]今回のみ  |  [s]セッション中  |  [a]常に許可  |  [d]拒否"

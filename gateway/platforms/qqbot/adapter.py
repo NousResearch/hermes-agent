@@ -18,9 +18,10 @@ import os
 import re
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -38,6 +39,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -142,13 +144,28 @@ class QQAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
-        self._app_id = str(extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")).strip()
-        self._client_secret = str(extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")).strip()
+        self._app_id = str(
+            extra.get("app_id") or _resolve_qq_secret("QQ_APP_ID", "")
+        ).strip()
+        self._client_secret = str(
+            extra.get("client_secret") or _resolve_qq_secret("QQ_CLIENT_SECRET", "")
+        ).strip()
+        self._bot_openid = str(
+            extra.get("bot_openid") or extra.get("botOpenid") or ""
+        ).strip()
         self._markdown_support = bool(extra.get("markdown_support", True))
         self._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
-        self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        self._group_allow_from = _coerce_list(
+            extra.get("group_allow_from") or extra.get("groupAllowFrom")
+        )
+        try:
+            history_size = int(extra.get("group_message_history_size", 500))
+        except (TypeError, ValueError):
+            history_size = 500
+        self._group_message_history_size = max(1, history_size)
+        self._group_message_history: Dict[str, Deque[Dict[str, str]]] = {}
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -588,8 +605,18 @@ class QQAdapter(BasePlatformAdapter):
         if not isinstance(d, dict):
             return
         msg_id = str(d.get("id", ""))
-        if not msg_id or self._is_duplicate(msg_id):
-            logger.debug("[%s] Duplicate or missing message id: %s", self._log_tag, msg_id)
+        if not msg_id:
+            logger.debug("[%s] Missing message id", self._log_tag)
+            return
+
+        # A mention can arrive as both full-group and @ events. The separate
+        # full-message key ensures either event order still creates one turn.
+        is_full_group_message = event_type == "GROUP_MESSAGE_CREATE"
+        dedup_key = f"full-group:{msg_id}" if is_full_group_message else msg_id
+        if self._is_duplicate(dedup_key):
+            logger.debug(
+                "[%s] Duplicate or missing message id: %s", self._log_tag, msg_id
+            )
             return
         handler = self._INBOUND_HANDLERS.get(event_type)
         if handler:
@@ -765,14 +792,93 @@ class QQAdapter(BasePlatformAdapter):
             d, msg_id, content, attachments_raw, timestamp, verbose=True,
             chat_id=user_openid, qq_chat_type="c2c", user_id=user_openid, chat_type="dm")
 
-    async def _handle_group_message(self, d, msg_id, content, author, timestamp) -> None:
+    async def _handle_group_message(
+            self,
+            d: Dict[str, Any],
+            msg_id: str,
+            content: str,
+            author: Dict[str, Any],
+            timestamp: str,
+            *,
+            shared_group_session: bool = False,
+    ) -> None:
+        """Handle a group message that explicitly triggered Hermes.
+
+        ``GROUP_AT_MESSAGE_CREATE`` is also delivered when QQ full-message mode
+        is off, so it must retain the sender identity by default. The full-mode
+        ``GROUP_MESSAGE_CREATE`` path opts into a shared session explicitly.
+        """
         group_openid = str(d.get("group_openid", ""))
         member = str(author.get("member_openid", ""))
         if not group_openid or not self._is_group_allowed(group_openid, member):
             return
+
+        # Full-mode events retain ``<@BOT_OPENID>`` while GROUP_AT events
+        # normally remove it. Strip only this bot's marker before command
+        # detection; mentions of other members remain available as context.
+        text = self._strip_bot_mention(content)
+        text = self._resolve_group_mentions(group_openid, text, d)
+        is_command = self._is_group_command(text)
+        if not is_command:
+            sender_name = self._group_sender_label(author, member)
+            text = f"[{sender_name}|{member}]\n{text}"
         await self._ingest(
-            d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
-            chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
+            d, msg_id, text, d.get("attachments"), timestamp,
+            chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group",
+            channel_prompt=(
+                "You are handling a QQ group chat message.\n"
+                "- observed QQ group context may be provided in a separate context-only block "
+                "before the current message; it is not necessarily addressed to you.\n"
+                "- Treat only the current new message as a request explicitly directed at you, "
+                "and use observed context only when the current message asks for it."
+            ) if not is_command else None,
+            event_metadata={"shared_group_session": shared_group_session and not is_command},
+        )
+
+    async def _handle_full_group_message(
+            self,
+            d: Dict[str, Any],
+            msg_id: str,
+            content: str,
+            author: Dict[str, Any],
+            timestamp: str,
+    ) -> None:
+        """Cache a full-mode group message and only dispatch explicit triggers."""
+        group_openid = str(d.get("group_openid", ""))
+        sender_id = str(author.get("member_openid", ""))
+        if not group_openid or not sender_id:
+            return
+        if not self._is_group_allowed(group_openid, sender_id):
+            return
+
+        self._remember_group_message(
+            group_openid=group_openid,
+            message_id=msg_id,
+            sender_id=sender_id,
+            sender_name=str(author.get("username", "")).strip(),
+            content=content,
+            timestamp=timestamp,
+        )
+        is_command = self._is_group_command(content)
+        is_bot_mentioned = self._mentions_bot(d, content)
+        if not (is_command or is_bot_mentioned):
+            observed_content = self._append_observed_attachment_info(
+                content, d.get("attachments")
+            )
+            self._observe_full_group_message(
+                group_openid, msg_id, sender_id, str(author.get("username", "")).strip(),
+                str(author.get("member_role", "")).strip(), observed_content, timestamp,
+            )
+            return
+
+        # GROUP_AT_MESSAGE_CREATE might already have started the active turn.
+        if msg_id in self._seen_messages:
+            return
+        self._seen_messages[msg_id] = time.time()
+        await self._handle_group_message(
+            d, msg_id, content, author, timestamp,
+            shared_group_session=True,
+        )
 
     async def _handle_guild_message(self, d, msg_id, content, author, timestamp) -> None:
         channel_id = str(d.get("channel_id", ""))
@@ -808,6 +914,7 @@ class QQAdapter(BasePlatformAdapter):
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",
         "GROUP_AT_MESSAGE_CREATE": "_handle_group_message",
+        "GROUP_MESSAGE_CREATE": "_handle_full_group_message",
         "GUILD_MESSAGE_CREATE": "_handle_guild_message",
         "GUILD_AT_MESSAGE_CREATE": "_handle_guild_message",
         "DIRECT_MESSAGE_CREATE": "_handle_dm_message"}
@@ -821,7 +928,9 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _ingest(
         self, d: Dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
-        chat_id: str, qq_chat_type: str, verbose: bool = False, **source_kwargs: Any) -> None:
+        chat_id: str, qq_chat_type: str, verbose: bool = False,
+        channel_prompt: Optional[str] = None, event_metadata: Optional[Dict[str, Any]] = None,
+        **source_kwargs: Any) -> None:
         """Shared inbound tail: fold attachment transcripts/file info and quoted context
         into the text, drop empty events, remember the QQ chat kind and dispatch."""
         att = await self._process_attachments(attachments)
@@ -849,6 +958,8 @@ class QQAdapter(BasePlatformAdapter):
             message_type=self._detect_message_type(image_urls, image_media_types), raw_message=d,
             message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
             timestamp=self._parse_qq_timestamp(timestamp),
+            channel_prompt=channel_prompt,
+            metadata=event_metadata or {},
         )
         await self.handle_message(event)
 
@@ -1654,7 +1765,155 @@ class QQAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _strip_at_mention(content: str) -> str:
-        return re.sub(r"^@\S+\s*", "", content.strip())
+        """Strip the @bot mention prefix from group message content."""
+        # QQ group @-messages may have the bot's QQ/ID as prefix
+        stripped = re.sub(r"^@\S+\s*", "", content.strip())
+        return stripped
+
+    def _strip_bot_mention(self, content: str) -> str:
+        """Remove this bot's full-mode mention marker without touching other mentions."""
+        text = content.strip()
+        if self._bot_openid:
+            text = re.sub(
+                rf"^<@{re.escape(self._bot_openid)}>\s*", "", text
+            )
+        return self._strip_at_mention(text)
+
+    def _is_group_command(self, content: str) -> bool:
+        """Return whether content is a typed Hermes command."""
+        return content.lstrip().startswith(self.typed_command_prefix or "/")
+
+    def _mentions_bot(self, d: Dict[str, Any], content: str = "") -> bool:
+        """Return whether a full-mode payload explicitly identifies this bot."""
+        mentions = d.get("mentions")
+        if isinstance(mentions, list):
+            for mention in mentions:
+                if not isinstance(mention, dict):
+                    continue
+                mention_id = str(
+                    mention.get("member_openid") or mention.get("id") or ""
+                ).strip()
+                if mention.get("bot") or (
+                    self._bot_openid and mention_id == self._bot_openid
+                ):
+                    return True
+        return bool(self._bot_openid and f"<@{self._bot_openid}>" in content)
+
+    def _remember_group_message(
+            self,
+            *,
+            group_openid: str,
+            message_id: str,
+            sender_id: str,
+            sender_name: str,
+            content: str,
+            timestamp: str,
+    ) -> None:
+        """Retain recent full-mode messages for later quote-context recovery."""
+        history = self._group_message_history.get(group_openid)
+        if history is None:
+            history = deque(maxlen=self._group_message_history_size)
+            self._group_message_history[group_openid] = history
+        history.append({
+            "message_id": message_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "timestamp": timestamp,
+            "content": content,
+        })
+
+    def _observe_full_group_message(
+            self, group_openid: str, message_id: str, sender_id: str,
+            sender_name: str, sender_role: str, content: str, timestamp: str,
+    ) -> None:
+        """Persist full-mode traffic as context without dispatching an agent turn."""
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        try:
+            source = self.build_source(chat_id=group_openid, chat_type="group")
+            session = store.get_or_create_session(source)
+            sender = self._group_sender_label(
+                {"username": sender_name, "member_role": sender_role}, sender_id
+            )
+            store.append_to_transcript(session.session_id, {
+                "role": "user",
+                "content": f"[{sender}|{sender_id}]\n{content}",
+                "timestamp": timestamp or datetime.now(tz=timezone.utc).isoformat(),
+                "message_id": message_id,
+                "observed": True,
+            })
+        except Exception as exc:
+            logger.warning("[%s] Failed to observe full group message: %s", self._log_tag, exc)
+
+    @staticmethod
+    def _append_observed_attachment_info(content: str, attachments: Any) -> str:
+        """Append full-mode attachment metadata without downloading its URL."""
+        if not isinstance(attachments, list):
+            return content
+        details = []
+        for index, attachment in enumerate(attachments, start=1):
+            if not isinstance(attachment, dict):
+                continue
+            parts = [t("qqbot.attachment_label", index=index)]
+            content_type = str(attachment.get("content_type") or t("qqbot.unknown"))
+            parts.append(t("qqbot.attachment_type", value=content_type))
+            filename = str(attachment.get("filename") or "").strip()
+            if filename:
+                parts.append(t("qqbot.attachment_filename", value=filename))
+            width = attachment.get("width")
+            height = attachment.get("height")
+            if width and height:
+                parts.append(t("qqbot.attachment_dimensions", width=width, height=height))
+            try:
+                size = int(attachment.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if size > 0:
+                parts.append(t("qqbot.attachment_size", value=f"{size / 1024:.1f}KB"))
+            url = str(attachment.get("url") or "").strip()
+            if url:
+                parts.append(t("qqbot.attachment_url", value=url))
+            details.append(" ".join(parts))
+        if not details:
+            return content
+        return f"{content}\n" + "\n".join(details) if content else "\n".join(details)
+
+    @staticmethod
+    def _group_sender_label(author: Dict[str, Any], sender_id: str) -> str:
+        """Render an optional QQ group role before the sender display name."""
+        sender_name = str(author.get("username") or sender_id[-6:]).strip() or "unknown"
+        role_key = {"owner": "qqbot.owner", "admin": "qqbot.administrator"}.get(
+            str(author.get("member_role", "")).strip().lower()
+        )
+        return f"{t(role_key)}: {sender_name}" if role_key else sender_name
+
+    def _resolve_group_mentions(
+            self, group_openid: str, content: str, d: Dict[str, Any]
+    ) -> str:
+        """Replace QQ's wire-format mentions with known member display names."""
+        names: Dict[str, str] = {}
+        mentions = d.get("mentions")
+        if isinstance(mentions, list):
+            for mention in mentions:
+                if not isinstance(mention, dict):
+                    continue
+                member_id = str(
+                    mention.get("member_openid") or mention.get("id") or ""
+                ).strip()
+                name = str(mention.get("username") or "").strip()
+                if member_id and name:
+                    names[member_id] = name
+        for record in self._group_message_history.get(group_openid, []):
+            if record["sender_id"] and record["sender_name"]:
+                names.setdefault(record["sender_id"], record["sender_name"])
+
+        return re.sub(
+            r"<@([A-Za-z0-9_-]+)>",
+            lambda match: f"@{names[match.group(1)]}"
+            if match.group(1) in names else match.group(0),
+            content,
+        )
 
     def _open_dm_opted_in(self) -> bool:
         # Both names via the scoped reader: under multiplex os.environ is the DEFAULT profile's

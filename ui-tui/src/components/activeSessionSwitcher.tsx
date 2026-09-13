@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import { Box, type InputEvent, Text, useInput, useStdout } from '@hermes/ink'
 import type { SessionListItem, SessionListResponse } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -324,6 +324,12 @@ export function ActiveSessionSwitcher({
   // than keeping a now-stale flat index.
   const itemsRef = useRef<SessionActiveItem[]>([])
   const historyDisplayRef = useRef<SessionListItem[]>([])
+  // Generation stamp for full-history loads. Toggling the cron filter (or
+  // Ctrl+R) recreates `load` while an older request may still be in flight;
+  // if that older opposite-filter response resolved last it would overwrite
+  // rawHistoryRef/history/err against the checkbox. A response only applies
+  // while its generation is still the newest full-history request.
+  const historyLoadGenRef = useRef(0)
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -344,6 +350,11 @@ export function ActiveSessionSwitcher({
     // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
     // poll, which only needs fresh live-session status).
     async (quiet = false, includeHistory = true) => {
+      // Full-history loads supersede older ones; the quiet 1.5s poll only
+      // reads the stamp so it can't invalidate an in-flight full load but is
+      // itself dropped when a full load starts mid-poll.
+      const gen = includeHistory ? ++historyLoadGenRef.current : historyLoadGenRef.current
+
       if (!quiet) {
         setLoading(true)
       }
@@ -362,6 +373,13 @@ export function ActiveSessionSwitcher({
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
+
+        if (gen !== historyLoadGenRef.current) {
+          // Superseded while in flight: drop every state write so this stale
+          // response can't overwrite the newer request's history/err/loading.
+          // Still hand callers the live snapshot (closeSelected's fallback).
+          return r?.sessions ?? []
+        }
 
         if (!r) {
           setErr('invalid response: session.active_list')
@@ -432,8 +450,10 @@ export function ActiveSessionSwitcher({
 
         return next
       } catch (e: unknown) {
-        setErr(rpcErrorMessage(e))
-        setLoading(false)
+        if (gen === historyLoadGenRef.current) {
+          setErr(rpcErrorMessage(e))
+          setLoading(false)
+        }
 
         return []
       }
@@ -567,7 +587,7 @@ export function ActiveSessionSwitcher({
   const newSelected = selectedKind === 'new'
   const draftHasText = Boolean(draft.trim())
 
-  useInput((ch, key) => {
+  useInput((ch, key, event: InputEvent) => {
     if (pickingModel || deleting) {
       return
     }
@@ -604,6 +624,9 @@ export function ActiveSessionSwitcher({
     }
 
     if (key.meta && lower === 'c') {
+      // Consume the event: when "+ new" is selected the draft TextInput's
+      // useInput listener runs after this one and would insert a literal 'c'.
+      event.stopImmediatePropagation()
       setIncludeCron(value => !value)
 
       return

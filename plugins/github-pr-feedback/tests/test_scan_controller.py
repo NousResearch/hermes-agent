@@ -2543,7 +2543,36 @@ def test_scan_dispatches_a_new_local_ci_audit_when_only_the_base_head_changes(
     )
     github.pull_request = second
     github.current = second
+    github.branch_head = second.base_sha
     second_scan = scanner.scan()
+    commands = (
+        CommandEvidence(
+            argv=("python3", "scripts/run_test_lane.py"),
+            cwd=str(local_path),
+            returncode=0,
+            duration_ms=1,
+            timed_out=False,
+            stdout_sha256="0" * 64,
+            stderr_sha256="0" * 64,
+            classification="passed",
+        ),
+    )
+    identity = CIAuditIdentity("acme/widgets", 17, second.base_sha, head_sha)
+    completed_at = datetime.now(UTC)
+    ledger.record_ci_receipt(
+        CIAuditReceipt(
+            receipt_id=_receipt_id(
+                identity, "e" * 64, "passed", completed_at, commands
+            ),
+            identity=identity,
+            manifest_digest="e" * 64,
+            status="passed",
+            started_at=completed_at,
+            completed_at=completed_at,
+            actions_state=CheckState(False, True, 0),
+            commands=commands,
+        )
+    )
     duplicate_scan = scanner.scan()
 
     assert first_scan.created == 1
@@ -2723,8 +2752,19 @@ def test_duplicate_local_ci_receipts_do_not_starve_a_new_head_after_comment_fixe
         not_before="2026-08-24T00:00:00Z",
         local_ci_audit=True,
     )
+    base_sha = "c" * 40
     stale_pulls = tuple(
-        PullRequest(number, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/fix", sha)
+        PullRequest(
+            number,
+            "OPEN",
+            "acme/widgets",
+            "acme/widgets",
+            "owner",
+            "codex/fix",
+            sha,
+            base_branch="stable",
+            base_sha=base_sha,
+        )
         for number in range(1, MAX_ADMISSIONS_PER_SCAN + 1)
     )
     repaired = PullRequest(
@@ -2751,9 +2791,40 @@ def test_duplicate_local_ci_receipts_do_not_starve_a_new_head_after_comment_fixe
     github.actions_are_enabled = False
     ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
     claimed_at = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+    commands = (
+        CommandEvidence(
+            argv=("python3", "scripts/run_test_lane.py"),
+            cwd=str(local_path),
+            returncode=0,
+            duration_ms=1,
+            timed_out=False,
+            stdout_sha256="0" * 64,
+            stderr_sha256="0" * 64,
+            classification="passed",
+        ),
+    )
     for pull in stale_pulls:
+        identity = CIAuditIdentity("acme/widgets", pull.number, base_sha, pull.head_sha)
+        ledger.record_ci_receipt(
+            CIAuditReceipt(
+                receipt_id=_receipt_id(
+                    identity, "e" * 64, "passed", claimed_at, commands
+                ),
+                identity=identity,
+                manifest_digest="e" * 64,
+                status="passed",
+                started_at=claimed_at,
+                completed_at=claimed_at,
+                actions_state=CheckState(True, True, 1),
+                commands=commands,
+            )
+        )
         receipt = FeedbackReceipt(
-            "acme/widgets", pull.number, "pr_local_ci", LOCAL_CI_FEEDBACK_ID, pull.head_sha
+            "acme/widgets",
+            pull.number,
+            "pr_local_ci",
+            _local_ci_feedback_id(pull),
+            pull.head_sha,
         )
         lease = ledger.claim(
             receipt,

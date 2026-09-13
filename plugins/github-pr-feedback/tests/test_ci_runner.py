@@ -222,6 +222,29 @@ def test_active_exact_head_ci_run_rejects_duplicate_without_running_commands(tmp
     ledger.close()
 
 
+def test_latest_ci_receipt_for_head_filters_base_before_selecting_newest(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+    runner, ledger, _ = build_runner(tmp_path)
+    current = runner.run(CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
+    stale = replace(
+        current,
+        receipt_id="b" * 64,
+        identity=replace(current.identity, base_sha="c" * 40),
+        status="failed",
+        completed_at=current.completed_at + timedelta(minutes=1),
+        failure_reason="stale base",
+    )
+    ledger.record_ci_receipt(stale)
+
+    assert ledger.latest_ci_receipt_for_head(
+        "acme/widgets", 17, HEAD_SHA, base_sha=BASE_SHA
+    ) == current
+    ledger.close()
+
+
 def test_dead_stale_ci_supervisor_allows_one_fenced_takeover(tmp_path: Path) -> None:
     worktree = tmp_path / "worktree"
     prepare_repository(worktree)

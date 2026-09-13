@@ -475,12 +475,31 @@ class MergeController:
             reconciled = self._reconcile_verified_merge(pending, snapshot)
             if reconciled is not None:
                 return reconciled
+            pull = snapshot.pull_request
+            releaseable_unmerged = (
+                pull.repository == self._policy.repository
+                and not pull.merged
+                and (
+                    (pull.state == "OPEN" and pull.head_sha != pending.head_sha)
+                    or pull.state == "CLOSED"
+                )
+            )
+            if releaseable_unmerged:
+                self._ledger.release_open_unmerged_merge_lease(
+                    pending,
+                    updated_at=self._now(),
+                )
             blocked = MergeDecision(
                 False,
                 ("merge_verification_required",),
                 None,
                 _snapshot_digest(snapshot, snapshot.ci_receipt),
             )
+            return MergeRunResult(blocked, None)
+        if self._ledger.merge_queue_required_merge_attempt(
+            self._policy.repository, number
+        ):
+            blocked = MergeDecision(False, ("merge_queue_required",), None, "")
             return MergeRunResult(blocked, None)
         first_snapshot = self._source.snapshot(number)
         first = evaluate_merge(self._policy, first_snapshot, now=self._now())
@@ -536,8 +555,37 @@ class MergeController:
                 number,
                 second_snapshot.pull_request.head_sha,
                 method=second.method,
+                base_branch=second_snapshot.pull_request.base_branch,
             )
-        except GitHubClientError:
+        except GitHubClientError as error:
+            if error.code == "merge_queue_preflight_failed":
+                self._ledger.finish_merge_lease(
+                    lease,
+                    status="failed",
+                    updated_at=self._now(),
+                    error=error.code,
+                    expected_status="verification_required",
+                )
+                return MergeRunResult(
+                    MergeDecision(
+                        False, (error.code,), None, second.snapshot_digest
+                    ),
+                    None,
+                )
+            if error.code in {"merge_rejected", "merge_queue_required"}:
+                self._ledger.finish_merge_lease(
+                    lease,
+                    status="failed",
+                    updated_at=self._now(),
+                    error=error.code if error.code == "merge_queue_required" else str(error),
+                    expected_status="verification_required",
+                )
+                return MergeRunResult(
+                    MergeDecision(
+                        False, (error.code,), None, second.snapshot_digest
+                    ),
+                    None,
+                )
             # A transport error cannot prove that GitHub rejected the write.
             # Canonical readback below remains the only completion authority.
             pass

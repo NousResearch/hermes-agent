@@ -47,7 +47,7 @@ def codex_review_comment(head_sha: str = HEAD_SHA) -> Feedback:
             "| --- | --- | --- | --- |\n"
             "| Code Review | Completed "
             '<relative-time datetime="2026-08-25T20:00:00Z"></relative-time> | '
-            f"`{head_sha[:7]}` | PR opened |"
+            f"`{head_sha}` | PR opened |"
         ),
         datetime(2026, 8, 25, 20, 0, tzinfo=UTC),
         True,
@@ -114,7 +114,13 @@ class CanonicalFakeGitHub:
         self.labels = [item for item in self.labels if item.casefold() != label.casefold()]
 
     def merge_pull_request(
-        self, repository: str, number: int, head_sha: str, *, method: str
+        self,
+        repository: str,
+        number: int,
+        head_sha: str,
+        *,
+        method: str,
+        base_branch: str,
     ) -> None:
         self.merge_calls.append((repository, number, head_sha, method))
 

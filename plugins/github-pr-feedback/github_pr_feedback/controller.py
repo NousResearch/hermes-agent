@@ -1349,6 +1349,34 @@ class ScanController:
                             head_sha=pull_request.head_sha,
                         )
                     )
+                    if local_ci_receipt_status == "completed":
+                        exact_ci = FeedbackReceipt(
+                            repository=pull_request.base_repository,
+                            pr_number=pull_request.number,
+                            feedback_kind="pr_local_ci",
+                            feedback_id=_local_ci_feedback_id(pull_request),
+                            head_sha=pull_request.head_sha,
+                        )
+                        base_sha = (
+                            current.base_sha if current is not None else pull_request.base_sha
+                        )
+                        if (
+                            self._ledger.ci_receipt_row_exists(
+                                pull_request.base_repository,
+                                pull_request.number,
+                                pull_request.head_sha,
+                                base_sha=base_sha,
+                            )
+                            and self._ledger.latest_ci_receipt_for_head(
+                                pull_request.base_repository,
+                                pull_request.number,
+                                pull_request.head_sha,
+                                base_sha=base_sha,
+                            )
+                            is None
+                        ):
+                            self._ledger.quarantine_malformed_ci_receipt(exact_ci)
+                            local_ci_receipt_status = "failed"
                 feedback_pending = False
                 base_refresh_pending = False
                 base_head_cache: dict[tuple[str, str, str], str | None] = {}
@@ -1911,6 +1939,7 @@ class ScanController:
             current.base_repository,
             current.number,
             current.head_sha,
+            base_sha=current.base_sha,
         )
         if getattr(existing_audit, "status", None) == "failed":
             repair_status = self.dispatch_ci_failure(existing_audit)
@@ -2270,7 +2299,7 @@ class ScanController:
                 prepared.expected_sha,
             )
             task_id = self._kanban.create_or_get_task(
-                _dispatch_generation(_task(
+                _task(
                     self._policy,
                     receipt,
                     prepared,
@@ -2279,7 +2308,7 @@ class ScanController:
                     assignee_override=self._typed_ci_assignee(receipt, feedback.body),
                     labels=labels,
                     internal_intent_review=internal_intent_review,
-                ), lease)
+                )
             )
             _bind_pooled_worktree_task(
                 self._local_git, receipt, task_id, self._policy.board or ""

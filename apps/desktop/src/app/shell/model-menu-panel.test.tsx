@@ -28,7 +28,27 @@ vi.mock('@/hermes', () => ({
 const MOA_PROVIDER = { models: ['default', 'BeastMode'], name: 'Mixture of Agents', slug: 'moa' }
 
 const DEEPSEEK_PROVIDER = {
-  models: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
+  capabilities: {
+    'deepseek-v4-pro': { fast: false, reasoning: true }
+  },
+  metadata: {
+    'deepseek-chat-free': {
+      context_window: 65536,
+      input_modalities: ['text']
+    },
+    'deepseek-v4-pro': {
+      context_window: 200000,
+      input_modalities: ['text', 'image', 'pdf'],
+      max_output_tokens: 32000,
+      supports_pdf: true,
+      supports_tools: true,
+      supports_vision: true
+    }
+  },
+  models: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-chat-free'],
+  pricing: {
+    'deepseek-v4-pro': { cache: null, free: false, input: '$0.50', output: '$1.50' }
+  },
   name: 'DeepSeek',
   slug: 'deepseek'
 }
@@ -149,6 +169,52 @@ describe('ModelMenuPanel current selection', () => {
 
     expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
     expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+})
+
+describe('ModelMenuPanel model metadata', () => {
+  it('summarizes registry metadata on each model row', async () => {
+    const { content } = renderPanel()
+
+    const row = (await content.findByText(/Deepseek V4 Pro/i)).closest('[role="menuitem"]')
+
+    expect(row?.textContent).toContain('200K')
+    expect(row?.textContent).toContain('Vision')
+    expect(row?.textContent).toContain('Tools')
+  })
+
+  it('shows complete model facts in the hover panel', async () => {
+    const { content } = renderPanel()
+    const row = (await content.findByText(/Deepseek V4 Pro/i)).closest('[role="menuitem"]')
+
+    expect(row).not.toBeNull()
+    fireEvent.pointerMove(row!, { pointerType: 'mouse' })
+
+    expect(await screen.findByText('Context window')).toBeTruthy()
+    expect(screen.getByText('200K tokens')).toBeTruthy()
+    expect(screen.getByText('Max output')).toBeTruthy()
+    expect(screen.getByText('32K tokens')).toBeTruthy()
+    expect(screen.getByText('Model')).toBeTruthy()
+    expect(screen.getByText('Provider')).toBeTruthy()
+    expect(screen.getAllByText('DeepSeek').length).toBeGreaterThan(0)
+    expect(screen.getByText('Inputs')).toBeTruthy()
+    expect(screen.getByText('text, image, PDF')).toBeTruthy()
+    expect(screen.getByText('Input')).toBeTruthy()
+    expect(screen.getByText('$0.50 / Mtok')).toBeTruthy()
+    expect(screen.getByText('Output')).toBeTruthy()
+    expect(screen.getByText('$1.50 / Mtok')).toBeTruthy()
+  })
+
+  it('derives a Free pricing row from the -free model id suffix', async () => {
+    const { content } = renderPanel()
+    const row = (await content.findByText(/Deepseek Chat Free/i)).closest('[role="menuitem"]')
+
+    expect(row).not.toBeNull()
+    fireEvent.pointerMove(row!, { pointerType: 'mouse' })
+
+    expect(await screen.findByText('Pricing')).toBeTruthy()
+    expect(screen.getByText('Free')).toBeTruthy()
+    expect(screen.getByText('65.5K tokens')).toBeTruthy()
   })
 })
 

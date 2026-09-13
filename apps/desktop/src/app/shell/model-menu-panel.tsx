@@ -63,6 +63,7 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
   return (
     <ModelCatalogMenu
       controller={controller}
+      detailsOnHover
       footer={
         <DropdownMenuItem
           className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

@@ -14,6 +14,50 @@ import hermes_cli.models as models_mod
 from hermes_cli import models_reasoning_caps
 
 
+def test_picker_payload_reuses_models_dev_metadata(monkeypatch):
+    """The picker gets rich facts from Hermes' existing registry, not a second catalog."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)
+    monkeypatch.setattr(
+        "agent.models_dev.get_model_capabilities",
+        lambda provider, model: SimpleNamespace(supports_reasoning=True),
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.get_model_info",
+        lambda provider, model: SimpleNamespace(
+            attachment=True,
+            context_window=200_000,
+            input_modalities=("text", "image", "pdf"),
+            max_input=180_000,
+            max_output=32_000,
+            open_weights=False,
+            output_modalities=("text",),
+            structured_output=True,
+            supports_audio_input=lambda: False,
+            supports_pdf=lambda: True,
+            supports_vision=lambda: True,
+            tool_call=True,
+        ),
+    )
+
+    rows = [{"slug": "openai", "models": ["gpt-test"]}]
+    inv._apply_capabilities(rows)
+
+    assert rows[0]["metadata"]["gpt-test"] == {
+        "context_window": 200_000,
+        "input_modalities": ["text", "image", "pdf"],
+        "max_input_tokens": 180_000,
+        "max_output_tokens": 32_000,
+        "output_modalities": ["text"],
+        "structured_output": True,
+        "supports_audio_input": False,
+        "supports_pdf": True,
+        "supports_tools": True,
+        "supports_vision": True,
+    }
+
+
 def _patch_catalog(monkeypatch, caps_by_model, *, provider="nous"):
     """Point the Nous/OpenRouter catalog readers at a fixed capability map."""
     monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda model: False)

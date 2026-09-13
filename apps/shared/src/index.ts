@@ -82,6 +82,7 @@ export {
   type ModelCapabilities,
   type ModelOptionProvider,
   type ModelOptionsResponse,
+  type ModelPickerMetadata,
   type ModelPricing,
   type NotificationShowPayload,
   type RequestExpirePayload,

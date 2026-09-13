@@ -87,6 +87,25 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
     agent._compress_context.assert_not_called()
 
 
+def test_windowless_gate_is_gateway_only_so_in_process_surfaces_still_reach_compress_context():
+    """``has_content_to_compress`` only knows the local summary window; codex_app_server native compaction
+    and the phase-1 tool-result prune inside ``_compress_context`` do useful work without one, so CLI/TUI/
+    ACP (the default) must not short-circuit on it. The gateway keeps its historical early answer."""
+    agent, history = _agent(), _history()
+    agent.context_compressor = MagicMock()
+    agent.context_compressor.has_content_to_compress.return_value = False
+    agent._compress_context.return_value = (history[:-1], "")  # e.g. a pruned tool result, no summary
+
+    default = compress_now(agent, history, parse_compress_args(""))
+    assert default.status == "compressed" and default.removed == 1
+    agent._compress_context.assert_called_once()
+
+    agent._compress_context.reset_mock()
+    gateway = compress_now(agent, history, parse_compress_args(""), system_message="", skip_without_window=True)
+    assert gateway.status == "nothing_to_do" and gateway.after_messages == history
+    agent._compress_context.assert_not_called()
+
+
 def _coro(value):
     async def _inner(*_a, **_k):
         return value

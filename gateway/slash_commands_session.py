@@ -550,7 +550,7 @@ class GatewaySessionCommandsMixin:
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
             result = await self._run_in_executor_with_context(
-                lambda: compress_now(tmp_agent, msgs, request, system_message=""))
+                lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True))
             if result.status == "nothing_to_do":
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":

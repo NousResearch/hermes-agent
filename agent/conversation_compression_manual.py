@@ -68,7 +68,7 @@ def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> i
 
 def compress_now(
     agent: Any, history: Sequence[Dict[str, Any]], request: CompressRequest, *,
-    system_message: Any = None, task_id: str = "default",
+    system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
@@ -78,7 +78,11 @@ def compress_now(
     discarded; otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
     committed=True)`` once its own history transaction commits (``committed=False`` on failure).
     ``system_message=None`` makes ``_compress_context`` rebuild the prompt; passing the cached prompt
-    duplicated the identity block (#15281)."""
+    duplicated the identity block (#15281). ``skip_without_window`` (gateway) answers ``nothing_to_do``
+    when the local compressor sees no summarizable middle; the in-process surfaces leave it off because
+    ``_compress_context`` still does useful work there — codex_app_server native compaction, and the
+    phase-1 tool-result prune / blank-echo drop that ``ContextCompressor.compress`` commits even when no
+    summary window exists."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
     from agent.manual_compression_feedback import summarize_manual_compression
     from hermes_cli.partial_compress import (
@@ -97,7 +101,7 @@ def compress_now(
 
     compressor = getattr(agent, "context_compressor", None)
     has_content = getattr(compressor, "has_content_to_compress", None)
-    if callable(has_content) and has_content(head) is False:
+    if skip_without_window and callable(has_content) and has_content(head) is False:
         return CompressResult("nothing_to_do", before, before, before_tokens, before_tokens, request)
     try:
         compressed, _ = agent._compress_context(

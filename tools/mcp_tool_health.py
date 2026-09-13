@@ -136,8 +136,18 @@ class MCPServerHealthMixin:
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:
             old_tool_names = set(self._registered_tool_names)
+            # Snapshot the session pointer only after both locks are held: a queued refresh
+            # can sit behind a park/reconnect (#109824), and self.session is None until the
+            # replacement transport finishes connecting. Querying through None crashed the
+            # health loop ("'NoneType' object has no attribute 'list_tools'") once per profile
+            # on every gateway restart with a slow-to-connect MCP server; skipping the cycle
+            # is correct — the next tools/list_changed notification re-arms this refresh.
+            session = self.session
+            if session is None:
+                logger.debug("MCP server '%s': skipping dynamic tool refresh; session not connected", self.name)
+                return
             async with self._rpc_lock:
-                new_mcp_tools = await _core._paginate_full_list(self.session.list_tools, "tools", self.name)
+                new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})

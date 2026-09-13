@@ -238,9 +238,10 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
         should_use_ollama_native_catalog,
     )
 
-    from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+    from agent.api_credential import materialize_credential
+    from agent.command_token_source import build_command_token_provider
     source = build_command_token_provider(provider_info.get("key_cmd", ""), provider_info["name"])
-    api_key = materialize_probe_api_key(source if source is not None else api_key)
+    api_key = materialize_credential(source if source is not None else api_key)
     name, base_url = provider_info["name"], provider_info["base_url"]
     api_mode = provider_info.get("api_mode", "")
     provider_key = (provider_info.get("provider_key") or "").strip()

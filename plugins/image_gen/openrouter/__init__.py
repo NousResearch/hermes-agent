@@ -529,9 +529,11 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         """``(api_key, base_url)`` — either may be ``""``; raises on resolution failure."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
+        from agent.api_credential import materialize_credential
+
         runtime = resolve_runtime_provider(requested=self._runtime_name)
         return (
-            str(runtime.get("api_key") or "").strip(), str(runtime.get("base_url") or "").strip().rstrip("/"),
+            materialize_credential(runtime.get("api_key")), str(runtime.get("base_url") or "").strip().rstrip("/"),
         )
 
     def is_available(self) -> bool:

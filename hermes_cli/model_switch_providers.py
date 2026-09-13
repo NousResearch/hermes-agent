@@ -13,7 +13,8 @@ import time
 import threading as _threading
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
-from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+from agent.api_credential import is_token_provider, materialize_credential
+from agent.command_token_source import build_command_token_provider
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
 from utils import base_url_host_matches
 
@@ -99,12 +100,12 @@ def _fetch_picker_live_models(
         should_use_ollama_native_catalog,
     )
 
-    if callable(api_key):
+    if is_token_provider(api_key):
         # Let the catalog cache decide whether any token or network I/O is needed.
         return cached_fetch_api_models(
             api_key, api_url, timeout=timeout, headers=headers, api_mode=api_mode,
             fetch_models=lambda: _fetch_picker_live_models(
-                materialize_probe_api_key(api_key), api_url, native_catalog_provider,
+                materialize_credential(api_key), api_url, native_catalog_provider,
                 preserve_native_models, headers, timeout, api_mode, cache=False))
 
     candidate_headers = _get_ollama_native_headers(api_url, api_key=api_key)

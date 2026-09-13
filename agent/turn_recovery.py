@@ -277,7 +277,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
 def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
     from agent.anthropic_credentials import _is_oauth_token
-    from agent.azure_identity_adapter import is_token_provider
+    from agent.api_credential import is_token_provider
     from hermes_constants import display_hermes_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
     if is_token_provider(key):

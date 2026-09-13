@@ -694,7 +694,7 @@ def _setup_logging(agent):
 def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
     """Masked credential line. ``key`` may be a callable Entra ID bearer provider (Azure
     Foundry) — never invoke or inspect it. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
-    from agent.azure_identity_adapter import is_token_provider
+    from agent.api_credential import is_token_provider
     if is_token_provider(key):
         print("🔑 Using credentials: Microsoft Entra ID")
     elif isinstance(key, str) and len(key) > 12:
@@ -998,7 +998,10 @@ def _host_default_headers_factory(base_url: str):
 def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     """OpenAI-client kwargs mirroring a router-resolved client, keeping its provider headers
     (SDK stores them in ``_custom_headers``; older/mocked clients expose ``default_headers``)."""
-    kwargs = {"api_key": client.api_key, "base_url": str(client.base_url)}
+    from agent.api_credential import client_credential
+
+    # A provider-built client (key_cmd, Entra ID) reports api_key == ""; keep its provider.
+    kwargs = {"api_key": client_credential(client), "base_url": str(client.base_url)}
     if timeout is not None:
         kwargs["timeout"] = timeout
     headers = (

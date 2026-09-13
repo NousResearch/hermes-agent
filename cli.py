@@ -3132,7 +3132,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # ``api_key`` may be a callable (Entra ID bearer provider): never invoke it. Prefer the
         # LIVE agent's key: the constructor seeds self.api_key from env before provider
         # resolution, so on non-OpenAI providers it can be another vendor's key.
-        from agent.azure_identity_adapter import is_token_provider
+        from agent.api_credential import is_token_provider
 
         display_key = self.api_key
         if self.agent is not None and getattr(self.agent, "api_key", None):

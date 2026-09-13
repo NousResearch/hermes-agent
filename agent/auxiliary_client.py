@@ -24,6 +24,13 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.api_credential import (
+    async_credential,
+    client_credential,
+    has_credential,
+    normalize_credential,
+    static_credential,
+)
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -1563,7 +1570,7 @@ class CodexAuxiliaryClient:
     def __init__(self, real_client: OpenAI, model: str):
         self._real_client = real_client
         self.chat = _ChatShim(_CodexCompletionsAdapter(real_client, model))
-        self.api_key = real_client.api_key
+        self.api_key = client_credential(real_client)
         self.base_url = real_client.base_url
 
     def close(self):
@@ -2594,7 +2601,7 @@ def set_runtime_main(
         "requested_provider": (requested_provider or "").strip().lower(),
         "model": (model or "").strip(),
         "base_url": (base_url or "").strip(),
-        "api_key": api_key.strip() if isinstance(api_key, str) else api_key if callable(api_key) else "",
+        "api_key": normalize_credential(api_key),
         "api_mode": (api_mode or "").strip(),
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
@@ -2826,8 +2833,7 @@ def _try_azure_foundry(
     api_key = runtime.get("api_key")
     base_url = str(runtime.get("base_url", "") or "")
     runtime_api_mode = api_mode or runtime.get("api_mode") or "chat_completions"
-    # api_key may be a callable token provider; bail only on None/"".
-    if not (callable(api_key) or api_key) or not base_url:
+    if not has_credential(api_key) or not base_url:
         return None, None
     final_model = _normalize_resolved_model(model or str(model_cfg.get("default") or ""), "azure-foundry")
     if not final_model:
@@ -4336,11 +4342,15 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
-    async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    # ``sync_client.api_key`` is "" when the client was built from a token provider
+    # (key_cmd, Entra ID); client_credential() recovers the provider, and
+    # async_credential() gives AsyncOpenAI the awaitable shape it requires.
+    credential = client_credential(sync_client)
+    async_kwargs = {"api_key": async_credential(credential), "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
-        headers = _apply_user_default_headers(_codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url))
+        headers = _apply_user_default_headers(_codex_cloudflare_headers(static_credential(credential), base_url=sync_base_url))
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
@@ -4351,7 +4361,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
     if headers:
         async_kwargs["default_headers"] = headers
-    _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
+    _apply_required_codex_headers(async_kwargs, access_token=static_credential(credential), base_url=sync_base_url)
     async_kwargs = {**_openai_http_client_kwargs(sync_base_url, async_mode=True), **async_kwargs}
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.
@@ -4661,7 +4671,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if req.api_mode == "anthropic_messages":
             wrap_base = (req.explicit_base_url or "").strip().rstrip("/")
         custom_key = (
-            (req.explicit_api_key or "").strip()
+            normalize_credential(req.explicit_api_key)  # a token provider passes through uncalled
             or _scoped_key_env("OPENAI_API_KEY")
             or _read_main_api_key_if_same_host(custom_base)
             or "no-key-required"  # local servers don't need auth
@@ -4675,7 +4685,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         # Re-resolution loses the provider name and falls back to OpenRouter or a wrong API-key provider —
         # the main agent already solved this, we just need to reuse its answer. (#45472)
         _main_base = str(main_runtime.get("base_url") or "").strip().rstrip("/")
-        _main_key = str(main_runtime.get("api_key") or "").strip()
+        _main_key = normalize_credential(main_runtime.get("api_key"))
         if _main_base and _main_key:
             custom_base, custom_key = _main_base, _main_key
     if custom_base and custom_key:
@@ -4701,10 +4711,8 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         client, default = try_fn()
         if client is not None:
             final_model = _normalize_resolved_model(model or default, provider)
-            # ``client.api_key`` may be a callable (Azure Entra bearer provider);
-            # wrapping decisions only need base_url + api_mode.
-            _raw_ckey = getattr(client, "api_key", "")
-            _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
+            # Wrapping decisions only need base_url + api_mode: never mint for them.
+            _ckey = static_credential(client_credential(client))
             client = _wrap_transport(req, client, final_model, str(getattr(client, "base_url", "") or ""), _ckey)
             return _route_client(req, client, final_model)
     logger.warning("resolve_provider_client: custom/main requested but no endpoint credentials found")
@@ -4739,7 +4747,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # whatever the caller left blank, never replaces what the caller set (compression prompts carry
     # conversation history, so a silently swapped destination is a data-routing bug, not a nuisance).
     custom_base = (req.explicit_base_url or custom_entry.get("base_url") or "").strip()
-    custom_key = (req.explicit_api_key or "").strip() or _named_custom_api_key(custom_entry, provider, custom_base)
+    custom_key = normalize_credential(req.explicit_api_key) or _named_custom_api_key(custom_entry, provider, custom_base)
     if custom_key == "no-key-required":
         logger.warning("resolve_provider_client: named custom provider %r has no resolvable "
                        "api_key — request will be sent with placeholder no-key-required "
@@ -4807,7 +4815,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     # Explicit api_key override (fallback_model / custom_providers entry) lets callers
     # authenticate where no built-in credential is registered for this alias.
     if req.explicit_api_key:
-        api_key = req.explicit_api_key.strip() or api_key
+        api_key = normalize_credential(req.explicit_api_key) or api_key
     raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
     if req.explicit_base_url:
         raw_base_url = req.explicit_base_url.strip().rstrip("/")

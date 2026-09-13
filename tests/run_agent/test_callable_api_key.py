@@ -254,9 +254,10 @@ class TestCliEnsureRuntimeCredentialsCallable:
         # module the method actually lives in now.
         src = (Path(__file__).resolve().parent.parent.parent
                / "hermes_cli" / "cli_agent_setup_mixin.py").read_text()
-        # The fix gates the string-only check on ``callable(api_key)`` so callable
-        # token providers survive.
-        assert "if not callable(api_key) and not (isinstance(api_key, str) and api_key):" in src, (
+        # The fix gates the string-only check on a provider-aware presence test, so callable
+        # token providers survive. ``has_credential`` (agent.api_credential) is that test;
+        # its behaviour is pinned in tests/agent/test_api_credential.py.
+        assert "if not has_credential(api_key):" in src, (
             "_ensure_runtime_credentials must preserve a callable "
             "api_key (Entra ID bearer provider). Without the guard, the "
             "callable is stringified to 'no-key-required' and Azure 401s."

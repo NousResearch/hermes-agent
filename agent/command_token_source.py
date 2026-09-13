@@ -34,13 +34,8 @@ class CommandTokenError(RuntimeError):
     """A ``key_cmd`` failed to produce a usable token."""
 
 
-def materialize_probe_api_key(api_key: object) -> str:
-    """Best-effort probe credential; never send a callable's repr or log mint errors."""
-    try:
-        token = api_key() if callable(api_key) else api_key
-    except Exception:
-        return ""
-    return token.strip() if isinstance(token, str) else ""
+# Kept for importers from before agent.api_credential existed; new code imports from there.
+from agent.api_credential import materialize_credential as materialize_probe_api_key  # noqa: E402,F401
 
 
 def _mint(command: str, label: str) -> tuple[str, Optional[float]]:

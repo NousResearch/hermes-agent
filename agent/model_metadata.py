@@ -426,9 +426,8 @@ def _normalize_base_url(base_url: str) -> str:
 
 
 def _auth_headers(api_key: object = "") -> Dict[str, str]:
-    from agent.command_token_source import materialize_probe_api_key
-    token = materialize_probe_api_key(api_key)
-    return {"Authorization": f"Bearer {token}"} if token else {}
+    from agent.api_credential import bearer_headers
+    return bearer_headers(api_key)
 
 
 def _is_custom_endpoint(base_url: str) -> bool:

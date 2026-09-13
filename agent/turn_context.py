@@ -888,7 +888,18 @@ def build_turn_context(
     # client-managed history, which then trips the "stored system prompt is null; rebuilding from scratch"
     # warning and a needless first-turn prefix cache miss. (Issue #45499.)
     set_session_context(agent.session_id)
-    set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+    # Detect same-session background-review injection turn: if the foreground agent receives a review
+    # prompt (starts with "Review the conversation above"), treat it as a background-review write for
+    # skill-guard purposes even though the agent itself was not forked. This path happens when a review
+    # is injected inline instead of spawned in a separate fork (issue #107850).
+    _origin = getattr(agent, "_memory_write_origin", "assistant_tool")
+    if (
+        _origin == "assistant_tool"
+        and isinstance(user_message, str)
+        and user_message.strip().startswith("Review the conversation above")
+    ):
+        _origin = "background_review"
+    set_current_write_origin(_origin)
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()

@@ -33,13 +33,17 @@ def _print_decision_message(decision: dict) -> bool:
 # these is the user answering, so none may un-pause a goal waiting on user input.
 _SELF_INJECTED_TURN_PREFIXES = (
     "[Continuing toward your standing goal]", "[Continuing toward this kanban task",
-    "[Heartbeat —", "[/loop wakeup", "[IMPORTANT: Background process",
+    "[Heartbeat —", "[/loop wakeup", "[IMPORTANT:",
     "[ASYNC DELEGATION BATCH COMPLETE", "[System note:", "[System:",
 )
 
 
 def _is_self_injected_turn(text: Any) -> bool:
-    return isinstance(text, str) and text.lstrip().startswith(_SELF_INJECTED_TURN_PREFIXES)
+    from tools.process_registry_notifications import SubagentNotification
+
+    return isinstance(text, SubagentNotification) or (
+        isinstance(text, str) and text.lstrip().startswith(_SELF_INJECTED_TURN_PREFIXES)
+    )
 
 
 class CLILoopsMixin:
@@ -531,6 +535,16 @@ class CLILoopsMixin:
                 and mgr.state is not None):
             _cprint(f"  {_DIM}↻ Loop: {mgr.state.remaining_label()}.{_RST}")
 
+    def _revive_blocked_goal_for_user_turn(self, message) -> None:
+        """Recover on admitted input, not on a successful model response."""
+        from cli import _cprint
+
+        if not isinstance(message, str) or not message.strip() or _is_self_injected_turn(message):
+            return
+        mgr = self._get_goal_manager()
+        if mgr is not None and mgr.resume_for_user_input():
+            _cprint(f"  ▶ Goal resumed: {mgr.state.goal}")
+
     def _maybe_continue_goal_after_turn(self) -> None:
         """Post-turn hook: judge the goal and maybe re-queue a continuation. A real user
         message already queued preempts judging (re-judged after their turn). Ctrl+C
@@ -541,13 +555,6 @@ class CLILoopsMixin:
         mgr = self._get_goal_manager()
         if mgr is None:
             return
-        # A BLOCKED pause means the judge saw "needs user input"; the user just supplied it. Only a
-        # message the user typed counts — self-injected prompts (notifications, wakeups) do not.
-        last_input = getattr(self, "_last_turn_input_text", "")
-        if (last_input and not _is_self_injected_turn(last_input)
-                and not getattr(self, "_last_turn_interrupted", False)
-                and mgr.resume_for_user_input()):
-            _cprint(f"  ▶ Goal resumed: {mgr.state.goal}")
         if not mgr.is_active():
             return
 

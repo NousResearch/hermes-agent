@@ -259,13 +259,30 @@ class GatewayGoalsMixin:
         await self._warm_goals_session_db(label)
         return factory(sid)
 
+    async def _revive_blocked_goal_for_user_turn(self, session_entry, source, event) -> None:
+        """Resume only after turn admission, independently of model success or delivery."""
+        if (getattr(event, "internal", False)
+                or not getattr(event, "allow_gateway_control", True)
+                or getattr(event, "_heartbeat_session_id", None)
+                or self._is_goal_continuation_event(event)):
+            return
+        from hermes_cli.goals import GoalManager
+
+        with self._profile_scope_for_source(source):
+            await self._warm_goals_session_db("goal recovery")
+            mgr = GoalManager(session_entry.session_id, default_max_turns=self._goal_max_turns_from_config())
+            if not mgr.resume_for_user_input():
+                return
+            try:
+                await self._send_goal_status_notice(source, f"▶ Goal resumed: {mgr.state.goal}")
+            except Exception as exc:
+                logger.debug("goal recovery notice failed: %s", exc)
+
     async def _post_turn_goal_continuation(
-        self, *, session_entry: Any, source: Any, final_response: str, user_turn: bool = True,
+        self, *, session_entry: Any, source: Any, final_response: str,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
-        continuation through the adapter FIFO so a simultaneous real user message takes priority.
-        A real user turn also revives a goal the judge paused as BLOCKED (needs user input): the
-        message IS the input. Internal turns (notifications, wakeups) leave the pause alone."""
+        continuation through the adapter FIFO so a simultaneous real user message takes priority."""
         def _load():
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
@@ -274,9 +291,6 @@ class GatewayGoalsMixin:
         mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
         if mgr is None:
             return
-        if user_turn and mgr.resume_for_user_input() and source is not None:
-            await self._defer_goal_status_notice_after_delivery(
-                source, f"▶ Goal resumed: {mgr.state.goal}")
         if not mgr.is_active():
             return
 
@@ -318,6 +332,10 @@ class GatewayGoalsMixin:
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
+        # Error notices and interrupted partial replies are not goal progress.
+        # Events from legacy/direct callers without an outcome retain text fallback.
+        if getattr(event, "_agent_turn_succeeded", None) is False:
+            final_text = ""
         try:
             session_entry = await self.async_session_store.get_or_create_session(
                 source, touch_activity=not is_internal,
@@ -325,17 +343,14 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
-        # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
+        # Unsuccessful or empty responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
-        hooks = [("loop completion", self._post_turn_loop_completion, {})]
+        hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip():
-            # Goal continuations are synthetic prompts too: they are not the user answering.
-            user_turn = not is_internal and not self._is_goal_continuation_event(event)
-            hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation,
-                             {"user_turn": user_turn}))
-        for label, hook, extra in hooks:
+            hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
+        for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response=final_text, **extra)
+                await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
 

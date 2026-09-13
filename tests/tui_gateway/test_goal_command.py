@@ -472,11 +472,18 @@ def test_user_message_after_blocked_pause_continues_the_goal(server, turn_env, m
     assert continuation == "", "a paused goal has no continuation prompt yet"
 
     seen_prompts = []
+    start_states = []
+    start_snapshots = []
     results = iter([{"final_response": "Copying the login and starting session A."},
                     {"final_response": "Session A is running."}])
 
     def run_conversation(message, **_kwargs):
         seen_prompts.append(message)
+        state = GoalManager(session_key).state
+        assert state is not None
+        start_states.append((state.status, state.turns_used))
+        start_snapshots.append([payload["control"] for event, _, payload in turn_env
+                                if event == "session.control.update"])
         return next(results)
 
     verdicts = iter([("continue", "session B still pending", False, None, False),
@@ -488,6 +495,9 @@ def test_user_message_after_blocked_pause_continues_the_goal(server, turn_env, m
 
     server._run_prompt_submit("rid", "sid", session, "yes go ahead.", user_turn=True)
 
+    assert start_states == [("active", 1), ("active", 2)]
+    assert start_snapshots[0], "publish the resumed goal before the model starts working"
+    assert start_snapshots[0][-1]["goal"]["status"] == "active"
     assert seen_prompts[0] == "yes go ahead."
     assert len(seen_prompts) == 2 and seen_prompts[1].startswith("[Continuing toward your standing goal]")
     notices = [p["text"] for event, _sid, p in turn_env
@@ -495,6 +505,51 @@ def test_user_message_after_blocked_pause_continues_the_goal(server, turn_env, m
     assert any(text.startswith("▶ Goal resumed") for text in notices), notices
     assert any("Continuing toward goal" in text for text in notices), notices
     assert GoalManager(session_key).state.status == "done"
+
+
+@pytest.mark.parametrize("outcome", ["error", "exception", "interrupted", "pause"])
+def test_recovery_is_not_conditional_on_a_successful_reply(
+    server, turn_env, monkeypatch, tmp_path, outcome,
+):
+    from hermes_cli.goals import GoalManager
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    session_key = "profile-recovery"
+    secondary = tmp_path / "secondary"
+    secondary.mkdir()
+    start_states = []
+
+    def run_conversation(message, **_kwargs):
+        state = GoalManager(session_key).state
+        start_states.append((state.status, state.turns_used))
+        if outcome == "exception":
+            raise RuntimeError("fixture provider failure")
+        if outcome == "pause":
+            GoalManager(session_key).pause("user-paused")
+            return {"final_response": "Stopped as requested."}
+        if outcome == "interrupted":
+            return {"final_response": "", "interrupted": True}
+        return {"final_response": "", "failed": True, "error": "fixture provider failure"}
+
+    agent = types.SimpleNamespace(
+        session_id=session_key, run_conversation=run_conversation, clear_interrupt=lambda: None)
+    session = _turn_session(agent, session_key)
+    session["profile_home"] = str(secondary)
+    with server._session_profile_runtime_scope(session):
+        _blocked_goal(session_key)
+    monkeypatch.setattr("hermes_cli.goals.judge_goal",
+                        lambda *a, **k: pytest.fail("failed or user-paused turns must not be judged"))
+
+    server._run_prompt_submit("rid", "sid", session, "I fixed it, continue.", user_turn=True)
+
+    assert start_states == [("active", 1)]
+    assert GoalManager(session_key).state is None, "must not write the launch profile"
+    with server._session_profile_runtime_scope(session):
+        state = GoalManager(session_key).state
+        assert state.turns_used == 1, "failed turns must not spend goal budget"
+        assert state.status == ("paused" if outcome == "pause" else "active")
+        assert state.paused_reason == ("user-paused" if outcome == "pause" else None)
 
 
 def test_synthetic_turn_does_not_reactivate_a_blocked_goal(server, turn_env, monkeypatch):
@@ -585,6 +640,38 @@ def test_prompt_submit_rpc_marks_turn_as_user_turn(server, session, monkeypatch)
     r = _call(server, "prompt.submit", session_id=sid, text="widget intent", display_kind="hidden")
     assert r["result"]["status"] == "streaming", r
     assert seen["kwargs"]["user_turn"] is False, "hidden widget sends are not the user answering"
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+@pytest.mark.parametrize("origin", ["hidden", "relay"])
+def test_queued_non_user_does_not_become_a_user_answer(server, session, monkeypatch, isolated, origin):
+    from tools.bot_relay import DeliveryAuthor
+
+    sid, _, record = session
+    record["running"] = True
+    record["agent"] = types.SimpleNamespace()
+    seen = []
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_a: None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_a: isolated)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: seen.append(kw) or True)
+    monkeypatch.setattr(server, "_submit_prompt_to_compute_host",
+                        lambda *a, **kw: seen.append(kw) or {"result": {"status": "streaming"}})
+    provenance = ({"display_kind": "hidden"} if origin == "hidden" else
+                  {"_turn_author": DeliveryAuthor({"id": "bot:fixture", "name": "Fixture"})})
+    response = _call(server, "prompt.submit", session_id=sid, text="Non-user update", **provenance)
+    assert response["result"]["status"] == "queued"
+    # A subsequent real answer must keep a separate envelope and its own provenance.
+    _call(server, "prompt.submit", session_id=sid, text="I fixed it, continue.")
+    record["running"] = False
+    assert server._drain_queued_prompt("first", sid, record)
+    record["running"] = False
+    assert server._drain_queued_prompt("second", sid, record)
+    assert [kw["user_turn"] for kw in seen] == [False, True]
+    if origin == "hidden":
+        assert seen[0]["display_kind"] == "hidden"
+    elif not isolated:
+        assert seen[0]["turn_author"]["id"] == "bot:fixture"
 
 
 @pytest.mark.parametrize("method", ["command.dispatch", "slash.exec"])

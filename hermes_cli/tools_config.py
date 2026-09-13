@@ -591,7 +591,14 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets.add("context_engine")
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
-    explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
+    # ``all``/``*`` are composite expansion sentinels, never toolset names to
+    # forward after the composite has already been expanded above.
+    explicit_passthrough = {
+        ts for ts in toolset_names
+        if ts not in explicit_known_keys
+        and ts not in platform_default_keys
+        and ts not in {"all", "*"}
+    }
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even

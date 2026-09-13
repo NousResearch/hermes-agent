@@ -276,18 +276,22 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
+        session.setdefault("voice_live_context", "")
         _enqueue_prompt(
             session, text, transport, image_paths=image_paths, turn_author=turn_author,
             client_surface=client_surface, voice_live_context=voice_live_context,
         )
-        # A busy submit that omits surface metadata is still part of the active
-        # turn. Do not erase the surface that the live turn is already using;
-        # the normal idle-submit path records an explicit empty surface below.
+        # A busy surface is a queued-turn hint. If a subsequent plain submit
+        # replaces that hint, clear it; an already-active surface is preserved.
         if client_surface:
             session["client_surface"] = client_surface
             session["voice_live_context"] = voice_live_context if client_surface == "voice-live" else ""
+            session["_surface_from_busy_queue"] = True
         elif voice_live_context:
             session["voice_live_context"] = voice_live_context
+        elif session.pop("_surface_from_busy_queue", False):
+            session["client_surface"] = ""
+            session["voice_live_context"] = ""
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
@@ -312,6 +316,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         session["running"] = True
         session["client_surface"] = queued.get("client_surface", "")
         session["voice_live_context"] = queued.get("voice_live_context", "") if session["client_surface"] == "voice-live" else ""
+        session["_surface_from_busy_queue"] = False
         queued_transport = queued.get("transport")
         # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
         # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the

@@ -611,6 +611,7 @@ def _admit_prompt_submit(
         session["voice_live_context"] = (
             str(params.get("voice_context") or "") if client_surface == "voice-live" else ""
         )
+        session["_surface_from_busy_queue"] = False
         if turn_author is not None:
             session["_accepted_turn_author"] = turn_author
         return None, survivor_fields
@@ -660,7 +661,11 @@ def _(rid, params: dict) -> dict:
     err, survivor_fields = _admit_prompt_submit(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids,
         hosted_task, internal_hosted_submit, t, reattach=True,
-        client_surface="hud" if params.get("surface") == "hud" else "")
+        client_surface=(
+            params.get("surface")
+            if params.get("surface") in {"hud", "voice-live"}
+            else ""
+        ))
     if err is not None:
         return err
     turn_author = session.pop("_accepted_turn_author", None)

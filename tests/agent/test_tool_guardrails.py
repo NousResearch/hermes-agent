@@ -282,6 +282,70 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+def test_subagent_cap_counts_only_calls_that_actually_spawned():
+    # A rejected batch (oversized, malformed, no goal, ...) spawns NOTHING, so it
+    # must not consume the per-turn subagent budget. Pinning the regression: a
+    # poisoned counter blocked every later valid single-task call for the turn.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_subagents=5),
+        )
+    )
+    # A batch WITHIN the turn budget is allowed by the guardrail, but the tool
+    # can still reject it for its own reasons (validation, pool limits) — the
+    # failed result must roll the estimate back.
+    mid = {"tasks": [{"goal": f"g{i} " + "x" * 40} for i in range(3)]}
+    assert controller.before_call("delegate_task", mid).action == "allow"
+    rejected = json.dumps({"error": "Task 1 goal is too short."})
+    assert controller.after_call("delegate_task", mid, rejected, failed=True).action == "allow"
+    assert controller._turn_subagent_count == 0  # estimate rolled back
+
+    # The turn's budget is intact: a valid single-task call still spawns.
+    ok = {"goal": "do the thing", "context": "ctx"}
+    assert controller.before_call("delegate_task", ok).action == "allow"
+    spawned = json.dumps({"status": "completed", "subagent_id": "sa-1"})
+    assert controller.after_call("delegate_task", ok, spawned, failed=False).action == "allow"
+    assert controller._turn_subagent_count == 1
+
+
+def test_subagent_cap_still_blocks_runaway_valid_spawning():
+    # The rollback must not weaken the cap: enough SUCCESSFUL spawns still block.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_subagents=2),
+        )
+    )
+    ok = json.dumps({"status": "completed", "subagent_id": "sa-1"})
+    for i in range(2):
+        args = {"goal": f"task {i} " + "x" * 40}
+        assert controller.before_call("delegate_task", args).action == "allow"
+        assert controller.after_call("delegate_task", args, ok, failed=False).action == "allow"
+    blocked = controller.before_call("delegate_task", {"goal": "one more " + "x" * 40})
+    assert blocked.action == "block"
+    assert blocked.code == "loop_subagent_cap"
+    assert "2" in blocked.message  # truthful count: 2 actually spawned
+
+
+def test_subagent_cap_pending_estimate_blocks_oversized_batch_upfront():
+    # A single batch larger than the whole turn budget is refused BEFORE any
+    # counter moves — with a truthful message naming the batch size.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=False,
+            loop_caps=LoopCapConfig(max_subagents=5),
+        )
+    )
+    big = {"tasks": [{"goal": f"g{i} " + "x" * 40} for i in range(6)]}
+    decision = controller.before_call("delegate_task", big)
+    assert decision.action == "block"
+    assert decision.code == "loop_subagent_cap"
+    assert controller._turn_subagent_count == 0  # blocked call consumed nothing
+    # And the turn is not poisoned: a valid call still goes through.
+    assert controller.before_call("delegate_task", {"goal": "ok " + "x" * 40}).action == "allow"
+
+
 
 
 

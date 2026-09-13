@@ -302,6 +302,10 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Loop-cap estimates are provisionally counted in before_call and settled
+        # in after_call: a delegate_task batch the tool REJECTS spawns nothing, so
+        # its estimate must roll back instead of poisoning the turn's budget.
+        self._pending_loop_cap_estimates: dict[ToolCallSignature, int] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -346,6 +350,12 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
         warnings = self.config.warnings_enabled
+
+        # Settle the loop-cap estimate from before_call: a failed call spawned
+        # nothing, so its optimistic spawn estimate must return to the budget.
+        # (web_search has no batch semantics — its estimate of 1 is kept as-is
+        # whenever the search itself ran, success or failure alike.)
+        self._settle_loop_cap_estimate(tool_name, signature, failed=failed)
 
         if failed:
             # An identical failing call is only a REPLAY if nothing landed in between;
@@ -465,7 +475,13 @@ class ToolCallGuardrailController:
         self, tool_name: str, args: Mapping[str, Any], signature: ToolCallSignature,
     ) -> ToolGuardrailDecision | None:
         """Block once a per-turn cap is reached (BEFORE the call, so the (cap+1)-th is refused), else advance
-        the counter and return None. delegate_task control actions spawn nothing and keep working after the cap."""
+        the counter and return None. delegate_task control actions spawn nothing and keep working after the cap.
+
+        Spawn counting is estimate-then-settle: before_call counts the batch optimistically so the
+        (cap+1)-th valid batch is still refused in time, and after_call rolls the estimate back when
+        the tool rejected the batch or the call failed (a rejected batch spawns nothing). Estimates
+        unsettled by after_call (call crashed, legacy callers) stay counted — fail-closed.
+        """
         spec = _LOOP_CAPS.get(tool_name)
         if spec is None:
             return None
@@ -474,8 +490,42 @@ class ToolCallGuardrailController:
         increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
         if increment and cap and count >= cap:
             return self._decide("block", code, tool_name, count, signature, cap=cap)
+        if increment and cap and tool_name == "delegate_task" and count + increment > cap:
+            # A batch larger than the whole remaining turn budget can never run;
+            # refuse it upfront (with a truthful count) instead of letting the tool
+            # reject it and still burn the estimate.
+            return self._decide("block", code, tool_name, count, signature, cap=cap)
         setattr(self, count_attr, count + increment)
+        if increment:
+            self._pending_loop_cap_estimates[signature] = (
+                self._pending_loop_cap_estimates.get(signature, 0) + increment
+            )
         return None
+
+    def _settle_loop_cap_estimate(self, tool_name: str, signature: ToolCallSignature, *, failed: bool) -> None:
+        """Settle the before_call estimate once the call's outcome is known.
+
+        Only delegate_task has batch semantics: a FAILED delegate_task spawned nothing
+        (validation error, crash, timeout before spawn), so its whole estimate rolls
+        back. A successful call spawned what it asked for — the estimate stands.
+        web_search counts searches that RAN (the cap is against runaway searching,
+        not failed searching), so its estimate of 1 is kept even on failure.
+        Estimates with no matching pending entry (blocked pre-call, legacy callers
+        that skip after_call) are left untouched — fail-closed.
+        """
+        spec = _LOOP_CAPS.get(tool_name)
+        if spec is None:
+            return
+        pending = self._pending_loop_cap_estimates.pop(signature, None)
+        if pending is None:
+            return
+        if tool_name == "delegate_task" and failed:
+            _, count_attr, _ = spec
+            count = getattr(self, count_attr)
+            setattr(self, count_attr, max(0, count - pending))
+            return
+        # Success (or web_search failure): estimate confirmed as spawned/run.
+        return
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

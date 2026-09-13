@@ -12,6 +12,15 @@ dispatcher.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_claims as _owner_kanban_claims
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+import hermes_cli.kanban_db_dispatch as _owner_kanban_db_dispatch
+import hermes_cli.kanban_worker_recovery as _owner_kanban_worker_recovery
+
 import sqlite3
 import time
 from pathlib import Path
@@ -19,6 +28,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 WORKER_HOOKS = (
@@ -36,7 +47,7 @@ def kanban_home(tmp_path, monkeypatch):
     # Crash detection acts immediately in these tests (no launch grace).
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -64,7 +75,7 @@ def test_dispatch_spawn_fires_worker_spawned(
     def _read_pid(**kw):
         # Read through a FRESH connection: proves the PID write was
         # committed before the hook fired (the RFC timing contract).
-        c2 = sqlite3.connect(kb.kanban_db_path())
+        c2 = sqlite3.connect(_owner_kanban_db.kanban_db_path())
         try:
             row = c2.execute(
                 "SELECT worker_pid FROM tasks WHERE id = ?", (kw["task_id"],)
@@ -76,10 +87,10 @@ def test_dispatch_spawn_fires_worker_spawned(
     mgr = get_plugin_manager()
     mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(_read_pid)
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
-        result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
         assert any(row[0] == tid for row in result.spawned)
     finally:
         conn.close()
@@ -98,13 +109,13 @@ def test_dispatch_spawn_fires_worker_spawned(
 
 def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypatch):
     """A dead-PID reclaim fires the exit observer with the exit facts."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
-        kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, 98765)
-        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-        assert kb.detect_crashed_workers(conn) == [tid]
+        _owner_kanban_claims.claim_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_owner_kanban_db_dispatch, "_pid_alive", lambda pid: False)
+        assert _owner_kanban_worker_recovery.detect_crashed_workers(conn) == [tid]
     finally:
         conn.close()
 
@@ -124,16 +135,16 @@ def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypa
 
 def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     """A TTL-expired reclaim fires the stale-claim observer post-commit."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
-        kb.claim_task(conn, tid)
+        _owner_kanban_claims.claim_task(conn, tid)
         conn.execute(
             "UPDATE tasks SET claim_expires = ? WHERE id = ?",
             (int(time.time()) - 100, tid),
         )
         conn.commit()
-        assert kb.release_stale_claims(conn) == 1
+        assert _owner_kanban_claims.release_stale_claims(conn) == 1
     finally:
         conn.close()
 
@@ -162,23 +173,23 @@ def test_raising_callbacks_never_break_worker_lifecycle(
     for hook in WORKER_HOOKS:
         mgr._hooks.setdefault(hook, []).append(_boom)
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="alice")
-            result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
+            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
             assert any(row[0] == tid for row in result.spawned)
 
-            monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-            assert kb.detect_crashed_workers(conn) == [tid]
+            monkeypatch.setattr(_owner_kanban_db_dispatch, "_pid_alive", lambda pid: False)
+            assert _owner_kanban_worker_recovery.detect_crashed_workers(conn) == [tid]
 
-            kb.claim_task(conn, tid)
+            _owner_kanban_claims.claim_task(conn, tid)
             conn.execute(
                 "UPDATE tasks SET claim_expires = ?, worker_pid = NULL "
                 "WHERE id = ?",
                 (int(time.time()) - 100, tid),
             )
             conn.commit()
-            assert kb.release_stale_claims(conn) == 1
+            assert _owner_kanban_claims.release_stale_claims(conn) == 1
         finally:
             conn.close()
     finally:
@@ -199,10 +210,10 @@ def test_no_subscriber_short_circuits_worker_hooks(
         return real_invoke(hook_name, **kw)
 
     monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.create_task(conn, title="t", assignee="alice")
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 222)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 222)
     finally:
         conn.close()
     assert "on_kanban_worker_spawned" not in invoked

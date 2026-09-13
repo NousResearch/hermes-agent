@@ -16,6 +16,10 @@ with it":
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import json
 import sys
 import tarfile
@@ -30,6 +34,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_transfer as kt
 from hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
 
@@ -51,7 +56,7 @@ def kanban_root(tmp_path, monkeypatch):
         for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_WORKSPACES_ROOT",
                     "HERMES_KANBAN_ATTACHMENTS_ROOT", "HERMES_KANBAN_BOARD"):
             monkeypatch.delenv(var, raising=False)
-        kb._INITIALIZED_PATHS.clear()
+        _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
         return root
 
     _use("source")
@@ -60,9 +65,9 @@ def kanban_root(tmp_path, monkeypatch):
 
 def _seed_board(slug: str = "alpha") -> dict[str, str]:
     """Create a board with one task of each interesting shape."""
-    kb.create_board(slug, name="Alpha Board")
+    _owner_kanban_boards.create_board(slug, name="Alpha Board")
     ids = {}
-    with kb.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         ids["scratch"] = kb.create_task(
             conn, title="scratch task", body="body", assignee="coder"
         )
@@ -80,8 +85,8 @@ def _seed_board(slug: str = "alpha") -> dict[str, str]:
 
 def _claim(task_id: str, slug: str = "alpha") -> None:
     """Put a task into the state a live worker would leave behind."""
-    with kb.connect_closing(board=slug) as conn:
-        with kb.write_txn(conn):
+    with kbc.connect_closing(board=slug) as conn:
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET status='running', claim_lock='lock-1', "
                 "claim_expires=?, worker_pid=4242, last_heartbeat_at=?, "
@@ -91,8 +96,8 @@ def _claim(task_id: str, slug: str = "alpha") -> None:
 
 
 def _subscribe(task_id: str, slug: str = "alpha") -> None:
-    with kb.connect_closing(board=slug) as conn:
-        with kb.write_txn(conn):
+    with kbc.connect_closing(board=slug) as conn:
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute(
                 "INSERT INTO kanban_notify_subs "
                 "(task_id, platform, chat_id, thread_id, created_at) "
@@ -102,7 +107,7 @@ def _subscribe(task_id: str, slug: str = "alpha") -> None:
 
 
 def _tasks_by_title(slug: str) -> dict[str, dict]:
-    with kb.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         return {
             row["title"]: dict(row)
             for row in conn.execute("SELECT * FROM tasks").fetchall()
@@ -137,7 +142,7 @@ def test_attachment_blob_travels_and_is_readable(kanban_root, tmp_path):
     target_root = kanban_root("target")
     result = kt.import_board(archive)
 
-    with kb.connect_closing(board=result["board"]) as conn:
+    with kbc.connect_closing(board=result["board"]) as conn:
         row = conn.execute(
             "SELECT filename, stored_path FROM task_attachments"
         ).fetchone()
@@ -166,7 +171,7 @@ def test_export_without_attachments_drops_the_rows(kanban_root, tmp_path):
 
 def test_workspaces_are_never_exported(kanban_root, tmp_path):
     _seed_board()
-    workspace = kb.workspaces_root("alpha") / "junk"
+    workspace = _owner_kanban_boards.workspaces_root("alpha") / "junk"
     workspace.mkdir(parents=True)
     (workspace / "huge.bin").write_bytes(b"x" * 1024)
 
@@ -211,7 +216,7 @@ def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
     # at all, because the archive is the thing that gets shared.
     kanban_root("target")
     result = kt.import_board(archive)
-    with kb.connect_closing(board=result["board"]) as conn:
+    with kbc.connect_closing(board=result["board"]) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM kanban_notify_subs"
         ).fetchone()[0] == 0
@@ -240,13 +245,13 @@ def test_unresolvable_workspaces_are_parked_not_dispatched(kanban_root, tmp_path
 
 
 def test_board_metadata_loses_exporter_local_paths(kanban_root, tmp_path):
-    kb.create_board("alpha", name="Alpha Board",
+    _owner_kanban_boards.create_board("alpha", name="Alpha Board",
                     default_workdir="/exporter/repo", project_id="proj-1")
     archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
 
     kanban_root("target")
     result = kt.import_board(archive)
-    meta = kb.read_board_metadata(result["board"])
+    meta = _owner_kanban_boards.read_board_metadata(result["board"])
 
     assert meta["name"] == "Alpha Board"
     assert meta["default_workdir"] is None
@@ -274,12 +279,12 @@ def test_slug_collision_creates_a_new_board(kanban_root, tmp_path):
 
 
 def test_import_never_targets_the_default_board(kanban_root, tmp_path):
-    with kb.connect_closing(board="default") as conn:
+    with kbc.connect_closing(board="default") as conn:
         kb.create_task(conn, title="exported default task")
     archive = kt.export_board("default", str(tmp_path / "default"))["archive"]
 
     kanban_root("target")
-    with kb.connect_closing(board="default") as conn:
+    with kbc.connect_closing(board="default") as conn:
         kb.create_task(conn, title="local default task")
 
     result = kt.import_board(archive)
@@ -298,7 +303,7 @@ def test_explicit_slug_is_honoured(kanban_root, tmp_path):
 
     assert result["board"] == "renamed-board"
     assert result["renamed"] is False
-    assert kb.get_current_board() == "renamed-board"
+    assert _owner_kanban_boards.get_current_board() == "renamed-board"
 
 
 # ---------------------------------------------------------------------------
@@ -362,3 +367,52 @@ def test_import_rejects_a_future_format_version(kanban_root, tmp_path):
     kanban_root("target")
     with pytest.raises(ValueError, match="newer than this Hermes"):
         kt.import_board(str(bumped))
+
+
+@pytest.mark.parametrize("untrusted_archive", [False, True])
+def test_transfer_discards_execution_scope_authority(kanban_root, tmp_path, untrusted_archive):
+    import sqlite3
+    from hermes_cli import kanban_claims
+
+    ids = _seed_board()
+    tid = ids["scratch"]
+    with kbc.connect_closing(board="alpha") as conn:
+        assert kanban_claims.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE tasks SET worker_scope='source-worker.scope', worker_pid_started_at=456, "
+            "worker_registered_at=123, reclaim_reserved_at=99 WHERE id=?", (tid,))
+        conn.execute(
+            "UPDATE task_runs SET worker_scope='source-worker.scope', stop_pending=1 WHERE id=?", (run_id,))
+        conn.commit()
+    archive = kt.export_board("alpha", str(tmp_path / "scoped"))["archive"]
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    safe_extract_targz(Path(archive), staged)
+    with sqlite3.connect(str(staged / "alpha/kanban.db")) as conn:
+        if untrusted_archive:
+            # An archive may come from an older exporter or be hand-edited;
+            # importer validation must independently discard its authority.
+            conn.execute(
+                "UPDATE tasks SET worker_scope='source-worker.scope', worker_pid_started_at=456, "
+                "worker_registered_at=123, reclaim_reserved_at=99 WHERE id=?", (tid,))
+            conn.execute(
+                "UPDATE task_runs SET worker_scope='source-worker.scope', stop_pending=1 WHERE id=?", (run_id,))
+            conn.commit()
+        else:
+            assert conn.execute("SELECT worker_scope FROM tasks WHERE id=?", (tid,)).fetchone()[0] is None
+    if untrusted_archive:
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(staged / "alpha", arcname="alpha")
+    kanban_root("target")
+    imported = kt.import_board(archive)
+    with kbc.connect_closing(board=imported["board"]) as conn:
+        task = conn.execute(
+            "SELECT worker_scope, worker_pid_started_at, worker_registered_at, reclaim_reserved_at "
+            "FROM tasks WHERE id=?", (tid,)).fetchone()
+        assert tuple(task) == (None, None, None, None)
+        run = conn.execute("SELECT worker_scope, stop_pending FROM task_runs WHERE id=?", (run_id,)).fetchone()
+        assert tuple(run) == (None, None)
+        assert kb.get_task(conn, tid).body == "body"
+        assert kanban_claims.claim_task(conn, tid)
+        assert kb.get_task(conn, tid).current_run_id != run_id

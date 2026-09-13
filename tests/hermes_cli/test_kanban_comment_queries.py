@@ -7,6 +7,8 @@ re-reading the whole thread.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import sys
 from pathlib import Path
 
@@ -17,6 +19,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -32,12 +35,12 @@ def fresh_home(tmp_path, monkeypatch):
         hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
     except Exception:
         pass
-    kb._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
     return home
 
 
 def test_list_comments_after_cursor(fresh_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="chat")
         c1 = kb.add_comment(conn, tid, author="alice", body="first")

@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_claims as _owner_kanban_claims
+import hermes_cli.kanban_stats as _owner_kanban_stats
+import hermes_cli.kanban_transitions as _owner_kanban_transitions
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import json
 from pathlib import Path
 
@@ -9,6 +17,7 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -19,11 +28,13 @@ def review_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_PROFILE", "builder")
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
-    with kb.connect() as conn:
+    # kanban_request_review now rejects reviewers that are not installed profiles (#106163).
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect.init_db()
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="Review tool contract", assignee="builder")
-        task = kb.claim_task(conn, task_id, claimer="builder:1")
+        task = _owner_kanban_claims.claim_task(conn, task_id, claimer="builder:1")
         assert task is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
@@ -46,16 +57,16 @@ def test_review_tools_redact_handoff_and_route_changes(
     )
     assert requested["ok"] is True
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, review_worker)
         assert task is not None
         assert task.status == "review"
         assert task.assignee == "reviewer"
-        handoff = kb.latest_run(conn, review_worker)
+        handoff = _owner_kanban_stats.latest_run(conn, review_worker)
         assert handoff is not None
         assert secret not in (handoff.summary or "")
         assert secret not in json.dumps(handoff.metadata)
-        review = kb.claim_review_task(conn, review_worker, claimer="reviewer:1")
+        review = _owner_kanban_claims.claim_review_task(conn, review_worker, claimer="reviewer:1")
         assert review is not None
 
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
@@ -69,7 +80,7 @@ def test_review_tools_redact_handoff_and_route_changes(
     assert changed["ok"] is True
     assert changed["implementer"] == "builder"
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, review_worker)
         assert task is not None
         assert task.status == "ready"
@@ -105,12 +116,17 @@ def test_review_tools_are_gated_and_visible_to_kanban_workers(
     assert "kanban_request_review" in names
     assert "kanban_request_changes" in names
 
-    from acp_adapter.tools import _POLISHED_TOOLS
     from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
-    assert "kanban_request_changes" in _POLISHED_TOOLS
     assert "kanban_request_changes" in EXPOSED_TOOLS
     assert "kanban_request_changes" in resolve_toolset("kanban")
+
+
+def test_review_changes_are_exposed_in_acp() -> None:
+    pytest.importorskip("acp", reason="ACP adapter requires the optional acp extra")
+    from acp_adapter.tools import _POLISHED_TOOLS
+
+    assert "kanban_request_changes" in _POLISHED_TOOLS
 
 
 def test_review_cli_round_trip_preserves_handoff(
@@ -121,12 +137,12 @@ def test_review_cli_round_trip_preserves_handoff(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect.init_db()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="CLI review", assignee="builder")
-        implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+        implementation = _owner_kanban_claims.claim_task(conn, task_id, claimer="builder:1")
         assert implementation is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(implementation.current_run_id))
@@ -137,14 +153,14 @@ def test_review_cli_round_trip_preserves_handoff(
     )
     assert "Requested review" in output
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.assignee == "reviewer"
-        handoff = kb.latest_run(conn, task_id)
+        handoff = _owner_kanban_stats.latest_run(conn, task_id)
         assert handoff is not None
         assert handoff.metadata == {"tests_run": 3}
-        review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+        review = _owner_kanban_claims.claim_review_task(conn, task_id, claimer="reviewer:1")
         assert review is not None
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(review.current_run_id))
 
@@ -152,7 +168,7 @@ def test_review_cli_round_trip_preserves_handoff(
         f"request-changes {task_id} 'cover the malformed payload case'"
     )
     assert "Requested changes" in output
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.status == "ready"
@@ -168,18 +184,18 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
     monkeypatch.setenv("HERMES_HOME", str(home))
     secret = "ghp_" + "R" * 40
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         direct_id = kb.create_task(conn, title="direct redaction", assignee="builder")
-        direct_run = kb.claim_task(conn, direct_id)
+        direct_run = _owner_kanban_claims.claim_task(conn, direct_id)
         assert direct_run is not None
-        assert kb.request_review(
+        assert _owner_kanban_transitions.request_review(
             conn,
             direct_id,
             summary=f"direct {secret}",
             metadata={"nested": [secret]},
             expected_run_id=direct_run.current_run_id,
         )
-        run = kb.latest_run(conn, direct_id)
+        run = _owner_kanban_stats.latest_run(conn, direct_id)
         event = [
             item for item in kb.list_events(conn, direct_id)
             if item.kind == "review_requested"
@@ -189,15 +205,15 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
         assert secret not in json.dumps(run.metadata)
         assert secret not in json.dumps(event.payload)
 
-        review = kb.claim_review_task(conn, direct_id)
+        review = _owner_kanban_claims.claim_review_task(conn, direct_id)
         assert review is not None
-        assert kb.request_changes(
+        assert _owner_kanban_transitions.request_changes(
             conn,
             direct_id,
             reason=f"change {secret}",
             expected_run_id=review.current_run_id,
         ) == (True, "builder")
-        run = kb.latest_run(conn, direct_id)
+        run = _owner_kanban_stats.latest_run(conn, direct_id)
         event = [
             item for item in kb.list_events(conn, direct_id)
             if item.kind == "changes_requested"
@@ -213,8 +229,8 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
     )
     assert "Requested review" in cli_output
     assert secret not in cli_output
-    with kb.connect() as conn:
-        run = kb.latest_run(conn, cli_id)
+    with kbc.connect() as conn:
+        run = _owner_kanban_stats.latest_run(conn, cli_id)
         event = [
             item for item in kb.list_events(conn, cli_id)
             if item.kind == "review_requested"
@@ -256,16 +272,16 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     secret = "ghp_" + "Q" * 40
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         invalid_id = kb.create_task(conn, title="not review", assignee="builder")
         review_id = kb.create_task(conn, title="review", assignee="builder")
-        assert kb.request_review(conn, review_id, summary="ready")
+        assert _owner_kanban_transitions.request_review(conn, review_id, summary="ready")
 
     invalid_output = kc.run_slash(
         f'reopen-review {invalid_id} --reason "invalid {secret}"'
     )
     assert "cannot reopen" in invalid_output
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.list_comments(conn, invalid_id) == []
 
     success_output = kc.run_slash(
@@ -273,7 +289,7 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
     )
     assert "Reopened" in success_output
     assert secret not in success_output
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, review_id)
         assert task is not None
         assert task.status == "ready"
@@ -290,17 +306,17 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect.init_db()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tool_task = kb.create_task(
             conn,
             title="Goal-mode tool task",
             assignee="builder",
             goal_mode=True,
         )
-        claimed = kb.claim_task(conn, tool_task, claimer="builder:1")
+        claimed = _owner_kanban_claims.claim_task(conn, tool_task, claimer="builder:1")
         assert claimed is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", tool_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
@@ -322,20 +338,20 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     rejected = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
     assert "error" in rejected
     assert "rejected by judge" in rejected["error"]
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tool_after = kb.get_task(conn, tool_task)
         assert tool_after is not None
         assert tool_after.status == "running"
 
     # The shell/CLI path applies the same gate and must not bypass the tool.
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         cli_task = kb.create_task(
             conn,
             title="Goal-mode CLI task",
             assignee="builder",
             goal_mode=True,
         )
-        cli_claimed = kb.claim_task(conn, cli_task, claimer="builder:2")
+        cli_claimed = _owner_kanban_claims.claim_task(conn, cli_task, claimer="builder:2")
         assert cli_claimed is not None
     monkeypatch.setenv("HERMES_KANBAN_TASK", cli_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
@@ -355,7 +371,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     )
     output = kc.run_slash(f"request-review {cli_task} --summary 'Looks ready.'")
     assert "rejected by judge" in output
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         cli_after = kb.get_task(conn, cli_task)
         assert cli_after is not None
         assert cli_after.status == "running"
@@ -393,10 +409,10 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb._INITIALIZED_PATHS.clear()
-    kb.init_db()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect.init_db()
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="Implementation", assignee="builder")
         child_id = kb.create_task(
             conn,
@@ -404,9 +420,9 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
             assignee="reviewer",
             parents=[parent_id],
         )
-        parent = kb.claim_task(conn, parent_id, claimer="builder:1")
+        parent = _owner_kanban_claims.claim_task(conn, parent_id, claimer="builder:1")
         assert parent is not None
-        assert kb.block_task(
+        assert _owner_kanban_db.block_task(
             conn,
             parent_id,
             reason="review-required: ready",
@@ -421,7 +437,7 @@ def test_cli_and_dashboard_receive_graph_aware_deadlock_diagnostic(
 
     from plugins.kanban.dashboard.plugin_api import _compute_task_diagnostics
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         dashboard = _compute_task_diagnostics(conn, task_ids=[parent_id])
     assert dashboard[parent_id][0]["kind"] == "review_dependency_deadlock"
     assert dashboard[parent_id][0]["data"]["waiting_child_ids"] == [child_id]

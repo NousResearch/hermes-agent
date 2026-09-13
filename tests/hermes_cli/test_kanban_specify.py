@@ -7,6 +7,8 @@ writes, and CLI flag surface.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import argparse
 import json as jsonlib
 from pathlib import Path
@@ -16,6 +18,7 @@ import pytest
 
 from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_specify as spec
 
 
@@ -25,7 +28,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -69,7 +72,7 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
 # ---------------------------------------------------------------------------
 
 def test_specify_task_happy_path(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="rough", triage=True)
 
     content = jsonlib.dumps({
@@ -84,7 +87,7 @@ def test_specify_task_happy_path(kanban_home):
     assert outcome.task_id == tid
     assert outcome.new_title == "Refined rough"
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     # Parent-free → recompute_ready promotes to ready.
     assert task.status == "ready"
@@ -112,7 +115,7 @@ def _run_cli(*argv: str) -> int:
 
 
 def test_cli_specify_tenant_filter(kanban_home, capsys):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         outside = kb.create_task(conn, title="outside", triage=True)
         inside = kb.create_task(
             conn, title="inside", triage=True, tenant="proj-a",
@@ -132,7 +135,7 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
     assert ids == {inside}
 
     # The outside task stays in triage.
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert kb.get_task(conn, outside).status == "triage"
         # The inside task was promoted.
         assert kb.get_task(conn, inside).status in {"todo", "ready"}

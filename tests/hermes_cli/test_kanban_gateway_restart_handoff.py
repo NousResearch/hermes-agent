@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_models as _owner_kanban_db_models
+
+import hermes_cli.kanban_worker_scope as _owner_kanban_worker_scope
+import hermes_cli.kanban_worker_spawn as _owner_kanban_worker_spawn
+
 import json
 import subprocess
 import sys
@@ -11,10 +18,12 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_boards as boards
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
-def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, kb.Task]:
+def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, _owner_kanban_db_models.Task]:
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "coder"
     profile.mkdir(parents=True)
@@ -22,11 +31,11 @@ def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(_owner_kanban_worker_spawn, "_resolve_hermes_argv", lambda: ["hermes"])
 
     workspace = tmp_path / "candidate-worktree"
     workspace.mkdir()
-    task = kb.Task(
+    task = _owner_kanban_db_models.Task(
         id="t_candidate_restart",
         title="activate candidate",
         body=None,
@@ -50,7 +59,7 @@ def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
 
 @pytest.mark.linux_only
 def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
-    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+    worker_setup: tuple[Path, _owner_kanban_db_models.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
     captured_cmd: list[str] = []
@@ -82,12 +91,12 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-cross-profile")
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
-    monkeypatch.setattr("tools.process_registry._worker_memory_max_bytes", lambda: 536_870_912)
+    monkeypatch.setattr("tools.process_registry_scope._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("tools.process_registry_scope._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr("tools.process_registry_scope._worker_memory_max_bytes", lambda: 536_870_912)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
-    assert kb._default_spawn(task, str(workspace)) == 4242
+    assert _owner_kanban_worker_spawn._default_spawn(task, str(workspace)) == 4242
     assert captured_cmd[:4] == ["/usr/bin/systemd-run", "--user", "--scope", "--quiet"]
     unit_index = captured_cmd.index("--unit")
     # Worker isolation (kanban.worker_isolation, default `auto`) wraps the
@@ -98,7 +107,9 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     # Wrapping twice would nest one transient scope inside another. The
     # restart-safe guarantee itself is unchanged and still asserted below
     # (scope prefix, memory bound, fail-closed cases).
-    assert captured_cmd[unit_index + 1] == "hermes-kanban-t_candidate_restart-r23.scope"
+    import hashlib
+    board_digest = hashlib.sha256(str(_owner_kanban_db.kanban_db_path().resolve()).encode()).hexdigest()[:24]
+    assert captured_cmd[unit_index + 1] == f"hermes-kanban-b{board_digest}--t_candidate_restart-r23.scope"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
     assert captured_cmd[separator + 1 : separator + 4] == ["hermes", "-p", "coder"]
@@ -110,37 +121,37 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
 
 @pytest.mark.linux_only
 def test_managed_gateway_worker_spawn_fails_closed_without_scope(
-    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+    worker_setup: tuple[Path, _owner_kanban_db_models.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
     popen_calls: list[list[str]] = []
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: popen_calls.append(list(cmd)))
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: False)
+    monkeypatch.setattr("tools.process_registry_scope._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("tools.process_registry_scope._systemd_run_user_scope_available", lambda: False)
 
     with pytest.raises(RuntimeError, match="restart-safe systemd scope"):
-        kb._default_spawn(task, str(workspace))
+        _owner_kanban_worker_spawn._default_spawn(task, str(workspace))
     assert popen_calls == []
 
 
 @pytest.mark.linux_only
 def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
-    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+    worker_setup: tuple[Path, _owner_kanban_db_models.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr("tools.process_registry_scope._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("tools.process_registry_scope._systemd_run_user_scope_available", lambda: True)
     monkeypatch.setattr("shutil.which", lambda _name: None)
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unsafe direct spawn"))
 
     with pytest.raises(RuntimeError, match="restart-safe systemd scope"):
-        kb._default_spawn(task, str(workspace))
+        _owner_kanban_worker_spawn._default_spawn(task, str(workspace))
 
 
 def test_standalone_dispatcher_keeps_direct_worker_spawn(
-    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+    worker_setup: tuple[Path, _owner_kanban_db_models.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
     captured_cmd: list[str] = []
@@ -150,29 +161,29 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     # isolates workers regardless of gateway topology. Pinning `none` isolates
     # the claim under test here — that a standalone dispatcher gets no
     # RESTART-SAFE wrap — from the separate isolation decision.
-    monkeypatch.setattr(kb, "_resolve_worker_isolation", lambda *a, **k: "none")
+    monkeypatch.setattr(_owner_kanban_worker_scope, "_resolve_worker_isolation", lambda *a, **k: "none")
 
     class FakeProc:
         pid = 4243
 
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
+    monkeypatch.setattr("tools.process_registry_scope._is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(
-        "tools.process_registry._systemd_run_user_scope_available",
+        "tools.process_registry_scope._systemd_run_user_scope_available",
         lambda: pytest.fail("scope probe must not run outside managed gateway"),
     )
 
-    assert kb._default_spawn(task, str(workspace)) == 4243
+    assert _owner_kanban_worker_spawn._default_spawn(task, str(workspace)) == 4243
     assert captured_cmd[:3] == ["hermes", "-p", "coder"]
 
 
 @pytest.mark.linux_only
 def test_real_user_systemd_scope_preserves_worker_context(
-    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+    worker_setup: tuple[Path, _owner_kanban_db_models.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tools import process_registry
+    from tools import process_registry_scope as process_registry
 
-    if not process_registry._systemd_run_user_scope_available():
+    if not scope_module._systemd_run_user_scope_available():
         pytest.skip("systemd-run --user --scope is unavailable on this host")
 
     workspace, task = worker_setup
@@ -185,11 +196,11 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
         "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
     )
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
+    monkeypatch.setattr(_owner_kanban_worker_spawn, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 
-    pid = kb._default_spawn(task, str(workspace))
+    pid = _owner_kanban_worker_spawn._default_spawn(task, str(workspace))
     deadline = time.monotonic() + 5
     while not receipt.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -202,3 +213,5 @@ def test_real_user_systemd_scope_preserves_worker_context(
     assert payload["run"] == "23"
     assert ".scope" in payload["cgroup"]
     assert "hermes-gateway.service" not in payload["cgroup"]
+
+from tools import process_registry_scope as scope_module

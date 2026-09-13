@@ -12,12 +12,19 @@ Covers three layers:
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import goals
 
 
@@ -27,7 +34,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -46,7 +53,7 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    db_path = kb.kanban_db_path()
+    db_path = _owner_kanban_db.kanban_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     # Minimal legacy schema: tasks table missing goal_mode / goal_max_turns.
     legacy = sqlite3.connect(db_path)
@@ -78,8 +85,8 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
     legacy.close()
 
     # init_db runs the additive migration.
-    kb.init_db()
-    with kb.connect() as conn:
+    _owner_kanban_db_connect.init_db()
+    with kbc.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
         assert "goal_mode" in cols
         assert "goal_max_turns" in cols
@@ -172,7 +179,7 @@ class TestCLIJudgeGate:
 
         monkeypatch.setattr("hermes_cli.kanban.kb.get_task", lambda conn, tid: fake_task)
         monkeypatch.setattr("hermes_cli.kanban.kb.complete_task", fake_complete_task)
-        monkeypatch.setattr("hermes_cli.kanban.kb.connect_closing", fake_connect_closing)
+        monkeypatch.setattr("hermes_cli.kanban.kbc.connect_closing", fake_connect_closing)
         monkeypatch.setattr("hermes_cli.kanban._worker_run_id_for", lambda _: None)
 
         _aux_client = (object(), "judge-model") if judge_available else (None, None)

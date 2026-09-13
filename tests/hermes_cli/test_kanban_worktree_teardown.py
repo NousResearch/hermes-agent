@@ -11,12 +11,20 @@ remote-tracking ref. Any doubt preserves the worktree.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_claims as _owner_kanban_claims
+import hermes_cli.kanban_completion as _owner_kanban_completion
+import hermes_cli.kanban_transitions as _owner_kanban_transitions
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli import kanban_db_connect as kbc
 
 
 def _git(*args: str, cwd: str | None = None) -> str:
@@ -44,7 +52,7 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -66,7 +74,7 @@ def repo(tmp_path: Path) -> Path:
 
 def _make_worktree(repo: Path, task_id: str, branch: str | None = None) -> Path:
     target = repo / ".worktrees" / task_id
-    kb._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
+    kbw._ensure_git_worktree(repo, target, branch or f"wt/{task_id}")
     return target
 
 
@@ -82,7 +90,7 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 
 def test_clean_pushed_worktree_removed(repo: Path) -> None:
     wt = _make_worktree(repo, "t_aaaa1111")
-    kb._cleanup_worktree_workspace("t_aaaa1111", str(wt))
+    kbw._cleanup_worktree_workspace("t_aaaa1111", str(wt))
     assert not wt.exists()
     # auto-generated task branch goes with it
     assert not _branch_exists(repo, "wt/t_aaaa1111")
@@ -93,7 +101,7 @@ def test_clean_pushed_worktree_removed(repo: Path) -> None:
 def test_dirty_worktree_preserved(repo: Path) -> None:
     wt = _make_worktree(repo, "t_bbbb2222")
     (wt / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
-    kb._cleanup_worktree_workspace("t_bbbb2222", str(wt))
+    kbw._cleanup_worktree_workspace("t_bbbb2222", str(wt))
     assert wt.is_dir()
     assert (wt / "wip.txt").exists()
 
@@ -103,20 +111,20 @@ def test_unpushed_commits_preserved(repo: Path) -> None:
     (wt / "work.txt").write_text("committed but not pushed\n", encoding="utf-8")
     _git("-C", str(wt), "add", "work.txt")
     _git("-C", str(wt), "commit", "-m", "local work")
-    kb._cleanup_worktree_workspace("t_cccc3333", str(wt))
+    kbw._cleanup_worktree_workspace("t_cccc3333", str(wt))
     assert wt.is_dir()
 
 
 def test_custom_branch_survives_worktree_removal(repo: Path) -> None:
     wt = _make_worktree(repo, "t_dddd4444", branch="feature/custom")
-    kb._cleanup_worktree_workspace("t_dddd4444", str(wt), "feature/custom")
+    kbw._cleanup_worktree_workspace("t_dddd4444", str(wt), "feature/custom")
     assert not wt.exists()
     # only auto-generated wt/* branches are deleted
     assert _branch_exists(repo, "feature/custom")
 
 
 def test_main_checkout_never_removed(repo: Path) -> None:
-    kb._cleanup_worktree_workspace("t_eeee5555", str(repo))
+    kbw._cleanup_worktree_workspace("t_eeee5555", str(repo))
     assert repo.is_dir()
     assert (repo / "README.md").exists()
 
@@ -124,7 +132,7 @@ def test_main_checkout_never_removed(repo: Path) -> None:
 def test_non_git_dir_preserved(tmp_path: Path) -> None:
     plain = tmp_path / "not-a-worktree"
     plain.mkdir()
-    kb._cleanup_worktree_workspace("t_ffff6666", str(plain))
+    kbw._cleanup_worktree_workspace("t_ffff6666", str(plain))
     assert plain.is_dir()
 
 
@@ -144,8 +152,10 @@ def test_tree_dirtied_between_check_and_removal_preserved(
     (wt / "late-wip.txt").write_text("dirtied after the check\n", encoding="utf-8")
     # Pre-check lies (as if the file appeared just after it ran) — real git
     # must still refuse the removal.
-    monkeypatch.setattr(cli, "_worktree_is_dirty", lambda _p: False)
-    kb._cleanup_worktree_workspace("t_gggg7777", str(wt))
+    from hermes_cli import worktree_ops
+
+    monkeypatch.setattr(worktree_ops, "_worktree_is_dirty", lambda _p: False)
+    kbw._cleanup_worktree_workspace("t_gggg7777", str(wt))
     assert wt.is_dir()
     assert (wt / "late-wip.txt").exists()
 
@@ -158,7 +168,7 @@ def test_tree_dirtied_between_check_and_removal_preserved(
 def _worktree_task(conn, repo: Path, title: str = "wt-task") -> tuple[str, Path]:
     tid = kb.create_task(conn, title=title, assignee="worker")
     wt = _make_worktree(repo, tid)
-    with kb.write_txn(conn):
+    with _owner_kanban_db_connect.write_txn(conn):
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, "
             "branch_name=? WHERE id=?",
@@ -168,53 +178,53 @@ def _worktree_task(conn, repo: Path, title: str = "wt-task") -> tuple[str, Path]
 
 
 def test_complete_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
-        with kb.write_txn(conn):
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
-        assert kb.claim_task(conn, tid, claimer="worker") is not None
-        assert kb.complete_task(conn, tid, summary="done")
+        assert _owner_kanban_claims.claim_task(conn, tid, claimer="worker") is not None
+        assert _owner_kanban_completion.complete_task(conn, tid, summary="done")
     assert not wt.exists()
     assert not _branch_exists(repo, f"wt/{tid}")
 
 
 def test_complete_task_preserves_dirty_worktree(kanban_home: Path, repo: Path) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
         (wt / "wip.txt").write_text("unsaved\n", encoding="utf-8")
-        with kb.write_txn(conn):
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
-        assert kb.claim_task(conn, tid, claimer="worker") is not None
-        assert kb.complete_task(conn, tid, summary="done")
+        assert _owner_kanban_claims.claim_task(conn, tid, claimer="worker") is not None
+        assert _owner_kanban_completion.complete_task(conn, tid, summary="done")
     assert wt.is_dir()
     assert (wt / "wip.txt").exists()
 
 
 def test_archive_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
-        assert kb.archive_task(conn, tid)
+        assert _owner_kanban_transitions.archive_task(conn, tid)
     assert not wt.exists()
 
 
 def test_parent_worktree_deferred_until_children_done(
     kanban_home: Path, repo: Path
 ) -> None:
-    with kb.connect_closing() as conn:
+    with kbc.connect_closing() as conn:
         parent, parent_wt = _worktree_task(conn, repo, title="parent")
         child = kb.create_task(conn, title="child", assignee="worker")
         kb.link_tasks(conn, parent, child)
 
-        with kb.write_txn(conn):
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
-        assert kb.claim_task(conn, parent, claimer="worker") is not None
-        assert kb.complete_task(conn, parent, summary="parent done")
+        assert _owner_kanban_claims.claim_task(conn, parent, claimer="worker") is not None
+        assert _owner_kanban_completion.complete_task(conn, parent, summary="parent done")
         # child still active -> parent worktree must survive for handoff
         assert parent_wt.is_dir()
 
-        with kb.write_txn(conn):
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
-        assert kb.claim_task(conn, child, claimer="worker") is not None
-        assert kb.complete_task(conn, child, summary="child done")
+        assert _owner_kanban_claims.claim_task(conn, child, claimer="worker") is not None
+        assert _owner_kanban_completion.complete_task(conn, child, summary="child done")
     # last child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()

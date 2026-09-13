@@ -7,6 +7,8 @@ compact JSON reply (tokens + complexity + rationale). Tests monkeypatch
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import importlib.util
 import sys
 import types
@@ -35,7 +37,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 

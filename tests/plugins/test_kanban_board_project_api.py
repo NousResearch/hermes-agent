@@ -8,6 +8,8 @@ on a scoped board inheriting the project.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -17,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import projects_db as pdb
 
 
@@ -36,7 +39,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -112,7 +115,7 @@ def test_task_on_scoped_board_inherits_project(client, project):
     assert r.status_code == 200, r.text
     task_id = r.json()["task"]["id"]
 
-    conn = kb.connect(board="widget")
+    conn = kbc.connect(board="widget")
     try:
         assert kb.get_task(conn, task_id).project_id == project["id"]
     finally:

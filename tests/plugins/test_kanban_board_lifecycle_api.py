@@ -7,6 +7,10 @@ these assert the response shape as well as the on-disk outcome.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -34,7 +38,7 @@ def client(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
@@ -55,7 +59,7 @@ def test_rename_board_keeps_slug(client):
 def test_delete_board_archives_and_reverts_current(client):
     client.post("/api/plugins/kanban/boards", json={"slug": "widget", "name": "Widget"})
     client.post("/api/plugins/kanban/tasks?board=widget", json={"title": "do the thing"})
-    kb.set_current_board("widget")
+    _owner_kanban_boards.set_current_board("widget")
 
     r = client.delete("/api/plugins/kanban/boards/widget")
     assert r.status_code == 200, r.text
@@ -67,7 +71,7 @@ def test_delete_board_archives_and_reverts_current(client):
     archived = Path(body["result"]["new_path"])
     assert archived.is_dir()
     assert (archived / "kanban.db").exists()
-    assert not kb.board_dir("widget").exists()
+    assert not _owner_kanban_boards.board_dir("widget").exists()
 
     assert all(b["slug"] != "widget" for b in client.get("/api/plugins/kanban/boards").json()["boards"])
 
@@ -78,7 +82,7 @@ def test_delete_board_hard_leaves_nothing(client):
     r = client.delete("/api/plugins/kanban/boards/widget?delete=true")
     assert r.status_code == 200, r.text
     assert r.json()["result"]["action"] == "deleted"
-    assert not kb.board_dir("widget").exists()
+    assert not _owner_kanban_boards.board_dir("widget").exists()
 
 
 def test_delete_default_board_is_refused(client):

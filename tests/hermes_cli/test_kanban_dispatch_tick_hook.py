@@ -12,11 +12,20 @@ subscriber never breaks the dispatcher.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+import hermes_cli.kanban_db_dispatch as _owner_kanban_db_dispatch
+
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
@@ -26,7 +35,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -48,10 +57,10 @@ def test_active_tick_fires_hook_with_outcome_ok(
     kanban_home, all_assignees_spawnable, captured_ticks,
 ):
     """A tick that spawns a worker fires the hook with outcome='ok'."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
     finally:
         conn.close()
     ok_events = [kw for kw in captured_ticks if kw["outcome"] == "ok"]
@@ -67,20 +76,20 @@ def test_tick_hook_fires_after_dispatch_lock_released(kanban_home):
     board's dispatch lock must succeed — flock conflicts across file
     descriptors within one process, so this fails if the hook still fires
     while ``dispatch_once`` holds the lock."""
-    db_path = kb.kanban_db_path()
+    db_path = _owner_kanban_db.kanban_db_path()
     mgr = get_plugin_manager()
     saved = {k: list(v) for k, v in mgr._hooks.items()}
     acquired: list[bool] = []
 
     def _probe_lock(**kw):
-        with kb._dispatch_tick_lock(db_path) as held:
+        with kbc._dispatch_tick_lock(db_path) as held:
             acquired.append(held)
 
     mgr._hooks.setdefault("on_kanban_dispatch_tick", []).append(_probe_lock)
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
-            kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
         finally:
             conn.close()
     finally:
@@ -98,10 +107,10 @@ def test_misbehaving_subscriber_does_not_break_dispatcher(kanban_home):
 
     mgr._hooks.setdefault("on_kanban_dispatch_tick", []).append(_boom)
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
-            result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
-            assert isinstance(result, kb.DispatchResult)
+            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+            assert isinstance(result, _owner_kanban_db_dispatch.DispatchResult)
         finally:
             conn.close()
     finally:
@@ -120,9 +129,9 @@ def test_no_subscriber_short_circuits_tick_hook(kanban_home, monkeypatch):
         return real_invoke(hook_name, **kw)
 
     monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
     finally:
         conn.close()
     assert "on_kanban_dispatch_tick" not in invoked

@@ -12,6 +12,11 @@ The plugin router is attached to a bare FastAPI app — same approach as
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_context as _owner_kanban_context
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -21,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +54,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -69,11 +75,11 @@ def _make_task(conn, title="t") -> str:
 
 
 def test_add_list_get_delete_attachment(kanban_home, tmp_path):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn)
         # Write a real blob under the per-task dir so delete can unlink it.
-        dest_dir = kb.task_attachments_dir(task_id)
+        dest_dir = _owner_kanban_boards.task_attachments_dir(task_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
         blob = dest_dir / "source.pdf"
         blob.write_bytes(b"%PDF-1.4 fake")
@@ -111,7 +117,7 @@ def test_add_list_get_delete_attachment(kanban_home, tmp_path):
 
 
 def test_delete_attachment_missing_returns_none(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.delete_attachment(conn, 999999) is None
     finally:
@@ -120,11 +126,11 @@ def test_delete_attachment_missing_returns_none(kanban_home):
 
 def test_attachments_root_is_per_board(kanban_home, monkeypatch):
     # default board uses <root>/kanban/attachments
-    default_root = kb.attachments_root(board="default")
+    default_root = _owner_kanban_boards.attachments_root(board="default")
     assert default_root.name == "attachments"
     # a named board nests under its board dir
     monkeypatch.delenv("HERMES_KANBAN_ATTACHMENTS_ROOT", raising=False)
-    named = kb.attachments_root(board="default")
+    named = _owner_kanban_boards.attachments_root(board="default")
     assert named == default_root
 
 
@@ -134,10 +140,10 @@ def test_attachments_root_is_per_board(kanban_home, monkeypatch):
 
 
 def test_worker_context_lists_attachments_with_absolute_path(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn, title="translate PDF")
-        dest_dir = kb.task_attachments_dir(task_id)
+        dest_dir = _owner_kanban_boards.task_attachments_dir(task_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
         blob = dest_dir / "manual.pdf"
         blob.write_bytes(b"data")
@@ -149,7 +155,7 @@ def test_worker_context_lists_attachments_with_absolute_path(kanban_home):
             content_type="application/pdf",
             size=4,
         )
-        ctx = kb.build_worker_context(conn, task_id)
+        ctx = _owner_kanban_context.build_worker_context(conn, task_id)
         assert "## Attachments" in ctx
         assert "manual.pdf" in ctx
         # The absolute path must appear so the worker can read_file it.
@@ -217,7 +223,7 @@ def test_upload_sanitizes_traversal_filename(client):
     stored_path = r.json()["attachment"]["stored_path"]
     # The leaf name only; never escapes the per-task attachments dir.
     assert Path(stored_path).name == "passwd"
-    task_dir = kb.task_attachments_dir(task_id).resolve()
+    task_dir = _owner_kanban_boards.task_attachments_dir(task_id).resolve()
     assert Path(stored_path).resolve().is_relative_to(task_dir)
 
 
@@ -231,7 +237,7 @@ def test_download_unknown_attachment_404(client):
 
 
 def test_store_attachment_bytes_roundtrip(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn)
         att_id = kb.store_attachment_bytes(
@@ -245,7 +251,7 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
         assert a.uploaded_by == "tester"
         assert Path(a.stored_path).read_bytes() == b"some bytes"
         assert Path(a.stored_path).resolve().is_relative_to(
-            kb.task_attachments_dir(task_id).resolve()
+            _owner_kanban_boards.task_attachments_dir(task_id).resolve()
         )
     finally:
         conn.close()
@@ -259,7 +265,7 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
 def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
     from hermes_cli.kanban import run_slash
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn, title="cli-attach")
     finally:
@@ -271,7 +277,7 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
     out = run_slash(f"attach {task_id} {src}")
     assert "Attached" in out, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         atts = kb.list_attachments(conn, task_id)
         assert len(atts) == 1
@@ -286,7 +292,7 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
 
     removed = run_slash(f"attach-rm {att_id}")
     assert "Deleted attachment" in removed
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.list_attachments(conn, task_id) == []
     finally:

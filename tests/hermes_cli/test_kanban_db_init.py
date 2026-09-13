@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_db_models as _owner_kanban_db_models
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import contextlib
 import sqlite3
 import threading
 from pathlib import Path
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 def _make_legacy_db(path: Path) -> None:
@@ -14,7 +23,7 @@ def _make_legacy_db(path: Path) -> None:
     additive-column migration runs cleanly on top.
     """
     conn = sqlite3.connect(str(path))
-    conn.executescript(kb.SCHEMA_SQL)
+    conn.executescript(_owner_kanban_db_models.SCHEMA_SQL)
     conn.executescript(
         """
         DROP TABLE task_events;
@@ -51,9 +60,9 @@ def _setup_home(tmp_path, monkeypatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db_path = kb.kanban_db_path(board="legacy")
+    db_path = _owner_kanban_db.kanban_db_path(board="legacy")
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    _owner_kanban_db_connect._INITIALIZED_PATHS.discard(str(db_path.resolve()))
     return db_path
 
 
@@ -79,7 +88,7 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
     db_path = _setup_home(tmp_path, monkeypatch)
     _make_legacy_db(db_path)
 
-    with kb.connect(db_path) as conn:
+    with kbc.connect(db_path) as conn:
         for table in ("task_events", "task_comments", "task_runs"):
             id_col = {r["name"]: r for r in conn.execute(f"PRAGMA table_info({table})")}["id"]
             assert id_col["type"].upper() == "INTEGER" and id_col["pk"] == 1
@@ -130,7 +139,7 @@ def test_rebuild_keeps_task_runs_worker_scope(tmp_path, monkeypatch):
     raw.commit()
     raw.close()
 
-    with kb.connect(db_path) as conn:
+    with _owner_kanban_db_connect.connect(db_path) as conn:
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(task_runs)")]
         assert "worker_scope" in cols
         row = conn.execute(
@@ -145,10 +154,10 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
     db_path = _setup_home(tmp_path, monkeypatch)
     _make_legacy_db(db_path)
 
-    with kb.connect(db_path):
+    with kbc.connect(db_path):
         pass
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    with kb.connect(db_path) as conn:
+    _owner_kanban_db_connect._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kbc.connect(db_path) as conn:
         id_col = {r["name"]: r for r in conn.execute("PRAGMA table_info(task_events)")}["id"]
         assert id_col["type"].upper() == "INTEGER"
         assert len(conn.execute("SELECT * FROM task_events").fetchall()) == 2
@@ -160,8 +169,8 @@ def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     db_path = _setup_home(tmp_path, monkeypatch)
     _make_legacy_db(db_path)
 
-    with kb.connect(db_path) as conn:
-        cursor, events = kb.unseen_events_for_sub(
+    with kbc.connect(db_path) as conn:
+        cursor, events = kbn.unseen_events_for_sub(
             conn, task_id="task-1", platform="telegram", chat_id="123"
         )
         assert isinstance(cursor, int)
@@ -175,9 +184,9 @@ def _default_board_db(tmp_path, monkeypatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db_path = kb.kanban_db_path(board="default")
+    db_path = _owner_kanban_db.kanban_db_path(board="default")
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    _owner_kanban_db_connect._INITIALIZED_PATHS.discard(str(db_path.resolve()))
     return db_path
 
 
@@ -200,19 +209,19 @@ def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatc
     """
     db_path = _default_board_db(tmp_path, monkeypatch)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute(
             "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-1', 'T', 'ready', 1000)"
         )
         conn.commit()
-    assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
+    assert str(db_path.resolve()) in _owner_kanban_db_connect._INITIALIZED_PATHS
 
     # External deletion (manual cleanup, restore, sync tool) while the process
     # that cached this path is still alive.
     for suffix in ("", "-wal", "-shm"):
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     assert "tasks" in _tables(db_path)
 
@@ -222,7 +231,7 @@ def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, m
     header and the integrity probes, but carries no schema at all."""
     db_path = _default_board_db(tmp_path, monkeypatch)
 
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
 
     for suffix in ("", "-wal", "-shm"):
@@ -230,7 +239,7 @@ def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, m
     sqlite3.connect(str(db_path)).close()
     assert "tasks" not in _tables(db_path)
 
-    with kb.connect_closing(db_path) as conn:
+    with kbc.connect_closing(db_path) as conn:
         conn.execute(
             "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-2', 'T', 'ready', 1000)"
         )
@@ -244,11 +253,11 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
     the schema is actually gone."""
     db_path = _default_board_db(tmp_path, monkeypatch)
 
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
 
     locks: list[Path] = []
-    real_lock = kb._cross_process_init_lock
+    real_lock = kbc._cross_process_init_lock
 
     @contextlib.contextmanager
     def recording_lock(path):
@@ -256,13 +265,13 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
         with real_lock(path):
             yield
 
-    monkeypatch.setattr(kb, "_cross_process_init_lock", recording_lock)
+    monkeypatch.setattr(kbc, "_cross_process_init_lock", recording_lock)
 
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
     assert locks == []
 
     db_path.unlink()
-    with kb.connect_closing(db_path):
+    with kbc.connect_closing(db_path):
         pass
     assert len(locks) == 1

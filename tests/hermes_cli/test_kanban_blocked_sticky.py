@@ -29,12 +29,20 @@ landed via #28754 / #28781 ahead of this fix.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_claims as _owner_kanban_claims
+import hermes_cli.kanban_transitions as _owner_kanban_transitions
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import time
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -44,7 +52,7 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -58,10 +66,10 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
     must stay blocked across an arbitrary number of dispatcher ticks.
     Before #28712's fix, ``recompute_ready`` would silently flip it
     back to ``ready`` on the very next tick."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="needs human review")
-        kb.claim_task(conn, tid)
-        assert kb.block_task(
+        _owner_kanban_claims.claim_task(conn, tid)
+        assert _owner_kanban_db.block_task(
             conn, tid,
             reason="review-required: please verify ACL change",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
@@ -71,7 +79,7 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
         # Hammer the promotion code — exactly the dispatcher loop's
         # behaviour, just compressed in time.
         for _ in range(5):
-            promoted = kb.recompute_ready(conn)
+            promoted = _owner_kanban_transitions.recompute_ready(conn)
             assert promoted == 0, "worker-blocked task must not auto-promote"
             assert kb.get_task(conn, tid).status == "blocked"
 
@@ -115,10 +123,10 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
     that *would* have been written and asserts the *next* tick still
     leaves the task blocked.
     """
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="loop reproducer")
-        kb.claim_task(conn, tid)
-        kb.block_task(
+        _owner_kanban_claims.claim_task(conn, tid)
+        _owner_kanban_db.block_task(
             conn, tid,
             reason="review-required: human eyes please",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
@@ -126,7 +134,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
         assert kb.get_task(conn, tid).status == "blocked"
 
         # First dispatcher tick — must NOT promote.
-        assert kb.recompute_ready(conn) == 0
+        assert _owner_kanban_transitions.recompute_ready(conn) == 0
         assert kb.get_task(conn, tid).status == "blocked"
 
         # Simulate the (hypothetical) protocol_violation + gave_up
@@ -150,7 +158,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 
         # Subsequent ticks must still leave it blocked.
         for _ in range(3):
-            promoted = kb.recompute_ready(conn)
+            promoted = _owner_kanban_transitions.recompute_ready(conn)
             assert promoted == 0
             assert kb.get_task(conn, tid).status == "blocked"
 

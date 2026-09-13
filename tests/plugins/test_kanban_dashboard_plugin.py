@@ -7,6 +7,14 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_claims as _owner_kanban_claims
+import hermes_cli.kanban_completion as _owner_kanban_completion
+import hermes_cli.kanban_stats as _owner_kanban_stats
+import hermes_cli.kanban_transitions as _owner_kanban_transitions
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import importlib.util
 import json
 import os
@@ -20,6 +28,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +59,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -118,7 +127,7 @@ def test_create_task_appears_on_board(client):
 
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
-    kb.create_board("late-config")
+    _owner_kanban_boards.create_board("late-config")
     project_dir = tmp_path / "late-project"
     project_dir.mkdir()
 
@@ -133,7 +142,7 @@ def test_patch_board_sets_project_directory(client, tmp_path):
     # The recommendation flips from scratch to a persistent kind so the
     # create-task dialog's workspace default follows the board setting.
     assert board["default_workspace_kind"] == "dir"
-    assert kb.read_board_metadata("late-config")["default_workdir"] == str(
+    assert _owner_kanban_boards.read_board_metadata("late-config")["default_workdir"] == str(
         project_dir.resolve()
     )
 
@@ -146,9 +155,9 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
         json={"title": "wait for indexed data", "assignee": "ops"},
     ).json()["task"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        with kb.write_txn(conn):
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET status = 'scheduled' WHERE id = ?",
                 (task["id"],),
@@ -242,8 +251,8 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "review"
-    with kb.connect() as conn:
-        run = kb.latest_run(conn, task["id"])
+    with kbc.connect() as conn:
+        run = _owner_kanban_stats.latest_run(conn, task["id"])
         assert run is not None
         assert run.outcome == "review_requested"
         assert run.metadata is not None
@@ -266,7 +275,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "ready"
     assert response.json()["task"]["assignee"] == "builder"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         assert any(
             event.kind == "review_reopened"
             for event in kb.list_events(conn, task["id"])
@@ -311,9 +320,9 @@ def test_reopening_parent_demotes_ready_child(client):
 
 
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert _owner_kanban_completion.complete_task(conn, parent_id)
         child_id = kb.create_task(
             conn,
             title="child in review",
@@ -326,15 +335,15 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
             assignee="writer",
             parents=[child_id],
         )
-        implementation = kb.claim_task(conn, child_id)
+        implementation = _owner_kanban_claims.claim_task(conn, child_id)
         assert implementation is not None
-        assert kb.request_review(
+        assert _owner_kanban_transitions.request_review(
             conn,
             child_id,
             summary="ready",
             expected_run_id=implementation.current_run_id,
         )
-        active_review = kb.claim_review_task(conn, child_id)
+        active_review = _owner_kanban_claims.claim_review_task(conn, child_id)
         assert active_review is not None
 
     response = client.patch(
@@ -343,15 +352,15 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
         assert child.status == "todo"
-        reclaimed = kb.latest_run(conn, child_id)
+        reclaimed = _owner_kanban_stats.latest_run(conn, child_id)
         assert reclaimed is not None
         assert reclaimed.outcome == "reclaimed"
-        assert kb.claim_review_task(conn, child_id) is None
-        assert not kb.complete_task(conn, child_id, summary="must not approve")
+        assert _owner_kanban_claims.claim_review_task(conn, child_id) is None
+        assert not _owner_kanban_completion.complete_task(conn, child_id, summary="must not approve")
         grandchild = kb.get_task(conn, grandchild_id)
         assert grandchild is not None
         assert grandchild.status == "todo"
@@ -362,13 +371,13 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
         assert child.status == "review"
-        review = kb.claim_review_task(conn, child_id)
+        review = _owner_kanban_claims.claim_review_task(conn, child_id)
         assert review is not None
-        assert kb.complete_task(
+        assert _owner_kanban_completion.complete_task(
             conn,
             child_id,
             summary="approved after parent stabilized",
@@ -380,23 +389,23 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 
 
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert _owner_kanban_completion.complete_task(conn, parent_id)
         child_id = kb.create_task(
             conn,
             title="accepted child",
             assignee="builder",
             parents=[parent_id],
         )
-        assert kb.complete_task(conn, child_id)
+        assert _owner_kanban_completion.complete_task(conn, child_id)
         grandchild_id = kb.create_task(
             conn,
             title="running grandchild",
             assignee="writer",
             parents=[child_id],
         )
-        grandchild_run = kb.claim_task(conn, grandchild_id)
+        grandchild_run = _owner_kanban_claims.claim_task(conn, grandchild_id)
         assert grandchild_run is not None
 
     response = client.patch(
@@ -405,14 +414,14 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
     )
     assert response.status_code == 200, response.text
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         grandchild = kb.get_task(conn, grandchild_id)
         assert child is not None and child.status == "todo"
         assert grandchild is not None and grandchild.status == "todo"
         assert grandchild.current_run_id is None
-        assert kb.claim_task(conn, grandchild_id) is None
-        reclaimed = kb.latest_run(conn, grandchild_id)
+        assert _owner_kanban_claims.claim_task(conn, grandchild_id) is None
+        reclaimed = _owner_kanban_stats.latest_run(conn, grandchild_id)
         assert reclaimed is not None
         assert reclaimed.outcome == "reclaimed"
 
@@ -421,7 +430,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
         json={"status": "done"},
     )
     assert response.status_code == 200, response.text
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, child_id)
         grandchild = kb.get_task(conn, grandchild_id)
         assert child is not None and child.status == "ready"
@@ -429,17 +438,17 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
 
 
 def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="active review", assignee="reviewer")
-        implementation = kb.claim_task(conn, task_id)
+        implementation = _owner_kanban_claims.claim_task(conn, task_id)
         assert implementation is not None
-        assert kb.request_review(
+        assert _owner_kanban_transitions.request_review(
             conn,
             task_id,
             summary="ready",
             expected_run_id=implementation.current_run_id,
         )
-        review = kb.claim_review_task(conn, task_id)
+        review = _owner_kanban_claims.claim_review_task(conn, task_id)
         assert review is not None
 
     response = client.patch(
@@ -449,11 +458,11 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "review"
     assert response.json()["task"]["assignee"] == "reviewer"
-    with kb.connect() as conn:
-        run = kb.latest_run(conn, task_id)
+    with kbc.connect() as conn:
+        run = _owner_kanban_stats.latest_run(conn, task_id)
         assert run is not None
         assert run.outcome == "reclaimed"
-        next_review = kb.claim_review_task(conn, task_id)
+        next_review = _owner_kanban_claims.claim_review_task(conn, task_id)
         assert next_review is not None
 
 
@@ -538,16 +547,16 @@ def test_dispatch_dry_run(client):
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     """Loopback mode: a missing or wrong ?token= must be rejected with
     policy-violation; the correct token is accepted. The kanban WS now
-    delegates to web_server._ws_auth_ok, so we stub that with the real
+    delegates to web_server_chat._ws_auth_ok, so we stub that with the real
     loopback-token semantics (auth_required False → constant-time token
     compare)."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
 
-    # Stub web_server with a loopback-mode _ws_auth_ok (auth_required False →
+    # Stub web_server_chat with a loopback-mode _ws_auth_ok (auth_required False →
     # accept only the correct ?token=). Mirrors the real gate's loopback path.
     import hermes_cli
     import types
@@ -559,8 +568,8 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         _SESSION_TOKEN="secret-xyz",
         _ws_auth_ok=_fake_ws_auth_ok,
     )
-    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
-    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server_chat", stub)
+    monkeypatch.setattr(hermes_cli, "web_server_chat", stub, raising=False)
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
@@ -640,7 +649,7 @@ def test_bulk_review_assignment_preserves_implementer_provenance(client):
     )
     assert response.status_code == 200, response.text
     assert all(item["ok"] for item in response.json()["results"])
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         for task in tasks:
             current = kb.get_task(conn, task["id"])
             assert current is not None
@@ -672,11 +681,11 @@ def test_bulk_status_done_forwards_completion_summary(client):
 
     assert r.status_code == 200
     assert all(r["ok"] for r in r.json()["results"])
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         for tid in (a["id"], b["id"]):
             task = kb.get_task(conn, tid)
-            run = kb.latest_run(conn, tid)
+            run = _owner_kanban_stats.latest_run(conn, tid)
             assert task.status == "done"
             assert task.result == "DECIDED: ship it"
             assert run.summary == "DECIDED: ship it"
@@ -977,11 +986,12 @@ def test_event_dict_includes_run_id(client):
     r = client.post("/api/plugins/kanban/tasks", json={"title": "e", "assignee": "worker"})
     tid = r.json()["task"]["id"]
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
-        kb.claim_task(conn, tid)
-        run_id = kb.latest_run(conn, tid).id
-        kb.complete_task(conn, tid, summary="wss")
+        _owner_kanban_claims.claim_task(conn, tid)
+        run_id = _owner_kanban_stats.latest_run(conn, tid).id
+        _owner_kanban_completion.complete_task(conn, tid, summary="wss")
     finally:
         conn.close()
 
@@ -1075,7 +1085,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
     """POST /tasks/<id>/reclaim drops the claim, returns ok, and emits
     a manual reclaimed event."""
     import secrets
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="running", assignee="x")
         lock = secrets.token_hex(8)
@@ -1106,7 +1116,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
     assert body["task_id"] == t
 
     # Confirm the task is back to ready.
-    conn2 = kb.connect()
+    conn2 = kbc.connect()
     try:
         row = conn2.execute(
             "SELECT status, claim_lock FROM tasks WHERE id=?", (t,),
@@ -1119,7 +1129,7 @@ def test_reclaim_endpoint_releases_running_claim(client):
 
 def test_reassign_endpoint_switches_profile(client):
     """POST /tasks/<id>/reassign changes the assignee field."""
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         t = kb.create_task(conn, title="task", assignee="orig")
     finally:
@@ -1132,7 +1142,7 @@ def test_reassign_endpoint_switches_profile(client):
     assert r.status_code == 200, r.text
     assert r.json()["assignee"] == "newbie"
 
-    conn2 = kb.connect()
+    conn2 = kbc.connect()
     try:
         row = conn2.execute(
             "SELECT assignee FROM tasks WHERE id=?", (t,),
@@ -1148,13 +1158,13 @@ def test_reassign_endpoint_switches_profile(client):
 
 
 def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         parent = kb.create_task(conn, title="parent", assignee="alice")
         real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
         import pytest as _pytest
-        with _pytest.raises(kb.HallucinatedCardsError):
-            kb.complete_task(
+        with _pytest.raises(_owner_kanban_completion.HallucinatedCardsError):
+            _owner_kanban_completion.complete_task(
                 conn, parent, summary="phantom",
                 created_cards=[real, "t_ffff00001234"],
             )

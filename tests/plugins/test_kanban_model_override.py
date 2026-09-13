@@ -8,6 +8,9 @@ PATCH/bulk/model-options surfaces.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+import hermes_cli.kanban_worker_spawn as _owner_kanban_worker_spawn
+
 import importlib.util
 import subprocess
 import sys
@@ -18,6 +21,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -31,13 +36,13 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
 @pytest.fixture
 def conn(kanban_home):
-    c = kb.connect()
+    c = kbc.connect()
     yield c
     c.close()
 
@@ -118,7 +123,7 @@ def test_migration_adds_provider_override_column(conn):
 
 
 def _spawn_and_capture(monkeypatch, tmp_path, task):
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(_owner_kanban_worker_spawn, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:
@@ -131,7 +136,7 @@ def _spawn_and_capture(monkeypatch, tmp_path, task):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
-    kb._default_spawn(task, str(workspace))
+    _owner_kanban_worker_spawn._default_spawn(task, str(workspace))
     return captured["cmd"]
 
 

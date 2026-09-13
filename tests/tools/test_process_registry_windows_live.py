@@ -13,6 +13,8 @@ thread) — no mocked spawn.
 
 from __future__ import annotations
 
+from tools import process_registry_scope as _process_scope
+
 import os
 import sys
 import time
@@ -75,11 +77,11 @@ class TestWindowsSpawnParity:
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process", lambda: True
         )
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(_process_scope, "_SYSTEMD_SCOPE_AVAILABLE", None)
 
         scope_builds = []
         monkeypatch.setattr(
-            pr,
+            _process_scope,
             "_build_systemd_scope_argv",
             lambda *a, **k: scope_builds.append(a) or a[0],
         )
@@ -92,7 +94,7 @@ class TestWindowsSpawnParity:
         assert done.systemd_unit == ""
         assert scope_builds == [], "Windows must never build a systemd scope argv"
         # The availability probe must not have flipped to True on Windows.
-        assert pr._SYSTEMD_SCOPE_AVAILABLE is not True
+        assert _process_scope._SYSTEMD_SCOPE_AVAILABLE is not True
 
     def test_kill_process_windows_plain_path(self, registry):
         """kill_process on Windows works without any systemd unit cleanup."""

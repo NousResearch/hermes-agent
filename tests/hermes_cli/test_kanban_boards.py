@@ -15,6 +15,14 @@ Covers the pieces added when boards became a first-class concept:
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_db_models as _owner_kanban_db_models
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+import hermes_cli.kanban_worker_spawn as _owner_kanban_worker_spawn
+
 import json
 import os
 import subprocess
@@ -29,6 +37,8 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +70,7 @@ def fresh_home(tmp_path, monkeypatch):
     except Exception:
         pass
     # Kanban module-level init cache must not leak between tests.
-    kb._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
     return home
 
 
@@ -74,13 +84,13 @@ class TestSlugValidation:
         "very-long-but-still-ok-slug-with-hyphens-and-numbers-1234",
     ])
     def test_accepts_valid(self, good):
-        assert kb._normalize_board_slug(good) == good
+        assert _owner_kanban_boards._normalize_board_slug(good) == good
 
 
     def test_empty_returns_none(self):
-        assert kb._normalize_board_slug(None) is None
-        assert kb._normalize_board_slug("") is None
-        assert kb._normalize_board_slug("   ") is None
+        assert _owner_kanban_boards._normalize_board_slug(None) is None
+        assert _owner_kanban_boards._normalize_board_slug("") is None
+        assert _owner_kanban_boards._normalize_board_slug("   ") is None
 
 
 # ---------------------------------------------------------------------------
@@ -90,11 +100,11 @@ class TestSlugValidation:
 class TestPathResolution:
     def test_default_board_legacy_path(self, fresh_home):
         """The default board's DB lives at ``<root>/kanban.db`` for back-compat."""
-        assert kb.kanban_db_path() == fresh_home / "kanban.db"
-        assert kb.kanban_db_path(board="default") == fresh_home / "kanban.db"
+        assert _owner_kanban_db.kanban_db_path() == fresh_home / "kanban.db"
+        assert _owner_kanban_db.kanban_db_path(board="default") == fresh_home / "kanban.db"
 
     def test_named_board_under_boards_dir(self, fresh_home):
-        p = kb.kanban_db_path(board="atm10-server")
+        p = _owner_kanban_db.kanban_db_path(board="atm10-server")
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
 
@@ -102,8 +112,8 @@ class TestPathResolution:
         """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
-        assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert _owner_kanban_db.kanban_db_path() == forced
+        assert _owner_kanban_db.kanban_db_path(board="ignored") == forced
 
 
 # ---------------------------------------------------------------------------
@@ -119,18 +129,18 @@ class TestCurrentBoard:
         current.parent.mkdir(parents=True, exist_ok=True)
         current.write_text("missing-board\n", encoding="utf-8")
 
-        assert kb.get_current_board() == "default"
-        assert not kb.board_exists("missing-board")
-        assert [b["slug"] for b in kb.list_boards()] == ["default"]
+        assert _owner_kanban_boards.get_current_board() == "default"
+        assert not _owner_kanban_boards.board_exists("missing-board")
+        assert [b["slug"] for b in _owner_kanban_boards.list_boards()] == ["default"]
 
 
 
     def test_kanban_db_path_reads_current(self, fresh_home):
         """kanban_db_path() with no args respects the on-disk pointer."""
-        kb.create_board("my-proj")
-        kb.set_current_board("my-proj")
+        _owner_kanban_boards.create_board("my-proj")
+        _owner_kanban_boards.set_current_board("my-proj")
         expected = fresh_home / "kanban" / "boards" / "my-proj" / "kanban.db"
-        assert kb.kanban_db_path() == expected
+        assert _owner_kanban_db.kanban_db_path() == expected
 
 
 # ---------------------------------------------------------------------------
@@ -151,21 +161,21 @@ class TestBoardCRUD:
         # (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS still
         # contains the resolved path, the CREATE TABLE pass is skipped and
         # downstream readers hit `no such table: task_events`.
-        kb.create_board("recycle")
+        _owner_kanban_boards.create_board("recycle")
         # First connect populates _INITIALIZED_PATHS for this DB.
-        with kb.connect(board="recycle") as conn:
+        with kbc.connect(board="recycle") as conn:
             kb.create_task(conn, title="t1", assignee="dev")
-        db_path = kb.board_dir("recycle") / "kanban.db"
-        assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
+        db_path = _owner_kanban_boards.board_dir("recycle") / "kanban.db"
+        assert str(db_path.resolve()) in _owner_kanban_db_connect._INITIALIZED_PATHS
 
-        kb.remove_board("recycle", archive=archive)
+        _owner_kanban_boards.remove_board("recycle", archive=archive)
         # remove_board must drop the cache entry so a re-create through
         # connect() gets a fresh schema-init pass.
-        assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
+        assert str(db_path.resolve()) not in _owner_kanban_db_connect._INITIALIZED_PATHS
 
         # Simulate the event-stream poll: re-open the same slug. connect()
         # recreates the directory + empty .db; the schema must be re-applied.
-        with kb.connect(board="recycle") as conn:
+        with kbc.connect(board="recycle") as conn:
             tables = {
                 row[0]
                 for row in conn.execute(
@@ -176,11 +186,11 @@ class TestBoardCRUD:
         assert "tasks" in tables
 
     def test_rename_updates_metadata(self, fresh_home):
-        kb.create_board("slug-immutable")
-        kb.write_board_metadata("slug-immutable", name="New Display Name")
-        assert kb.read_board_metadata("slug-immutable")["name"] == "New Display Name"
+        _owner_kanban_boards.create_board("slug-immutable")
+        _owner_kanban_boards.write_board_metadata("slug-immutable", name="New Display Name")
+        assert _owner_kanban_boards.read_board_metadata("slug-immutable")["name"] == "New Display Name"
         # Slug must not change.
-        assert kb.board_exists("slug-immutable")
+        assert _owner_kanban_boards.board_exists("slug-immutable")
 
 
 # ---------------------------------------------------------------------------
@@ -189,21 +199,21 @@ class TestBoardCRUD:
 
 class TestConnectionIsolation:
     def test_tasks_do_not_leak_across_boards(self, fresh_home):
-        kb.create_board("alpha")
-        kb.create_board("beta")
+        _owner_kanban_boards.create_board("alpha")
+        _owner_kanban_boards.create_board("beta")
 
-        with kb.connect(board="alpha") as conn:
+        with kbc.connect(board="alpha") as conn:
             kb.create_task(conn, title="alpha-task-1", assignee="dev")
             kb.create_task(conn, title="alpha-task-2", assignee="dev")
 
-        with kb.connect(board="beta") as conn:
+        with kbc.connect(board="beta") as conn:
             kb.create_task(conn, title="beta-only", assignee="dev")
 
-        with kb.connect(board="alpha") as conn:
+        with kbc.connect(board="alpha") as conn:
             a = kb.list_tasks(conn)
-        with kb.connect(board="beta") as conn:
+        with kbc.connect(board="beta") as conn:
             b = kb.list_tasks(conn)
-        with kb.connect(board="default") as conn:
+        with kbc.connect(board="default") as conn:
             d = kb.list_tasks(conn)
 
         assert {t.title for t in a} == {"alpha-task-1", "alpha-task-2"}
@@ -211,24 +221,24 @@ class TestConnectionIsolation:
         assert d == []
 
     def test_connect_without_args_uses_current(self, fresh_home):
-        kb.create_board("curr")
-        kb.set_current_board("curr")
-        with kb.connect() as conn:
+        _owner_kanban_boards.create_board("curr")
+        _owner_kanban_boards.set_current_board("curr")
+        with kbc.connect() as conn:
             kb.create_task(conn, title="implicit", assignee="x")
-        with kb.connect(board="curr") as conn:
+        with kbc.connect(board="curr") as conn:
             tasks = kb.list_tasks(conn)
         assert [t.title for t in tasks] == ["implicit"]
 
     def test_connect_env_var_overrides_current(self, fresh_home, monkeypatch):
-        kb.create_board("persist")
-        kb.create_board("envwin")
-        kb.set_current_board("persist")
+        _owner_kanban_boards.create_board("persist")
+        _owner_kanban_boards.create_board("envwin")
+        _owner_kanban_boards.set_current_board("persist")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "envwin")
-        with kb.connect() as conn:
+        with kbc.connect() as conn:
             kb.create_task(conn, title="via-env", assignee="x")
-        with kb.connect(board="envwin") as conn:
+        with kbc.connect(board="envwin") as conn:
             assert [t.title for t in kb.list_tasks(conn)] == ["via-env"]
-        with kb.connect(board="persist") as conn:
+        with kbc.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
 
 
@@ -255,9 +265,9 @@ class TestWorkerSpawnEnv:
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
-        kb.create_board("spawntest")
+        _owner_kanban_boards.create_board("spawntest")
 
-        task = kb.Task(
+        task = _owner_kanban_db_models.Task(
             id="t_abc",
             title="worker test",
             body=None,
@@ -275,7 +285,7 @@ class TestWorkerSpawnEnv:
             tenant=None,
         )
 
-        kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
+        _owner_kanban_worker_spawn._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"

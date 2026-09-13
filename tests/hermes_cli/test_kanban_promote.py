@@ -8,6 +8,14 @@ Direct-SQL setup is used to construct that state deterministically.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_claims as _owner_kanban_claims
+import hermes_cli.kanban_transitions as _owner_kanban_transitions
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import argparse
 import json
 from pathlib import Path
@@ -16,6 +24,7 @@ import pytest
 
 from hermes_cli import kanban as kb_cli
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -24,15 +33,15 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    db_path = kb.kanban_db_path(board="default")
-    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
-    kb.init_db()
+    db_path = _owner_kanban_db.kanban_db_path(board="default")
+    _owner_kanban_db_connect._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    _owner_kanban_db_connect.init_db()
     return home
 
 
 @pytest.fixture
 def conn(kanban_home):
-    with kb.connect() as c:
+    with kbc.connect() as c:
         yield c
 
 
@@ -58,15 +67,27 @@ def _stuck_todo(conn, *, parents_done=True, n_parents=1):
 
 def test_promote_stuck_todo_succeeds(conn):
     child, _ = _stuck_todo(conn, parents_done=True)
-    ok, err = kb.promote_task(conn, child, actor="tester")
+    ok, err = _owner_kanban_transitions.promote_task(conn, child, actor="tester")
     assert ok and err is None
     assert kb.get_task(conn, child).status == "ready"
 
 
+def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
+    # #106195: promotion must never report a 'ready' that the first claim reverts.
+    child, (parent,) = _stuck_todo(conn, parents_done=False)
+    ok, err = _owner_kanban_transitions.promote_task(conn, child, actor="tester", reason="recovery")
+    assert not ok
+    assert parent in err and "--force" not in err and f"unlink <parent_id> {child}" in err
+    assert kb.get_task(conn, child).status == "todo"
+    assert _owner_kanban_claims.claim_task(conn, child) is None  # still gated; nothing pretended
 
 
-
-
+def test_cli_promote_has_no_force_flag(kanban_home):
+    from hermes_cli import kanban_parser
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kanban_parser.build_parser(parser.add_subparsers(dest="command"))
+    with pytest.raises(SystemExit):
+        parser.parse_args(["kanban", "promote", "t_x", "--force"])
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +109,7 @@ def _promote_ns(task_id, *, ids=None, reason=None, force=False,
 
 
 def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         children = [
             kb.create_task(conn, title=f"c{i}", parents=[parent])
@@ -100,7 +121,7 @@ def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
     out = capsys.readouterr().out
     for c in children:
         assert c in out
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         for c in children:
             assert kb.get_task(conn, c).status == "ready"
 

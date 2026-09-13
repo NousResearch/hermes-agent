@@ -7,15 +7,21 @@ source for the same conversation, a scope-less key does not, and platforms
 without tenant scoping keep their exact key shape.
 """
 
+import hermes_cli.kanban_completion as _owner_kanban_completion
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import asyncio
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.kanban_watchers import _wake_scope_id
+from gateway.kanban_watchers_notifier import _wake_scope_id
 from gateway.run import GatewayRunner
 from gateway.session import build_session_key
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 from plugins.platforms.slack.adapter import SlackAdapter
 
 TEAM = "T0B8U2M6NRE"
@@ -36,6 +42,7 @@ class UnscopedAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
+        event._gateway_accepted = True
 
 
 def _slack_adapter(channel_team=None):
@@ -45,7 +52,7 @@ def _slack_adapter(channel_team=None):
     adapter._app.client = AsyncMock()
     adapter._running = True
     adapter.send = AsyncMock()
-    adapter.handle_message = AsyncMock()
+    adapter.handle_message = AsyncMock(side_effect=lambda event: setattr(event, "_gateway_accepted", True))
     if channel_team:
         adapter._channel_team.update(channel_team)
     return adapter
@@ -75,7 +82,7 @@ async def _one_notifier_tick(monkeypatch, runner):
 
 
 def _completed_subscription(**sub_kwargs):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -87,8 +94,8 @@ def _completed_subscription(**sub_kwargs):
         # delivery_mode ("notify+wake"/"wake") on current main; the plain
         # "notify" default would never reach the wake path under test.
         sub_kwargs.setdefault("delivery_mode", "notify+wake")
-        kb.add_notify_sub(conn, task_id=tid, **sub_kwargs)
-        kb.complete_task(conn, tid, summary="done")
+        kbn.add_notify_sub(conn, task_id=tid, **sub_kwargs)
+        _owner_kanban_completion.complete_task(conn, tid, summary="done")
         return tid
     finally:
         conn.close()
@@ -103,7 +110,7 @@ def _wake_source_from(adapter):
 
 def test_slack_wake_resumes_the_creators_workspace_scoped_session(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-scope.db"))
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     _completed_subscription(
         platform="slack",
         chat_id=CHANNEL,
@@ -137,7 +144,7 @@ def test_slack_wake_resumes_the_creators_workspace_scoped_session(tmp_path, monk
 def test_slack_wake_falls_back_to_the_adapter_channel_workspace_map(tmp_path, monkeypatch):
     """Subscriptions that stored no workspace resolve it from the adapter."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-scope-fallback.db"))
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     _completed_subscription(
         platform="slack",
         chat_id=CHANNEL,
@@ -157,7 +164,7 @@ def test_slack_wake_falls_back_to_the_adapter_channel_workspace_map(tmp_path, mo
 def test_unknown_channel_keeps_the_previous_unscoped_wake(tmp_path, monkeypatch):
     """An unresolvable workspace yields an unscoped key, not a wrong scope."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-scope-unknown.db"))
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     _completed_subscription(
         platform="slack",
         chat_id=CHANNEL,
@@ -175,7 +182,7 @@ def test_unknown_channel_keeps_the_previous_unscoped_wake(tmp_path, monkeypatch)
 def test_unscoped_platform_wake_key_is_byte_identical(tmp_path, monkeypatch):
     """Platforms without tenant scoping must keep their exact key shape."""
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-scope-telegram.db"))
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     _completed_subscription(
         platform="telegram",
         chat_id="chat-dm",

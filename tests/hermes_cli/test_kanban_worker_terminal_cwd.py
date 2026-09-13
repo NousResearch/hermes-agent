@@ -13,11 +13,15 @@ Pinning ``TERMINAL_CWD`` to the workspace fixes both.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_models as _owner_kanban_db_models
+
+import hermes_cli.kanban_worker_spawn as _owner_kanban_worker_spawn
+
 import subprocess
 
 
 def _make_task(kb, *, assignee: str = "w"):
-    return kb.Task(
+    return _owner_kanban_db_models.Task(
         id="t_cwd",
         title="cwd pin",
         body=None,
@@ -38,7 +42,9 @@ def _make_task(kb, *, assignee: str = "w"):
 
 
 def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(_owner_kanban_worker_spawn, "_resolve_hermes_argv", lambda: ["hermes"])
 
     captured: dict = {}
 
@@ -52,7 +58,7 @@ def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    kb._default_spawn(_make_task(kb), workspace)
+    _owner_kanban_worker_spawn._default_spawn(_make_task(kb), workspace)
     return captured
 
 

@@ -5,6 +5,11 @@ state.db as an untitled `cli` row — the desktop sidebar then rendered one entr
 per attempt, labeled with the worker's own prompt.
 """
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+import hermes_cli.kanban_db_models as _owner_kanban_db_models
+
+import hermes_cli.kanban_worker_spawn as _owner_kanban_worker_spawn
+
 import os
 
 import pytest
@@ -23,6 +28,7 @@ def db(tmp_path, monkeypatch):
 def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     """The dispatcher tags the worker's env so its session is a `kanban` row."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
     captured = {}
 
@@ -34,10 +40,10 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
         return _Proc()
 
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
-    monkeypatch.setattr(kb, "_retag_legacy_worker_sessions", lambda _root: None)
-    monkeypatch.setattr(kb, "worker_logs_dir", lambda board=None: tmp_path / "logs")
+    monkeypatch.setattr(_owner_kanban_worker_spawn, "_retag_legacy_worker_sessions", lambda _root: None)
+    monkeypatch.setattr(_owner_kanban_boards, "worker_logs_dir", lambda board=None: tmp_path / "logs")
 
-    task = kb.Task(
+    task = _owner_kanban_db_models.Task(
         id="t_b21733fb",
         title="ship it",
         body=None,
@@ -57,7 +63,7 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     workspace = str(tmp_path / "ws")
     os.makedirs(workspace, exist_ok=True)
 
-    kb._default_spawn(task, workspace)
+    _owner_kanban_worker_spawn._default_spawn(task, workspace)
 
     assert captured["env"]["HERMES_SESSION_SOURCE"] == "kanban"
 

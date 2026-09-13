@@ -9,12 +9,10 @@ from tools.budget_config import (
     BudgetConfig,
 )
 from tools.tool_result_storage import (
-    HEREDOC_MARKER,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
-    _heredoc_marker,
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
@@ -41,20 +39,6 @@ class TestGeneratePreview:
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
-
-
-# ── _heredoc_marker ───────────────────────────────────────────────────
-
-class TestHeredocMarker:
-    def test_default_marker_when_no_collision(self):
-        assert _heredoc_marker("normal content") == HEREDOC_MARKER
-
-    def test_uuid_marker_on_collision(self):
-        content = f"some text with {HEREDOC_MARKER} embedded"
-        marker = _heredoc_marker(content)
-        assert marker != HEREDOC_MARKER
-        assert marker.startswith("HERMES_PERSIST_")
-        assert marker not in content
 
 
 # ── _write_to_sandbox ─────────────────────────────────────────────────
@@ -340,7 +324,7 @@ class TestSpillover:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         # Reset the once-per-process prune flag so each test is independent.
         import tools.tool_result_storage as trs
-        monkeypatch.setattr(trs, "_spillover_pruned_once", False)
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
         yield
 
     def test_env_none_persists_to_spillover(self):

@@ -11,6 +11,8 @@ new comments steer, and own-authored comments are skipped.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import sys
 from pathlib import Path
 
@@ -21,6 +23,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 import tools.kanban_tools as kt
 
 
@@ -46,7 +49,7 @@ def worker_home(tmp_path, monkeypatch):
         hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
     except Exception:
         pass
-    kb._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
     # Reset module-level poll state so tests don't leak into each other.
     kt._comment_watermark.clear()
     kt._comment_poll_last_attempt = 0.0
@@ -66,7 +69,7 @@ def test_noop_without_worker_env(worker_home, monkeypatch):
 
 
 def test_seed_then_inject_new_comment(worker_home, monkeypatch):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="live task")
         kb.add_comment(conn, tid, author="desktop", body="pre-existing note")
@@ -82,7 +85,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
     assert kt.inject_new_comments_from_env(agent) is False
     assert agent.steers == []
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="desktop", body="actually use the v2 API")
     finally:
@@ -100,7 +103,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
 
 
 def test_skips_own_authored_comments(worker_home, monkeypatch):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="echo guard")
     finally:
@@ -113,7 +116,7 @@ def test_skips_own_authored_comments(worker_home, monkeypatch):
     _unthrottle()
     kt.inject_new_comments_from_env(agent)  # seed
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         kb.add_comment(conn, tid, author="worker-bot", body="i did a thing")
     finally:

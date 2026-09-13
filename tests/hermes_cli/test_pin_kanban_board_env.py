@@ -7,10 +7,13 @@ Without this, a concurrent `hermes kanban boards switch` from another session
 can flip the global current-board file mid-turn and silently divert the
 shell calls to a different DB.
 """
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
 import importlib
 import os
 
 import pytest
+from hermes_cli import main_tui_launch
 
 
 @pytest.fixture(autouse=True)
@@ -37,9 +40,9 @@ def test_pin_writes_resolved_board_when_env_unset(monkeypatch):
     main_mod = importlib.import_module("hermes_cli.main")
 
     import hermes_cli.kanban_db as kdb
-    monkeypatch.setattr(kdb, "get_current_board", lambda: "space")
+    monkeypatch.setattr(_owner_kanban_boards, "get_current_board", lambda: "space")
 
-    main_mod._pin_kanban_board_env()
+    main_tui_launch._pin_kanban_board_env()
 
     assert main_mod.os.environ.get("HERMES_KANBAN_BOARD") == "space"
 
@@ -53,9 +56,9 @@ def test_pin_does_not_overwrite_existing_env(monkeypatch):
     def _explode():
         raise AssertionError("get_current_board must not be called when env is set")
 
-    monkeypatch.setattr(kdb, "get_current_board", _explode)
+    monkeypatch.setattr(_owner_kanban_boards, "get_current_board", _explode)
 
-    main_mod._pin_kanban_board_env()
+    main_tui_launch._pin_kanban_board_env()
 
     assert main_mod.os.environ.get("HERMES_KANBAN_BOARD") == "preset"
 

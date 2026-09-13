@@ -9,6 +9,8 @@ direct-SQL write path (single-task PATCH and bulk POST) reports through
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -18,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import get_plugin_manager
 
 
@@ -41,7 +44,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -67,7 +70,7 @@ def captured_updates():
 
 
 def _make_task(title="t"):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         return kb.create_task(conn, title=title, assignee="alice")
     finally:

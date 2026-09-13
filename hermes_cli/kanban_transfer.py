@@ -1,46 +1,32 @@
 """Kanban board export / import — move a whole board between machines.
 
-Backs ``hermes kanban export|import``, the matching ``/boards/{slug}/export``
-and ``/boards/import`` REST endpoints, and the desktop board switcher's
-Export/Import items.
+Backs ``hermes kanban export|import``, the ``/boards/{slug}/export`` and
+``/boards/import`` REST endpoints, and the desktop board switcher. Archive
+layout (``<slug>.tar.gz``, one top-level dir named for the source slug):
+``manifest.json`` (format/version/provenance/counts), ``board.json`` (display
+metadata, machine-local fields stripped), ``kanban.db`` (consistent snapshot),
+``attachments/<task>/…`` (unless --no-attachments), ``logs/<task>.log`` (only
+with --include-logs).
 
-Archive layout (``<slug>.tar.gz``, one top-level directory named for the
-source board's slug)::
-
-    <slug>/
-      manifest.json          format + version + provenance + row counts
-      board.json             display metadata, machine-local fields stripped
-      kanban.db              consistent snapshot of the board database
-      attachments/<task>/…   attachment blobs (unless --no-attachments)
-      logs/<task>.log        worker logs (only with --include-logs)
-
-Two things make this more than a ``tar czf`` of the board directory.
-
-**The database is live.** Kanban runs in WAL mode and a dispatcher may be
-mid-write, so copying ``kanban.db`` off the filesystem yields a torn
-snapshot that is missing whatever still sits in the ``-wal`` file. Export
-goes through SQLite's online-backup API instead, which produces a
-consistent single-file image of a database that is being written to.
-
-**Rows carry machine-local state.** Claims, PIDs, heartbeats, absolute
-workspace and attachment paths, gateway chat subscriptions, and session
-ids are all meaningful only on the machine that wrote them. Shipping them
-verbatim is how an imported board arrives holding claims owned by a
-process on somebody else's laptop, or starts pushing task events into a
-stranger's Telegram thread. Everything machine-local is scrubbed on the
-export side (so the archive itself never carries it) and defensively
-re-scrubbed on import; see :func:`_scrub_local_state` and
-:func:`_relocate_imported_rows`.
-
-Imports always land as a **new** board — the slug auto-suffixes on
-collision — so an import can never mutate a board that is already there.
-That also means an imported board is never ``default``, which is what
-lets the import side ignore the default board's split on-disk layout
-(``<root>/kanban.db`` beside ``<root>/kanban/attachments/``) and put
-everything inside one ``boards/<slug>/`` directory.
+Two things make this more than ``tar czf`` of the board directory: the DB is
+live (WAL mode, dispatcher may be mid-write) so export uses SQLite's online
+backup instead of a file copy that would miss the ``-wal`` sidecar; and rows
+carry machine-local state (claims, PIDs, heartbeats, absolute paths, gateway
+chat subscriptions, session ids) that would import a stranger's claims or push
+events into a stranger's Telegram thread — scrubbed on export and re-scrubbed
+on import (an archive is untrusted); see :func:`_scrub_local_state` and
+:func:`_relocate_imported_rows`. Imports always land as a **new** board (slug
+auto-suffixes on collision), never ``default``, so the importer can ignore the
+default board's split on-disk layout.
 """
 
 from __future__ import annotations
+
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
 
 import contextlib
 import json
@@ -51,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.archive_safe import (
     archive_root_dirs,
     copy_regular_files,
@@ -67,6 +53,11 @@ ARCHIVE_FORMAT_VERSION = 1
 # if it is in one of these — terminal and already-parked tasks are left
 # alone rather than having their history rewritten.
 _DISPATCHABLE_STATUSES = ("ready", "running", "todo", "scheduled")
+_COUNTED_TABLES = ("tasks", "task_links", "task_comments", "task_events", "task_runs", "task_attachments")
+
+
+def _placeholders(items) -> str:
+    return ", ".join("?" * len(items))
 
 
 # ---------------------------------------------------------------------------
@@ -74,33 +65,17 @@ _DISPATCHABLE_STATUSES = ("ready", "running", "todo", "scheduled")
 # ---------------------------------------------------------------------------
 
 def _snapshot_db(source: Path, target: Path) -> None:
-    """Write a consistent copy of ``source`` to ``target``.
-
-    Uses SQLite's online-backup API rather than a file copy: in WAL mode
-    a just-committed page can still live in the ``-wal`` sidecar, so
-    copying only ``kanban.db`` loses recent writes and can produce a
-    torn image if the dispatcher commits mid-copy.
-    """
-    src = sqlite3.connect(str(source))
-    try:
-        dst = sqlite3.connect(str(target))
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        src.close()
+    """Consistent copy of ``source`` via the online-backup API (a file copy
+    would miss pages still in the ``-wal`` sidecar and could tear)."""
+    with contextlib.closing(sqlite3.connect(str(source))) as src, \
+            contextlib.closing(sqlite3.connect(str(target))) as dst:
+        src.backup(dst)
 
 
 def _scrub_local_state(conn: sqlite3.Connection) -> None:
-    """Strip machine-local runtime state. Caller owns the transaction.
-
-    Runs on the export side so the archive itself never carries another
-    machine's claims, PIDs, or — the one that actually matters for a
-    board shared with someone else — the gateway chat ids subscribed to
-    its task events. Repeated on import because an archive is untrusted
-    input.
-    """
+    """Strip machine-local runtime state (claims, PIDs, and above all the
+    gateway chat ids subscribed to task events). Caller owns the transaction.
+    Run on export and again on import (an archive is untrusted input)."""
     conn.execute("DELETE FROM kanban_notify_subs")
     conn.execute(
         """
@@ -130,24 +105,26 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
         """,
         (int(time.time()),),
     )
-    conn.execute("UPDATE task_runs SET claim_lock = NULL, worker_pid = NULL")
+    conn.execute("UPDATE task_runs SET claim_lock = NULL, claim_expires = NULL, worker_pid = NULL")
+    # Export may snapshot a board that has not yet been migrated by this
+    # install. Clear optional ownership columns when present; import runs
+    # the same scrub after migration and must distrust archive contents.
+    for table, fields in (
+        ("tasks", ("worker_scope", "worker_pid_started_at", "worker_registered_at", "reclaim_reserved_at")),
+        ("task_runs", ("worker_scope", "stop_pending")),
+    ):
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        resets = [f"{field} = NULL" for field in fields if field in present]
+        if resets:
+            conn.execute(f"UPDATE {table} SET {', '.join(resets)}")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _count_rows(conn: sqlite3.Connection) -> dict[str, int]:
-    tables = (
-        "tasks", "task_links", "task_comments",
-        "task_events", "task_runs", "task_attachments",
-    )
-    return {
-        t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
-        for t in tables
-    }
+    return {t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]) for t in _COUNTED_TABLES}
 
 
 def export_board(
@@ -157,22 +134,18 @@ def export_board(
     include_attachments: bool = True,
     include_logs: bool = False,
 ) -> dict[str, Any]:
-    """Export ``board`` to a ``tar.gz`` archive. Returns a summary dict.
-
-    ``output_path`` may be given with or without the ``.tar.gz`` suffix.
-    Workspaces are never included: they are git worktrees and scratch
-    trees that are large, machine-local, and rebuilt on demand.
-    """
-    slug = kb._normalize_board_slug(board) or kb.get_current_board()
-    if not kb.board_exists(slug):
+    """Export ``board`` to a ``tar.gz`` (suffix optional on ``output_path``);
+    returns a summary dict. Workspaces are never included — large,
+    machine-local, rebuilt on demand."""
+    slug = _owner_kanban_boards._normalize_board_slug(board) or _owner_kanban_boards.get_current_board()
+    if not _owner_kanban_boards.board_exists(slug):
         raise ValueError(f"board {slug!r} does not exist")
 
-    db_path = kb.kanban_db_path(slug)
+    db_path = _owner_kanban_db.kanban_db_path(slug)
     if not db_path.exists():
         raise FileNotFoundError(f"board {slug!r} has no database at {db_path}")
 
-    output = Path(output_path).expanduser()
-    base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
+    base = str(Path(output_path).expanduser()).removesuffix(".tar.gz").removesuffix(".tgz")
     Path(base).parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -187,7 +160,7 @@ def export_board(
             snapshot.commit()
             counts = _count_rows(snapshot)
 
-        meta = kb.read_board_metadata(slug)
+        meta = _owner_kanban_boards.read_board_metadata(slug)
         # Both name a location on the exporting machine; the importer
         # resolves its own.
         meta.pop("db_path", None)
@@ -195,16 +168,8 @@ def export_board(
         meta["project_id"] = None
         _write_json(staged / "board.json", meta)
 
-        attachments = 0
-        if include_attachments:
-            attachments = copy_regular_files(
-                kb.attachments_root(slug), staged / "attachments"
-            )
-        logs = 0
-        if include_logs:
-            logs = copy_regular_files(
-                kb.worker_logs_dir(slug), staged / "logs"
-            )
+        attachments = copy_regular_files(_owner_kanban_boards.attachments_root(slug), staged / "attachments") if include_attachments else 0
+        logs = copy_regular_files(_owner_kanban_boards.worker_logs_dir(slug), staged / "logs") if include_logs else 0
 
         try:
             from hermes_cli import __version__ as hermes_version
@@ -218,10 +183,7 @@ def export_board(
             "board_name": meta.get("name") or slug,
             "exported_at": int(time.time()),
             "hermes_version": str(hermes_version),
-            "includes": {
-                "attachments": bool(include_attachments),
-                "logs": bool(include_logs),
-            },
+            "includes": {"attachments": bool(include_attachments), "logs": bool(include_logs)},
             "counts": {**counts, "attachment_files": attachments, "log_files": logs},
         }
         _write_json(staged / "manifest.json", manifest)
@@ -241,30 +203,22 @@ def export_board(
 # ---------------------------------------------------------------------------
 
 def _available_slug(preferred: str) -> str:
-    """Return ``preferred``, or the first free ``<preferred>-N`` variant.
-
-    ``default`` always reports as existing, so an archive exported from a
-    default board naturally lands as ``default-2`` instead of colliding
-    with the importer's own default board.
-    """
-    if not kb.board_exists(preferred):
+    """``preferred`` or the first free ``<preferred>-N``. ``default`` always
+    exists, so a default-board export lands as ``default-2``."""
+    if not _owner_kanban_boards.board_exists(preferred):
         return preferred
     # Leave headroom for the suffix inside the 64-char slug limit.
     stem = preferred[:58].rstrip("-_") or "board"
     n = 2
-    while True:
-        candidate = f"{stem}-{n}"
-        if not kb.board_exists(candidate):
-            return candidate
+    while _owner_kanban_boards.board_exists(f"{stem}-{n}"):
         n += 1
+    return f"{stem}-{n}"
 
 
 def _read_manifest(root: Path) -> dict[str, Any]:
     path = root / "manifest.json"
     if not path.exists():
-        raise ValueError(
-            "archive is not a Hermes kanban board export (no manifest.json)"
-        )
+        raise ValueError("archive is not a Hermes kanban board export (no manifest.json)")
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -292,92 +246,58 @@ def _read_board_metadata(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _relocate_imported_rows(
-    conn: sqlite3.Connection, slug: str
-) -> tuple[dict[str, int], list[str]]:
-    """Re-anchor an imported board's rows to this machine.
+def _relocate_imported_rows(conn: sqlite3.Connection, slug: str) -> tuple[dict[str, int], list[str]]:
+    """Re-anchor an imported board's rows to this machine; returns ``(stats, warnings)``.
 
-    Returns ``(stats, warnings)``. Three things move:
-
-    * Attachment rows are repointed at this board's attachments tree.
-      Rows whose blob did not travel (an export made with
-      ``--no-attachments``) are dropped, because a row pointing at a file
-      that does not exist breaks download in every UI that lists it.
-    * Workspace paths are cleared. ``scratch`` tasks regenerate one under
-      this board on the next claim, so they are simply reset. ``dir`` and
-      ``worktree`` tasks cannot be resolved without a path that means
-      something here, so any that are still dispatchable are parked in
-      ``triage`` — otherwise the dispatcher claims them, fails to build a
-      workspace, and burns them straight into the failure breaker.
-    * Runtime state is scrubbed again. Export already did this, but an
-      archive is an untrusted input and the cost is one UPDATE.
+    * Attachment rows are repointed at this board's tree; rows whose blob
+      did not travel (``--no-attachments``) are dropped, since a dangling row
+      breaks download in every UI.
+    * Workspace paths are cleared. ``scratch`` regenerates on next claim;
+      dispatchable ``dir``/``worktree`` tasks are parked in ``triage``,
+      otherwise the dispatcher claims them, fails to build a workspace, and
+      burns them into the failure breaker.
+    * Runtime state is scrubbed again (untrusted input, one UPDATE).
     """
     warnings: list[str] = []
     now = int(time.time())
-    attachments_dir = kb.attachments_root(slug)
+    attachments_dir = _owner_kanban_boards.attachments_root(slug)
 
-    with kb.write_txn(conn):
+    with _owner_kanban_db_connect.write_txn(conn):
         _scrub_local_state(conn)
 
-        dropped = 0
-        rehomed = 0
-        for row in conn.execute(
-            "SELECT id, task_id, stored_path FROM task_attachments"
-        ).fetchall():
+        dropped = rehomed = 0
+        for row in conn.execute("SELECT id, task_id, stored_path FROM task_attachments").fetchall():
             landed = attachments_dir / row["task_id"] / Path(row["stored_path"]).name
             if landed.is_file():
-                conn.execute(
-                    "UPDATE task_attachments SET stored_path = ? WHERE id = ?",
-                    (str(landed), row["id"]),
-                )
+                conn.execute("UPDATE task_attachments SET stored_path = ? WHERE id = ?", (str(landed), row["id"]))
                 rehomed += 1
             else:
-                conn.execute(
-                    "DELETE FROM task_attachments WHERE id = ?", (row["id"],)
-                )
+                conn.execute("DELETE FROM task_attachments WHERE id = ?", (row["id"],))
                 dropped += 1
         if dropped:
-            warnings.append(
-                f"{dropped} attachment record(s) dropped — the files were not "
-                f"in the archive"
-            )
+            warnings.append(f"{dropped} attachment record(s) dropped — the files were not in the archive")
 
         parked = [
             r["id"]
             for r in conn.execute(
                 "SELECT id FROM tasks WHERE workspace_kind IN ('dir', 'worktree') "
-                f"AND status IN ({', '.join('?' * len(_DISPATCHABLE_STATUSES))})",
+                f"AND status IN ({_placeholders(_DISPATCHABLE_STATUSES)})",
                 _DISPATCHABLE_STATUSES,
             ).fetchall()
         ]
         conn.execute("UPDATE tasks SET workspace_path = NULL, branch_name = NULL")
         if parked:
-            conn.execute(
-                f"UPDATE tasks SET status = 'triage' "
-                f"WHERE id IN ({', '.join('?' * len(parked))})",
-                parked,
-            )
+            conn.execute(f"UPDATE tasks SET status = 'triage' WHERE id IN ({_placeholders(parked)})", parked)
             warnings.append(
-                f"{len(parked)} task(s) moved to triage — their workspace was a "
-                f"directory or git worktree on the exporting machine and needs "
-                f"to be pointed somewhere on this one"
+                f"{len(parked)} task(s) moved to triage — their workspace was a directory or git "
+                f"worktree on the exporting machine and needs to be pointed somewhere on this one"
             )
 
         for row in conn.execute("SELECT id FROM tasks").fetchall():
             conn.execute(
                 "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
                 "VALUES (?, NULL, 'imported', ?, ?)",
-                (
-                    row["id"],
-                    json.dumps(
-                        {
-                            "board": slug,
-                            "parked": row["id"] in parked,
-                        },
-                        ensure_ascii=False,
-                    ),
-                    now,
-                ),
+                (row["id"], json.dumps({"board": slug, "parked": row["id"] in parked}, ensure_ascii=False), now),
             )
 
     return {"attachments": rehomed, "parked": len(parked)}, warnings
@@ -389,21 +309,15 @@ def import_board(
     *,
     activate: bool = False,
 ) -> dict[str, Any]:
-    """Import a board archive as a new board. Returns a summary dict.
-
-    ``slug`` overrides the name from the archive. Either way the final
-    slug auto-suffixes if it is taken, so an import never merges into or
-    overwrites an existing board.
-    """
+    """Import an archive as a NEW board (``slug`` overrides the archive's;
+    either way it auto-suffixes if taken). Returns a summary dict."""
     archive = Path(archive_path).expanduser()
     if not archive.exists():
         raise FileNotFoundError(f"archive not found: {archive}")
 
     roots = archive_root_dirs(archive)
     if len(roots) != 1:
-        raise ValueError(
-            "a kanban board archive must contain exactly one top-level directory"
-        )
+        raise ValueError("a kanban board archive must contain exactly one top-level directory")
     archive_root = roots.pop()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -416,9 +330,7 @@ def import_board(
         if not staged_db.is_file():
             raise ValueError("archive is missing kanban.db")
 
-        requested = kb._normalize_board_slug(
-            slug or manifest.get("board") or archive_root
-        )
+        requested = _owner_kanban_boards._normalize_board_slug(slug or manifest.get("board") or archive_root)
         if not requested:
             raise ValueError(
                 "cannot determine a board name from the archive — pass one "
@@ -428,7 +340,7 @@ def import_board(
 
         staged_meta = _read_board_metadata(extracted / "board.json")
 
-        board_root = kb.board_dir(target)
+        board_root = _owner_kanban_boards.board_dir(target)
         board_root.mkdir(parents=True, exist_ok=True)
         shutil.move(str(staged_db), str(board_root / "kanban.db"))
         for tree in ("attachments", "logs"):
@@ -439,7 +351,7 @@ def import_board(
     # Rewritten rather than moved across: the archive's copy names a slug
     # and a workdir that belong to the exporting machine.
     name = str(staged_meta.get("name") or manifest.get("board_name") or target)
-    kb.write_board_metadata(
+    _owner_kanban_boards.write_board_metadata(
         target,
         name=name,
         description=str(staged_meta.get("description") or ""),
@@ -449,22 +361,22 @@ def import_board(
     )
     # Bring the imported schema up to this install's version before the
     # relocation pass writes to it.
-    kb.init_db(board=target)
+    _owner_kanban_db_connect.init_db(board=target)
 
-    with kb.connect_closing(board=target) as conn:
+    with kbc.connect_closing(board=target) as conn:
         stats, warnings = _relocate_imported_rows(conn, target)
         counts = _count_rows(conn)
 
     if activate:
-        kb.set_current_board(target)
+        _owner_kanban_boards.set_current_board(target)
 
     return {
         "board": target,
         "requested_board": requested,
         "renamed": target != requested,
         "name": name,
-        "path": str(kb.board_dir(target)),
-        "db_path": str(kb.kanban_db_path(target)),
+        "path": str(_owner_kanban_boards.board_dir(target)),
+        "db_path": str(_owner_kanban_db.kanban_db_path(target)),
         "source": {
             "board": manifest.get("board"),
             "exported_at": manifest.get("exported_at"),

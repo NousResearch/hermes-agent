@@ -7,6 +7,10 @@ metadata round-trip and the create-time inheritance.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import sys
 from pathlib import Path
 
@@ -17,6 +21,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import projects_db as pdb
 
 
@@ -33,27 +38,27 @@ def fresh_home(tmp_path, monkeypatch):
         hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
     except Exception:
         pass
-    kb._INITIALIZED_PATHS.clear()
+    _owner_kanban_db_connect._INITIALIZED_PATHS.clear()
     return home
 
 
 def test_board_metadata_project_id_roundtrip(fresh_home):
-    assert kb.read_board_metadata("default").get("project_id") is None
+    assert _owner_kanban_boards.read_board_metadata("default").get("project_id") is None
 
-    kb.write_board_metadata("default", project_id="p_abc123")
-    assert kb.read_board_metadata("default")["project_id"] == "p_abc123"
+    _owner_kanban_boards.write_board_metadata("default", project_id="p_abc123")
+    assert _owner_kanban_boards.read_board_metadata("default")["project_id"] == "p_abc123"
 
     # None leaves unchanged; "" clears.
-    kb.write_board_metadata("default", name="Still Here")
-    assert kb.read_board_metadata("default")["project_id"] == "p_abc123"
-    kb.write_board_metadata("default", project_id="")
-    assert kb.read_board_metadata("default")["project_id"] is None
+    _owner_kanban_boards.write_board_metadata("default", name="Still Here")
+    assert _owner_kanban_boards.read_board_metadata("default")["project_id"] == "p_abc123"
+    _owner_kanban_boards.write_board_metadata("default", project_id="")
+    assert _owner_kanban_boards.read_board_metadata("default")["project_id"] is None
 
 
 def test_create_board_accepts_project_id(fresh_home):
-    meta = kb.create_board("proj-board", name="Proj Board", project_id="p_xyz")
+    meta = _owner_kanban_boards.create_board("proj-board", name="Proj Board", project_id="p_xyz")
     assert meta["project_id"] == "p_xyz"
-    assert kb.read_board_metadata("proj-board")["project_id"] == "p_xyz"
+    assert _owner_kanban_boards.read_board_metadata("proj-board")["project_id"] == "p_xyz"
 
 
 def test_create_task_inherits_board_project(fresh_home, tmp_path):
@@ -62,8 +67,8 @@ def test_create_task_inherits_board_project(fresh_home, tmp_path):
     with pdb.connect_closing() as pconn:
         proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
 
-    kb.create_board("scoped", name="Scoped", project_id=proj_id)
-    conn = kb.connect(board="scoped")
+    _owner_kanban_boards.create_board("scoped", name="Scoped", project_id=proj_id)
+    conn = kbc.connect(board="scoped")
     try:
         tid = kb.create_task(conn, title="inherit me", board="scoped")
         assert kb.get_task(conn, tid).project_id == proj_id
@@ -78,10 +83,31 @@ def test_create_task_explicit_project_beats_board(fresh_home, tmp_path):
         board_proj = pdb.create_project(pconn, name="BoardProj", primary_path=str(tmp_path / "a"))
         task_proj = pdb.create_project(pconn, name="TaskProj", primary_path=str(tmp_path / "b"))
 
-    kb.create_board("scoped2", name="Scoped2", project_id=board_proj)
-    conn = kb.connect(board="scoped2")
+    _owner_kanban_boards.create_board("scoped2", name="Scoped2", project_id=board_proj)
+    conn = kbc.connect(board="scoped2")
     try:
         tid = kb.create_task(conn, title="explicit", board="scoped2", project_id=task_proj)
         assert kb.get_task(conn, tid).project_id == task_proj
+    finally:
+        conn.close()
+
+
+def test_create_task_explicit_scratch_beats_board(fresh_home, tmp_path):
+    """#106342: every surface (CLI --workspace scratch, dashboard workspace_kind,
+    tool) funnels here; an explicit scratch on a project-scoped board must stay
+    scratch, while an omitted kind still inherits the project worktree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pdb.connect_closing() as pconn:
+        proj_id = pdb.create_project(pconn, name="Widget", primary_path=str(repo))
+
+    _owner_kanban_boards.create_board("scoped3", name="Scoped3", project_id=proj_id)
+    conn = kbc.connect(board="scoped3")
+    try:
+        scratch = kb.get_task(conn, kb.create_task(
+            conn, title="explicit scratch", board="scoped3", workspace_kind="scratch"))
+        assert (scratch.workspace_kind, scratch.project_id) == ("scratch", None)
+        default = kb.get_task(conn, kb.create_task(conn, title="default", board="scoped3"))
+        assert (default.workspace_kind, default.project_id) == ("worktree", proj_id)
     finally:
         conn.close()

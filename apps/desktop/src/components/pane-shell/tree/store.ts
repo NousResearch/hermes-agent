@@ -43,7 +43,6 @@ import {
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
-import { rootChildSide } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -97,6 +96,15 @@ export const $treeDragging = atom<string | null>(null)
 /** Sentinel `$treeDragging` value for a session (not a pane) drag — the zone
  *  overlay renders its normal targets, scoped to session-hosting zones. */
 export const SESSION_TILE_DRAG = '__session-tile-drag__'
+
+/** Sentinel `$treeDragging` value for a NEW-session drag (the sidebar's
+ *  "New session" row dragged into a zone). It reuses the SAME zone overlay as
+ *  a session drag EXCEPT the "link to chat" affordance never lights: a session
+ *  that doesn't exist yet can't be `@session`-linked, so a center drop stacks a
+ *  fresh tab instead. Keeping this distinct from SESSION_TILE_DRAG is what lets
+ *  the overlay's `sessionDrag` checks (which gate the link affordance) stay
+ *  false here with zero edits to the hot overlay paths. */
+export const NEW_SESSION_DRAG = '__new-session-drag__'
 
 /**
  * Panes hidden by app chrome toggles (titlebar sidebar / right-sidebar
@@ -181,7 +189,7 @@ function frontPaneInGroup(paneId: string) {
  *    removed from the tree and remembered so adoption doesn't re-add them.
  *    Reveal intent (a preview target, ⌘G) or a layout reset un-dismisses;
  *  - closing the sole pane from a plugin disables that plugin, preserving the
- *    discoverable Settings → Plugins recovery path for single-pane plugins.
+ *    discoverable Capabilities → Plugins recovery path for single-pane plugins.
  */
 const DISMISSED_KEY = 'hermes.desktop.dismissedPanes.v1'
 
@@ -200,6 +208,28 @@ function setDismissed(paneId: string, dismissed: boolean) {
   const next = toggledSet($dismissedPanes.get(), paneId, dismissed)
 
   if (next) {
+    saveDismissed(next)
+  }
+}
+
+/**
+ * Clear dismissal records for panes a NEW layout declares, without touching
+ * the tree or anyone's active tab (`revealTreePane` fronts, which would bury
+ * whatever the user is looking at).
+ *
+ * A dismissal outlives the layout that caused it. Switching to a layout that
+ * wants a previously dismissed pane back would otherwise place it in the tree
+ * and leave it invisible — the layout half-applies.
+ */
+export function undismissTreePanes(paneIds: Iterable<string>): void {
+  const dismissed = $dismissedPanes.get()
+  const next = new Set(dismissed)
+
+  for (const paneId of paneIds) {
+    next.delete(paneId)
+  }
+
+  if (next.size !== dismissed.size) {
     saveDismissed(next)
   }
 }
@@ -501,6 +531,16 @@ export const isMainStripPane = (paneId: string): boolean =>
   (registry.getArea('panes').find(c => c.id === paneId)?.data as { placement?: string } | undefined)?.placement ===
   'main'
 
+/** Whether a zone may receive a SESSION drop — an existing session dragged
+ *  from the sidebar, or a brand-new one dropped from a create-drag ("New
+ *  session" row, project "+" buttons, "New project" +). Any zone hosting a
+ *  chat strip or another main tile qualifies; standing side chrome never does.
+ *  The resolvers (session-drag.ts / new-session-drag.ts) and the zone overlay
+ *  (tree-group.tsx) share this one truth, so every painted zone can commit
+ *  and every denied zone stays dark — the two cannot drift apart again. */
+export const hostsSessionDropTarget = (paneIds: readonly string[]): boolean =>
+  paneIds.some(isSessionStripPane) || paneIds.some(isMainStripPane)
+
 /** The zone the session-tab verbs (⌘T / ⌘⇧T / the strip's "+") act on: the
  *  first of hovered / focused / workspace that hosts a chat strip. Same ladder
  *  ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree about
@@ -736,6 +776,11 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
   })
 }
 
+/** Shared target for tab-number hints and shortcut dispatch. */
+export function treeTabSlotTarget(): GroupNode | null {
+  return tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
+}
+
 /** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
  *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
  *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
@@ -744,7 +789,7 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
  *  must also route back to the chat) — or null so it falls back to its
  *  default (profile switch) when no zone qualifies. */
 export function activateTreeTabSlot(slot: number): null | string {
-  const group = tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
+  const group = treeTabSlotTarget()
   const panes = group ? shownPanesInGroup(group) : []
 
   if (!group || slot < 1 || slot > panes.length) {
@@ -848,9 +893,23 @@ export function paneRootSide(paneId: string): null | TreeSide {
   }
 
   const panes = registry.getArea('panes')
-  const child = row.children.find(c => allPaneIds(c).includes(paneId))
+  const index = row.children.findIndex(c => allPaneIds(c).includes(paneId))
 
-  return child ? rootChildSide(child, id => panes.find(p => p.id === id)) : null
+  const mainIndices = row.children.flatMap((child, i) =>
+    allPaneIds(child).some(
+      id =>
+        id === 'workspace' ||
+        (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+    )
+      ? [i]
+      : []
+  )
+
+  if (index < 0 || mainIndices.length === 0) {
+    return null
+  }
+
+  return index < mainIndices[0] ? 'left' : index > mainIndices[mainIndices.length - 1] ? 'right' : null
 }
 
 /** The closer-less Close: dismiss the pane (removed + remembered; reveal
@@ -890,7 +949,7 @@ export function closeTreePane(paneId: string) {
     }
 
     // A single-pane plugin keeps the existing symmetric behavior: Close uses
-    // the same switch as Settings → Plugins. Its contribution unregisters but
+    // the same switch as Capabilities → Plugins. Its contribution unregisters but
     // the pane id stays in the tree, so re-enabling restores its exact place.
     const pluginId = source.slice('plugin:'.length)
     void setPluginEnabled(pluginId, false)
@@ -939,11 +998,52 @@ export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
   }
 }
 
+/** Explicit side-open also recovers hide-only tabs, without fronting over Bots. */
+export function restoreHiddenTreeSideTabs(side: TreeSide): void {
+  for (const paneId of [...$hiddenStripTabs.get()]) {
+    if (paneRootSide(paneId) === side) {
+      setStripTabHidden(paneId, false)
+    }
+  }
+}
+
+/** Restore minimized zones without changing their active tab (including Bots). */
+export function restoreMinimizedTreeSide(side: TreeSide): boolean {
+  const tree = $layoutTree.get()
+  const row = rootRow()
+
+  if (!tree || !row) {
+    return false
+  }
+
+  let next = tree
+
+  for (const child of row.children) {
+    if (paneRootSide(allPaneIds(child)[0]) !== side) {
+      continue
+    }
+
+    for (const id of groupLeafIds(child)) {
+      if (findGroup(next, id)?.minimized) {
+        next = setGroupMinimized(next, id, false)
+      }
+    }
+  }
+
+  if (next === tree) {
+    return false
+  }
+
+  commit(next)
+
+  return true
+}
+
 /**
  * Does the layout have a collapsible root side of `side`? ⌘J's normal target is
  * the right sidebar; a layout without one (e.g. a terminal-on-bottom preset)
- * lets callers fall back to the terminal so ⌘J is never a dead key. Semantic —
- * reuses `rootChildSide`, so it tracks a ⌘\ flip / drag like the toggles do.
+ * lets callers fall back to the terminal so ⌘J is never a dead key. Tracks
+ * physical position through a ⌘\ flip / drag, just like the toggles.
  */
 export function layoutHasRootSide(side: TreeSide): boolean {
   const row = rootRow()
@@ -952,9 +1052,7 @@ export function layoutHasRootSide(side: TreeSide): boolean {
     return false
   }
 
-  const panes = registry.getArea('panes')
-
-  return row.children.some(child => rootChildSide(child, id => panes.find(p => p.id === id)) === side)
+  return row.children.some(child => paneRootSide(allPaneIds(child)[0]) === side)
 }
 
 /**
@@ -1003,33 +1101,9 @@ export function bindTreeSideVisibility(
   $open.listen(open => setTreeSideCollapsed(side, !open))
 }
 
-/** The chrome toggle owning `paneId`'s root-row column — SEMANTIC, matching
- *  the renderer's `rootChildSide`: ⌘B ⇔ the sessions column (left-placement
- *  panes) wherever it sits, ⌘J ⇔ the other side columns. Null for the main
- *  column (never side-collapsed). */
+/** The physical column's chrome toggle; main columns never side-collapse. */
 export function treeSideOfPane(paneId: string): TreeSide | null {
-  const row = rootRow()
-
-  if (!row) {
-    return null
-  }
-
-  const child = row.children.find(node => allPaneIds(node).includes(paneId))
-
-  if (!child) {
-    return null
-  }
-
-  const placementOf = (id: string) =>
-    (registry.getArea('panes').find(c => c.id === id)?.data as { placement?: string } | undefined)?.placement
-
-  const placements = allPaneIds(child).map(placementOf)
-
-  if (placements.includes('main')) {
-    return null
-  }
-
-  return placements.includes('left') ? 'left' : 'right'
+  return paneRootSide(paneId)
 }
 
 /**
@@ -1248,6 +1322,20 @@ writeKey('hermes.desktop.paneDockHeals.v1', null)
 const enforcedDocksThisBoot = new Set<string>()
 
 /**
+ * Reopen the enforcement window. The ledger protects a user's mid-session
+ * drags, but a wholesale tree replacement has no drags left to protect — and
+ * a pass that ran against a DIFFERENT tree burned the entry for nothing. That
+ * is how the guided onboarding shipped Bots as a tab over the chat: the boot
+ * pass fired while the solo tree had no sessions column to anchor to, so the
+ * assembled layout's pass was skipped as already-done.
+ *
+ * Only call this when replacing the tree wholesale.
+ */
+export function resetEnforcedDocks(): void {
+  enforcedDocksThisBoot.clear()
+}
+
+/**
  * A `panes` contribution whose dock hint carries `enforce: true` is re-homed
  * onto the hint's anchor at every boot's first adoption pass when it isn't
  * already docked there. Unlike the retired one-time heal, nothing
@@ -1323,7 +1411,7 @@ function enforceDockedPanes(
   return next
 }
 
-function adoptContributedPanes(): void {
+export function adoptContributedPanes(): void {
   const tree = $layoutTree.get()
 
   if (!tree) {

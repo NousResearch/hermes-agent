@@ -10,6 +10,22 @@ description: "Durable SQLite-backed task board for coordinating multiple Hermes 
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
 
+### Completion checkpoints before the iteration cap
+
+Dispatcher-owned workers get one checkpoint notice near 90% of their finite iteration
+budget, attached to a fresh tool result while another tool-capable call remains. Use
+`agent.budget_warning_ratio` to choose an earlier threshold. Tiny budgets warn no later
+than their penultimate iteration; a one-iteration run has no pre-cap checkpoint window.
+The notice is saved in the session transcript before the next request. Workers should
+call `kanban_complete` only after verifying the task contract, or persist a progress
+comment and continue. A commit or diff alone never automatically completes a task.
+
+The hard cap, toolless final summary, and consecutive-failure circuit breaker are
+unchanged: workers that still exhaust their budget remain subject to bounded retries.
+This is a reporting opportunity, not a guarantee that a model will heed the notice.
+Ordinary conversations and delegated children do not inherit the automatic Kanban
+checkpoint; their iteration warning remains opt-in.
+
 ### Two surfaces: the model talks through tools, you talk through the CLI
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
@@ -28,6 +44,43 @@ This is the shape that covers the workloads `delegate_task` can't:
 - **Fleet work** — one specialist managing N subjects (50 social accounts, 12 monitored services).
 
 For the full design rationale, comparative analysis against Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise, and the eight canonical collaboration patterns, see `docs/hermes-kanban-v1-spec.pdf` in the repository.
+
+## PR completion contracts
+
+Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
+`https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
+accepts the same `completion_contract`. Use `local-only` for intentionally local
+work; existing and undeclared cards retain that default. Prose URLs are not policy.
+
+After publishing, pass `metadata.published_pr` to completion. The first matching
+URL binds the card permanently; retries cannot substitute a green sibling PR.
+CLI `show --json` and `kanban_show` expose the persisted contract.
+
+The shared `complete_task` boundary covers worker tools, CLI, review approval and
+dashboard completion. It reads classic branch protection and active ruleset
+required contexts, paginates exact-head check runs and legacy statuses, then
+re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
+required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
+neutral **required** evidence cannot complete the card. Neither can zero-run
+acceptance, unreadable policy or GitHub API failures. A repository without required
+checks needs a local-only contract. `gh` must be authenticated with read access to
+the repository's checks and rules; no remote writes are performed by this gate.
+
+Rejection retains the active card and workspace. Durable `pr_acceptance` events
+store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
+instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
+infrastructure checks or wait, then retry completion. Use `kanban_block` when
+human action is needed. Generic GitHub `failure` cannot establish whether a test
+or artifact upload failed; inspect its retained URL. Explicit infrastructure
+conclusions and API failures are classified separately. No extra worker is spawned.
+
+Receipt persistence and the terminal write recheck run/status/contract ownership
+under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
+the new run. The final GitHub read is a completion-time snapshot, not a distributed
+transaction or a continuous post-completion monitor. This is a single-user lifecycle
+guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
+is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
+verification and publication alone are not remote acceptance.
 
 ## Kanban vs. `delegate_task`
 
@@ -287,6 +340,29 @@ unblocked task in the work pool, resolve *why it keeps re-blocking* (unfinished
 parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
 :::
+
+## Enabling tools for a chat profile
+
+The Desktop Kanban plugin displays the board; it does not grant the chat agent
+permission to manage tasks. Enable the `kanban` toolset for the profile and
+platform that should orchestrate work:
+
+```bash
+hermes -p planner tools enable kanban                      # CLI / TUI / Desktop chats
+hermes -p planner tools enable kanban --platform telegram  # a gateway platform
+```
+
+Each platform has its own selection under `platform_toolsets.<platform>` in
+`config.yaml`; the toolset is also a checkbox in `hermes tools` and the dashboard.
+A gateway agent that has it can `kanban_create` from a chat and is auto-subscribed
+to that task's completion/block notifications in the same thread. Start a new chat
+after changing this setting; existing conversations retain their tool schemas and
+prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
+`toolsets: [kanban]` is honoured as a fallback only when no platform selection was
+saved; `all` alone is not a Kanban opt-in.
+
+Dispatcher-owned workers receive their task lifecycle tools automatically.
+`delegate_task` children do not gain permission to mutate the board.
 
 ## How workers interact with the board
 
@@ -595,6 +671,16 @@ The kanban board has two ways to handle a task you drop into the Triage column:
 
 **Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
+A completed built-in fan-out is recorded atomically with its child graph. Moving
+that root back to Triage does not create another graph; ordinary prerequisite
+links do not prevent a task's first decomposition. The completion marker survives
+event retention until the task is deleted. This is not semantic deduplication of
+independently created manual graphs, nor a repair for previously pruned history.
+
+When a new task omits its tenant, creation inherits the first nonempty tenant
+among its parents, in supplied order. An explicit tenant (including the worker's
+active tenant passed by tools) wins. Boards remain the hard isolation boundary.
+
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `hermes kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
 **Important boundary:** Manual mode disables only the built-in Triage decomposer. It does not prevent a profile from calling `kanban_create`, and it does not disable creator-session wake-ups. With `kanban.auto_subscribe_on_create: true`, a task's terminal event resumes the originating agent with a synthetic status turn so it can inspect the handoff and decide whether genuinely new follow-up work is needed. Set `auto_subscribe_on_create: false` when task completion should remain passive. For provenance, built-in decomposer children use `created_by=auto-decomposer`; tasks created by a resumed profile carry that profile name instead.
@@ -793,9 +879,9 @@ All commands are also available as a slash command in the interactive CLI and in
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
-| `kanban.worker_isolation` | `auto` | How each dispatched worker is isolated from the gateway. `auto` (default): when `systemd-run --user --scope` works on the host (Linux with a user systemd session), spawn each worker inside its own transient scope `hermes-kanban-<task>-r<run_id>.scope` (the run suffix guarantees a respawn never collides with a lingering scope from the previous attempt) with its own memory ceiling; otherwise fall back to the classic unisolated spawn (macOS, containers) — a refused systemd-run launch also falls back per-run, with a warning. `systemd-scope`: strict — never degrades: an unusable systemd (the probe fails, or systemd-run vanishes between probe and launch) fails the spawn loudly (`spawn_failed` with the reason on the task and the run) instead of falling back; the operator pinned strict, so "no worker" beats "unisolated worker". `none`: kanban adds no scope of its own — the pre-isolation behaviour, and the rollback setting. One exception on a systemd-managed gateway (the gateway runs as a systemd service): the worker still gets the shared restart-safe scope `hermes-worker-kanban-<task>-run-<n>.scope`, because a plain child would be killed with the service cgroup on the next gateway restart. That unit is recorded on the run and swept by the audit like any other, so those runs also start unregistered and the same 120 s launch grace applies to them: a worker that does no tool activity in that window is stopped and its run recorded `spawn_failed` (one rule for every run that owns a scope; a slow boot is safe, because the queued stop re-checks registration immediately before it signals and stands down if the worker registered meanwhile). Scoped workers survive gateway restarts (the scope is an independent unit, not a child of the gateway service) and are re-adopted by the new gateway. Liveness is judged by worker self-registration: the worker writes its own PID + start-time fingerprint on first activity (the PID recorded at spawn is the systemd-run launcher's, which dies with the gateway), re-adoption verifies that registered PID (scope-cgroup truth first), and a scoped run that never registers within its 120 s launch grace is recorded as a spawn failure, not a crash — and if a slow-booting worker registers while its unregistered-launch stop is still queued, the stop re-checks registration immediately before acting and stands down. Every terminal transition — complete, block, review, timeout, reclaim, crash cleanup, archive, schedule, ancestor-reopen invalidation — stops the whole scope (`systemctl --user stop`, SIGTERM→SIGKILL, death confirmed from the unit's `cgroup.procs` — `unknown`/`deactivating` states are NOT treated as dead), so dev servers and browsers a worker spawned die with it; a stop that cannot be confirmed never releases the task's claim — the run is marked `stopping` and the next dispatcher tick re-checks, so no duplicate worker is ever spawned beside a wedged unit — and an audit sweep reaps any scope left behind. The run's OWN worker requesting review or changes takes the same stance from its side: it cannot verify its own scope dead while it is alive inside it, so the terminal handoff is recorded as a deferred marker, the scope stop is requested, and the row flips to `review`/`ready` only once the sweep confirms the cgroup empty — the spawnable lane is never written beside a draining scope. The audit sweep itself bounds its synchronous work: at most a few scopes are probed or collected per dispatcher tick (oldest first), so a bus full of orphans slows the audit, never the dispatcher. `hermes kanban show`/`runs` print the scope unit while a run is live in one. |
+| `kanban.worker_isolation` | `auto` | `auto` uses a systemd user scope when available; fallback is allowed only after a refused launch is known not to have left a worker. `systemd-scope` requires isolation and fails the spawn when it is unavailable. `none` disables Kanban-added isolation; a managed systemd gateway still uses the shared restart-safe wrapper. Scope names include the canonical board namespace, task and run, so imported copies do not share worker ownership. Scoped workers register their real PID and can be adopted after gateway restart. An unverified stop retains the claim for another recovery attempt. |
 | `kanban.worker_memory_max_mb` | unset (computed) | Per-worker cgroup memory ceiling (MiB) when isolation is active — BOTH `MemoryMax` and `MemorySwapMax` are set to this value. Default: the tighter of the gateway's own cgroup limit and half the host RAM, floored at 64 MiB and capped at 4 GiB. Explicit values are clamped to those bounds. When no positive bound can be computed, both properties are omitted (a literal `MemoryMax=0` would mean "no limit" in systemd). |
-| `kanban.worker_isolation_stop_on_shutdown` | `false` | What a graceful gateway shutdown does to still-running scoped workers. Default `false`: workers keep running through the restart and the next gateway re-adopts them (claims rewritten, runs continue) — the scope, not the gateway process, is their lifetime anchor. Set `true` to stop every scoped worker this host still claims (verified whole-scope teardown, SIGTERM→SIGKILL) as the gateway exits; the dispatcher lock is held until the cleanup finishes or its budget expires — one ceiling (a base for the board scans plus each expected unit's own verified-stop deadline) that covers the pre-scan, the stops, and the queued-stop drain — and whatever is left (pending or in-flight units) is logged for the next gateway's re-adoption sweep. When the budget expires mid-stop, the in-flight stop is cancelled between its escalation steps (after the TERM wait, before the SIGKILL, before the final verify) rather than running to completion unread; and if the pre-scan itself timed out, the summary says the scan is incomplete and that units on the unscanned boards were not enumerated — never a confident zero unstopped. A crash never stops workers either way; re-adoption covers them. |
+| `kanban.worker_isolation_stop_on_shutdown` | `false` | By default, scoped workers survive graceful gateway shutdown and are adopted on restart. Set `true` to request verified stops within the shutdown deadline. Incomplete scans and pending stops remain visible for subsequent recovery. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
@@ -805,6 +891,25 @@ kanban:
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+### Worker recovery evidence
+
+Heartbeats and dashboard termination requests target the current run. A late
+heartbeat, launch result or terminate request from a previous attempt cannot
+update its successor. Reclaim checks both ownership and lease movement before
+signaling; a concurrent heartbeat cancels that attempt to reclaim.
+
+For systemd scopes, recovery checks recursive cgroup population, including nested
+descendants. Missing, unreadable or inconsistent evidence is inconclusive. A
+missing unit on the user bus alone does not establish that the worker is gone.
+Scope stops and deferred review handoffs are retried without publishing a second
+runnable attempt beside a known surviving scope.
+
+Unisolated fallback on macOS, Windows and hosts without a usable systemd user
+scope preserves the existing PID-based behavior. It does not establish that all
+descendants have stopped. Process termination also does not roll back files,
+commits or external publication; inspect the retained workspace and run history
+when recovering work with such effects.
 
 ### Scheduled task starts (`scheduled_at`)
 
@@ -891,6 +996,21 @@ bot> ✓ t_9fc1a3 completed by transcriber
 ```
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
+
+Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
+copy the owning task's durable notification subscriptions even without `parents`
+dependency links. Destinations, route anchors, and delivery modes are preserved;
+a passive subscription is not upgraded to a wake by auto-subscribe. This copies
+existing subscriptions independently of `auto_subscribe_on_create`, which controls
+adding the current conversation as a new destination. No destination is invented
+for a bare CLI session or a worker whose owning task has no subscriptions.
+
+For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
+the owning worker task's durable session, request-scoped API origin, then the
+current process session. Built-in decomposition also inherits its root's durable
+session. Session lineage is not itself a notification destination: changing
+`session_id` does not replace existing subscriptions; use `notify-subscribe` and
+`notify-unsubscribe` to change where events are delivered.
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
@@ -1036,6 +1156,8 @@ A subscription removes itself automatically once the task reaches `done` or `arc
 | `notify+wake` | yes | yes | You also want the destination agent to take a real turn — read the board context and reply in its own voice. Chat-originated auto-subscribes use this. |
 | `wake` | no | yes | You only want the agent to act on the event, with no separate ping. |
 
+For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
+
 A "wake" forges a synthetic inbound message to the destination gateway agent so it takes a normal turn (reads the comment + result, reasons, replies) instead of getting a one-line passive notification. It only fires when the notifier runs inside a live gateway process; otherwise a `notify+wake` subscription still delivers its passive message, while a `wake`-only subscription does nothing in that process.
 
 **Which events wake.** The ones that hand a decision back to the origin: `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `review_requested` (a worker finished the implementation and handed off via `kanban_request_review`) and `block_loop_detected` (the task was routed to `triage` after repeated blocks). `status`, `archived` and `unblocked` are delivered but never wake — they are bookkeeping transitions, not decisions. When a `completed` or `review_requested` event carries a summary, that handoff rides the wake turn, so the woken agent sees what the worker actually did.
@@ -1058,6 +1180,14 @@ dispatch and delivery have separate owners:
   `writer` profile's Telegram gets its `completed`/`blocked` message delivered
   by the `writer` gateway, even though the `default` gateway did the
   dispatching.
+- **Route-only multiplex profiles** can use the primary adapter when the
+  subscription's persisted platform, chat, thread, scope and parent-channel
+  anchors resolve to that exact served profile through `gateway.profile_routes`.
+  A connected secondary adapter remains authoritative; a partial secondary
+  adapter registry never falls back to the primary bot. Unmatched, reassigned,
+  disabled or ambiguous routes remain undelivered and retryable. Old rows
+  missing required routing anchors are not guessed into a profile. Wake turns keep
+  the destination profile's runtime scope and the authorized transport.
 - **Legacy subscriptions** created before profile stamping (no
   `notifier_profile` on the row) are delivered only by the gateway that holds
   the actual dispatcher singleton lock, so two gateways never race for them.

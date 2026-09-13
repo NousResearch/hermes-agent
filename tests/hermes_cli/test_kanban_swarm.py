@@ -1,6 +1,12 @@
+
+import hermes_cli.kanban_completion as _owner_kanban_completion
+import hermes_cli.kanban_transitions as _owner_kanban_transitions
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_swarm import (
     SwarmWorkerSpec,
     create_swarm,
@@ -10,7 +16,7 @@ from hermes_cli.kanban_swarm import (
 
 
 def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path):
-    conn = kb.connect(tmp_path / "kanban.db")
+    conn = kbc.connect(tmp_path / "kanban.db")
     try:
         created = create_swarm(
             conn,
@@ -52,10 +58,10 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ):
     db_path = tmp_path / "kanban.db"
-    writer = kb.connect(db_path)
-    reader = kb.connect(db_path)
+    writer = kbc.connect(db_path)
+    reader = kbc.connect(db_path)
     original_create = kb.create_task
-    original_complete = kb.complete_task
+    original_complete = _owner_kanban_completion.complete_task
     calls = 0
 
     def observed_create(*args, **kwargs):
@@ -137,12 +143,12 @@ def test_plain_write_txn_nesting_raises_and_allow_nested_composes(tmp_path):
     and an outer rollback discards the inner work without any post-commit
     side effects having fired (the workspace directory survives).
     """
-    conn = kb.connect(tmp_path / "kanban.db")
+    conn = kbc.connect(tmp_path / "kanban.db")
     try:
         workspace = tmp_path / "scratch-ws"
         workspace.mkdir()
         tid = kb.create_task(conn, title="ws task", assignee="worker")
-        with kb.write_txn(conn):
+        with _owner_kanban_db_connect.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET workspace_path = ? WHERE id = ?",
                 (str(workspace), tid),
@@ -150,16 +156,16 @@ def test_plain_write_txn_nesting_raises_and_allow_nested_composes(tmp_path):
 
         # 1) Plain nesting raises loudly.
         with pytest.raises(RuntimeError, match="already inside a transaction"):
-            with kb.write_txn(conn):
-                with kb.write_txn(conn):
+            with _owner_kanban_db_connect.write_txn(conn):
+                with _owner_kanban_db_connect.write_txn(conn):
                     pass
         assert not conn.in_transaction
 
         # 2) allow_nested composes; outer rollback discards inner work
         #    and no side effects (workspace cleanup) fired meanwhile.
         with pytest.raises(RuntimeError, match="outer failure"):
-            with kb.write_txn(conn):
-                with kb.write_txn(conn, allow_nested=True):
+            with _owner_kanban_db_connect.write_txn(conn):
+                with _owner_kanban_db_connect.write_txn(conn, allow_nested=True):
                     conn.execute(
                         "UPDATE tasks SET status = 'done' WHERE id = ?", (tid,)
                     )
@@ -178,7 +184,7 @@ def test_plain_write_txn_nesting_raises_and_allow_nested_composes(tmp_path):
 
 
 def test_swarm_blackboard_merges_structured_updates(tmp_path):
-    conn = kb.connect(tmp_path / "kanban.db")
+    conn = kbc.connect(tmp_path / "kanban.db")
     try:
         created = create_swarm(
             conn,
@@ -212,7 +218,7 @@ def test_swarm_blackboard_merges_structured_updates(tmp_path):
 
 
 def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
-    conn = kb.connect(tmp_path / "kanban.db")
+    conn = kbc.connect(tmp_path / "kanban.db")
     try:
         created = create_swarm(
             conn,
@@ -225,13 +231,13 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
             synthesizer_assignee="writer",
         )
 
-        kb.complete_task(
+        _owner_kanban_completion.complete_task(
             conn,
             created.worker_ids[0],
             summary="A done",
             metadata={"confidence": 0.8},
         )
-        kb.recompute_ready(conn)
+        _owner_kanban_transitions.recompute_ready(conn)
         verifier = kb.get_task(conn, created.verifier_id)
         synthesizer = kb.get_task(conn, created.synthesizer_id)
         assert verifier is not None
@@ -239,8 +245,8 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert verifier.status == "todo"
         assert synthesizer.status == "todo"
 
-        kb.complete_task(conn, created.worker_ids[1], summary="B done")
-        kb.recompute_ready(conn)
+        _owner_kanban_completion.complete_task(conn, created.worker_ids[1], summary="B done")
+        _owner_kanban_transitions.recompute_ready(conn)
         verifier = kb.get_task(conn, created.verifier_id)
         synthesizer = kb.get_task(conn, created.synthesizer_id)
         assert verifier is not None
@@ -248,13 +254,13 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert verifier.status == "ready"
         assert synthesizer.status == "todo"
 
-        kb.complete_task(
+        _owner_kanban_completion.complete_task(
             conn,
             created.verifier_id,
             summary="Verified both branches",
             metadata={"gate": "pass"},
         )
-        kb.recompute_ready(conn)
+        _owner_kanban_transitions.recompute_ready(conn)
         synthesizer = kb.get_task(conn, created.synthesizer_id)
         assert synthesizer is not None
         assert synthesizer.status == "ready"

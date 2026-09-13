@@ -1,5 +1,7 @@
 """Notifier polling stays active when another gateway owns dispatching."""
 
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
 import asyncio
 from unittest.mock import MagicMock, patch
 
@@ -34,7 +36,7 @@ def test_notifier_watcher_polls_without_dispatch_ownership():
     import hermes_cli.kanban_db as _kb
 
     with patch.object(
-        _kb, "list_boards",
+        _owner_kanban_boards, "list_boards",
         side_effect=lambda *a, **kw: past_gate.append(True) or [],
     ):
         with patch("asyncio.sleep", side_effect=fake_sleep):

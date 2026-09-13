@@ -8,12 +8,19 @@ call sites short-circuit when nothing subscribes.
 
 from __future__ import annotations
 
+import hermes_cli.kanban_db as _owner_kanban_db
+
+import hermes_cli.kanban_db_boards as _owner_kanban_boards
+
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
@@ -23,7 +30,7 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
@@ -47,7 +54,7 @@ def test_assign_fires_updated_with_changed_fields(kanban_home, captured_updates)
     def _read_assignee(**kw):
         # Fresh connection: proves the assignment was committed before
         # the hook fired.
-        c2 = sqlite3.connect(kb.kanban_db_path())
+        c2 = sqlite3.connect(_owner_kanban_db.kanban_db_path())
         try:
             row = c2.execute(
                 "SELECT assignee FROM tasks WHERE id = ?", (kw["task_id"],)
@@ -59,7 +66,7 @@ def test_assign_fires_updated_with_changed_fields(kanban_home, captured_updates)
     mgr = get_plugin_manager()
     mgr._hooks.setdefault("on_kanban_task_updated", []).append(_read_assignee)
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
         captured_updates.clear()  # create-time bookkeeping is not under test
@@ -86,7 +93,7 @@ def test_raising_callback_does_not_break_assign(kanban_home):
 
     mgr._hooks.setdefault("on_kanban_task_updated", []).append(_boom)
     try:
-        conn = kb.connect()
+        conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="alice")
             assert kb.assign_task(conn, tid, "bob") is True
@@ -108,7 +115,7 @@ def test_no_subscriber_short_circuits_task_updated(kanban_home, monkeypatch):
         return real_invoke(hook_name, **kw)
 
     monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
         assert kb.assign_task(conn, tid, "bob") is True

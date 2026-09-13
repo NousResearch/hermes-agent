@@ -7,6 +7,8 @@ operator footgun that only manifests in long-running setups.
 """
 from __future__ import annotations
 
+import hermes_cli.kanban_db_dispatch as _owner_kanban_db_dispatch
+
 import argparse
 import os
 import sys
@@ -47,6 +49,7 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     unreachable from the CLI even though it works from the gateway."""
     from hermes_cli import kanban as kb_cli
     from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
 
     # Configure max_in_progress in the loaded config.
     fake_config = {
@@ -65,9 +68,9 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
 
     def fake_dispatch_once(conn, **kwargs):
         captured.update(kwargs)
-        return kanban_db.DispatchResult()
+        return _owner_kanban_db_dispatch.DispatchResult()
 
-    monkeypatch.setattr(kanban_db, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
 
     args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
     kb_cli._cmd_dispatch(args)
@@ -88,14 +91,15 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     The CLI flag is the explicit operator signal; config is the default."""
     from hermes_cli import kanban as kb_cli
     from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
 
     fake_config = {"kanban": {"max_spawn": 10}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
 
     captured = {}
     monkeypatch.setattr(
-        kanban_db, "dispatch_once",
-        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+        kbd, "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), _owner_kanban_db_dispatch.DispatchResult())[1],
     )
 
     args = argparse.Namespace(dry_run=True, max=2, failure_limit=2, json=False)

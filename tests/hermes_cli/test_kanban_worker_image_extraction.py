@@ -14,12 +14,15 @@ DB during startup. These tests cover the round-trip:
 """
 from __future__ import annotations
 
+import hermes_cli.kanban_db_connect as _owner_kanban_db_connect
+
 import base64
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from agent.image_routing import (
     build_native_content_parts,
     extract_image_refs,
@@ -41,12 +44,12 @@ def kanban_home(tmp_path: Path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    kb.init_db()
+    _owner_kanban_db_connect.init_db()
     return home
 
 
 def _add_task_with_body(body: str, *, title: str = "Look at this") -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(
             conn,
@@ -61,7 +64,7 @@ def _add_task_with_body(body: str, *, title: str = "Look at this") -> str:
 
 
 def _read_body(task_id: str) -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, task_id)
         return (task.body if task is not None else "") or ""

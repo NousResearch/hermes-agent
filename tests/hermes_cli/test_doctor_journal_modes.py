@@ -493,6 +493,20 @@ class TestConfiguredDeleteNeverApplied:
         assert "systemctl --user stop hermes-dashboard" in out
         assert "s6-svc" in out
         assert "HERMES_DESKTOP_CHILD_PID" in out
+        # `gateway stop --all` is NOT owner-level for sibling profiles: _cmd_stop stops only the active
+        # profile's installed service (_stop_installed_service -> get_service_name(), per-profile
+        # `hermes-gateway-<profile>`) and kill_gateway_processes(all_profiles=True) merely signals the
+        # rest, whose units carry Restart=always / KeepAlive and respawn them (review finding). The
+        # hint must say so and give the per-profile owner command, not claim --all covers every profile.
+        assert "(every profile's gateway)" not in out
+        assert "Restart=always" in out
+        assert "-p <profile> gateway stop" in out
+        # ...and two supported dashboard owners the previous text omitted: a system-scope unit
+        # (`systemctl --user` cannot stop it; #100896's field report) and the repo's own Compose
+        # layout, where `dashboard` is a separate `restart: unless-stopped` container so s6-svc
+        # does not reach it (docker-compose.yml / docker-compose.windows.yml).
+        assert "sudo systemctl stop hermes-dashboard" in out
+        assert "docker compose stop gateway dashboard" in out
 
     def test_rollback_on_disk_with_delete_configured_is_quiet(self, tmp_path, capsys, monkeypatch):
         """The setting DID apply — this is the healthy state and must not nag."""

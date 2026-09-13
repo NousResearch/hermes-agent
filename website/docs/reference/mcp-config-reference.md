@@ -337,6 +337,27 @@ Behavior:
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
 
+:::note Per-profile OAuth identity (multiplexed gateways)
+Token files live under the **active profile's** home: `~/.hermes/mcp-tokens/`
+for the default profile, `~/.hermes/profiles/<name>/mcp-tokens/` for a named
+profile. In a [multiplexed gateway](/user-guide/multi-profile-gateways#4-mcp-oauth-identity-is-per-profile)
+(`gateway.multiplex_profiles: true`), two profiles on the same server route
+share one live connection only when they present the same OAuth identity:
+identical configuration **and** identical on-disk token state. If profile A
+logged in as user A and profile B as user B, B gets its own connection and its
+tool calls run as B — a sibling profile can never ride A's Bearer token.
+:::
+
+:::warning Previous behavior: cross-profile identity adoption (fixed)
+Earlier builds shared a live connection across profiles as soon as the static
+configuration (URL, transport, headers, auth method) matched, ignoring the
+on-disk tokens — so two profiles with an identical `mcp_servers` block
+silently executed the second profile's calls under the first profile's OAuth
+account ([issue #109422](https://github.com/NousResearch/hermes-agent/issues/109422)).
+The fix is now in; pending first-logins (no token file yet) and non-OAuth
+routes still share as before.
+:::
+
 ### Device-code login (RFC 8628)
 
 For an authorization server advertising `device_authorization_endpoint`, explicitly choose

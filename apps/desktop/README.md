@@ -74,6 +74,12 @@ HERMES_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
+Microphone capture runs in the renderer and follows Chromium's secure-context
+rules. A remote `HERMES_DESKTOP_DEV_SERVER` URL must use HTTPS or be reached
+through localhost (for example, with an SSH port forward); plain HTTP on a LAN
+or Tailscale address does not expose `getUserMedia`. The packaged native app is
+not affected.
+
 ### Building installers
 
 ```bash

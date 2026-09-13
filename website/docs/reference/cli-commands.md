@@ -154,8 +154,11 @@ parent in the same turn. Batch children still run in parallel, subject to
 `delegation.max_concurrent_children`. The parent can use those results in its
 final response before the CLI exits.
 
-- **Automatic joining:** no opt-in or background-mode override is needed.
-  Interactive TTY chat and messaging sessions keep background delegation.
+- **Automatic joining:** no opt-in or background-mode override is needed. This
+  finite-session fallback is independent of `delegation.wait_for_all`, which
+  extends the same parent barrier to ordinary model-facing top-level delegation.
+  Interactive TTY chat and messaging sessions keep background delegation unless
+  that opt-in is enabled.
 - **Existing safeguards:** delegation limits, timeouts, cancellation, and
   `approvals.single_query_mode` still apply. Joining does not auto-approve commands
   or guarantee successful child outcomes. Inspect results and verify artifacts.

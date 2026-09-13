@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,7 @@ def _allow_lazy_installs() -> bool:
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config
         cfg = load_config()
-    if cfg is not None and not bool((cfg.get("security") or {}).get("allow_lazy_installs", True)):
+    if cfg is not None and not is_truthy_value((cfg.get("security") or {}).get("allow_lazy_installs", True)):
         return False
     if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1":
         return _lazy_install_target() is not None

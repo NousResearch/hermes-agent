@@ -2079,7 +2079,12 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether every direct parent is terminal for dependency gating."""
-    return not _blocking_parents(conn, task_id)
+    return conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? "
+        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+    ).fetchone() is None
 
 
 def _blocking_parents(conn: sqlite3.Connection, task_id: str) -> tuple[tuple[str, str], ...]:
@@ -2578,13 +2583,13 @@ def complete_task(
         return (ok, refusal) if with_reason else ok
 
     now = int(time.time())
-    state_refusal = _completion_state_refusal(conn, task_id, expected_run_id)
-    if state_refusal is not None:
-        return _ret(False, state_refusal)
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     blockers = _blocking_parents(conn, task_id)
     if blockers:
         return _ret(False, CompletionRefusal("parents_not_satisfied", blocking_parents=blockers))
+    state_refusal = _completion_state_refusal(conn, task_id, expected_run_id)
+    if state_refusal is not None:
+        return _ret(False, state_refusal)
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(

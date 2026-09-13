@@ -448,9 +448,11 @@ def test_complete_task_structured_refusals_preserve_dependency_and_cas_invariant
     from hermes_cli import kanban_pr_acceptance_store as acceptance_store
 
     with kbc.connect() as conn:
-        parent_b = kb.create_task(conn, title="parent b", initial_status="blocked")
-        parent_a = kb.create_task(conn, title="parent a", initial_status="blocked")
+        parent_b = kb.create_task(conn, title="parent b")
+        parent_a = kb.create_task(conn, title="parent a")
         child = kb.create_task(conn, title="child", parents=[parent_b, parent_a])
+        assert kb.block_task(conn, parent_a, reason="wait", kind="needs_input")
+        assert kb.block_task(conn, parent_b, reason="wait", kind="needs_input")
 
         ok, refusal = kb.complete_task(conn, child, with_reason=True)
         assert ok is False

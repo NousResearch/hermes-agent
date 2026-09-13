@@ -895,8 +895,13 @@ def _completion_refusal_message(tid: str, refusal: Optional[kb.CompletionRefusal
     if refusal is None:
         return prefix + "task state changed concurrently; inspect the task and retry"
     if refusal.code == "parents_not_satisfied":
-        parents = ", ".join(f"{parent_id} ({status})" for parent_id, status in refusal.blocking_parents)
-        return prefix + f"unsatisfied parent dependencies: {parents}; complete the parents first (done or archived)"
+        parents = ", ".join(
+            f"{parent_id} ({status})" for parent_id, status in refusal.blocking_parents
+        )
+        return (
+            prefix + f"unsatisfied parent dependencies: {parents}; "
+            "complete the parents first (done or archived)"
+        )
     if refusal.code == "unknown_task":
         return prefix + "task not found"
     if refusal.code == "terminal_state":

@@ -74,9 +74,10 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
 
 def test_kanban_complete_reports_all_blocking_parents_and_distinct_task_states(kanban_home):
     with kbc.connect_closing() as conn:
-        blocked = kb.create_task(conn, title="blocked parent", initial_status="blocked")
+        blocked = kb.create_task(conn, title="blocked parent")
         waiting = kb.create_task(conn, title="waiting parent")
         child = kb.create_task(conn, title="child", parents=[waiting, blocked])
+        assert kb.block_task(conn, blocked, reason="wait", kind="needs_input")
         done = kb.create_task(conn, title="done")
         assert kb.complete_task(conn, done)
 

@@ -79,6 +79,29 @@ def _quiet_sync(call, default=None):
         return default
 
 
+def _running_kanban_tasks() -> list[dict]:
+    """Running kanban tasks from the shared board (dispatcher-spawned workers).
+
+    Kept as a tiny wrapper so tests can monkeypatch it directly without
+    stubbing the kanban_db modules (tests patch the binding this call reads).
+    """
+    from hermes_cli.kanban_status import list_running_tasks
+
+    return list_running_tasks()
+
+
+def _kanban_task_lines(task: dict) -> list[str]:
+    from tools.process_registry import format_uptime_short
+
+    task_id = str(task.get("task_id") or "?")
+    title = _clip(" ".join(str(task.get("title") or "").split()), 70)
+    assignee = str(task.get("assignee") or "unassigned")
+    board = str(task.get("board") or "default")
+    elapsed = task.get("elapsed_seconds")
+    up = f" · {format_uptime_short(int(elapsed))}" if elapsed is not None else ""
+    return [f"- `{task_id}` · {assignee} · board {board}{up} · {title}"]
+
+
 def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
     """``(model, provider, context_used, context_total)`` for /status.
 
@@ -444,7 +467,16 @@ class GatewayStatusCommandsMixin:
         if delegations:
             lines += ["", t("gateway.agents.background_delegations", count=len(delegations))]
             lines += _capped_rows(delegations, _agents_delegation_lines)
-        if not (agent_rows or running_processes or background_tasks or delegations):
+
+        # Kanban workers spawned by the dispatcher are separate processes, not
+        # children of this gateway's sessions — only the shared board knows.
+        kanban_tasks = _quiet_sync(_running_kanban_tasks, [])
+        if kanban_tasks:
+            lines += ["", t("gateway.agents.kanban_tasks", count=len(kanban_tasks))]
+            lines += _capped_rows(kanban_tasks, _kanban_task_lines)
+
+        if not (agent_rows or running_processes or background_tasks or delegations
+                or kanban_tasks):
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)
 

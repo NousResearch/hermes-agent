@@ -952,6 +952,18 @@ class CLICommandsMixin:
                     if idle is not None:
                         part += f" · last activity {idle:.0f}s ago"
                     _cp(part)
+        # Kanban workers spawned by the dispatcher are separate processes, not
+        # this session's children — only the shared board knows about them.
+        kanban = _probe("hermes_cli.kanban_status", "list_running_tasks", [])
+        if kanban:
+            _cp(f"  Kanban tasks running: {len(kanban)}")
+            for task in kanban[:15]:
+                board = task.get("board") or "default"
+                assignee = task.get("assignee") or "unassigned"
+                elapsed = task.get("elapsed_seconds")
+                up = f" · {format_uptime_short(int(elapsed))}" if elapsed is not None else ""
+                _cp(f"    {task.get('task_id', '?')} · {assignee} · board {board}{up} · "
+                    f"{(task.get('title') or '')[:60]}")
         agent_running = getattr(self, "_agent_running", False)
         _cp(f"  Agent: {'running' if agent_running else 'idle'}")
 

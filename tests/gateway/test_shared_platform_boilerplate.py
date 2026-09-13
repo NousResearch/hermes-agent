@@ -108,6 +108,9 @@ def test_extra_or_secret_honours_explicit_false_but_not_blank(monkeypatch):
     assert shared.extra_or_secret({"require_mention": False}, "require_mention", "X", "true") is False
     assert shared.extra_or_secret({"require_mention": ""}, "require_mention", "X", "true") == "env:true"
     assert shared.extra_or_secret(None, "require_mention", "X", "true") == "env:true"
+    # Readers where a blank YAML value means "cleared" (channel whitelists) keep it as a value.
+    assert shared.extra_or_secret({"allowed_channels": ""}, "allowed_channels", "X", "", blank_is_unset=False) == ""
+    assert shared.extra_or_secret({}, "allowed_channels", "X", "", blank_is_unset=False) == "env:"
 
 
 def test_external_fallback_consults_profile_scope_only_when_unscoped(monkeypatch):

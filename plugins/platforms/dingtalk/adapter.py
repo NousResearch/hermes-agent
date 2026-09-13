@@ -254,11 +254,11 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     def _csv_setting(self, key: str, env_name: str) -> Set[str]:
         """List/CSV setting from config.extra[key], falling back to the env var."""
-        return _csv_set(_extra_or_secret(self.config.extra, key, env_name))
+        return _csv_set(_extra_or_secret(self.config.extra, key, env_name, blank_is_unset=False))
 
     def _dingtalk_require_mention(self) -> bool:
         """Whether group chats require an explicit bot trigger."""
-        configured = _extra_or_secret(self.config.extra, "require_mention", "DINGTALK_REQUIRE_MENTION", "false")
+        configured = _extra_or_secret(self.config.extra, "require_mention", "DINGTALK_REQUIRE_MENTION", "false", blank_is_unset=False)
         return configured.lower() in _TRUTHY if isinstance(configured, str) else bool(configured)
 
     def _dingtalk_allowed_chats(self) -> Set[str]:

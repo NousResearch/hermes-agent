@@ -86,16 +86,19 @@ def platform_gate_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
-def extra_or_secret(extra: Optional[dict], key: str, env: str, default: Any = "") -> Any:
+def extra_or_secret(extra: Optional[dict], key: str, env: str, default: Any = "",
+                    *, blank_is_unset: bool = True) -> Any:
     """``config.extra[key]`` when set, else the scoped env var ``env`` (else ``default``).
 
     ``extra`` is the per-profile truth under multiplexing (the YAML→env bridge is skipped for a
     secondary profile), so it is consulted first; the env read goes through ``get_scoped_secret``.
-    "Unset" is ``None`` or a blank string — an explicit ``False``/``0`` in YAML is a real value
-    (``require_mention: false`` must not fall through to the env default).
+    An explicit ``False``/``0`` in YAML is always a real value (``require_mention: false`` must not
+    fall through to the env default). A blank string is unset by default; readers whose YAML key
+    means "clear it" (``allowed_channels: ""`` = no whitelist, not "use the env CSV") pass
+    ``blank_is_unset=False`` so only a missing/``None`` key falls through.
     """
     value = (extra or {}).get(key)
-    if value is None or (isinstance(value, str) and not value.strip()):
+    if value is None or (blank_is_unset and isinstance(value, str) and not value.strip()):
         return get_scoped_secret(env, default)
     return value
 

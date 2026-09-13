@@ -131,6 +131,57 @@ def scan_directory(
     return manifests
 
 
+# Source precedence for registry-key collisions: later sources win (bundled < user < project <
+# entrypoint), matching the historical "last writer wins" append order of discovery.
+_SOURCE_RANK = {"bundled": 0, "user": 1, "project": 2, "entrypoint": 3}
+
+
+def collision_sort_key(source: str, path: Optional[str], key: str) -> tuple:
+    """Deterministic winner rank for one manifest claiming registry *key*.
+
+    Higher wins. Within one source, the manifest whose directory basename equals the key leaf
+    (the canonical install target ``<plugins>/<name>``) beats same-key impostors — backup trees
+    like ``<name>.old-<timestamp>`` carry the same manifest ``name`` and used to shadow the
+    active plugin purely through sorted-directory order (stale version in list/registry while
+    the live tree was current). Ties fall back to scan order (first wins), which is sorted and
+    therefore stable.
+    """
+    canonical = 0
+    if path:
+        try:
+            canonical = 1 if Path(path).name == key.split("/")[-1] else 0
+        except (OSError, ValueError):
+            canonical = 0
+    return (_SOURCE_RANK.get(source, 1), canonical)
+
+
+def resolve_key_collisions(
+    manifests: List[PluginManifest],
+) -> tuple[dict, List[tuple]]:
+    """Collapse manifests onto one winner per registry key.
+
+    Returns ``(winners, collisions)``: *winners* maps key -> manifest in first-seen key order
+    (load-order resolution downstream is unchanged), *collisions* lists ``(key, all_claimants,
+    winner)`` for every key claimed more than once so callers can warn/verify.
+    """
+    by_key: dict = {}
+    for manifest in manifests:
+        by_key.setdefault(manifest_key(manifest), []).append(manifest)
+    winners: dict = {}
+    collisions: List[tuple] = []
+    for key, group in by_key.items():
+        best = group[0]
+        best_rank = collision_sort_key(best.source, best.path, key)
+        for candidate in group[1:]:
+            rank = collision_sort_key(candidate.source, candidate.path, key)
+            if rank > best_rank:
+                best, best_rank = candidate, rank
+        winners[key] = best
+        if len(group) > 1:
+            collisions.append((key, group, best))
+    return winners, collisions
+
+
 def collect_directory_manifests() -> List[PluginManifest]:
     """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
     project) without loading or mutating anything, so startup probes share the exact precedence/containment

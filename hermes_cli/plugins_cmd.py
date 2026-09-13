@@ -21,6 +21,7 @@ from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
 from hermes_cli.plugin_capabilities import _child_dict
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_cli.plugins_verify import cmd_verify, reconcile_console_package  # noqa: E402 — verify surface (read-only)
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -745,6 +746,9 @@ def cmd_install(
             f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
     _prompt_plugin_env_vars(installed_manifest, console)
     _print_python_dependencies(installed_manifest, console)
+    # Gap 2 of the lifecycle contract: the tree moved into place, so probe whether the console
+    # package it declares is present/matching in the active runtime. Read-only; never auto-pips.
+    reconcile_console_package(target, console)
     _display_after_install(target, identifier)
 
     if enable is None:
@@ -813,6 +817,9 @@ def cmd_update(name: str) -> None:
         _fail(console, f"[red]Error:[/red] {exc}")
     _rescan_after_update(target, name, console)
     _post_pull_housekeeping(target, console)
+    # Same console-package drift probe as install: a pull refreshed the tree, so the declared
+    # console distribution may now be stale/broken in the active runtime. Read-only.
+    reconcile_console_package(target, console)
 
     # Re-consent when the new version declares capabilities the granted set lacks or the
     # declared set changed; additions stay ungranted until the user says yes (fail closed).
@@ -1255,7 +1262,11 @@ def _bundled_default_on(dir_path) -> bool:
 
 
 def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: int, seen: dict) -> None:
-    """Recursive directory scan matching PluginManager._scan_directory_level."""
+    """Recursive directory scan matching PluginManager._scan_directory_level.
+
+    Collects ALL candidates per registry key (``seen[key]`` is a scan-ordered list); the caller
+    resolves collisions through the same helper the runtime uses, so listing can never show a
+    different winner than discovery loads."""
     if not base.is_dir():
         return
     for d in sorted(base.iterdir()):
@@ -1267,15 +1278,39 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
                 _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen)
             continue
         name, version, description, key = info
-        if key in seen and source == "bundled":
-            continue
         src_label = "git" if source == "user" and (d / ".git").exists() else source
-        seen[key] = (name, version, description, src_label, d, key)
+        seen.setdefault(key, []).append((name, version, description, src_label, d, key))
+
+
+def _resolve_scan_collisions(seen: dict, *, warn: bool = True) -> dict:
+    """Collapse ``key -> [entries]`` onto one winner per key, mirroring runtime discovery.
+
+    Winner rank comes from :func:`hermes_cli.plugins_discovery.collision_sort_key` (source
+    precedence, then canonical directory name), so a stale backup tree sharing the manifest name
+    never shadows the active install. Ties keep scan order (first wins).
+    """
+    from hermes_cli.plugins_discovery import collision_sort_key
+    winners: dict = {}
+    for key, entries in seen.items():
+        best = entries[0]
+        best_rank = collision_sort_key(best[3], str(best[4]) if best[4] else None, key)
+        for candidate in entries[1:]:
+            rank = collision_sort_key(candidate[3], str(candidate[4]) if candidate[4] else None, key)
+            if rank > best_rank:
+                best, best_rank = candidate, rank
+        winners[key] = best
+        if warn and len(entries) > 1:
+            ignored = ", ".join(str(e[4]) for e in entries if e is not best)
+            logger.warning(
+                "Plugin key '%s' claimed by %d directories; listing %s (version %s) and ignoring: %s",
+                key, len(entries), best[4], best[1] or "?", ignored)
+    return winners
 
 
 def _discover_all_plugins() -> list:
     """``(name, version, description, source, dir_path, key)`` for every plugin the loader sees,
-    in ``PluginManager.discover_and_load`` order: bundled, user, entry points (later wins)."""
+    in ``PluginManager.discover_and_load`` order: bundled, user, entry points. Key collisions are
+    resolved deterministically (see :func:`_resolve_scan_collisions`) instead of last-wins."""
     seen: dict = {}
     # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
@@ -1287,8 +1322,9 @@ def _discover_all_plugins() -> list:
         _scan_level(base, source, skip, "", 0, seen)
     # Entry-point plugins are installed as Python packages, so they have no plugin directory.
     for m in discover_entrypoint_manifests():
-        seen[m.name] = (m.name, m.version, m.description, "entrypoint", m.path, m.name)
-    return list(seen.values())
+        seen.setdefault(m.name, []).append(
+            (m.name, m.version, m.description, "entrypoint", m.path, m.name))
+    return list(_resolve_scan_collisions(seen).values())
 
 
 def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
@@ -2070,6 +2106,11 @@ _PLUGIN_ACTIONS = {
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(args.path, as_json=getattr(args, "json", False)),
     "update": lambda args: cmd_update(args.name),
+    "verify": lambda args: cmd_verify(
+        args.name,
+        profiles=getattr(args, "profile", None),
+        json_output=getattr(args, "json", False),
+        no_doctor=getattr(args, "no_doctor", False)),
     "remove": lambda args: cmd_remove(args.name),
     "rm": lambda args: cmd_remove(args.name),
     "uninstall": lambda args: cmd_remove(args.name),
@@ -2089,13 +2130,13 @@ _PLUGIN_ACTIONS = {
 }
 
 
-def plugins_command(args) -> None:
-    """Dispatch hermes plugins subcommands."""
+def plugins_command(args) -> int | None:
+    """Dispatch hermes plugins subcommands (propagates fail-closed exit codes, e.g. verify)."""
     action = getattr(args, "plugins_action", None)
     handler = _PLUGIN_ACTIONS.get(action)
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
-    handler(args)
+    return handler(args)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

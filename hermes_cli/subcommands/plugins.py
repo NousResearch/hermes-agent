@@ -104,6 +104,24 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_doctor.add_argument(
         "--ci", action="store_true", help="Exit non-zero when validation reports an error")
 
+    plugins_verify = plugins_subparsers.add_parser(
+        "verify",
+        help="Read-only integrity verification of an installed plugin",
+        description="Prove which tree discovery loads per profile and that its declared "
+            "console package (pyproject [project.scripts]) is importable and version-matched. "
+            "Read-only: prints versions, tree digest, doctor verdict — never file contents; "
+            "fails closed (exit 1) on any mismatch.")
+    plugins_verify.add_argument("name", help="Plugin name (manifest name or registry key)")
+    plugins_verify.add_argument(
+        "--profile", "--profiles", action="append", metavar="NAME", dest="profile",
+        help="Verify in the given profile home (repeatable, or comma-separated like "
+             "--profiles a,b; default: the active HERMES_HOME)")
+    plugins_verify.add_argument(
+        "--json", action="store_true", help="Machine-readable output")
+    plugins_verify.add_argument(
+        "--no-doctor", action="store_true",
+        help="Skip the plugin-doctor pass (faster; digest + console checks still run)")
+
     plugins_compat = plugins_subparsers.add_parser(
         "compat",
         help="Show installed plugins that import paths removed by the Sep 2026 decomposition",

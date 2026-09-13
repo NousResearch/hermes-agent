@@ -117,6 +117,9 @@ class SessionTelegramTopicsMixin:
         See #76423.
         """
         def _do(conn):
+            # executescript() implicitly commits _execute_write's transaction.
+            # Keep both table swaps, indexes and the version marker in one
+            # transaction so a failed upgrade rolls back and can be retried.
             for table, columns, ddl in _TOPIC_TABLES:
                 conn.execute(f"CREATE TABLE IF NOT EXISTS {table} ({ddl})")
                 have = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
@@ -125,21 +128,22 @@ class SessionTelegramTopicsMixin:
                 # v1/v2 → v3. SQLite can't ALTER a PK or FK, so rebuild (also supplies v2's
                 # ON DELETE CASCADE). Legacy rows land in "default" only.
                 legacy_columns = columns.replace("profile_name, ", "", 1)
-                conn.executescript(f"""
-                    CREATE TABLE {table}_new ({ddl});
-                    INSERT INTO {table}_new ({columns})
-                        SELECT 'default', {legacy_columns} FROM {table};
-                    DROP TABLE {table};
-                    ALTER TABLE {table}_new RENAME TO {table};
-                    """)
+                conn.execute(f"CREATE TABLE {table}_new ({ddl})")
+                conn.execute(
+                    f"INSERT INTO {table}_new ({columns}) "
+                    f"SELECT 'default', {legacy_columns} FROM {table}"
+                )
+                conn.execute(f"DROP TABLE {table}")
+                conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
             # Indexes after any rebuild: the user index needs profile_name.
-            conn.executescript("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
-                ON telegram_dm_topic_bindings(session_id);
-
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
-                """)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session "
+                "ON telegram_dm_topic_bindings(session_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user "
+                "ON telegram_dm_topic_bindings(profile_name, user_id, chat_id)"
+            )
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

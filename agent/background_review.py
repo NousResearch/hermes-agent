@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -957,6 +958,18 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        # Cache-scope parity (#109964): the fork shares the parent's physical session_id and
+        # byte-identical prefix, but is _persist_disabled (declared scope fails closed) and
+        # _session_db=None (lineage walk skipped) — so BOTH cache-identity resolvers keyed it
+        # into a different bucket than the gateway parent, costing one cold ~full-context
+        # request per review. Inherit the parent's ALREADY-RESOLVED scope once, here: no DB
+        # access from the fork, persistence stays fully detached, and both consumers (the
+        # affinity header via set_affinity_scope and the body prompt_cache_key via
+        # cache_scope_id) resolve the parent's bucket together. Routed (different-model)
+        # forks do NOT inherit: their prefix is cache-cold anyway.
+        inherited_scope = resolve_prompt_cache_scope_safe(agent)
+        if inherited_scope:
+            review_agent._inherited_cache_scope = inherited_scope
         _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in

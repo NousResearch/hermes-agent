@@ -26,7 +26,7 @@ logger = logging.getLogger("tools.terminal_tool")
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, kubernetes, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -41,6 +41,7 @@ _CONTAINER_KEYS = (
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
+    ("kubernetes", {}),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -180,6 +181,22 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
                            key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only)
 
 
+def _build_kubernetes_env(*, cwd, timeout, cc, task_id, **_):
+    from tools.environments import kubernetes as k8s
+    kcfg = k8s.merge_kubernetes_config(cc.get("kubernetes"))
+    k8s.resolve_provisioner_kind(kcfg)
+    errors, _warnings = k8s.preflight_spec(kcfg)
+    if errors:
+        raise ValueError("terminal.kubernetes.spec cannot serve a session: " + " ".join(errors))
+    core_api = k8s.load_core_api(kcfg)
+    namespace = k8s.resolve_namespace(kcfg)
+    owner_ref = k8s.resolve_owner_reference(core_api, namespace, kcfg)
+    provisioner = k8s.PodProvisioner(kcfg, namespace, api=core_api, owner_reference=owner_ref)
+    return k8s.KubernetesEnvironment(
+        provisioner=provisioner, task_id=task_id, cwd=cwd, timeout=timeout, api=core_api,
+    )
+
+
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
@@ -204,7 +221,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
 _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
                  "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
-                 "ssh": _build_ssh_env}
+                 "kubernetes": _build_kubernetes_env, "ssh": _build_ssh_env}
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
@@ -287,6 +304,10 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
               "module": ("modal", "modal is required for direct modal terminal backend: pip install modal")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
+    "kubernetes": {"module": (
+        "kubernetes",
+        "kubernetes backend selected but the client is not installed: pip install 'hermes-agent[kubernetes]'",
+    )},
 }
 
 

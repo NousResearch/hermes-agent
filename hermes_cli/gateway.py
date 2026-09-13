@@ -6061,11 +6061,10 @@ def _cmd_stop(args):
         # Register cleanup before the s6 dispatch: the supervisor path returns
         # immediately, so it must not bypass the drain or leave its marker behind
         # if the process is interrupted while waiting.
-        if stop_all:
-            from gateway.drain_control import clear_drain_request
-            homes = desktop_profile_homes()
-            atexit.register(lambda: [clear_drain_request(home=home) for home in homes])
-        drain_all_desktop_work()
+        from gateway.drain_control import clear_drain_request
+        homes = desktop_profile_homes() if stop_all else (get_hermes_home(),)
+        atexit.register(lambda: [clear_drain_request(home=home) for home in homes])
+        drain_all_desktop_work(all_profiles=stop_all)
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
         return

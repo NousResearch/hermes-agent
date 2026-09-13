@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psutil
+
 from .policy import FeedbackReceipt
 
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
@@ -83,6 +85,16 @@ class MergeLease:
     repository: str
     pr_number: int
     head_sha: str
+    owner: str
+    claimed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentLease:
+    deployment_path: str
+    repository: str
+    pr_number: int
+    merge_commit_oid: str
     owner: str
     claimed_at: datetime
 
@@ -164,6 +176,45 @@ class MaintenanceCommandEvidence:
 
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_DEPLOYMENT_OWNER = re.compile(
+    r"^post-merge:(?P<pid>[1-9][0-9]*):(?P<start_time_us>[1-9][0-9]*):[1-9][0-9]*$"
+)
+
+
+def deployment_owner(nonce: int) -> str:
+    """Build a deployment lease owner with a PID and process start identity."""
+
+    if isinstance(nonce, bool) or not isinstance(nonce, int) or nonce <= 0:
+        raise ValueError("deployment owner nonce must be a positive integer")
+    try:
+        start_time_us = int(round(psutil.Process(os.getpid()).create_time() * 1_000_000))
+    except (OSError, ValueError, psutil.Error):
+        return f"post-merge-unknown:{os.getpid()}:{nonce}"
+    if start_time_us <= 0:
+        return f"post-merge-unknown:{os.getpid()}:{nonce}"
+    return f"post-merge:{os.getpid()}:{start_time_us}:{nonce}"
+
+
+def _deployment_owner_is_alive(owner: str) -> bool:
+    """Return whether a structured post-merge owner still has a live PID.
+
+    Legacy or externally supplied owner names remain conservatively active until
+    their existing TTL expires because they carry no verifiable process identity.
+    """
+
+    match = _DEPLOYMENT_OWNER.fullmatch(owner)
+    if match is None:
+        return True
+    pid = int(match.group("pid"))
+    expected_start_time_us = int(match.group("start_time_us"))
+    try:
+        process = psutil.Process(pid)
+        actual_start_time_us = int(round(process.create_time() * 1_000_000))
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return False
+    except (psutil.AccessDenied, OSError, ValueError, psutil.Error):
+        return True
+    return actual_start_time_us == expected_start_time_us
 
 
 def parse_maintenance_command_evidence(
@@ -386,6 +437,20 @@ class FeedbackLedger:
                 status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
                 completed_at TEXT NOT NULL,
                 receipt_json TEXT NOT NULL
+            )
+            """)
+        self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS deployment_attempts (
+                deployment_path TEXT PRIMARY KEY,
+                repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                merge_commit_oid TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('claimed', 'completed', 'failed')),
+                owner TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                receipt_id TEXT,
+                last_error TEXT
             )
             """)
         self._connection.execute("""
@@ -2348,6 +2413,113 @@ class FeedbackLedger:
                     payload,
                 ),
             )
+
+    def claim_deployment(
+        self,
+        deployment_path: Path,
+        repository: str,
+        pr_number: int,
+        merge_commit_oid: str,
+        *,
+        owner: str,
+        claimed_at: datetime,
+    ) -> DeploymentLease | None:
+        """Atomically claim one deployment worktree for destructive operations."""
+
+        canonical_path = str(Path(deployment_path).resolve())
+        owner = owner.strip() if isinstance(owner, str) else ""
+        if not canonical_path or not owner:
+            raise ValueError("deployment lease identity is invalid")
+        claimed_at = _aware_utc(claimed_at, "claimed_at")
+        with self._transaction():
+            row = self._connection.execute(
+                "SELECT repository, pr_number, merge_commit_oid, status, owner, claimed_at "
+                "FROM deployment_attempts WHERE deployment_path = ?",
+                (canonical_path,),
+            ).fetchone()
+            if row is not None:
+                previous_claimed_at = _aware_utc(
+                    datetime.fromisoformat(str(row[5])), "claimed_at"
+                )
+                same_merge = (
+                    str(row[0]) == repository
+                    and int(row[1]) == pr_number
+                    and str(row[2]) == merge_commit_oid
+                )
+                if same_merge and str(row[3]) == "completed":
+                    return None
+                if str(row[3]) == "claimed":
+                    claim_is_fresh = claimed_at - previous_claimed_at < timedelta(hours=2)
+                    if claim_is_fresh and _deployment_owner_is_alive(str(row[4])):
+                        return None
+                self._connection.execute(
+                    "UPDATE deployment_attempts SET repository = ?, pr_number = ?, "
+                    "merge_commit_oid = ?, status = 'claimed', owner = ?, claimed_at = ?, "
+                    "updated_at = ?, receipt_id = NULL, last_error = NULL "
+                    "WHERE deployment_path = ?",
+                    (
+                        repository,
+                        pr_number,
+                        merge_commit_oid,
+                        owner,
+                        claimed_at.isoformat(),
+                        claimed_at.isoformat(),
+                        canonical_path,
+                    ),
+                )
+            else:
+                self._connection.execute(
+                    "INSERT INTO deployment_attempts "
+                    "(deployment_path, repository, pr_number, merge_commit_oid, status, owner, "
+                    "claimed_at, updated_at) VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?)",
+                    (
+                        canonical_path,
+                        repository,
+                        pr_number,
+                        merge_commit_oid,
+                        owner,
+                        claimed_at.isoformat(),
+                        claimed_at.isoformat(),
+                    ),
+                )
+        return DeploymentLease(
+            canonical_path, repository, pr_number, merge_commit_oid, owner, claimed_at
+        )
+
+    def finish_deployment(
+        self,
+        lease: DeploymentLease,
+        *,
+        receipt: object,
+        updated_at: datetime,
+    ) -> None:
+        """Finalize the exact deployment lease held by the caller."""
+
+        from .post_merge import DeploymentReceipt
+
+        if not isinstance(receipt, DeploymentReceipt):
+            raise TypeError("receipt must be a DeploymentReceipt")
+        updated_at = _aware_utc(updated_at, "updated_at")
+        with self._transaction():
+            result = self._connection.execute(
+                "UPDATE deployment_attempts SET status = ?, updated_at = ?, receipt_id = ?, "
+                "last_error = ? WHERE deployment_path = ? AND repository = ? AND pr_number = ? "
+                "AND merge_commit_oid = ? AND status = 'claimed' AND owner = ? AND claimed_at = ?",
+                (
+                    receipt.status,
+                    updated_at.isoformat(),
+                    receipt.receipt_id,
+                    receipt.blocker,
+                    lease.deployment_path,
+                    lease.repository,
+                    lease.pr_number,
+                    lease.merge_commit_oid,
+                    lease.owner,
+                    lease.claimed_at.isoformat(),
+                ),
+            )
+            if result.rowcount != 1:
+                raise LedgerStateError("deployment lease is not held")
 
     def latest_deployment_receipt(
         self, repository: str, pr_number: int

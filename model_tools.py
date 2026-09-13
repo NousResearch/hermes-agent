@@ -316,10 +316,18 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     if enabled_toolsets is not None:
         enabled = list(enabled_toolsets)
         # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
-        if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
-            enabled.append("kanban")
+        # and inter-agent messaging tools, even when the assignee profile
+        # restricts its chat toolsets. Keep messaging separate from the static
+        # kanban membership so platform-native toolset recovery remains sound.
+        if (
+            os.environ.get("HERMES_KANBAN_TASK")
+            and not _is_delegated_child_context()
+            and _is_dispatcher_owned_worker()
+        ):
+            if "kanban" not in enabled:
+                enabled.append("kanban")
+            if "inter_agent" not in enabled:
+                enabled.append("inter_agent")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
         from toolsets import get_all_toolsets

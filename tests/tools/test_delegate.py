@@ -202,6 +202,7 @@ class TestStripBlockedTools(unittest.TestCase):
             "cronjob",
             "delegation",
             "memory",
+            "inter_agent",
         ):
             self.assertIn(toolset_name, disabled)
         # code_execution is deliberately NOT denied — children keep

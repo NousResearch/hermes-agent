@@ -1,11 +1,17 @@
 import json
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 import pytest
+import psutil
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from github_pr_feedback.ci_runner import CompletedCommand
+from github_pr_feedback.ledger import FeedbackLedger
+from github_pr_feedback import ledger as ledger_module
 from github_pr_feedback.merge_controller import MergeReceipt
 from github_pr_feedback.post_merge import (
     BundleIdentity,
@@ -17,6 +23,7 @@ from github_pr_feedback.post_merge import (
     _require_package_provenance,
     _require_runtime_absent,
     _wait_for_process_to_appear,
+    _wait_for_process_to_remain_running,
     _wait_for_processes_to_exit,
 )
 from github_pr_feedback.policy import PostMergePolicy
@@ -48,13 +55,17 @@ def test_process_shutdown_wait_rechecks_the_current_census():
     assert controller.censuses == []
 
 
-def test_process_census_reports_malformed_ps_rows_as_deployment_errors(monkeypatch):
-    monkeypatch.setattr(
-        "github_pr_feedback.post_merge.subprocess.run",
-        lambda *_args, **_kwargs: type(
-            "Completed", (), {"returncode": 0, "stdout": "123 /usr/bin/example foo'\n"}
-        )(),
+def test_process_census_reports_malformed_rows_as_deployment_errors(monkeypatch):
+    fake_psutil = SimpleNamespace(
+        process_iter=lambda _attrs: iter(
+            [SimpleNamespace(info={"pid": 123, "exe": "/usr/bin/example", "cmdline": []})]
+        ),
+        NoSuchProcess=type("NoSuchProcess", (Exception,), {}),
+        ZombieProcess=type("ZombieProcess", (Exception,), {}),
+        AccessDenied=type("AccessDenied", (Exception,), {}),
+        Error=Exception,
     )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     with pytest.raises(DeploymentError, match="process_census_ambiguous"):
         SystemProcessController().census()
@@ -87,7 +98,8 @@ def _post_merge_policy(deployment_path: Path) -> PostMergePolicy:
     )
 
 
-def test_post_merge_rechecks_runtime_before_shutdown_and_waits_for_verified_process():
+def test_post_merge_rechecks_runtime_before_shutdown_and_waits_for_verified_process(monkeypatch):
+    monkeypatch.setattr("github_pr_feedback.post_merge.RELAUNCH_STABILITY_SECONDS", 0.0)
     policy = _post_merge_policy(Path("/deployment"))
     merge_sha = "a" * 40
     application = ProcessRecord(
@@ -150,7 +162,8 @@ def test_post_merge_rechecks_runtime_before_shutdown_and_waits_for_verified_proc
     blocked_commands.run.assert_not_called()
 
 
-def test_post_merge_rechecks_protected_runtime_after_relaunch():
+def test_post_merge_rechecks_protected_runtime_after_relaunch(monkeypatch):
+    monkeypatch.setattr("github_pr_feedback.post_merge.RELAUNCH_STABILITY_SECONDS", 0.0)
     policy = _post_merge_policy(Path("/deployment"))
     merge_sha = "a" * 40
     application = ProcessRecord(
@@ -205,6 +218,7 @@ def test_post_merge_rejects_an_advanced_remote_base_before_fast_forward():
 
 
 def test_post_merge_executor_passes_processes_before_controller_to_shutdown_wait(monkeypatch, tmp_path):
+    monkeypatch.setattr("github_pr_feedback.post_merge.RELAUNCH_STABILITY_SECONDS", 0.0)
     bundle = tmp_path / "Hermes.app"
     executable = bundle / "Contents" / "MacOS" / "Hermes"
     process = ProcessRecord(123, executable, (str(executable),), None)
@@ -265,7 +279,7 @@ def test_post_merge_executor_passes_processes_before_controller_to_shutdown_wait
 
     monkeypatch.setattr("github_pr_feedback.post_merge._wait_for_processes_to_exit", wait)
     processes = Processes()
-    ledger = SimpleNamespace(record_deployment_receipt=lambda _receipt: None)
+    ledger = Mock()
     receipt = PostMergeExecutor(
         policy,
         ledger,
@@ -308,6 +322,112 @@ def test_relaunch_wait_fails_when_the_bundle_process_never_appears():
             Controller(),
             timeout=0,
         )
+
+
+def test_relaunch_wait_rejects_a_bundle_that_exits_during_stability_window():
+    process = ProcessRecord(
+        123, Path("/Applications/Hermes.app/Contents/MacOS/Hermes"), (), None
+    )
+
+    class Controller:
+        def __init__(self):
+            self.censuses = [[process], []]
+
+        def census(self):
+            return tuple(self.censuses.pop(0)) if self.censuses else ()
+
+    with pytest.raises(DeploymentError, match="relaunched_bundle_unstable"):
+        _wait_for_process_to_remain_running(
+            Controller(), process.executable, timeout=0.05, stable_for=0.01
+        )
+
+
+def test_deployment_claim_serializes_two_ledger_connections(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    deployment_path = tmp_path / "deployment"
+    now = datetime(2026, 9, 12, tzinfo=UTC)
+    first_ledger = FeedbackLedger(path)
+    second_ledger = FeedbackLedger(path)
+    try:
+        first = first_ledger.claim_deployment(
+            deployment_path,
+            "acme/widgets",
+            82,
+            "a" * 40,
+            owner="first",
+            claimed_at=now,
+        )
+        second = second_ledger.claim_deployment(
+            deployment_path,
+            "acme/widgets",
+            82,
+            "a" * 40,
+            owner="second",
+            claimed_at=now,
+        )
+        assert first is not None
+        assert second is None
+    finally:
+        first_ledger.close()
+        second_ledger.close()
+
+
+def test_deployment_claim_reclaims_recent_owner_after_process_exit(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    deployment_path = tmp_path / "deployment"
+    now = datetime(2026, 9, 12, tzinfo=UTC)
+    ledger = FeedbackLedger(path)
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited_start_time_us = int(round(psutil.Process(exited.pid).create_time() * 1_000_000))
+    exited.wait(timeout=5)
+    try:
+        first = ledger.claim_deployment(
+            deployment_path,
+            "acme/widgets",
+            82,
+            "a" * 40,
+            owner=f"post-merge:{exited.pid}:{exited_start_time_us}:1",
+            claimed_at=now,
+        )
+        assert first is not None
+
+        reclaimed = ledger.claim_deployment(
+            deployment_path,
+            "acme/widgets",
+            82,
+            "a" * 40,
+            owner=ledger_module.deployment_owner(1),
+            claimed_at=now,
+        )
+
+        assert reclaimed is not None
+        assert reclaimed.owner == ledger_module.deployment_owner(1)
+    finally:
+        ledger.close()
+
+
+def test_deployment_owner_identity_rejects_pid_reuse(monkeypatch):
+    class Process:
+        def create_time(self):
+            return 123.457
+
+    monkeypatch.setattr(ledger_module.psutil, "Process", lambda _pid: Process())
+    owner = "post-merge:4242:123456000:1"
+
+    assert not ledger_module._deployment_owner_is_alive(owner)
+
+
+def test_deployment_claim_contention_is_reported_as_in_progress(tmp_path):
+    policy = _post_merge_policy(tmp_path)
+    ledger = Mock()
+    ledger.claim_deployment.return_value = None
+    ledger.latest_deployment_receipt.return_value = None
+
+    result = PostMergeExecutor(policy, ledger).run(_merge_receipt("a" * 40))
+
+    assert result.status == "in_progress"
+    assert result.blocker == "deployment_in_progress"
+    ledger.record_deployment_receipt.assert_not_called()
 
 
 def test_process_census_preserves_executable_paths_with_spaces(monkeypatch):

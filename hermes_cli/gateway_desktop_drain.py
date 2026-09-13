@@ -25,7 +25,9 @@ def desktop_profile_homes() -> tuple[Path, ...]:
     return tuple(Path(profile.path) for profile in list_profiles())
 
 
-def read_desktop_drain_snapshot(homes: Iterable[Path]) -> tuple[int, int]:
+def read_desktop_drain_snapshot(
+    homes: Iterable[Path], *, filter_workers_by_profile: bool = True
+) -> tuple[int, int]:
     """Count live gateway turns and board workers without mutating either."""
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     from gateway.status import (
@@ -34,10 +36,22 @@ def read_desktop_drain_snapshot(homes: Iterable[Path]) -> tuple[int, int]:
         runtime_status_pid_is_live,
     )
     from hermes_cli import kanban_db as kb
+    from hermes_constants import profile_name_for_home
+
+    profile_homes = tuple(Path(home) for home in homes)
+    profile_names = (
+        frozenset(
+            profile_name
+            for home in profile_homes
+            if (profile_name := profile_name_for_home(home)) is not None
+        )
+        if filter_workers_by_profile
+        else None
+    )
 
     gateway_agents = 0
-    for home in homes:
-        runtime = read_runtime_status(path=Path(home) / "gateway_state.json")
+    for home in profile_homes:
+        runtime = read_runtime_status(path=home / "gateway_state.json")
         if runtime_status_pid_is_live(runtime):
             gateway_agents += parse_active_agents((runtime or {}).get("active_agents"))
 
@@ -56,21 +70,31 @@ def read_desktop_drain_snapshot(homes: Iterable[Path]) -> tuple[int, int]:
         conn = _hermes_cli_kanban_db_connect.connect(board=slug)
         try:
             rows = conn.execute(
-                "SELECT worker_pid FROM tasks WHERE status = 'running' "
+                "SELECT assignee, worker_pid FROM tasks WHERE status = 'running' "
                 "AND worker_pid IS NOT NULL"
             ).fetchall()
-            kanban_workers += sum(1 for row in rows if kb._pid_alive(row[0]))
+            kanban_workers += sum(
+                1
+                for row in rows
+                if (profile_names is None or row["assignee"] in profile_names)
+                and kb._pid_alive(row["worker_pid"])
+            )
         finally:
             conn.close()
 
     return gateway_agents, kanban_workers
 
 
-def drain_all_desktop_work() -> DesktopDrainSnapshot:
-    """Production entry point used by ``gateway stop --all --drain``."""
+def drain_all_desktop_work(*, all_profiles: bool = True) -> DesktopDrainSnapshot:
+    """Drain the selected profile homes before stopping gateway-owned work."""
     from gateway.drain_control import write_drain_request
 
-    homes = desktop_profile_homes()
+    if all_profiles:
+        homes = desktop_profile_homes()
+    else:
+        from hermes_constants import get_hermes_home
+
+        homes = (get_hermes_home(),)
 
     def report(current: DesktopDrainSnapshot) -> None:
         if current.idle:
@@ -84,7 +108,9 @@ def drain_all_desktop_work() -> DesktopDrainSnapshot:
 
     return wait_for_desktop_drain(
         homes=homes,
-        snapshot=lambda: read_desktop_drain_snapshot(homes),
+        snapshot=lambda: read_desktop_drain_snapshot(
+            homes, filter_workers_by_profile=not all_profiles
+        ),
         write_marker=lambda home: write_drain_request(
             home=home,
             principal="desktop-close",

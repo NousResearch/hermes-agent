@@ -1037,6 +1037,15 @@ _requires_recently_shipped = pytest.mark.skipif(
 )
 
 
+def test_inter_agent_toolset_is_opt_in_and_reachable_from_picker():
+    """Messaging stays off the default schema while remaining user-selectable."""
+    from toolsets import TOOLSETS, resolve_toolset
+
+    assert "inter_agent" in TOOLSETS
+    assert "inter_agent" not in resolve_toolset("hermes-cli")
+    assert "inter_agent" in _checklist_toolset_keys("cli")
+
+
 def _saved_list_from_before(platform="cli"):
     """A saved explicit list as it looked before the new toolsets existed."""
     from hermes_cli.tools_config import (
@@ -1158,6 +1167,22 @@ def test_disabled_composite_display_matches_runtime_tool_selection():
 
     for name in ("terminal", "file", "web", "vision", "skills"):
         assert (name in enabled) == bool(set(resolve_toolset(name)) & runtime), name
+
+
+def test_dispatcher_worker_recovers_kanban_and_injects_inter_agent_separately(monkeypatch):
+    """Kanban recovery must not depend on the messaging toolset's membership."""
+    from model_tools import _select_tool_names
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    monkeypatch.setattr("model_tools._is_dispatcher_owned_worker", lambda: True)
+    monkeypatch.setattr("model_tools._is_delegated_child_context", lambda: False)
+
+    enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+    assert "kanban" in enabled
+
+    selected = _select_tool_names(sorted(enabled), [], quiet_mode=True)
+    assert "kanban_complete" in selected
+    assert "inter_agent" in selected
 
 
 @_requires_recently_shipped

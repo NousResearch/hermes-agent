@@ -407,14 +407,14 @@ class TestGatewayStopCleanup:
         )
         monkeypatch.setattr(
             "hermes_cli.gateway_desktop_drain.drain_all_desktop_work",
-            lambda: events.append("drain"),
+            lambda **kwargs: events.append(("drain", kwargs)),
         )
 
         gateway_cli.gateway_command(
             SimpleNamespace(gateway_command="stop", all=True, system=False, drain=True)
         )
 
-        assert events[:2] == ["drain", "stop"]
+        assert events[:2] == [("drain", {"all_profiles": True}), "stop"]
 
     def test_stop_without_all_does_not_drain_every_profile(self, monkeypatch):
         drained = []

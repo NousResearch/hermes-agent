@@ -288,6 +288,8 @@ def _run_scan_with_primary_result(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     primary_result: SimpleNamespace,
+    *,
+    repair_callback=None,
 ) -> tuple[int, list[str], dict[str, object]]:
     from github_pr_feedback.cli import _scan
 
@@ -361,7 +363,7 @@ def _run_scan_with_primary_result(
     monkeypatch.setattr("github_pr_feedback.cli.RepairController", Repair)
     monkeypatch.setattr(
         "github_pr_feedback.cli._run_repair_scan_by_repository",
-        repair_by_repository,
+        repair_callback or repair_by_repository,
     )
     monkeypatch.setattr(
         "github_pr_feedback.cli._controller", lambda *_args: Primary()
@@ -398,6 +400,31 @@ def test_scan_keeps_merge_maintainer_moving_during_required_ci_backlog(
     assert payload["required_local_ci_backlog"] == 2
     assert payload["deferred"] == ["non_conflict_repair", "release_maintenance"]
     assert payload["merge"]["status"] == "ok"
+
+
+def test_scan_passes_per_repository_ci_backlog_to_repair_lane(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = SimpleNamespace(
+        created=0,
+        skipped={},
+        degraded=False,
+        required_local_ci_backlog=1,
+        required_local_ci_backlog_by_repository={"org/blocked": 1, "org/ready": 0},
+    )
+    observed = []
+
+    def repair_by_repository(_policy, _ledger, backlog, **_kwargs):
+        observed.append(dict(backlog))
+        return {"status": "ok", "created": 0, "skipped": {}}
+
+    returncode, _order, _payload = _run_scan_with_primary_result(
+        monkeypatch, capsys, result, repair_callback=repair_by_repository
+    )
+
+    assert returncode == 0
+    assert observed == [{"org/blocked": 1, "org/ready": 0}]
 
 
 def test_scan_runs_label_side_lane_after_merge_maintainer(

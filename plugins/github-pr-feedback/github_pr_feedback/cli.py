@@ -1445,7 +1445,7 @@ def _retry_deployment(ctx: Any, args: argparse.Namespace) -> int:
         finally:
             ledger.close()
     print(json.dumps(deployment.to_payload(), sort_keys=True))
-    return 0 if deployment.status == "completed" else 1
+    return 0 if deployment.status in {"completed", "in_progress"} else 1
 
 
 def _dispatch_feedback(ctx: Any, args: argparse.Namespace) -> int:
@@ -2324,7 +2324,7 @@ def _run_merge_scan_for_policy(
                                 "blocker": deployment.blocker,
                             }
                         )
-                        if deployment.status != "completed":
+                        if deployment.status not in {"completed", "in_progress"}:
                             degraded = True
                             deployment_failures.append(number)
                 except (RuntimeError, ValueError):
@@ -2423,7 +2423,7 @@ def _run_single_pr_merge_handoff(
                     "status": deployment.status,
                     "blocker": deployment.blocker,
                 }
-                if deployment.status != "completed":
+                if deployment.status not in {"completed", "in_progress"}:
                     payload["deployment_failure"] = True
         except (LedgerStateError, RuntimeError, ValueError) as error:
             payload["deployment"] = {

@@ -124,9 +124,10 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # provider payloads, where a line-start anchor is unavailable. Require a
 # structural delimiter before the key so prose, dotted technical settings,
 # relative URLs, and form bodies remain available to their dedicated passes.
+_INLINE_SECRET_KEY_NAMES = r"(?:token|secret|password|passwd|pass|pw|credential|auth|api[_-]?key)"
 _INLINE_SECRET_ASSIGN_RE = re.compile(
-    r"(^|[{[(,;:|]\s*|\s+(?=(?:token|secret|password|passwd|credential|auth|pass|pw|api[_-]?key)\s*=)|[\"'])"
-    r"(token|secret|password|passwd|credential|auth|pass|pw|api[_-]?key)"
+    rf"(^|[{{[(,;:|]\s*|\s+(?={_INLINE_SECRET_KEY_NAMES}\s*=)|[\"'])"
+    rf"({_INLINE_SECRET_KEY_NAMES})"
     r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
     r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&|\"')\]}]+))",
     re.IGNORECASE | re.MULTILINE,
@@ -279,6 +280,18 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
         return False
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
             or _looks_like_opaque_credential(value))
+
+
+def _should_redact_inline_assignment(key: str, value: str) -> bool:
+    """Redact an ordinary-whitespace inline assignment without swallowing prose scalars."""
+    if _ENV_LOOKUP_VALUE_RE.match(value) or (
+        key.casefold() == "auth" and value.casefold() == "none"
+    ):
+        return False
+    return (
+        _has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+        or _looks_like_opaque_credential(value)
+    )
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
@@ -527,25 +540,19 @@ def _redact_assignments(text: str, *, force: bool = False) -> str:
             # handles the opt-in case). The uppercase regex above is all-caps-only, so it never matches URL
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
-            text = _INLINE_SECRET_ASSIGN_RE.sub(
-                lambda match: (
-                    match.group(0)
-                    if (
-                        (
-                            match.group(1).isspace()
-                            and not _looks_like_opaque_credential(match.group(4))
-                            and not _has_word_bounded_keyword(
-                                match.group(2), _STRONG_KEY_KEYWORD_RE
-                            )
-                        )
-                        or not _should_redact_assignment(
-                            match.group(2), match.group(4), check_keyword=True
-                        )
+            def _redact_inline_assignment(match):
+                should_redact = (
+                    _should_redact_inline_assignment(match.group(2), match.group(4))
+                    if match.group(1).isspace()
+                    else _should_redact_assignment(
+                        match.group(2), match.group(4), check_keyword=True
                     )
-                    else f"{match.group(1)}{match.group(2)}{match.group(3)}***"
-                ),
-                text,
-            )
+                )
+                if not should_redact:
+                    return match.group(0)
+                return f"{match.group(1)}{match.group(2)}{match.group(3)}***"
+
+            text = _INLINE_SECRET_ASSIGN_RE.sub(_redact_inline_assignment, text)
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks
         # quadratically on long unbroken [A-Za-z0-9_.\-] runs.
         # Lowercase/dotted config keys (issue #16413). Skip URLs entirely — web-URL query params are

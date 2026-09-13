@@ -16,13 +16,16 @@ from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
 from .ci_runner import CICommandRunner, CompletedCommand, SubprocessCICommandRunner
-from .ledger import FeedbackLedger
+from .ledger import DeploymentLease, FeedbackLedger, deployment_owner
 from .merge_controller import MergeReceipt
 from .policy import PostMergePolicy
 
 
 class DeploymentError(RuntimeError):
     """A post-merge safety gate failed without changing merge truth."""
+
+
+RELAUNCH_STABILITY_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +138,7 @@ class SystemProcessController:
                     ProcessRecord(
                         pid,
                         Path(executable),
-                        tuple(str(argument) for argument in argv),
+                        tuple(argv),
                         Path(cwd) if isinstance(cwd, str) else None,
                     )
                 )
@@ -268,6 +271,45 @@ class PostMergeExecutor:
         deployed_sha: str | None = None
         relaunched = False
         bundle = (self._policy.deployment_path / self._policy.bundle_path).resolve()
+        existing = self._ledger.latest_deployment_receipt(merge.repository, merge.pr_number)
+        if (
+            isinstance(existing, DeploymentReceipt)
+            and existing.status == "completed"
+            and existing.merge_commit_oid == merge.merge_commit_oid
+        ):
+            return existing
+        lease = self._ledger.claim_deployment(
+            self._policy.deployment_path,
+            merge.repository,
+            merge.pr_number,
+            merge.merge_commit_oid,
+            owner=deployment_owner(id(self)),
+            claimed_at=self._now(),
+        )
+        if lease is None:
+            latest = self._ledger.latest_deployment_receipt(
+                merge.repository, merge.pr_number
+            )
+            if (
+                isinstance(latest, DeploymentReceipt)
+                and latest.status == "completed"
+                and latest.merge_commit_oid == merge.merge_commit_oid
+            ):
+                return latest
+            return DeploymentReceipt(
+                receipt_id=hashlib.sha256(
+                    f"{merge.repository}:{merge.pr_number}:{merge.merge_commit_oid}:in_progress".encode()
+                ).hexdigest(),
+                repository=merge.repository,
+                pr_number=merge.pr_number,
+                merge_commit_oid=merge.merge_commit_oid,
+                status="in_progress",
+                deployed_sha=None,
+                bundle_path=None,
+                relaunched=False,
+                blocker="deployment_in_progress",
+                completed_at=_aware_utc(self._now()),
+            )
         try:
             pre_census = self._processes.census()
             _require_runtime_absent(pre_census, self._policy)
@@ -314,20 +356,22 @@ class PostMergeExecutor:
             )
             if relaunch.returncode != 0 or relaunch.timed_out:
                 raise DeploymentError("relaunch_failed")
-            relaunch_census = _wait_for_process_to_appear(
-                identity.executable_path, self._processes
+            relaunch_census = _wait_for_process_to_remain_running(
+                self._processes,
+                identity.executable_path,
+                stable_for=RELAUNCH_STABILITY_SECONDS,
             )
             _require_runtime_absent(
                 relaunch_census,
                 self._policy,
                 blocker="protected_runtime_appeared_after_relaunch",
             )
+            relaunched = True
             _require_runtime_absent(
                 self._processes.census(),
                 self._policy,
                 blocker="protected_runtime_appeared_after_relaunch",
             )
-            relaunched = True
         except DeploymentError as error:
             return self._record(
                 merge,
@@ -336,6 +380,7 @@ class PostMergeExecutor:
                 bundle=bundle if deployed_sha else None,
                 relaunched=relaunched,
                 blocker=str(error),
+                lease=lease,
             )
         return self._record(
             merge,
@@ -344,6 +389,7 @@ class PostMergeExecutor:
             bundle=bundle,
             relaunched=True,
             blocker=None,
+            lease=lease,
         )
 
     def _record(
@@ -355,6 +401,7 @@ class PostMergeExecutor:
         bundle: Path | None,
         relaunched: bool,
         blocker: str | None,
+        lease: DeploymentLease,
     ) -> DeploymentReceipt:
         completed_at = _aware_utc(self._now())
         identity = {
@@ -382,6 +429,7 @@ class PostMergeExecutor:
             completed_at=completed_at,
         )
         self._ledger.record_deployment_receipt(receipt)
+        self._ledger.finish_deployment(lease, receipt=receipt, updated_at=completed_at)
         return receipt
 
 
@@ -425,12 +473,50 @@ def _wait_for_process_to_appear(
     deadline = time.monotonic() + timeout
     while True:
         census = controller.census()
-        if any(record.executable.resolve() == expected for record in census):
+        if any(process.executable.resolve() == expected for process in census):
             return census
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise DeploymentError("relaunched_bundle_missing")
         time.sleep(min(0.1, remaining))
+
+
+def _wait_for_process_to_remain_running(
+    controller: ProcessController,
+    executable: Path,
+    *,
+    timeout: float = 30.0,
+    stable_for: float = RELAUNCH_STABILITY_SECONDS,
+) -> tuple[ProcessRecord, ...]:
+    """Require the relaunched executable to survive a bounded stability window."""
+    expected = executable.resolve()
+    deadline = time.monotonic() + timeout
+    stable_since: float | None = None
+    seen_once = False
+    latest_census: tuple[ProcessRecord, ...] = ()
+    while True:
+        latest_census = controller.census()
+        present = any(process.executable.resolve() == expected for process in latest_census)
+        now = time.monotonic()
+        if present:
+            seen_once = True
+            if stable_since is None:
+                stable_since = now
+            if stable_for <= 0 or now - stable_since >= stable_for:
+                return latest_census
+        else:
+            stable_since = None
+        remaining = deadline - now
+        if remaining <= 0:
+            raise DeploymentError(
+                "relaunched_bundle_unstable" if seen_once else "relaunch_start_timeout"
+            )
+        wait_for_stability = (
+            stable_for - (now - stable_since)
+            if stable_since is not None
+            else remaining
+        )
+        time.sleep(min(0.1, remaining, max(0.0, wait_for_stability)))
 
 
 def _require_runtime_absent(

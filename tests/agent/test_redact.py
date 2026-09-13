@@ -193,6 +193,17 @@ class TestBareSecretEnvSuffixes:
         for text, expected in samples:
             assert redact_sensitive_text(text, force=True) == expected
 
+    @pytest.mark.parametrize("key", ["password", "secret", "credential", "pass", "pw", "api_key"])
+    def test_whitespace_delimited_inline_credential_keywords_mask(self, key):
+        value = "hunter2hunter2"
+        result = redact_sensitive_text(f"provider {key}={value}", force=True)
+        assert f"provider {key}=" in result
+        assert value not in result
+
+    def test_opaque_whitespace_token_masks_without_force(self):
+        value = "A9f3kZq7Lm2Xw8Rt4Yv6"
+        result = redact_sensitive_text(f"provider token={value}")
+        assert value not in result
 
 class TestControlCharSplitTokens:
     """Tokens split by control/zero-width chars must still mask — #77484."""

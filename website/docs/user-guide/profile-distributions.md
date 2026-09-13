@@ -625,6 +625,8 @@ On POSIX systems, file and directory permission bits are preserved when copying.
 The installer verifies the complete payload before changing profile files. It keeps
 backups during publication and rolls back changes if publication fails. If recovery
 cannot finish, the error identifies the retained backup directory.
+Destination directory handles remain open during publication and rollback so a
+concurrent link replacement cannot redirect writes through that link.
 
 ---
 

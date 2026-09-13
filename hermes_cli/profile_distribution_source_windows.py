@@ -157,14 +157,7 @@ def _open_one(path: Path, win32file, expected=None):
         win32file.CloseHandle(handle)
 
 
-@contextmanager
-def open_source(path: Path):
-    """Open without following any reparse component, retaining all ancestor handles."""
-    if sys.platform != "win32":
-        raise OSError("Native Windows distribution sources require Windows")
-    import pywintypes
-    import win32file
-
+def _filesystem_path(path: Path) -> Path:
     raw = str(path)
     if "\0" in raw or raw.startswith("\\\\.\\"):
         raise OSError("Distribution sources cannot use the Windows device namespace")
@@ -177,6 +170,18 @@ def open_source(path: Path):
     path = Path(os.path.abspath(raw))
     if not path.anchor or any(":" in part for part in path.parts[1:]):
         raise OSError("Distribution source must use a filesystem path without alternate streams")
+    return path
+
+
+@contextmanager
+def open_source(path: Path):
+    """Open without following any reparse component, retaining all ancestor handles."""
+    if sys.platform != "win32":
+        raise OSError("Native Windows distribution sources require Windows")
+    import pywintypes
+    import win32file
+
+    path = _filesystem_path(path)
     try:
         with ExitStack() as stack:
             source = stack.enter_context(_open_one(Path(path.anchor), win32file))

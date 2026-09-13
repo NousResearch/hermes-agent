@@ -239,20 +239,22 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
 
     main_path = db_path
     if create_main:
-        flags = os.O_WRONLY | os.O_CREAT
+        # O_EXCL: only a brand-new inode gets a descriptor. Opening an existing
+        # file here and closing it would drop this process's POSIX locks on it.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         if hasattr(os, "O_CLOEXEC"):
             flags |= os.O_CLOEXEC
         try:
             fd = os.open(main_path, flags, 0o600)
+        except FileExistsError:
+            pass
         except IsADirectoryError:
             # Not a database file at all; sqlite3.connect() raises the
             # canonical error for this, and a directory leaks no row data.
             return
-        try:
-            os.fchmod(fd, 0o600)
-        finally:
+        else:
             os.close(fd)
 
     for path in (

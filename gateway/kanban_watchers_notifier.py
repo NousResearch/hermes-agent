@@ -240,10 +240,11 @@ class _Collector:
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
+            incarnation_id=sub.get("incarnation_id"),
         )
         candidates = _kbn().list_due_deliveries_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-            thread_id=sub.get("thread_id") or "",
+            thread_id=sub.get("thread_id") or "", incarnation_id=sub.get("incarnation_id"),
         )
         if not candidates:
             return []
@@ -407,6 +408,10 @@ class _KanbanNotification:
         self.sub_fail_counts = sub_fail_counts
         self.sub = sub = d["sub"]
         self.outbox = d["outbox"]
+        # Freeze authorization from collection; later checks must not adopt a
+        # replacement route merely because its public identity is unchanged.
+        self.incarnation_id = sub.get("incarnation_id")
+        self.delivery_mode = str(sub.get("delivery_mode") or "notify")
         self.task = task = d["task"]
         self.board_slug = d.get("board")
         self.platform_str = (sub["platform"] or "").lower()
@@ -452,6 +457,26 @@ class _KanbanNotification:
             finally:
                 conn.close()
         return await _to_thread_process_service(_run)
+
+    async def authorize_effect(self) -> bool:
+        """Revalidate the captured claim immediately before an external effect."""
+        authorized = await self.outbox_op(
+            "delivery_effect_is_authorized",
+            lease_token=self.outbox["lease_token"],
+            incarnation_id=self.incarnation_id,
+            notifier_profile=self.sub_profile or None,
+            delivery_mode=self.delivery_mode,
+        )
+        if authorized:
+            return True
+        await self.outbox_op(
+            "cancel_revoked_delivery", lease_token=self.outbox["lease_token"],
+        )
+        logger.info(
+            "kanban notifier: cancelled revoked delivery %s before external effect",
+            self.outbox["delivery_key"],
+        )
+        return False
 
     async def quarantine_unknown(self, exc: Exception) -> None:
         marked = await self.outbox_op(
@@ -635,6 +660,8 @@ class _KanbanNotification:
                 if self.outbox.get("ping_receipt"):
                     self.transport_receipts.append(str(self.outbox["ping_receipt"]))
                 continue
+            if not await self.authorize_effect():
+                return False
             try:
                 receipt = await self._send_event(ev, msg)
                 self.transport_receipts.append(receipt)
@@ -706,6 +733,8 @@ class _KanbanNotification:
 
         # A requested wake is required even when its passive ping already landed.
         if wake_kinds:
+            if not await self.authorize_effect():
+                return
             try:
                 await self.wake()
                 self.transport_receipts.append("wake-accepted")

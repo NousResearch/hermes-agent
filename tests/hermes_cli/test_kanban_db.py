@@ -19,6 +19,7 @@ import hermes_state_wal
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_workspace as kbw
 
 
@@ -462,12 +463,9 @@ def test_delete_archived_task_removes_related_rows(kanban_home):
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, result="done")
         assert kb.archive_task(conn, tid)
-        conn.execute(
-            "INSERT INTO kanban_notify_subs(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
-            "VALUES (?, 'telegram', '123', '', 'u', 0, 0)",
-            (tid,),
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="123", user_id="u",
         )
-        conn.commit()
 
         assert kb.delete_archived_task(conn, tid) is True
         assert kb.get_task(conn, tid) is None

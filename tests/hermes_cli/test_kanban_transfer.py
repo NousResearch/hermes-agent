@@ -31,6 +31,7 @@ if str(_WORKTREE) not in sys.path:
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_transfer as kt
 from hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
 
@@ -93,13 +94,9 @@ def _claim(task_id: str, slug: str = "alpha") -> None:
 
 def _subscribe(task_id: str, slug: str = "alpha") -> None:
     with kbc.connect_closing(board=slug) as conn:
-        with kb.write_txn(conn):
-            conn.execute(
-                "INSERT INTO kanban_notify_subs "
-                "(task_id, platform, chat_id, thread_id, created_at) "
-                "VALUES (?, 'telegram', '12345', '', ?)",
-                (task_id, int(time.time())),
-            )
+        kbn.add_notify_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="12345",
+        )
 
 
 def _tasks_by_title(slug: str) -> dict[str, dict]:

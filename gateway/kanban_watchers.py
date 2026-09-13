@@ -125,7 +125,8 @@ class GatewayKanbanWatchersMixin:
         try:
             getattr(_kbn, op)(
                 conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "", **extra,
+                thread_id=sub.get("thread_id") or "",
+                incarnation_id=sub.get("incarnation_id"), **extra,
             )
         finally:
             conn.close()

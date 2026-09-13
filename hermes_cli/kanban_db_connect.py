@@ -33,6 +33,7 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+
 # Cap on ``<db>.corrupt.<hash>.bak`` quarantines per board: content-addressing
 # dedupes identical bytes, but mutating corruption mints a new fingerprint each
 # time (one user hit 124). Oldest-by-mtime beyond the cap are pruned after each
@@ -817,6 +818,7 @@ _LATER_TASK_COLUMNS = (
 
 _NOTIFY_SUB_COLUMNS = (
     ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
+    ("incarnation_id", "incarnation_id TEXT"),
     ("notifier_profile", "notifier_profile TEXT"),
     ("delivery_mode", "delivery_mode TEXT NOT NULL DEFAULT 'notify'"),
     ("chat_type", "chat_type TEXT"),
@@ -836,6 +838,7 @@ CREATE TABLE IF NOT EXISTS kanban_delivery_outbox (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     thread_id TEXT NOT NULL DEFAULT '',
+    incarnation_id TEXT,
     notifier_profile TEXT,
     payload_digest TEXT NOT NULL,
     payload_json TEXT NOT NULL,
@@ -849,6 +852,7 @@ CREATE TABLE IF NOT EXISTS kanban_delivery_outbox (
     transport_receipt TEXT,
     ping_delivered_at INTEGER,
     ping_receipt TEXT,
+    revoked_at INTEGER,
     exception_recorded INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -864,6 +868,8 @@ CREATE INDEX IF NOT EXISTS idx_delivery_outbox_task
 _DELIVERY_OUTBOX_COLUMNS = (
     ("ping_delivered_at", "ping_delivered_at INTEGER"),
     ("ping_receipt", "ping_receipt TEXT"),
+    ("incarnation_id", "incarnation_id TEXT"),
+    ("revoked_at", "revoked_at INTEGER"),
 )
 
 
@@ -938,6 +944,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     "UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' "
                     "WHERE platform != 'tui'"
                 )
+
+        # Existing subscriptions gain an identity, but old outbox rows remain
+        # unowned: today's matching route/profile cannot prove old authority.
+        conn.execute(
+            "UPDATE kanban_notify_subs SET incarnation_id=lower(hex(randomblob(16))) "
+            "WHERE incarnation_id IS NULL OR incarnation_id=''"
+        )
 
     if _table_exists(conn, "task_runs"):
         _backfill_legacy_inflight_runs(conn)
@@ -1064,6 +1077,7 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " incarnation_id TEXT NOT NULL,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),

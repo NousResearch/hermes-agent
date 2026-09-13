@@ -1022,6 +1022,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     platform      TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
     thread_id     TEXT NOT NULL DEFAULT '',
+    incarnation_id TEXT NOT NULL,
     user_id       TEXT,
     user_id_alt   TEXT,
     chat_type     TEXT,
@@ -1432,10 +1433,10 @@ def _inherit_notify_subs(
     conn.execute(
         f"""
         INSERT OR IGNORE INTO kanban_notify_subs
-            (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
+            (task_id, platform, chat_id, thread_id, incarnation_id, user_id, user_id_alt,
              chat_type, notifier_profile, delivery_mode, delivery_metadata,
              created_at, last_event_id)
-        SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
+        SELECT ?, platform, chat_id, thread_id, lower(hex(randomblob(16))), user_id, user_id_alt,
                COALESCE(chat_type, 'dm'), notifier_profile,
                COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
           FROM kanban_notify_subs

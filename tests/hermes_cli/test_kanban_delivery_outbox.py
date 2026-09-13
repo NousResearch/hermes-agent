@@ -130,8 +130,9 @@ def test_before_send_retry_and_post_send_ambiguity(tmp_path, monkeypatch):
         transport_receipt="fake-retry-receipt",
     )
 
-    # A second origin represents a separate non-idempotent transport obligation.
-    sub2 = dict(sub, chat_id="other-origin")
+    # A second subscribed origin represents a separate non-idempotent transport obligation.
+    kbn.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="other-origin")
+    sub2 = next(s for s in kbn.list_notify_subs(conn, task_id) if s["chat_id"] == "other-origin")
     second = kbn.enqueue_delivery(conn, event=event, sub=sub2)
     sent = kbn.claim_delivery(conn, delivery_key=second["delivery_key"], now=200, lease_seconds=5)
     assert sent
@@ -331,3 +332,34 @@ def test_retention_keeps_every_unsettled_event_and_exact_route(tmp_path, monkeyp
         } == {f"route-{state}" for state in open_states}
     finally:
         conn.close()
+
+
+def test_recreated_route_cannot_claim_revoked_prior_incarnation(tmp_path, monkeypatch):
+    """A delete/re-add of the same route must not inherit its old obligations."""
+    _db, conn, task_id, old_sub, event = _fixture(tmp_path, monkeypatch)
+    old_row = kbn.enqueue_delivery(conn, event=event, sub=old_sub)
+    old_incarnation = old_sub["incarnation_id"]
+
+    assert kbn.remove_notify_sub(
+        conn, task_id=task_id, platform=old_sub["platform"], chat_id=old_sub["chat_id"],
+        thread_id=old_sub["thread_id"], incarnation_id=old_incarnation,
+    )
+    kbn.add_notify_sub(
+        conn, task_id=task_id, platform=old_sub["platform"], chat_id=old_sub["chat_id"],
+        thread_id=old_sub["thread_id"],
+    )
+    new_sub = kbn.list_notify_subs(conn, task_id)[0]
+    assert new_sub["incarnation_id"] != old_incarnation
+
+    with kb.write_txn(conn):
+        kb._append_event(conn, task_id, "completed", {"summary": "new incarnation"})
+    new_event = kb.list_events(conn, task_id)[-1]
+    new_row = kbn.enqueue_delivery(conn, event=new_event, sub=new_sub)
+
+    assert conn.execute(
+        "SELECT revoked_at FROM kanban_delivery_outbox WHERE delivery_key=?",
+        (old_row["delivery_key"],),
+    ).fetchone()[0] is not None
+    assert kbn.claim_delivery(conn, delivery_key=old_row["delivery_key"], now=10**10) is None
+    assert kbn.claim_delivery(conn, delivery_key=new_row["delivery_key"], now=10**10) is not None
+    conn.close()

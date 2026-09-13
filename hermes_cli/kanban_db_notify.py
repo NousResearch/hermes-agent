@@ -56,7 +56,7 @@ def _delivery_payload(event: Event, sub: Mapping[str, Any]) -> tuple[str, str, s
     digest = hashlib.sha256(encoded.encode()).hexdigest()
     origin = json.dumps([
         sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "",
-        sub.get("notifier_profile") or "",
+        sub.get("notifier_profile") or "", sub.get("incarnation_id") or "",
     ], separators=(",", ":"))
     key = hashlib.sha256(f"{event.id}:{origin}:{digest}".encode()).hexdigest()
     return key, digest, encoded
@@ -69,11 +69,12 @@ def enqueue_delivery(conn: sqlite3.Connection, *, event: Event, sub: Mapping[str
     with _kb.write_txn(conn):
         conn.execute(
             """INSERT OR IGNORE INTO kanban_delivery_outbox
-               (delivery_key,task_id,event_id,platform,chat_id,thread_id,notifier_profile,
+               (delivery_key,task_id,event_id,platform,chat_id,thread_id,incarnation_id,notifier_profile,
                 payload_digest,payload_json,state,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
             (key, sub["task_id"], int(event.id), sub["platform"], sub["chat_id"],
-             sub.get("thread_id") or "", sub.get("notifier_profile"), digest, encoded, now, now),
+             sub.get("thread_id") or "", sub.get("incarnation_id"),
+             sub.get("notifier_profile"), digest, encoded, now, now),
         )
         row = conn.execute("SELECT * FROM kanban_delivery_outbox WHERE delivery_key=?", (key,)).fetchone()
     return dict(row)
@@ -106,13 +107,79 @@ def claim_delivery(conn: sqlite3.Connection, *, delivery_key: str, now: Optional
         )
         cur = conn.execute(
             """UPDATE kanban_delivery_outbox SET state='sending',lease_token=?,lease_expires_at=?,updated_at=?
-               WHERE delivery_key=? AND state IN ('pending','retry_wait') AND next_attempt_at<=?""",
+               WHERE delivery_key=? AND state IN ('pending','retry_wait') AND next_attempt_at<=?
+                 AND revoked_at IS NULL AND incarnation_id IS NOT NULL
+                 AND EXISTS (
+                    SELECT 1 FROM kanban_notify_subs s
+                     WHERE s.task_id=kanban_delivery_outbox.task_id
+                       AND s.platform=kanban_delivery_outbox.platform
+                       AND s.chat_id=kanban_delivery_outbox.chat_id
+                       AND s.thread_id=kanban_delivery_outbox.thread_id
+                       AND s.incarnation_id=kanban_delivery_outbox.incarnation_id
+                 )""",
             (token, stamp + max(1, int(lease_seconds)), stamp, delivery_key, stamp),
         )
         if cur.rowcount != 1:
             return None
         row = conn.execute("SELECT * FROM kanban_delivery_outbox WHERE delivery_key=?", (delivery_key,)).fetchone()
     return dict(row)
+
+
+def subscription_is_authorized(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str], incarnation_id: str, notifier_profile: Optional[str],
+    delivery_mode: str,
+) -> bool:
+    """Whether the captured subscription incarnation still owns this route.
+
+    This is a point-in-time authorization check. Call it immediately before an
+    external effect; SQLite cannot make that check atomic with network I/O.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM kanban_notify_subs " + _SUB_KEY_WHERE
+        + " AND incarnation_id=? AND notifier_profile IS ? AND delivery_mode=?",
+        (*_sub_key(task_id, platform, chat_id, thread_id), incarnation_id,
+         notifier_profile, delivery_mode),
+    ).fetchone()
+    return row is not None
+
+
+def delivery_effect_is_authorized(
+    conn: sqlite3.Connection, *, delivery_key: str, lease_token: str,
+    incarnation_id: str, notifier_profile: Optional[str], delivery_mode: str,
+) -> bool:
+    """Authorize a captured outbox claim at an external-effect boundary."""
+    row = conn.execute(
+        """SELECT task_id,platform,chat_id,thread_id FROM kanban_delivery_outbox
+           WHERE delivery_key=? AND state='sending' AND lease_token=?
+             AND revoked_at IS NULL AND incarnation_id=?
+             AND notifier_profile IS ?""",
+        (delivery_key, lease_token, incarnation_id, notifier_profile),
+    ).fetchone()
+    return bool(row) and subscription_is_authorized(
+        conn, task_id=row["task_id"], platform=row["platform"], chat_id=row["chat_id"],
+        thread_id=row["thread_id"], incarnation_id=incarnation_id,
+        notifier_profile=notifier_profile, delivery_mode=delivery_mode,
+    )
+
+
+def cancel_revoked_delivery(
+    conn: sqlite3.Connection, *, delivery_key: str, lease_token: str,
+    now: Optional[int] = None,
+) -> bool:
+    """Settle a revoked pre-effect claim without retrying or erasing its audit."""
+    stamp = int(time.time()) if now is None else int(now)
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            """UPDATE kanban_delivery_outbox
+               SET state='delivered',lease_token=NULL,lease_expires_at=NULL,
+                   last_error='subscription authorization revoked before external effect',
+                   transport_receipt='cancelled:subscription-revoked',updated_at=?
+               WHERE delivery_key=? AND state='sending' AND lease_token=?
+                 AND revoked_at IS NOT NULL""",
+            (stamp, delivery_key, lease_token),
+        )
+    return cur.rowcount == 1
 
 
 def mark_delivery_ping_delivered(
@@ -392,26 +459,47 @@ def add_notify_sub(
     metadata_json = _encode_notify_delivery_metadata(delivery_metadata)
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
+        existing = conn.execute(
+            "SELECT incarnation_id,notifier_profile,delivery_mode FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            key,
+        ).fetchone()
+        new_incarnation = secrets.token_hex(16)
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
-                 chat_type, notifier_profile, delivery_mode, delivery_metadata,
+                 chat_type, notifier_profile, delivery_mode, delivery_metadata, incarnation_id,
                  created_at, last_event_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     COALESCE((SELECT MAX(id) FROM task_events WHERE task_id = ?), 0))
             """,
             (
                 *key, user_id, user_id_alt, chat_type or "dm", notifier_profile,
-                insert_mode, metadata_json, int(time.time()), task_id,
+                insert_mode, metadata_json, new_incarnation, int(time.time()), task_id,
             ),
         )
+        if existing is not None:
+            next_profile = existing["notifier_profile"] if notifier_profile is None else notifier_profile
+            next_mode = existing["delivery_mode"] if valid_mode is None else valid_mode
+            if (next_profile, next_mode) != (existing["notifier_profile"], existing["delivery_mode"]):
+                stamp = int(time.time())
+                conn.execute(
+                    "UPDATE kanban_delivery_outbox SET revoked_at=COALESCE(revoked_at,?),updated_at=? "
+                    "WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? "
+                    "AND (incarnation_id=? OR incarnation_id IS NULL)",
+                    (stamp, stamp, *key, existing["incarnation_id"]),
+                )
+                conn.execute(
+                    "UPDATE kanban_notify_subs SET incarnation_id=?,notifier_profile=?,delivery_mode=? "
+                    + _SUB_KEY_WHERE,
+                    (new_incarnation, next_profile, next_mode, *key),
+                )
         # chat_type / delivery_mode / delivery_metadata are last-write-wins;
         # user_id_alt and notifier_profile only self-heal legacy rows lacking one.
         for column, value, fill_only in (
             ("chat_type", chat_type, False),
             ("user_id_alt", user_id_alt, True),
-            ("notifier_profile", notifier_profile, True),
+            ("notifier_profile", notifier_profile, False),
             ("delivery_mode", valid_mode, False),
             ("delivery_metadata", metadata_json, False),
         ):
@@ -542,11 +630,27 @@ def remove_notify_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    incarnation_id: Optional[str] = None,
 ) -> bool:
     with _kb.write_txn(conn):
+        key = _sub_key(task_id, platform, chat_id, thread_id)
+        row = conn.execute(
+            "SELECT incarnation_id FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            key,
+        ).fetchone()
+        if row is None or (incarnation_id is not None and row["incarnation_id"] != incarnation_id):
+            return False
+        owned = row["incarnation_id"]
+        stamp = int(time.time())
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET revoked_at=COALESCE(revoked_at,?),updated_at=? "
+            "WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? "
+            "AND (incarnation_id=? OR incarnation_id IS NULL)",
+            (stamp, stamp, *key, owned),
+        )
         cur = conn.execute(
-            "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE,
-            _sub_key(task_id, platform, chat_id, thread_id),
+            "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE + " AND incarnation_id=?",
+            (*key, owned),
         )
     return cur.rowcount > 0
 
@@ -601,11 +705,14 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
 
 def _notify_cursor(
     conn: sqlite3.Connection, task_id: str, platform: str, chat_id: str, thread_id: Optional[str],
+    incarnation_id: Optional[str] = None,
 ) -> Optional[int]:
     """``last_event_id`` of one subscription row, or ``None`` when unsubscribed."""
     row = conn.execute(
-        "SELECT last_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE,
-        _sub_key(task_id, platform, chat_id, thread_id),
+        "SELECT last_event_id FROM kanban_notify_subs " + _SUB_KEY_WHERE
+        + (" AND incarnation_id=?" if incarnation_id is not None else ""),
+        (*_sub_key(task_id, platform, chat_id, thread_id),
+         *((incarnation_id,) if incarnation_id is not None else ())),
     ).fetchone()
     return None if row is None else int(row["last_event_id"])
 
@@ -648,6 +755,7 @@ def claim_unseen_events_for_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
+    incarnation_id: Optional[str] = None,
 ) -> tuple[int, int, list[Event]]:
     """Atomically claim unseen events for one subscription.
 
@@ -659,7 +767,7 @@ def claim_unseen_events_for_sub(
     delivery failure.
     """
     with _kb.write_txn(conn):
-        old_cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id)
+        old_cursor = _notify_cursor(conn, task_id, platform, chat_id, thread_id, incarnation_id)
         if old_cursor is None:
             return 0, 0, []
         new_cursor, events = unseen_events_for_sub(
@@ -676,8 +784,10 @@ def claim_unseen_events_for_sub(
             "thread_id": thread_id or "",
         }
         stored = conn.execute(
-            "SELECT notifier_profile,delivery_mode FROM kanban_notify_subs " + _SUB_KEY_WHERE,
-            _sub_key(task_id, platform, chat_id, thread_id),
+            "SELECT incarnation_id,notifier_profile,delivery_mode FROM kanban_notify_subs "
+            + _SUB_KEY_WHERE + (" AND incarnation_id=?" if incarnation_id is not None else ""),
+            (*_sub_key(task_id, platform, chat_id, thread_id),
+             *((incarnation_id,) if incarnation_id is not None else ())),
         ).fetchone()
         if stored:
             sub.update(dict(stored))
@@ -685,19 +795,21 @@ def claim_unseen_events_for_sub(
             key, digest, encoded = _delivery_payload(event, sub)
             conn.execute(
                 """INSERT OR IGNORE INTO kanban_delivery_outbox
-                   (delivery_key,task_id,event_id,platform,chat_id,thread_id,notifier_profile,
+                   (delivery_key,task_id,event_id,platform,chat_id,thread_id,incarnation_id,notifier_profile,
                     payload_digest,payload_json,state,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
                 (key, task_id, int(event.id), platform, chat_id, thread_id or "",
-                 sub.get("notifier_profile"), digest, encoded, now, now),
+                 sub.get("incarnation_id"), sub.get("notifier_profile"), digest, encoded, now, now),
             )
-        _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor)
+        _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor,
+                    incarnation_id)
         return old_cursor, new_cursor, events
 
 
 def list_due_deliveries_for_sub(
     conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
     thread_id: Optional[str] = None, now: Optional[int] = None,
+    incarnation_id: Optional[str] = None,
 ) -> list[tuple[dict, Event]]:
     """List due rows in cursor order without leasing rows that are still waiting.
 
@@ -705,13 +817,15 @@ def list_due_deliveries_for_sub(
     """
     stamp = int(time.time()) if now is None else int(now)
     release_expired_delivery_leases(conn, now=stamp)
-    rows = conn.execute(
-        """SELECT * FROM kanban_delivery_outbox
-           WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?
-             AND state IN ('pending','retry_wait') AND next_attempt_at<=?
-           ORDER BY event_id,id""",
-        (*_sub_key(task_id, platform, chat_id, thread_id), stamp),
-    ).fetchall()
+    sql = """SELECT * FROM kanban_delivery_outbox
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?
+               AND state IN ('pending','retry_wait') AND next_attempt_at<=?
+               AND revoked_at IS NULL AND incarnation_id IS NOT NULL"""
+    params = (*_sub_key(task_id, platform, chat_id, thread_id), stamp)
+    if incarnation_id is not None:
+        sql += " AND incarnation_id=?"
+        params += (incarnation_id,)
+    rows = conn.execute(sql + " ORDER BY event_id,id", params).fetchall()
     due: list[tuple[dict, Event]] = []
     for row in rows:
         event_row = conn.execute("SELECT * FROM task_events WHERE id=?", (row["event_id"],)).fetchone()
@@ -720,12 +834,15 @@ def list_due_deliveries_for_sub(
     return due
 
 
-def _cas_cursor(conn: sqlite3.Connection, key: tuple, new_cursor: int, expected: int) -> sqlite3.Cursor:
+def _cas_cursor(conn: sqlite3.Connection, key: tuple, new_cursor: int, expected: int,
+                incarnation_id: Optional[str] = None) -> sqlite3.Cursor:
     """Move ``last_event_id`` only if it still equals ``expected``."""
-    return conn.execute(
-        "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE + " AND last_event_id = ?",
-        (int(new_cursor), *key, int(expected)),
-    )
+    sql = "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE + " AND last_event_id = ?"
+    params = (int(new_cursor), *key, int(expected))
+    if incarnation_id is not None:
+        sql += " AND incarnation_id=?"
+        params += (incarnation_id,)
+    return conn.execute(sql, params)
 
 
 def advance_notify_cursor(
@@ -736,24 +853,29 @@ def advance_notify_cursor(
     chat_id: str,
     thread_id: Optional[str] = None,
     new_cursor: int,
+    incarnation_id: Optional[str] = None,
 ) -> None:
     with _kb.write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE,
-            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id)),
+            "UPDATE kanban_notify_subs SET last_event_id = ? " + _SUB_KEY_WHERE
+            + (" AND incarnation_id=?" if incarnation_id is not None else ""),
+            (int(new_cursor), *_sub_key(task_id, platform, chat_id, thread_id),
+             *((incarnation_id,) if incarnation_id is not None else ())),
         )
 
 
 def record_notify_ping(
     conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
     thread_id: Optional[str] = None, event_id: int,
+    incarnation_id: Optional[str] = None,
 ) -> None:
     """Checkpoint a sent ping independently of the retryable wake cursor."""
     with _kb.write_txn(conn):
         conn.execute(
             "UPDATE kanban_notify_subs SET last_ping_event_id = MAX(last_ping_event_id, ?) "
-            + _SUB_KEY_WHERE,
-            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+            + _SUB_KEY_WHERE + (" AND incarnation_id=?" if incarnation_id is not None else ""),
+            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id),
+             *((incarnation_id,) if incarnation_id is not None else ())),
         )
 
 
@@ -766,12 +888,14 @@ def rewind_notify_cursor(
     thread_id: Optional[str] = None,
     claimed_cursor: int,
     old_cursor: int,
+    incarnation_id: Optional[str] = None,
 ) -> bool:
     """Undo a claim when delivery fails. The CAS guard only rewinds if no later
     notifier advanced the row, so retries never clobber newer progress.
     """
     with _kb.write_txn(conn):
-        cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor, claimed_cursor)
+        cur = _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), old_cursor,
+                          claimed_cursor, incarnation_id)
     return cur.rowcount > 0
 
 

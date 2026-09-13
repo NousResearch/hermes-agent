@@ -125,6 +125,157 @@ def test_post_send_checkpoint_failure_does_not_replay_after_runner_restart(tmp_p
     assert "delivery-list" in warnings[0]
 
 
+def test_recreated_route_is_revoked_between_collection_and_delivery(tmp_path, monkeypatch):
+    """A collected A delivery cannot send after the same route is recreated as B."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "recreate.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+
+    import gateway.kanban_watchers as watchers
+    real_collect = watchers._notifier_collect
+    incarnations = []
+
+    def collect_then_recreate(*args, **kwargs):
+        deliveries = real_collect(*args, **kwargs)
+        assert deliveries
+        conn = kbc.connect()
+        try:
+            old = kbn.list_notify_subs(conn, task_id)[0]
+            incarnations.append(old["incarnation_id"])
+            assert kbn.remove_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                incarnation_id=old["incarnation_id"],
+            )
+            kbn.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="chat-1")
+            incarnations.append(kbn.list_notify_subs(conn, task_id)[0]["incarnation_id"])
+        finally:
+            conn.close()
+        return deliveries
+
+    monkeypatch.setattr(watchers, "_notifier_collect", collect_then_recreate)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert incarnations[0] != incarnations[1]
+    conn = kbc.connect()
+    try:
+        rows = conn.execute(
+            "SELECT revoked_at FROM kanban_delivery_outbox "
+            "WHERE task_id=? AND incarnation_id=?", (task_id, incarnations[0]),
+        ).fetchall()
+        assert rows and all(row["revoked_at"] is not None for row in rows)
+    finally:
+        conn.close()
+
+
+def test_recreated_same_owner_route_is_revoked_after_outbox_claim(tmp_path, monkeypatch):
+    """A claimed incarnation must be re-authorized immediately before send."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "post-claim-recreate.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+    real_claim = kbn.claim_delivery
+    claims = []
+
+    def claim_then_recreate(conn, **kwargs):
+        claimed = real_claim(conn, **kwargs)
+        if claimed is not None and not claims:
+            claims.append(claimed)
+            old = kbn.list_notify_subs(conn, task_id)[0]
+            assert kbn.remove_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                incarnation_id=old["incarnation_id"],
+            )
+            kbn.add_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                notifier_profile=old["notifier_profile"], delivery_mode=old["delivery_mode"],
+            )
+        return claimed
+
+    monkeypatch.setattr(kbn, "claim_delivery", claim_then_recreate)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT state,revoked_at,transport_receipt FROM kanban_delivery_outbox WHERE delivery_key=?",
+            (claims[0]["delivery_key"],),
+        ).fetchone()
+        assert row["revoked_at"] is not None
+        assert row["state"] == "delivered"
+        assert row["transport_receipt"].startswith("cancelled:")
+    finally:
+        conn.close()
+
+
+def test_owner_and_mode_mutation_revoke_claim_before_send(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "post-claim-mutation.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+    real_claim = kbn.claim_delivery
+
+    def claim_then_mutate(conn, **kwargs):
+        claimed = real_claim(conn, **kwargs)
+        if claimed is not None:
+            kbn.add_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                notifier_profile="replacement-owner", delivery_mode="notify+wake",
+            )
+        return claimed
+
+    monkeypatch.setattr(kbn, "claim_delivery", claim_then_mutate)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+
+
+def test_replacement_after_passive_send_blocks_wake(tmp_path, monkeypatch):
+    """The wake leg has its own authorization boundary after passive I/O."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "pre-wake-recreate.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+    conn = kbc.connect()
+    try:
+        kbn.add_notify_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+            delivery_mode="notify+wake",
+        )
+    finally:
+        conn.close()
+
+    class ReplacingAdapter(RecordingAdapter):
+        async def send(self, chat_id, text, metadata=None):
+            result = await super().send(chat_id, text, metadata)
+            conn = kbc.connect()
+            try:
+                old = kbn.list_notify_subs(conn, task_id)[0]
+                assert kbn.remove_notify_sub(
+                    conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                    incarnation_id=old["incarnation_id"],
+                )
+                kbn.add_notify_sub(
+                    conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                    delivery_mode="notify+wake",
+                )
+            finally:
+                conn.close()
+            return result
+
+    adapter = ReplacingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == []
+
+
 def test_notifier_tick_isolates_each_delivery_exception(monkeypatch):
     import gateway.kanban_watchers as watchers
 

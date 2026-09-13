@@ -1,7 +1,7 @@
 """Production WebSocket RelayTransport — the gateway's live link to the connector.
 
 The gateway dials OUT to the connector's relay endpoint and speaks the
-newline-delimited JSON frame protocol of ``docs/relay-connector-contract.md``:
+newline-delimited JSON frame protocol of ``website/docs/developer-guide/relay-connector-contract.md``:
 gateway -> connector: hello, outbound, interrupt, going_idle, inbound_ack;
 connector -> gateway: descriptor, inbound, outbound_result, interrupt_inbound,
 going_idle_ack, passthrough_forward. Outbound calls block on a per-request future

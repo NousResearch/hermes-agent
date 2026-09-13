@@ -1,4 +1,4 @@
-"""Shared device-code / browser / TLS helpers for interactive OAuth logins.
+"""Shared device-code / loopback-PKCE / browser / TLS helpers for interactive OAuth logins.
 
 Split out of ``hermes_cli/auth.py`` and re-exported there; origin helpers are imported lazily
 inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
@@ -6,15 +6,19 @@ inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and 
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import os
 import ssl
 import sys
+import threading
 import time
 import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
     DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
@@ -93,6 +97,89 @@ def _ssh_user_at_host() -> str:
         hostname = "<this-host>"
     user = os.getenv("USER") or os.getenv("LOGNAME") or "<user>"
     return f"{user}@{hostname}"
+
+
+def _pkce_code_verifier(length: int = 64) -> str:
+    return base64.urlsafe_b64encode(os.urandom(length)).decode("ascii").rstrip("=")[:128]
+
+
+def _pkce_code_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _make_loopback_callback_handler(
+    expected_path: str, *, display_name: str,
+) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
+    """Handler class for an RFC 8252 loopback redirect plus the dict it fills in.
+
+    Only a GET on *expected_path* is accepted (anything else is a 404 and leaves the result
+    untouched), so a nonce embedded in the path acts as the CSRF ``state`` for authorization
+    servers that do not echo an explicit ``state`` parameter.
+    """
+    result: dict[str, Any] = {"code": None, "state": None, "error": None, "error_description": None}
+
+    class _LoopbackCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not found.")
+                return
+
+            params = parse_qs(parsed.query)
+            for key in result:
+                result[key] = params.get(key, [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            outcome = "failed" if result["error"] else "received"
+            self.wfile.write(
+                f"<html><body><h1>{display_name} authorization {outcome}.</h1>"
+                "You can close this tab.</body></html>".encode("utf-8"))
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+            return
+
+    return _LoopbackCallbackHandler, result
+
+
+def _bind_loopback_callback_server(
+    host: str, port: int, handler_cls: type[BaseHTTPRequestHandler], *, err: Callable[..., AuthError],
+    bind_failed_code: str,
+) -> HTTPServer:
+    """Bind the loopback listener up front (``port=0`` = OS-assigned) so the redirect URI sent to
+    the authorization server names a port we already own — no probe-close-rebind race."""
+
+    class _ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
+    try:
+        return _ReuseHTTPServer((host, port), handler_cls)
+    except OSError as exc:
+        raise err(f"Could not bind callback server on {host}:{port}: {exc}", bind_failed_code) from exc
+
+
+def _serve_loopback_callback(
+    server: HTTPServer, result: dict[str, Any], *, timeout_seconds: float, err: Callable[..., AuthError],
+    timeout_code: str,
+) -> dict[str, Any]:
+    """Serve *server* until the redirect lands in *result* or the deadline passes; always closes."""
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + max(5.0, timeout_seconds)
+    try:
+        while time.monotonic() < deadline:
+            if result["code"] or result["error"]:
+                return result
+            time.sleep(0.1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+    raise err("Authorization timed out waiting for the local callback.", timeout_code)
 
 
 def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) -> None:

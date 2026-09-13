@@ -6,6 +6,8 @@ the ambient accounting context (agent/aux_accounting.py), making aux model
 spend visible in analytics.
 """
 from pathlib import Path
+import sqlite3
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -385,3 +387,58 @@ class TestAuxUsageInTotals:
                    "total_api_calls": "api_calls"}
         for total_key, card_key in columns.items():
             assert data["totals"][total_key] == sum(card.get(card_key) or 0 for card in data["models"])
+
+
+def _commit_usage_delta_from_second_connection(db_path: str, session_id: str = "s2") -> None:
+    """Commit one more main-loop usage row from a SECOND connection — what a live write does
+    while a response is being assembled."""
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, model, billing_provider,"
+            " input_tokens, output_tokens, estimated_cost_usd, api_call_count)"
+            " VALUES (?, 'cli', ?, 'late-model', 'nous', 900000, 9000, 9.0, 1)",
+            (session_id, time.time()),
+        )
+    finally:
+        conn.close()
+
+
+class TestUsageResponseIsOneSnapshot:
+    """One response = one read instant. These component reads are autocommit SELECTs on a live WAL
+    store, so a usage write committing between them used to leave ``totals`` (derived from the older
+    ``daily`` pass) below the ``by_model`` lines the same response carried — the contradiction the
+    additive accounting of #23270 exists to rule out."""
+
+    def test_usage_analytics_ignores_a_write_committed_between_component_reads(
+        self, home_db, monkeypatch
+    ):
+        from hermes_cli.web_routers import analytics
+
+        _seed_main_and_aux(home_db)
+        before = analytics._get_usage_analytics(days=7)["totals"]
+
+        # Deterministic interleaving: the second connection commits the delta right after the
+        # first component read (the sessions-derived ``daily``) and before all the others.
+        real_rows = analytics._rows
+        fired: list = []
+
+        def rows_with_interleaved_commit(db, sql, cutoff):
+            out = real_rows(db, sql, cutoff)
+            if not fired:
+                fired.append(True)
+                _commit_usage_delta_from_second_connection(home_db.db_path)
+            return out
+
+        monkeypatch.setattr(analytics, "_rows", rows_with_interleaved_commit)
+        data = analytics._get_usage_analytics(days=7)
+
+        # the delta is really in the store now — the interleaving did happen
+        assert home_db._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id = 's2'"
+        ).fetchone()[0] == 1
+        # ... and the whole response still describes the single instant it started from
+        assert data["totals"] == before
+        assert {row["model"] for row in data["by_model"]} == {"main-model", "vision-model"}
+        assert data["totals"]["total_input"] == sum(row["input_tokens"] for row in data["by_model"])
+        assert data["totals"]["total_input"] == sum(row["input_tokens"] for row in data["daily"])

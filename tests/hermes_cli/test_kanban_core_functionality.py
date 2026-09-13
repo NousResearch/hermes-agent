@@ -1449,6 +1449,40 @@ def _end_run_as_reclaimed(conn, tid, *, outcome="crashed"):
     return run_id
 
 
+def _tamper_recorded_start_ticks(conn, tid, run_id):
+    """Corrupt the ``spawned`` event's recorded ``start_ticks`` for ``run_id``
+    so the non-reusable-identity check (signal 0 in
+    ``_prev_worker_identity_plausible``) sees a mismatch against the pid's
+    CURRENT live ``/proc`` value, forcing a fall-through to the weaker
+    cmdline/timing signals.
+
+    Models genuine pid reuse: the recorded value belonged to the ORIGINAL
+    worker that has since exited; the pid was recycled to an unrelated
+    process (the fixture's still-alive stand-in) afterward. Registering a
+    still-alive process's pid via ``_set_worker_pid`` and then probing that
+    same still-alive process necessarily reproduces its OWN identity exactly
+    -- so, without this tamper, the fixture models "the same process,
+    correctly identified" rather than a recycled pid (see PR 109491 review
+    finding F-1)."""
+    row = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id = ? AND run_id = ? "
+        "AND kind = 'spawned' ORDER BY id DESC LIMIT 1",
+        (tid, run_id),
+    ).fetchone()
+    assert row is not None, "test setup: no spawned event to tamper"
+    payload = kb._json_dict(row["payload"])
+    assert "start_ticks" in payload, (
+        "test setup: this host did not stamp start_ticks (non-Linux or /proc "
+        "unreadable) -- the tamper is meaningless without it"
+    )
+    payload["start_ticks"] = payload["start_ticks"] + 999_999
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload), row["id"]),
+        )
+
+
 def test_respawn_guard_blocks_spawn_when_prev_worker_pid_alive_on_this_host(
     kanban_home, all_assignees_spawnable,
 ):
@@ -1672,6 +1706,14 @@ def test_respawn_guard_recycled_pid_does_not_block_genuine_pid_does(
             assert claimed is not None
             kbd._set_worker_pid(conn, tid, decoy.pid)
             run_id = _end_run_as_reclaimed(conn, tid)
+            # Tamper the recorded non-reusable identity (start_ticks) so the
+            # decoy -- alive and genuinely occupying this pid slot -- no
+            # longer matches its OWN recorded identity: this models the pid
+            # having been reused by an unrelated process since the original
+            # worker recorded here exited (signal 0 must fall through to the
+            # weaker cmdline/timing signals below, not short-circuit on a
+            # self-match). See F-1, PR 109491 review.
+            _tamper_recorded_start_ticks(conn, tid, run_id)
             # Backdate the closed run's started_at far outside the identity
             # tolerance so ONLY the cmdline signal could plausibly accept
             # it -- and the decoy's cmdline carries no workspace reference.
@@ -1951,5 +1993,191 @@ def test_respawn_guard_consults_latest_ended_run_not_an_older_one(
         except Exception:
             alive_proc_2.kill()
             alive_proc_2.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Respawn guard — review findings on PR 109491 (F-1 fixture repair above;
+# F-2 the three missing test groups below; F-3 the narrowed cross-host hold)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.windows_only
+def test_respawn_guard_windows_probe_does_not_signal_live_child():
+    """(Review ask 1) On native Windows the liveness probe must route
+    through ``gateway.status._pid_exists`` (psutil, else the
+    OpenProcess/WaitForSingleObject ctypes path), never a bare
+    ``os.kill(pid, 0)`` -- ``sig=0`` on Windows is ``CTRL_C_EVENT``
+    broadcast to the whole console process group (bpo-14484), which could
+    signal or kill an unrelated process sharing the console, not merely
+    probe existence. A genuinely live child process must be reported alive,
+    and must remain alive and unharmed by the probe call itself -- this is
+    the real child-survival proof the review asked for, run on native
+    Windows rather than a platform-patched Linux stand-in (this repo's
+    testing rule forbids faking ``sys.platform`` for host-dependent
+    behaviour; see ``tests/conftest.py``)."""
+    proc = _spawn_stand_in_worker()
+    try:
+        assert kbd._prev_worker_alive_probe(proc.pid) is True
+        assert proc.poll() is None, (
+            "the liveness probe must not have signalled or terminated the child"
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_respawn_guard_cross_host_unclean_close_holds_card(
+    kanban_home, all_assignees_spawnable,
+):
+    """(Review ask 2 / F-3) A run closed as a crash/timeout/reclaim/stale
+    misclassification on a DIFFERENT host must hold the card fail-closed:
+    this host has no ``/proc`` route to verify the remote pid, and a live
+    remote worker sharing that run outcome is still plausible."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="cross-host-crash", assignee="alice")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        _end_run_as_reclaimed(conn, tid, outcome="crashed")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps({"prev_worker_pid": 424242, "prev_worker_host": "otherbox"}), run_id),
+            )
+        info = kbd._prev_worker_alive_guard_info(conn, tid)
+        assert info == {
+            "pid": 424242, "host": "otherbox", "run_id": run_id,
+            "reason": "prev_worker_cross_host_unknown",
+        }, info
+        assert kbd.check_respawn_guard(conn, tid) == "prev_worker_cross_host_unknown"
+
+        spawned: list[int] = []
+        res = kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+        )
+        assert not spawned, "a crash-closed cross-host run must hold the card"
+        assert tid not in [s[0] for s in res.spawned]
+        assert dict(res.respawn_guarded).get(tid) == "prev_worker_cross_host_unknown"
+
+
+@pytest.mark.parametrize("clean_outcome", ["completed", "review_requested"])
+def test_respawn_guard_cross_host_clean_close_fails_open(
+    kanban_home, all_assignees_spawnable, clean_outcome,
+):
+    """(Review ask 2 / F-3) A run closed CLEANLY (``completed`` -- an
+    ordinary ``kanban_complete``, or ``review_requested`` -- the standard
+    implementer-to-reviewer handoff) on a DIFFERENT host must NOT hold the
+    card: the remote worker is known to have stopped on purpose, not merely
+    unreachable, so this is the pre-existing fail-open behaviour, unlike the
+    genuinely-still-running case above. Holding this case was the F-3
+    regression: it would have blocked every multi-host board's ordinary
+    handoff after 5 ticks."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=f"cross-host-clean-{clean_outcome}", assignee="alice")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        _end_run_as_reclaimed(conn, tid, outcome=clean_outcome)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps({"prev_worker_pid": 424242, "prev_worker_host": "otherbox"}), run_id),
+            )
+            if clean_outcome == "completed":
+                # ``check_respawn_guard``'s UNRELATED ``recent_success`` guard
+                # (a separate, correct duplicate-work protection, not part of
+                # this fix) would otherwise hold a just-completed task within
+                # its own success window regardless of host. Append a
+                # ``status`` event, exactly the "explicit re-queue after
+                # success" exception that guard documents, so this test
+                # isolates the cross-host behaviour under review.
+                kb._append_event(conn, tid, "status", {"to": "ready"})
+        assert kbd._prev_worker_alive_guard_info(conn, tid) is None, clean_outcome
+        assert kbd.check_respawn_guard(conn, tid) is None, clean_outcome
+
+        spawned: list[int] = []
+        res = kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+        )
+        assert spawned, (
+            f"a cleanly-closed ({clean_outcome}) cross-host run must not hold the card"
+        )
+        assert tid in [s[0] for s in res.spawned]
+
+
+@pytest.mark.linux_only
+def test_respawn_guard_identity_mismatch_does_not_block_genuine_match_does(
+    kanban_home, all_assignees_spawnable,
+):
+    """(Review ask 3) Non-reusable identity (``start_ticks`` + ``boot_id``)
+    is signal 0, decisive over the weaker cmdline/timing signals: a live pid
+    whose RECORDED identity does not match its CURRENT identity (the
+    pid-reuse shape) must not block, even though the run started only
+    moments ago (the pre-existing ~600s time-window signal alone would have
+    wrongly accepted it as the same worker). The identical fixture with an
+    UNTAMPERED recorded identity DOES block, purely on the identity signal,
+    even with the run backdated far outside that time window and a cmdline
+    that does not reference the task's workspace (so neither of the two
+    weaker signals could have decided it either way)."""
+    # Case (a): recorded identity mismatch (genuine pid reuse) -- must NOT block.
+    decoy = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="ask3-mismatch", assignee="alice")
+            claimed = kb.claim_task(conn, tid)
+            assert claimed is not None
+            kbd._set_worker_pid(conn, tid, decoy.pid)
+            run_id = _end_run_as_reclaimed(conn, tid)
+            _tamper_recorded_start_ticks(conn, tid, run_id)
+            assert kbd._prev_worker_alive_probe(decoy.pid) is True
+            assert kbd._prev_worker_alive_guard_info(conn, tid) is None, (
+                "a live pid whose recorded identity mismatches must not block"
+            )
+            assert kbd.check_respawn_guard(conn, tid) is None
+    finally:
+        decoy.terminate()
+        try:
+            decoy.wait(timeout=5)
+        except Exception:
+            decoy.kill()
+            decoy.wait(timeout=5)
+
+    # Case (b): untampered identity -- must block on the identity signal alone.
+    proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid2 = kb.create_task(conn, title="ask3-match", assignee="alice")
+            workspace = f"/tmp/kanban-test-workspace-{tid2}"
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET workspace_path = ? WHERE id = ?", (workspace, tid2),
+                )
+            claimed2 = kb.claim_task(conn, tid2)
+            assert claimed2 is not None
+            kbd._set_worker_pid(conn, tid2, proc.pid)
+            run_id2 = _end_run_as_reclaimed(conn, tid2)
+            old = int(time.time()) - 100_000
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? WHERE id = ?", (old, run_id2),
+                )
+            with open(f"/proc/{proc.pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode()
+            assert workspace not in cmdline, "test setup: must not carry the workspace"
+            info = kbd._prev_worker_alive_guard_info(conn, tid2)
+            assert info is not None and info["reason"] == "prev_worker_alive", (
+                "an untampered identity match must block purely on signal 0"
+            )
+            assert kbd.check_respawn_guard(conn, tid2) == "prev_worker_alive"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
 
 

@@ -6,6 +6,8 @@ import type { SidebarListRow } from '@/lib/session-date-groups'
 
 import { VirtualSessionList } from './virtual-session-list'
 
+const mocks = vi.hoisted(() => ({ useVirtualizer: vi.fn() }))
+
 const virtualizer = {
   getTotalSize: () => 68,
   getVirtualItems: () => [
@@ -15,10 +17,11 @@ const virtualizer = {
   measure: vi.fn(),
   measureElement: vi.fn()
 }
+mocks.useVirtualizer.mockImplementation(() => virtualizer)
 
 vi.mock('@dnd-kit/sortable', () => ({ useSortable: vi.fn() }))
 vi.mock('@dnd-kit/utilities', () => ({ CSS: { Transform: { toString: vi.fn() } } }))
-vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: () => virtualizer }))
+vi.mock('@tanstack/react-virtual', () => ({ useVirtualizer: mocks.useVirtualizer }))
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -51,10 +54,47 @@ const rows: SidebarListRow[] = [
   { key: 'today', kind: 'divider', label: 'Today' },
   { key: 'older', kind: 'divider', label: 'Older' }
 ]
+const cardRows = [{ entry: { session: { id: 'card-session' } }, kind: 'session' }] as unknown as SidebarListRow[]
 
 const noop = () => {}
 
 describe('VirtualSessionList', () => {
+  it('estimates enough space for the permitted two-line card with preview and footer', () => {
+    // Keep this in lockstep with the card's declared CSS geometry:
+    // py-1.5; header's size-5 action; two --card-gap: 0.4rem gaps;
+    // two 13px leading-none title lines; the 0.15rem title/preview gap;
+    // and 10px leading-[1.35] preview + footer lines.
+    const tallestCardPx =
+      2 * 6 + // py-1.5
+      20 + // header action button (size-5)
+      2 * 6.4 + // card gaps
+      2 * 13 + // line-clamp-2 title
+      2.4 + // title/preview gap
+      2 * (10 * 1.35) // preview and footer
+
+    const expectedEstimatePx = Math.ceil(tallestCardPx)
+
+    mocks.useVirtualizer.mockClear()
+    render(
+      <VirtualSessionList
+        activeSessionId={null}
+        card
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        pinned={false}
+        rows={cardRows}
+        sortable={false}
+      />
+    )
+
+    const options = mocks.useVirtualizer.mock.calls.at(-1)?.[0] as { estimateSize: (index: number) => number }
+
+    expect(options.estimateSize(0)).toBe(expectedEstimatePx)
+  })
+
   it('positions measured rows independently within a total-size spacer', () => {
     const { getByTestId } = render(
       <VirtualSessionList

@@ -254,6 +254,16 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(kebab)).toBeNull()
   })
 
+  it('allows a long session title to wrap to two lines instead of applying single-line truncation', () => {
+    const title = 'Fix background process exit error during Hermes auto-update'
+    renderRow(makeSession({ title }))
+
+    const label = screen.getByText(title)
+    expect(label.className).toContain('line-clamp-2')
+    expect(label.className).toContain('leading-none')
+    expect(label.className).not.toContain('truncate')
+  })
+
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
   // trigger, but the tip only opens when the title is actually truncated.
   describe('full-title overflow tooltip', () => {
@@ -266,9 +276,24 @@ describe('SidebarSessionRow', () => {
     /** The rendered title label (tooltip trigger is the label itself). */
     const label = () => screen.getByText(title).closest('[data-slot="tooltip-trigger"]') as HTMLElement
 
-    const setWidths = (el: HTMLElement, scrollWidth: number, clientWidth: number) => {
+    const setGeometry = (
+      el: HTMLElement,
+      {
+        clientHeight = 20,
+        clientWidth = 100,
+        scrollHeight = clientHeight,
+        scrollWidth = clientWidth
+      }: {
+        clientHeight?: number
+        clientWidth?: number
+        scrollHeight?: number
+        scrollWidth?: number
+      }
+    ) => {
       Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
       Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: clientHeight })
     }
 
     it('wraps the title in a tooltip trigger', () => {
@@ -282,7 +307,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 300, 100)
+      setGeometry(el, { clientWidth: 100, scrollWidth: 300 })
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -297,7 +322,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 100, 100)
+      setGeometry(el, {})
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -312,7 +337,7 @@ describe('SidebarSessionRow', () => {
       renderRow(makeSession({ title }))
 
       const el = label()
-      setWidths(el, 300, 100)
+      setGeometry(el, { clientWidth: 100, scrollWidth: 300 })
 
       act(() => {
         fireEvent.pointerEnter(el)
@@ -322,6 +347,21 @@ describe('SidebarSessionRow', () => {
       })
 
       expect(screen.queryByRole('tooltip')).toBeNull()
+    })
+
+    it('opens for a title clamped vertically after two lines', () => {
+      vi.useFakeTimers()
+      renderRow(makeSession({ title }))
+
+      const el = label()
+      setGeometry(el, { clientHeight: 26, scrollHeight: 39 })
+
+      act(() => {
+        fireEvent.pointerEnter(el)
+        vi.advanceTimersByTime(700)
+      })
+
+      expect(screen.getByRole('tooltip').textContent).toContain(title)
     })
   })
 
@@ -430,12 +470,17 @@ describe('Inbox-style session card', () => {
     expect(title).toBeTruthy()
     expect(footer).toBeTruthy()
 
-    for (const el of [workspace, title!, footer!]) {
+    for (const el of [workspace, footer!]) {
       expect(el.className).not.toMatch(/\bleading-none\b/)
       expect(el.className).toMatch(/leading-\[1\.35\]/)
     }
 
     expect(workspace.className).toMatch(/\btruncate\b/)
+    // The fixed 74px card estimate accounts for a bounded two-line, 13px title.
+    expect(title!.className).toMatch(/\bline-clamp-2\b/)
+    expect(title!.className).toMatch(/\bbreak-words\b/)
+    expect(title!.className).toMatch(/\bleading-none\b/)
+    expect(title!.className).not.toMatch(/\btruncate\b/)
     expect(screen.getByText('133 messages')).toBeTruthy()
   })
 })

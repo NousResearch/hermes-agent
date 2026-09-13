@@ -43,10 +43,9 @@ export const SIDEBAR_ROW_INSET = cn(
 // so the extra leading just centers.
 export const SIDEBAR_TRUNCATED_LEADING = 'leading-[1.35]' as const
 
-export const SIDEBAR_ROW_LABEL = cn(
-  'min-w-0 truncate text-[0.8125rem] text-(--ui-text-secondary)',
-  SIDEBAR_TRUNCATED_LEADING
-)
+// Labels are neutral by default: session titles opt into two-line clamping,
+// while project labels retain their explicit one-line truncation.
+export const SIDEBAR_ROW_LABEL = 'min-w-0 text-[0.8125rem] text-(--ui-text-secondary)' as const
 
 /** Inbox-style card (workspace + age, title + preview, model + size). */
 export const SIDEBAR_ROW_CARD_MIN_H = 'min-h-[3.375rem]' as const

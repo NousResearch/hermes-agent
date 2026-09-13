@@ -491,7 +491,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     if resp is None:
                         return files
                     if resp.status_code == 429:
-                        retry_after = max(0, min(int(parse_retry_after_seconds(resp.headers) or 5), 15))  # Cap wait time
+                        parsed = parse_retry_after_seconds(resp.headers)
+                        retry_after = min(int(5 if parsed is None else parsed), 15)  # Cap wait time
                         logger.debug(
                             "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
                             slug, retry_after, attempt + 1, max_retries,

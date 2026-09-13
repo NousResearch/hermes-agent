@@ -2211,7 +2211,7 @@ class TestConcurrentToolExecution:
         )
         monkeypatch.setattr(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *_args, **_kwargs: (None, None),
+            lambda *_args, **_kwargs: (None, None, None),
         )
         monkeypatch.setattr(
             "agent.tool_executor._begin_tool_execution",
@@ -2273,7 +2273,7 @@ class TestConcurrentToolExecution:
 
         monkeypatch.setattr(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *args, **kwargs: ("Blocked by policy", None),
+            lambda *args, **kwargs: ("Blocked by policy", None, None),
         )
         agent._checkpoint_mgr.enabled = True
         agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
@@ -2349,7 +2349,7 @@ class TestConcurrentToolExecution:
         agent._turns_since_memory = 5
         monkeypatch.setattr(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *args, **kwargs: ("Blocked", None),
+            lambda *args, **kwargs: ("Blocked", None, None),
         )
         with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
             result = agent._invoke_tool(
@@ -2383,7 +2383,7 @@ class TestConcurrentToolExecution:
         )
         monkeypatch.setattr(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *_args, **_kwargs: (None, None),
+            lambda *_args, **_kwargs: (None, None, None),
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
 
@@ -2438,7 +2438,7 @@ class TestConcurrentToolExecution:
         )
         monkeypatch.setattr(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *_args, **_kwargs: (None, None),
+            lambda *_args, **_kwargs: (None, None, None),
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
 
@@ -2507,7 +2507,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         hook_calls = []
         monkeypatch.setattr(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            lambda *args, **kwargs: (None, None),
+            lambda *args, **kwargs: (None, None, None),
         )
         monkeypatch.setattr(
             "hermes_cli.lifecycle.invoke_hook",

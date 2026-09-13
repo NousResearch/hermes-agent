@@ -1,6 +1,7 @@
+import { waitFor } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { listPreparedImageDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
+import { claimPreparedSubmission, listPreparedDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
 import type { SubmissionDestination } from './submission-destination'
 
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear() })
@@ -17,8 +18,8 @@ test('image recovery never offers expanded slash intent as an ordinary draft and
   }
 
   const before = localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
-  expect((await listPreparedImageDrafts('stored', destination.scopeKey)).map(entry => entry.key)).toEqual([ordinary])
-  expect(await listPreparedImageDrafts('another', destination.scopeKey)).toEqual([])
+  expect((await listPreparedDrafts('stored', destination.scopeKey)).map(entry => entry.key)).toEqual([(await readPreparedSubmission(ordinary))!.journal!.storageKey])
+  expect(await listPreparedDrafts('another', destination.scopeKey)).toEqual([])
   expect(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).toBe(before)
   expect((await readPreparedSubmission(slash))?.text).toBe('expanded skill instructions')
 })
@@ -27,23 +28,64 @@ test('native preparation waits for acknowledgement and never downgrades a write 
   let ack!: () => void
   const gate = new Promise<void>(resolve => { ack = resolve })
   const entry = { id: 'a', text: 'Ω\n  exact', attachments: [], params: { session_id: 'live' } } as unknown as PreparedSubmission
-  const native = { read: vi.fn(async () => JSON.stringify({ key: entry })), update: vi.fn(() => gate) }
+  const key = preparedSubmissionKey('stored', { scopeKey: 'local' } as SubmissionDestination, entry.text, [])
+  const records: Record<string, unknown> = {}
+
+  const native = { read: vi.fn(async () => JSON.stringify(records)), update: vi.fn(async (key: string, value: string | null) => {
+    await gate
+
+    if (value === null) {delete records[key]}
+    else {records[key] = JSON.parse(value)}
+  }) }
+
   vi.stubGlobal('hermesDesktop', { preparedSubmissions: native })
   let finished = false
-  const writing = writePreparedSubmission('key', entry).then(() => { finished = true })
-  await Promise.resolve()
+  const writing = writePreparedSubmission(key, entry).then(() => { finished = true })
+  await waitFor(() => expect(native.update).toHaveBeenCalledOnce())
   expect(finished).toBe(false)
-  expect(native.update).toHaveBeenCalledWith('key', JSON.stringify(entry))
+  expect(native.update).toHaveBeenCalledWith(entry.journal!.storageKey, JSON.stringify(entry))
   ack(); await writing
-  expect(await readPreparedSubmission('key')).toEqual(entry)
+  expect(await readPreparedSubmission(key)).toEqual(entry)
   native.update.mockRejectedValueOnce(new Error('disk full'))
-  await expect(writePreparedSubmission('key', entry)).rejects.toThrow('disk full')
+  await expect(writePreparedSubmission(key, entry)).rejects.toThrow('disk full')
   expect(localStorage.length).toBe(0)
-  await removePreparedSubmission('key')
-  expect(native.update).toHaveBeenLastCalledWith('key', null)
+  await removePreparedSubmission(key, entry)
+  expect(native.update).toHaveBeenLastCalledWith(entry.journal!.storageKey, null)
   vi.stubGlobal('hermesDesktop', undefined)
-  await writePreparedSubmission('key', entry)
-  expect(await readPreparedSubmission('key')).toEqual(entry)
-  await removePreparedSubmission('key')
-  expect(await readPreparedSubmission('key')).toBeUndefined()
+  const browserEntry = { ...entry, journal: undefined }
+  await writePreparedSubmission(key, browserEntry)
+  expect(await readPreparedSubmission(key)).toEqual(browserEntry)
+  await removePreparedSubmission(key, browserEntry)
+  expect(await readPreparedSubmission(key)).toBeUndefined()
+})
+
+test('explicit recovery rejects metadata changed since the displayed draft was listed', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const destination = { scopeKey: 'local::default' } as SubmissionDestination
+  const key = preparedSubmissionKey('stored', destination, 'text-only draft', [])
+  await writePreparedSubmission(key, { id: 'text-draft', owner: undefined, text: 'text-only draft', attachments: [], params: { session_id: 'original' } })
+  const [displayed] = await listPreparedDrafts('stored', destination.scopeKey)
+  expect(displayed.text).toBe('text-only draft')
+  const changed = (await readPreparedSubmission(key))!
+  changed.params = { session_id: 'different' }
+  await writePreparedSubmission(key, changed)
+  await expect(claimPreparedSubmission(displayed.key, displayed.expected)).rejects.toThrow('changed during recovery')
+})
+
+test('browser writes fail before dispatch when atomic storage is unavailable', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  vi.stubGlobal('navigator', { locks: undefined })
+  const key = preparedSubmissionKey('stored', { scopeKey: 'local' } as SubmissionDestination, 'text', [])
+  await expect(writePreparedSubmission(key, { id: 'unsupported', owner: undefined, text: 'text', attachments: [], params: {} })).rejects.toThrow('Atomic draft storage unavailable')
+  expect(localStorage.length).toBe(0)
+})
+
+test('long frozen input does not become a native journal address or get truncated', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const text = 'exact input\n'.repeat(2048)
+  const key = preparedSubmissionKey('stored', { scopeKey: 'local' } as SubmissionDestination, text, [])
+  const entry: PreparedSubmission = { id: 'short-uuid', owner: undefined, text, attachments: [], params: { text } }
+  await writePreparedSubmission(key, entry)
+  expect(entry.journal!.storageKey.length).toBeLessThan(100)
+  expect((await readPreparedSubmission(key))?.params.text).toBe(text)
 })

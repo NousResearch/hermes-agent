@@ -31,6 +31,7 @@ from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
 from agent.display import ToolPreview
+from agent.retry_utils import parse_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -1908,27 +1909,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     @staticmethod
     def _extract_discord_retry_after(exc: BaseException) -> Optional[float]:
+        """Seconds to wait after a 429: discord.py's ``retry_after`` attribute, else the response's
+        ``Retry-After`` (numeric or HTTP-date) or Discord-specific ``X-RateLimit-Reset-After``
+        header; floored at 1s so a sub-second hint does not hot-loop."""
         value = getattr(exc, "retry_after", None)
         if value is not None:
+            parsed = parse_retry_after_seconds(value)
+            return None if parsed is None else max(1.0, parsed)
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+        if not headers:
+            return None
+        parsed = parse_retry_after_seconds(headers)
+        if parsed is None:
             try:
-                return max(1.0, float(value))
-            except (TypeError, ValueError):
-                return None
-        response = getattr(exc, "response", None)
-        headers = getattr(response, "headers", None)
-        if headers:
-            for key in ("Retry-After", "X-RateLimit-Reset-After"):
-                try:
-                    raw = headers.get(key)
-                except Exception:
-                    raw = None
-                if raw is None:
-                    continue
-                try:
-                    return max(1.0, float(raw))
-                except (TypeError, ValueError):
-                    continue
-        return None
+                parsed = parse_retry_after_seconds(headers.get("X-RateLimit-Reset-After"))
+            except Exception:
+                parsed = None
+        return None if parsed is None else max(1.0, parsed)
 
     @staticmethod
     def _is_discord_rate_limit(exc: BaseException) -> bool:

@@ -55,7 +55,7 @@ Every installed skill is automatically available as a slash command:
 # In the CLI or any messaging platform:
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
-/github-pr-workflow create a PR for the auth refactor
+/github create a PR for the auth refactor
 /songsee analyze the frequency spread of this mix
 
 # Just the skill name loads it and lets the agent ask what you need:
@@ -69,7 +69,7 @@ at the start — every leading `/skill` token (up to 5) is loaded, and the rest
 becomes your instruction:
 
 ```bash
-/github-pr-workflow /test-driven-development fix issue #123 and open a PR
+/github /test-driven-development fix issue #123 and open a PR
 ```
 
 Parsing stops at the first token that isn't an installed skill, so arguments
@@ -474,6 +474,8 @@ Trust is a repo-level decision, but a repo's skill content changes with every `g
 
 Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
 
+The six former GitHub skill IDs (`github-auth`, `github-code-review`, `github-issue-to-pr`, `github-issues`, `github-pr-workflow`, and `github-repo-management`) resolve to `software-development/github` when loaded through `skill_view`, preloaded with `-s`, or referenced by saved tasks and bundles. An installed skill with the original name takes precedence; disabled skills stay disabled. Use `/github` for new slash-command invocations and `github` in new configurations.
+
 ## Skill Bundles
 
 Skill bundles are tiny YAML files that group several skills under a single slash command. When you run `/<bundle-name>`, every skill listed in the bundle loads at once — useful when a particular task always benefits from the same set of skills together.
@@ -483,9 +485,8 @@ Skill bundles are tiny YAML files that group several skills under a single slash
 ```bash
 # Create a bundle for backend feature work
 hermes bundles create backend-dev \
-  --skill github-code-review \
+  --skill github \
   --skill test-driven-development \
-  --skill github-pr-workflow \
   -d "Backend feature work — review, test, PR workflow"
 ```
 
@@ -495,7 +496,7 @@ Then in the CLI or any gateway platform:
 /backend-dev refactor the auth middleware
 ```
 
-The agent receives all three skills loaded into one user message, with any text after the slash command attached as a user instruction.
+The agent receives both skills loaded into one user message, with any text after the slash command attached as a user instruction.
 
 ### YAML schema
 
@@ -505,9 +506,8 @@ Bundles live in **`~/.hermes/skill-bundles/<slug>.yaml`** and look like this:
 name: backend-dev
 description: Backend feature work — review, test, PR workflow.
 skills:
-  - github-code-review
+  - github
   - test-driven-development
-  - github-pr-workflow
 instruction: |
   Always start by writing failing tests, then implement.
   Open the PR through the standard workflow with co-author tags.

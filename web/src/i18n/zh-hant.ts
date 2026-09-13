@@ -767,7 +767,7 @@ export const zhHant: Translations = {
     assigneePlaceholder: "負責人",
     priority: "優先順序",
     skillsPlaceholder:
-      "技能（選填，以逗號分隔）：translation、github-code-review",
+      "技能（選填，以逗號分隔）：translation、github",
     noParent: "— 無上層任務 —",
     workspacePathDir: "工作區路徑（必填，例如 ~/projects/my-app）",
     workspacePathOptional:

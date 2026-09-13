@@ -72,6 +72,17 @@ def _skills_dir() -> Path:
 _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
 
+# Persisted cron/webhook/kanban/CLI references survive the bundled GitHub consolidation.
+# Only missing names migrate; installed user skills and collision checks keep precedence.
+_CONSOLIDATED_SKILLS = {
+    identifier: "software-development/github"
+    for old_name in (
+        "github-auth", "github-code-review", "github-issue-to-pr",
+        "github-issues", "github-pr-workflow", "github-repo-management",
+    )
+    for identifier in (old_name, f"github/{old_name}")
+}
+
 
 def _skill_lookup_path_error(name: str) -> Optional[str]:
     """Error if lookup *name* could escape the search roots it is joined onto. Windows drive
@@ -471,6 +482,11 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
+    legacy_name = local_category_name or name
+    if not candidates and (target := _CONSOLIDATED_SKILLS.get(legacy_name)):
+        if _is_skill_disabled(name) or _is_skill_disabled(legacy_name.rsplit("/", 1)[-1]):
+            return _fail(f"Skill '{name}' is disabled. Enable it with `hermes skills`."), None, None
+        candidates = _collect_skill_candidates(target, None, all_dirs)
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier still refuses.

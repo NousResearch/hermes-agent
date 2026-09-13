@@ -4498,7 +4498,7 @@ def main(
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
-        python cli.py --skills hermes-agent-dev,github-auth
+        python cli.py --skills hermes-agent-dev,github
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py -q "Describe this" --image ~/storage/shared/Pictures/cat.png
         python cli.py --list-tools               # List tools and exit

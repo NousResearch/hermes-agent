@@ -1212,7 +1212,7 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
             f"{quoted} {noun}, not skill name(s). "
             "Put toolsets in the assignee profile's `toolsets:` config "
             "instead of per-task skills. Skills are named skill bundles "
-            "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
+            "(e.g. `blogwatcher`, `github`); toolsets are runtime "
             "capabilities (e.g. `web`, `browser`, `terminal`)."
         )
     return cleaned

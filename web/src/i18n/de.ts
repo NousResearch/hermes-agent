@@ -767,7 +767,7 @@ export const de: Translations = {
     assigneePlaceholder: "Zuständige Person",
     priority: "Priorität",
     skillsPlaceholder:
-      "Fähigkeiten (optional, kommagetrennt): translation, github-code-review",
+      "Fähigkeiten (optional, kommagetrennt): translation, github",
     noParent: "— keine übergeordnete Aufgabe —",
     workspacePathDir: "Arbeitsbereichs-Pfad (erforderlich, z. B. ~/projects/my-app)",
     workspacePathOptional:

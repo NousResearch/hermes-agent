@@ -173,7 +173,7 @@ _SPECS = [
         _arg("--skill", action="append", default=[], dest="skills",
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
-                  "translation --skill github-code-review"),
+                  "translation --skill github"),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "

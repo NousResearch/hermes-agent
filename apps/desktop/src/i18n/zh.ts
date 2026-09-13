@@ -3068,7 +3068,7 @@ export const zh = defineLocale({
     githubSuggestions: {
       label: '设置 GitHub',
       tip: '这里通过 gh CLI 技能使用 GitHub — 点击连接你的账号',
-      done: '已添加 /github-auth',
+      done: '已添加 /github',
       doneTip: '发送消息后，agent 将引导你完成 GitHub 登录'
     },
     repairSuggestions: {

@@ -763,7 +763,7 @@ export const zh: Translations = {
     assigneePlaceholder: "负责人",
     priority: "优先级",
     skillsPlaceholder:
-      "技能（可选，逗号分隔）：翻译、github-code-review",
+      "技能（可选，逗号分隔）：翻译、github",
     noParent: "— 无父任务 —",
     workspacePathDir: "工作区路径（必填，例如 ~/projects/my-app）",
     workspacePathOptional:

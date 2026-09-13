@@ -767,7 +767,7 @@ export const ko: Translations = {
     assigneePlaceholder: "담당자",
     priority: "우선순위",
     skillsPlaceholder:
-      "스킬 (선택, 쉼표로 구분): translation, github-code-review",
+      "스킬 (선택, 쉼표로 구분): translation, github",
     noParent: "— 상위 작업 없음 —",
     workspacePathDir: "작업 공간 경로 (필수, 예: ~/projects/my-app)",
     workspacePathOptional:

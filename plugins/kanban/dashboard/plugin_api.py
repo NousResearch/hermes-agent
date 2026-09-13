@@ -432,10 +432,30 @@ async def upload_task_attachment(
     board: Optional[str] = Query(None),
     uploaded_by: Optional[str] = Form(None)):
     """Store an upload under ``attachments_root(board)/<task_id>/`` (sanitised,
-    collision-resolved name; ``_safe_attachment_name`` ValueError → 400) and record it."""
+    collision-resolved name; ``_safe_attachment_name`` ValueError → 400) and record it.
+
+    Runs the fail-closed secret-path pre-ingress policy on the
+    client-supplied ``file.filename`` BEFORE any blob is read off the
+    multipart stream, so a ``auth.json`` / ``.env`` upload can never
+    reach disk even if the streaming pipeline is restarted.  Raises
+    HTTP 422 with only the policy ``kind`` in the detail — never the
+    filename or any credential bytes.
+    """
+    from hermes_cli.secret_path_policy import check_attachment_filename
+    raw_policy = check_attachment_filename(
+        str(file.filename or ""), source="dashboard_upload")
+    if raw_policy is not None:
+        raise HTTPException(status_code=422, detail=raw_policy)
     with _board_conn(board) as (board, conn), _value_error_400():
         _require_task(conn, task_id)
         safe_name = _safe_attachment_name(file.filename or "")
+        # Belt-and-braces: re-check the sanitised leaf in case
+        # ``_safe_attachment_name`` collapsed a nested traversal to a
+        # prohibited basename.
+        sanitised_policy = check_attachment_filename(
+            safe_name, source="dashboard_upload")
+        if sanitised_policy is not None:
+            raise HTTPException(status_code=422, detail=sanitised_policy)
         dest_dir = kanban_db.task_attachments_dir(task_id, board=board)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_path = _collision_free_path(dest_dir, safe_name)  # foo.pdf → foo (1).pdf …

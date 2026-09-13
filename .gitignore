@@ -78,6 +78,12 @@ cli-config.yaml
 skills/.hub/
 ignored/
 .worktrees/
+# Per-worktree venv-redirect shims used to point Python's editable
+# installer at the worktree's modules during local hermetic testing.
+# Created by the developer profile's worktree bootstrap; never meant
+# to land on a branch.
+.worktree-*.pth
+.worktree_*.py
 environments/benchmarks/evals/
 
 # Web UI build output

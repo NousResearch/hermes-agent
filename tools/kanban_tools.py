@@ -733,7 +733,22 @@ def _handle_comment(args: dict, **kw) -> str:
 
 def _store_attachment(board, tid, filename, data, content_type) -> str:
     """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
-    dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
+    dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep.
+
+    Also runs the fail-closed secret-path pre-ingress policy on *filename*
+    BEFORE writing any bytes to disk.  This is the single shared chokepoint
+    for every ``kanban_attach`` / ``kanban_attach_url`` / dashboard upload /
+    CLI ``attach`` path, so the policy fires whether or not a higher layer
+    remembered to check.  The error message contains only the policy ``kind``
+    — never the filename or any credential bytes.
+    """
+    from hermes_cli.secret_path_policy import raise_if_blocked
+    try:
+        raise_if_blocked(str(filename), source="kanban_attach")
+    except Exception as e:
+        # ``raise_if_blocked`` raises ``SecretPathError``; map it to ``_Reject``
+        # so the ``@_kanban_handler`` decorator renders it as a tool error.
+        raise _Reject(str(e)) from None
     with _board(board) as (kb, conn):
         att_id = kb.store_attachment_bytes(
             conn, tid, str(filename), data,
@@ -743,9 +758,21 @@ def _store_attachment(board, tid, filename, data, content_type) -> str:
 
 @_kanban_handler("kanban_attach")
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task."""
+    """Attach an inline (base64) file to a task.
+
+    Runs the fail-closed secret-path pre-ingress policy on *filename*
+    BEFORE the base64 decode so a malicious attachment name can't even
+    trigger decoder work.  The lower ``_store_attachment`` chokepoint
+    fires again on the way out so the policy still applies if a future
+    code path bypasses this handler.
+    """
+    from hermes_cli.secret_path_policy import raise_if_blocked
     tid = _worker_guard("kanban_attach", args)
     filename = _require_text(args, "filename")
+    try:
+        raise_if_blocked(str(filename), source="kanban_attach")
+    except Exception as e:
+        raise _Reject(str(e)) from None
     content_b64 = _require_text(args, "content_base64")
     import base64
     import binascii
@@ -799,8 +826,18 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
 
 @_kanban_handler("kanban_attach_url")
 def _handle_attach_url(args: dict, **kw) -> str:
-    """Attach a file fetched server-side from an http(s) URL (shared size cap)."""
+    """Attach a file fetched server-side from an http(s) URL (shared size cap).
+
+    Runs the fail-closed secret-path pre-ingress policy on the
+    client-supplied *filename* (or the URL-derived leaf) BEFORE
+    downloading any bytes — so a model asking for
+    ``kanban_attach_url(url=..., filename="auth.json")`` never even
+    consumes network IO.  The lower ``_store_attachment`` chokepoint
+    fires again on the way out so the policy still applies if a future
+    code path bypasses this handler.
+    """
     from hermes_cli import kanban_db as kb
+    from hermes_cli.secret_path_policy import raise_if_blocked
     tid = _worker_guard("kanban_attach_url", args)
     url = str(_require_text(args, "url")).strip()
     filename = args.get("filename") or args.get("title")
@@ -808,6 +845,13 @@ def _handle_attach_url(args: dict, **kw) -> str:
         # Derive a name from the URL path's leaf component.
         from urllib.parse import unquote, urlparse
         filename = unquote(urlparse(url).path.rsplit("/", 1)[-1]).strip() or "download"
+    # Pre-ingress guard: block before any network IO so a malicious
+    # attachment name can't trigger an outbound request.  The same guard
+    # runs in ``_store_attachment`` as a belt-and-braces final check.
+    try:
+        raise_if_blocked(str(filename), source="kanban_attach_url")
+    except Exception as e:
+        return tool_error(str(e))
     try:
         data, fetched_ct = _download_url_with_cap(url, kb.KANBAN_ATTACHMENT_MAX_BYTES)
     except ValueError as e:

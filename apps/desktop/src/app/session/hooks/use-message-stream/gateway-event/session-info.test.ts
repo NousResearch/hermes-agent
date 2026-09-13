@@ -4,10 +4,12 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $currentCwd,
+  $currentReasoningEffort,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
   releaseWorkspaceCwdOwner,
-  setCurrentCwd
+  setCurrentCwd,
+  setCurrentReasoningEffort
 } from '@/store/session'
 
 import { handleSessionInfoEvent } from './session-info'
@@ -20,11 +22,13 @@ function sessionInfoEvent({
   activeSessionId,
   cwd,
   explicitSid = '',
+  reasoningEffort,
   storedSessionId = ''
 }: {
   activeSessionId: null | string
   cwd: string
   explicitSid?: string
+  reasoningEffort?: string
   storedSessionId?: string
 }): GatewayEventContext {
   const sessionId = explicitSid || activeSessionId
@@ -48,7 +52,7 @@ function sessionInfoEvent({
     fromActiveSource: () => true,
     isActiveEvent: !!sessionId && sessionId === activeSessionId,
     occurredAt: Date.now() / 1000,
-    payload: { cwd, stored_session_id: storedSessionId },
+    payload: { cwd, stored_session_id: storedSessionId, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) },
     scheduleConfigRefresh: vi.fn(),
     sessionId
   } as unknown as GatewayEventContext
@@ -65,6 +69,7 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
     setCurrentCwd('')
+    setCurrentReasoningEffort('')
   })
 
   // #55831 / the "workspace pane visible with no agent selected" report: with
@@ -145,5 +150,19 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     handleSessionInfoEvent(ctx)
 
     expect(next).toBe(original)
+  })
+
+  it('does not copy a session.info reasoning_effort into the global composer draft', () => {
+    setCurrentReasoningEffort('')
+
+    handleSessionInfoEvent(
+      sessionInfoEvent({ activeSessionId: null, cwd: '/repo', reasoningEffort: 'high' })
+    )
+
+    // A session's pinned effort is per-session only; it must never seed the
+    // persisted composer draft that a fresh chat reads — that would override the
+    // profile's `agent.reasoning_effort` default with whatever the last-resumed
+    // session happened to pin.
+    expect($currentReasoningEffort.get()).toBe('')
   })
 })

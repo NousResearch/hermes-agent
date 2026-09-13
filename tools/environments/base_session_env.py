@@ -53,6 +53,12 @@ _PATH_DEDUPE_AWK = (
 # mktemp template suffix + the shell variable holding the allocated temp path.
 _SNAP_TMP_SUFFIX = ".tmp.XXXXXXXXXX"
 _SNAP_TMP = '"$__hermes_snap_tmp"'
+# Separate staging file for the raw ``export -p`` dump. ``_export_dump_excluding_session_vars`` puts
+# its redirection ON the brace group (see its docstring: a redirect on a pipeline segment would
+# expand the temp path inside that segment's subshell, inconsistently with the parent that expands
+# the follow-up ``mv``), so its output cannot be piped directly. The re-dump therefore lands here and
+# is filtered into the snapshot temp afterwards.
+_SNAP_RAW = '"$__hermes_snap_raw"'
 
 
 def _cwd_marker(session_id: str) -> str:
@@ -180,13 +186,18 @@ def _wrap_command_script(
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready:
+        # Two temp files on purpose. The dump's redirection is on its brace group (see
+        # ``_export_dump_excluding_session_vars``), so `dump > f | awk > f` would redirect the dump's
+        # stdout AWAY from awk and have both sides truncate/write the same file — awk would filter an
+        # empty stream and the snapshot could publish empty or corrupt. Stage the raw dump, then read
+        # it back through the filter into the snapshot temp.
         parts.append(
+            f"__hermes_snap_raw=$(mktemp {snap_tmp_template}) && "
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
-            f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
-            f"| {_PATH_DEDUPE_AWK} "
-            f"> {_SNAP_TMP} "
+            f"{{ {_export_dump_excluding_session_vars(_SNAP_RAW, passthrough_names)} "
+            f"&& {_PATH_DEDUPE_AWK} < {_SNAP_RAW} > {_SNAP_TMP} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
-            f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
+            f"2>/dev/null || rm -f {_SNAP_TMP} {_SNAP_RAW} 2>/dev/null || true")
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]
     return "\n".join(parts)
 

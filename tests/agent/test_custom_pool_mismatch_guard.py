@@ -25,6 +25,8 @@ FIREWORKS_URL = "https://api.fireworks.ai/inference/v1"
 
 def _agent(provider, base_url, pool_provider):
     agent = MagicMock()
+    # Match the real initializer: an ordinary custom-provider session is unbound.
+    agent._expiry_aware_session_credential = None
     agent.provider = provider
     agent.base_url = base_url
     pool = MagicMock()

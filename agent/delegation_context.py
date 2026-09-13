@@ -13,6 +13,10 @@ from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
+_DELEGATED_CHILD_CREDENTIAL_BINDING: ContextVar[dict[str, str] | None] = ContextVar(
+    "hermes_delegated_child_credential_binding",
+    default=None,
+)
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
@@ -25,18 +29,50 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
 )
 
 
+def _normalize_credential_binding(
+    credential_binding: Mapping[str, object] | None,
+) -> dict[str, str] | None:
+    """Return only the non-secret identity fields from a credential binding."""
+    if not isinstance(credential_binding, Mapping):
+        raise ValueError("Invalid session credential binding")
+    normalized: dict[str, str] = {}
+    for field in ("provider", "entry_id", "account_id"):
+        value = credential_binding.get(field)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError("Invalid session credential identity")
+        normalized[field] = value
+    return normalized
+
+
+def get_delegated_child_credential_binding() -> dict[str, str] | None:
+    """Return the identity-only credential binding scoped to this child."""
+    binding = _DELEGATED_CHILD_CREDENTIAL_BINDING.get()
+    return dict(binding) if binding is not None else None
+
+
 @contextmanager
-def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
+def delegated_child_context(
+    session_id: str | None = None,
+    *,
+    credential_binding: Mapping[str, object] | None = None,
+) -> Iterator[None]:
     """Mark child execution and isolate its task-local session identity. Even a context
     entered without an id must restore the parent's session ContextVar (child
     construction calls ``set_current_session_id``)."""
+    inherited_binding = (
+        _normalize_credential_binding(credential_binding)
+        if credential_binding is not None
+        else _DELEGATED_CHILD_CREDENTIAL_BINDING.get()
+    )
     token = _DELEGATED_CHILD_CONTEXT.set(True)
+    binding_token = _DELEGATED_CHILD_CREDENTIAL_BINDING.set(inherited_binding)
     try:
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
 
         with scoped_current_session_id(session_id):
             yield
     finally:
+        _DELEGATED_CHILD_CREDENTIAL_BINDING.reset(binding_token)
         _DELEGATED_CHILD_CONTEXT.reset(token)
 
 

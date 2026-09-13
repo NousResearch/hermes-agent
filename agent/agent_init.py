@@ -9,6 +9,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -1147,6 +1148,13 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    pinned = getattr(agent, "_expiry_aware_session_credential", None)
+    if pinned is not None:
+        agent._session_init_model_config["credential_binding"] = {
+            "provider": agent.provider,
+            "entry_id": _credential_binding_value(pinned, "id", agent.session_id),
+            "account_id": _credential_binding_value(pinned, "account_id", agent.session_id),
+        }
     # Process-scoped --yolo is persisted so `hermes --resume` restores the bypass
     # (SessionDB.session_yolo_enabled); session-scoped /yolo toggles persist separately.
     with suppress(Exception):
@@ -2172,6 +2180,215 @@ _CALLBACK_PARAMS = (
 )
 
 
+
+class SessionCredentialBindingError(RuntimeError):
+    """Raised when an expiry-aware session credential cannot be reused."""
+
+
+_CREDENTIAL_BINDING_KEY = "credential_binding"
+_CREDENTIAL_BINDING_FIELDS = frozenset({"provider", "entry_id", "account_id"})
+
+
+def _session_credential_binding(
+    session_db: Any, session_id: str
+) -> Optional[Dict[str, str]]:
+    session = session_db.get_session(session_id)
+    if session is None:
+        return None
+
+    try:
+        raw_model_config = session["model_config"]
+    except (KeyError, TypeError):
+        raw_model_config = None
+
+    if raw_model_config in (None, ""):
+        return None
+    if isinstance(raw_model_config, str):
+        try:
+            model_config = json.loads(raw_model_config)
+        except json.JSONDecodeError as exc:
+            raise SessionCredentialBindingError(
+                "Session {} has invalid credential binding data".format(session_id)
+            ) from exc
+    elif isinstance(raw_model_config, dict):
+        model_config = raw_model_config
+    else:
+        raise SessionCredentialBindingError(
+            "Session {} has invalid credential binding data".format(session_id)
+        )
+
+    if not isinstance(model_config, dict):
+        raise SessionCredentialBindingError(
+            "Session {} has invalid credential binding data".format(session_id)
+        )
+    binding = model_config.get(_CREDENTIAL_BINDING_KEY)
+    if binding is None:
+        return None
+    if not isinstance(binding, dict) or set(binding) != _CREDENTIAL_BINDING_FIELDS:
+        raise SessionCredentialBindingError(
+            "Session {} has invalid credential binding data".format(session_id)
+        )
+    if any(
+        not isinstance(binding[field], str)
+        or not binding[field]
+        or binding[field] != binding[field].strip()
+        for field in _CREDENTIAL_BINDING_FIELDS
+    ):
+        raise SessionCredentialBindingError(
+            "Session {} has invalid credential binding data".format(session_id)
+        )
+    return {field: binding[field] for field in _CREDENTIAL_BINDING_FIELDS}
+
+
+def _credential_binding_value(credential: Any, field: str, session_id: str) -> str:
+    value = getattr(credential, field, None)
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise SessionCredentialBindingError(
+            "Session {} selected a credential without {}".format(session_id, field)
+        )
+    return value
+
+
+def _resolve_pinned_session_credential(
+    credential_pool: Any, session_id: str, binding: Dict[str, str]
+) -> Any:
+    try:
+        credential = credential_pool.select_exact(binding["entry_id"])
+    except Exception as exc:
+        raise SessionCredentialBindingError(
+            "Pinned credential {} for session {} is no longer available".format(
+                binding["entry_id"], session_id
+            )
+        ) from exc
+    if credential is None:
+        raise SessionCredentialBindingError(
+            "Pinned credential {} for session {} is no longer available".format(
+                binding["entry_id"], session_id
+            )
+        )
+
+    entry_id = _credential_binding_value(credential, "id", session_id)
+    account_id = _credential_binding_value(credential, "account_id", session_id)
+    if entry_id != binding["entry_id"] or account_id != binding["account_id"]:
+        raise SessionCredentialBindingError(
+            "Pinned credential {} for session {} has an account mismatch".format(
+                binding["entry_id"], session_id
+            )
+        )
+    return credential
+
+
+def prepare_expiry_aware_session_credential(
+    credential_pool: Any,
+    session_db: Any,
+    session_id: Optional[str],
+    provider: str,
+) -> Optional[Any]:
+    """Return the sole permitted expiry-aware credential for this session."""
+    from agent.delegation_context import get_delegated_child_credential_binding
+
+    inherited = get_delegated_child_credential_binding()
+    if inherited is not None and (
+        credential_pool is None or session_db is None or not session_id
+        or provider != inherited["provider"]
+    ):
+        raise SessionCredentialBindingError("Child runtime cannot honor the inherited session credential")
+    # Existing logical sessions retain their pin after a configuration change.
+    # The opt-in gate below applies only to admission, never to resume.
+    binding = (
+        _session_credential_binding(session_db, session_id)
+        if session_db is not None and session_id else None
+    )
+    if inherited is not None:
+        assert session_db is not None and session_id is not None
+        if inherited["provider"] != provider:
+            raise SessionCredentialBindingError("Inherited credential provider mismatch")
+        winner = session_db.get_or_bind_session_credential(session_id, **inherited)
+        if winner != inherited:
+            raise SessionCredentialBindingError("Child session credential conflicts with parent")
+        binding = winner
+    if binding is not None:
+        assert session_id is not None
+        if binding["provider"] != provider:
+            raise SessionCredentialBindingError(
+                "Session {} is pinned to provider {}, not {}".format(
+                    session_id, binding["provider"], provider
+                )
+            )
+        return _resolve_pinned_session_credential(credential_pool, session_id, binding)
+
+    if (
+        credential_pool is None
+        or provider != "openai-codex"
+        or getattr(credential_pool, "strategy", None) != "expiry_aware"
+    ):
+        return None
+    if session_db is None or not session_id:
+        raise SessionCredentialBindingError("expiry_aware requires a persistent session database and session ID")
+
+    # New sessions alone receive the account-bound, read-only usage seam.  A
+    # resumed binding returns above before this import/installation, so it
+    # cannot trigger telemetry.  The pool remains the sole selector; this does
+    # not call ``select`` merely to inspect usage.
+    try:
+        from agent.account_usage import prepare_codex_expiry_aware_usage_snapshots
+        snapshots = prepare_codex_expiry_aware_usage_snapshots(credential_pool.entries())
+        credential_pool.set_expiry_aware_usage_snapshots(snapshots)
+    except Exception:
+        # A missing optional seam must preserve the established fill-first
+        # admission path rather than turn telemetry availability into outage.
+        pass
+
+    selected = credential_pool.select()
+    if selected is None:
+        raise SessionCredentialBindingError(
+            "No credential is available to bind session {}".format(session_id)
+        )
+    selected_binding = {
+        "provider": provider,
+        "entry_id": _credential_binding_value(selected, "id", session_id),
+        "account_id": _credential_binding_value(selected, "account_id", session_id),
+    }
+    winner = session_db.get_or_bind_session_credential(
+        session_id,
+        provider=provider,
+        entry_id=selected_binding["entry_id"],
+        account_id=selected_binding["account_id"],
+    )
+    if not isinstance(winner, dict) or set(winner) != _CREDENTIAL_BINDING_FIELDS:
+        raise SessionCredentialBindingError(
+            "Session {} returned invalid credential binding data".format(session_id)
+        )
+    if winner["provider"] != provider:
+        raise SessionCredentialBindingError(
+            "Session {} is pinned to provider {}, not {}".format(
+                session_id, winner["provider"], provider
+            )
+        )
+    if winner == selected_binding:
+        return selected
+    return _resolve_pinned_session_credential(credential_pool, session_id, winner)
+
+
+def _expiry_aware_client_settings(credential: Any, session_id: str) -> tuple[str, str]:
+    api_key = getattr(credential, "runtime_api_key", None)
+    if not isinstance(api_key, str) or not api_key:
+        api_key = getattr(credential, "api_key", None)
+    if not isinstance(api_key, str) or not api_key:
+        api_key = getattr(credential, "access_token", None)
+    base_url = getattr(credential, "runtime_base_url", None)
+    if not isinstance(base_url, str) or not base_url:
+        base_url = getattr(credential, "base_url", None)
+    if not isinstance(api_key, str) or not api_key:
+        raise SessionCredentialBindingError(
+            "Pinned credential for session {} has no API key".format(session_id)
+        )
+    if not isinstance(base_url, str) or not base_url:
+        raise SessionCredentialBindingError(
+            "Pinned credential for session {} has no base URL".format(session_id)
+        )
+    return api_key, base_url
+
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
     acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
@@ -2203,7 +2420,7 @@ def init_agent(
     load_soul_identity: bool = False, skip_memory: bool = False,
     skip_background_review: bool = False, session_db=None, parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
-    fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
+    fallback_model: Optional[Dict[str, Any]] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
@@ -2278,6 +2495,21 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
+    if getattr(credential_pool, "strategy", None) == "expiry_aware" and session_db is not None:
+        session_id = session_id or f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
+        if session_db.get_session(session_id) is None:
+            session_db.create_session(
+                session_id, platform or "cli", model=model, parent_session_id=parent_session_id,
+            )
+    expiry_aware_credential = prepare_expiry_aware_session_credential(
+        credential_pool, session_db, session_id, provider_name or "auto"
+    )
+    if expiry_aware_credential is not None:
+        api_key, base_url = _expiry_aware_client_settings(
+            expiry_aware_credential, session_id
+        )
+        agent._expiry_aware_session_credential = expiry_aware_credential
+        fallback_model = None
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
@@ -2310,7 +2542,11 @@ def init_agent(
     _snapshot_primary_runtime(agent)
 
 
-__all__ = ["init_agent"]
+__all__ = [
+    "init_agent",
+    "SessionCredentialBindingError",
+    "prepare_expiry_aware_session_credential",
+]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

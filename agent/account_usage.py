@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
 import httpx
 
@@ -339,7 +342,9 @@ def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
 
 
 def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
-    with httpx.Client(timeout=timeout) as client:
+    # These calls carry an OAuth Authorization header.  Redirects can change
+    # the destination after origin validation, so they must never be followed.
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         response = client.get(url, headers=headers)
         response.raise_for_status()
     return response.json() or {}
@@ -383,6 +388,194 @@ def _fetch_codex_account_usage(
     elif credits.get("has_credits") and credits.get("unlimited"):
         details.append("Credits balance: unlimited")
     return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")))
+
+
+# Admission telemetry is intentionally narrower than the interactive /usage
+# command: only a known pool entry with explicit account provenance may make a
+# request, and an unusable result must leave normal pool routing untouched.
+_CODEX_EXPIRY_AWARE_USAGE_TIMEOUT_SECONDS = 5.0
+_CODEX_EXPIRY_AWARE_USAGE_STALE_AFTER_SECONDS = 60.0
+_CODEX_EXPIRY_AWARE_WEEK_SECONDS = 7 * 24 * 60 * 60
+_CODEX_EXPIRY_AWARE_USAGE_CACHE: dict[tuple[str, str], Any] = {}
+_CODEX_EXPIRY_AWARE_USAGE_CACHE_LOCK = threading.Lock()
+_CODEX_EXPIRY_AWARE_USAGE_PROBES = threading.BoundedSemaphore(2)
+
+
+def clear_codex_expiry_aware_usage_cache() -> None:
+    """Test/maintenance seam; cache values contain only non-secret quota facts."""
+
+    with _CODEX_EXPIRY_AWARE_USAGE_CACHE_LOCK:
+        _CODEX_EXPIRY_AWARE_USAGE_CACHE.clear()
+
+
+def _entry_codex_account_id(entry: Any) -> Optional[str]:
+    extra = getattr(entry, "extra", None)
+    value = getattr(entry, "account_id", extra.get("account_id") if isinstance(extra, dict) else None)
+    return value if isinstance(value, str) and value and value == value.strip() else None
+
+
+def _entry_codex_usage_origin(entry: Any) -> Optional[str]:
+    official_origin = "https://chatgpt.com/backend-api/codex"
+    configured = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
+    if configured is None or configured == "":
+        return official_origin
+    # This authorization-bearing probe is deliberately not a generic custom
+    # endpoint request.  Exact string matching rejects implicit ports,
+    # userinfo, non-canonical paths, queries, fragments, and surrounding
+    # whitespace before a client can receive the token.
+    if not isinstance(configured, str) or configured != official_origin:
+        return None
+    return official_origin
+
+
+def _expiry_aware_window(raw: Any, *, now: float, week: bool) -> Optional[tuple[float, float]]:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        used = float(raw["used_percent"])
+        reset_at = _parse_dt(raw.get("reset_at"))
+        window_seconds = int(raw["limit_window_seconds"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if reset_at is None:
+        return None
+    reset_epoch = reset_at.timestamp()
+    if (
+        not math.isfinite(used)
+        or not 0.0 <= used <= 100.0
+        or not math.isfinite(reset_epoch)
+        or reset_epoch <= now
+        or (week and window_seconds != _CODEX_EXPIRY_AWARE_WEEK_SECONDS)
+        or (not week and window_seconds <= 0)
+    ):
+        return None
+    return (1.0 - used / 100.0, reset_epoch)
+
+
+def fetch_codex_expiry_aware_usage(entry: Any, *, timeout_seconds: Optional[float] = None) -> Optional[Any]:
+    """Fetch a fresh, account-bound two-window Codex usage observation.
+
+    This is a read-only admission probe.  It never resolves credentials,
+    invokes a pool selector, logs headers/tokens, or mutates pool state.
+    ``None`` is the deliberate fail-open signal for normal routing.
+    """
+
+    if str(getattr(entry, "provider", "") or "").strip().lower() != "openai-codex":
+        return None
+    entry_id = str(getattr(entry, "id", "") or "").strip()
+    account_id = _entry_codex_account_id(entry)
+    token = str(getattr(entry, "runtime_api_key", "") or getattr(entry, "access_token", "") or "").strip()
+    base_url = _entry_codex_usage_origin(entry)
+    if not entry_id or not account_id or not token or base_url is None:
+        return None
+    key = (entry_id, account_id)
+    now = time.time()
+    with _CODEX_EXPIRY_AWARE_USAGE_CACHE_LOCK:
+        cached = _CODEX_EXPIRY_AWARE_USAGE_CACHE.get(key)
+    cached_short_reset_at = getattr(cached, "short_window_reset_at", None)
+    if (
+        cached is not None
+        and 0.0 <= now - cached.observed_at <= _CODEX_EXPIRY_AWARE_USAGE_STALE_AFTER_SECONDS
+        and cached.reset_at > now
+        and cached_short_reset_at is not None
+        and cached_short_reset_at > now
+    ):
+        return cached
+    request_timeout = _CODEX_EXPIRY_AWARE_USAGE_TIMEOUT_SECONDS
+    if timeout_seconds is not None:
+        try:
+            request_timeout = min(request_timeout, max(0.0, float(timeout_seconds)))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if request_timeout <= 0.0:
+            return None
+    if not _CODEX_EXPIRY_AWARE_USAGE_PROBES.acquire(blocking=False):
+        return None
+    try:
+        payload = _get_json(
+            _codex_backend_urls(base_url)[0],
+            _codex_headers(token, account_id),
+            timeout=request_timeout,
+        )
+    except Exception:
+        return None
+    finally:
+        _CODEX_EXPIRY_AWARE_USAGE_PROBES.release()
+    rate_limit = payload.get("rate_limit") if isinstance(payload, dict) else None
+    if not isinstance(rate_limit, dict):
+        return None
+    short_window = _expiry_aware_window(rate_limit.get("primary_window"), now=now, week=False)
+    weekly_window = _expiry_aware_window(rate_limit.get("secondary_window"), now=now, week=True)
+    if short_window is None or weekly_window is None:
+        return None
+    from agent.credential_pool import CodexAccountUsageWindows
+    usage = CodexAccountUsageWindows(
+        account_id=account_id,
+        remaining_fraction=weekly_window[0],
+        reset_at=weekly_window[1],
+        observed_at=now,
+        short_window_remaining_fraction=short_window[0],
+        short_window_reset_at=short_window[1],
+    )
+    with _CODEX_EXPIRY_AWARE_USAGE_CACHE_LOCK:
+        _CODEX_EXPIRY_AWARE_USAGE_CACHE[key] = usage
+    return usage
+
+
+def prepare_codex_expiry_aware_usage_snapshots(
+    entries: Iterable[Any],
+    *,
+    deadline_seconds: float = _CODEX_EXPIRY_AWARE_USAGE_TIMEOUT_SECONDS,
+) -> dict[str, Optional[Any]]:
+    """Probe Codex admission telemetry before pool selection acquires its lock.
+
+    The deadline is shared by all entries and capped at five seconds; workers
+    are capped at two.  Results use only non-secret pool entry ids, allowing a
+    caller to install them with ``CredentialPool.set_expiry_aware_usage_snapshots``.
+    """
+
+    try:
+        budget = min(_CODEX_EXPIRY_AWARE_USAGE_TIMEOUT_SECONDS, max(0.0, float(deadline_seconds)))
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    entry_list = list(entries)
+    snapshots: dict[str, Optional[Any]] = {
+        str(getattr(entry, "id", "") or ""): None
+        for entry in entry_list
+        if str(getattr(entry, "id", "") or "")
+    }
+    if not snapshots or budget <= 0.0:
+        return snapshots
+
+    deadline = time.monotonic() + budget
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="codex-usage")
+    futures = {}
+    for entry in entry_list:
+        entry_id = str(getattr(entry, "id", "") or "")
+        if not entry_id:
+            continue
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining <= 0.0:
+            break
+        futures[executor.submit(
+            fetch_codex_expiry_aware_usage,
+            entry,
+            timeout_seconds=remaining,
+        )] = entry_id
+    try:
+        done, _pending = wait(futures, timeout=max(0.0, deadline - time.monotonic()))
+        for future in done:
+            entry_id = futures[future]
+            try:
+                snapshots[entry_id] = future.result()
+            except Exception:
+                snapshots[entry_id] = None
+    finally:
+        for future in futures:
+            future.cancel()
+        # Do not turn a stuck transport into a lock-held selection delay.
+        executor.shutdown(wait=False, cancel_futures=True)
+    return snapshots
 
 
 @dataclass(frozen=True)

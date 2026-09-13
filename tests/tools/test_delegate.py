@@ -148,6 +148,25 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertNotIn("CONTEXT", prompt)
 
 class TestStripBlockedTools(unittest.TestCase):
+    def test_child_constructor_inherits_parent_credential_binding(self):
+        from agent.delegation_context import get_delegated_child_credential_binding
+
+        parent = _make_mock_parent()
+        binding = {"provider": "openai-codex", "entry_id": "entry-parent", "account_id": "account-parent"}
+        parent._session_init_model_config = {"credential_binding": binding}
+        captured = []
+
+        def construct(**kwargs):
+            captured.append(get_delegated_child_credential_binding())
+            return MagicMock()
+
+        with patch("run_agent.AIAgent", side_effect=construct):
+            _build_child_agent(
+                task_index=0, goal="Test inheritance", context=None, toolsets=None,
+                model=None, max_iterations=10, parent_agent=parent, task_count=1,
+            )
+        self.assertEqual(captured, [binding])
+
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
         self.assertEqual(sorted(result), ["code_execution", "file", "terminal"])

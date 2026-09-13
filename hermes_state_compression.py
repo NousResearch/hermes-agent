@@ -203,6 +203,38 @@ class SessionCompressionMixin:
         """INSERT the compression child's ``sessions`` row copied from *parent*. Same contract as
         _insert_session_row's compression-fork backfill: the child stays on the parent's profile and keeps
         gateway routing/origin columns; no owner on either side -> this store's profile."""
+        # ``publish_compression_child`` is the one durable handoff boundary.
+        # Keep a parent's established identity even when the rotating agent's
+        # cached model config names a different candidate. Copy the child
+        # config first so unrelated caller keys survive this narrow override.
+        child_model_config = dict(model_config or {})
+        parent_model_config = parent["model_config"]
+        if parent_model_config:
+            try:
+                parent_model_config = json.loads(parent_model_config)
+            except (TypeError, json.JSONDecodeError):
+                raise RuntimeError(
+                    f"Compression parent has invalid model config: {parent_session_id}"
+                ) from None
+            if not isinstance(parent_model_config, dict):
+                raise RuntimeError(
+                    f"Compression parent has invalid model config: {parent_session_id}"
+                )
+            if "credential_binding" in parent_model_config:
+                binding = parent_model_config["credential_binding"]
+                expected = {"provider", "entry_id", "account_id"}
+                if (
+                    not isinstance(binding, dict)
+                    or set(binding) != expected
+                    or any(
+                        not isinstance(value, str) or not value or value != value.strip()
+                        for value in binding.values()
+                    )
+                ):
+                    raise RuntimeError(
+                        f"Compression parent has invalid credential binding: {parent_session_id}"
+                    )
+                child_model_config["credential_binding"] = dict(binding)
         system_prompt_hash = self._store_system_prompt(conn, system_prompt)
         conn.execute(
             """INSERT INTO sessions (
@@ -213,7 +245,8 @@ class SessionCompressionMixin:
                    thread_id, display_name, origin_json, started_at
                 ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                child_session_id, source, model, json.dumps(model_config) if model_config else None,
+                child_session_id, source, model,
+                json.dumps(child_model_config) if child_model_config else None,
                 system_prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
@@ -256,7 +289,7 @@ class SessionCompressionMixin:
                 raise CompressionSessionBusyError(
                     f"Compression lease lost before publication: {parent_session_id}")
             parent = conn.execute(
-                """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
+                """SELECT ended_at, end_reason, model_config, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name
                    FROM sessions WHERE id = ?""",

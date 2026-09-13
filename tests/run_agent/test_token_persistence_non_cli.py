@@ -17,6 +17,9 @@ def _mock_response(*, usage: dict, content: str = "done"):
 
 
 def _make_agent(session_db, *, platform: str):
+    if session_db is not None:
+        # A new session has no persisted row or credential pin yet.
+        session_db.get_session.return_value = None
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),

@@ -15,6 +15,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # 1. CLI _resolve_turn_agent_config includes credential_pool
@@ -237,6 +239,143 @@ class TestPoolRotationCycle:
         assert recovered is True
         assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key", failure_reason="billing")
+
+
+class TestExpiryAwarePinnedSessionRecovery:
+    """A pinned expiry-aware session must never escape its bound credential."""
+
+    @staticmethod
+    def _agent_and_pool(*, entries=None, refreshed=None):
+        pinned = SimpleNamespace(
+            id="cred-pinned", account_id="account-pinned", runtime_api_key="pinned-key",
+        )
+        pool = MagicMock()
+        pool.provider = "openai-codex"
+        pool.strategy = "expiry_aware"
+        pool.entries.return_value = [pinned] if entries is None else entries
+        pool.current.return_value = pinned
+        pool.select_exact.side_effect = lambda entry_id: next(
+            (entry for entry in pool.entries() if entry.id == entry_id), None
+        )
+        pool.try_refresh_matching.return_value = refreshed
+        agent = SimpleNamespace(
+            provider="openai-codex",
+            base_url="https://api.openai.com",
+            api_key="pinned-key",
+            _credential_pool=pool,
+            _credential_pool_entry_id="cred-pinned",
+            _expiry_aware_session_credential=pinned,
+            _swap_credential=MagicMock(),
+            _is_entitlement_failure=MagicMock(return_value=False),
+        )
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        agent._recover_with_credential_pool = lambda **kwargs: recover_with_credential_pool(agent, **kwargs)
+        return agent, pool, pinned
+
+    @pytest.mark.parametrize(
+        ("status_code", "reason"),
+        [(429, "rate_limit"), (402, "billing")],
+    )
+    def test_quota_failures_are_terminal_without_rotation(self, status_code, reason):
+        """429 and hard quota cannot rotate a session-bound expiry-aware entry."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from agent.error_classifier import FailoverReason
+
+        agent, pool, _ = self._agent_and_pool()
+
+        with pytest.raises(RuntimeError, match="(?i)pinned.*expiry-aware"):
+            recover_with_credential_pool(
+                agent, status_code=status_code, has_retried_429=False,
+                classified_reason=getattr(FailoverReason, reason),
+            )
+
+        pool.mark_exhausted_and_rotate.assert_not_called()
+        agent._swap_credential.assert_not_called()
+
+    def test_removed_pinned_entry_is_terminal_before_429_retry(self):
+        """A removed pin is actionable instead of retrying, rotating, or falling back."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        agent, pool, _ = self._agent_and_pool(entries=[])
+
+        with pytest.raises(RuntimeError, match="cred-pinned.*no longer available"):
+            recover_with_credential_pool(agent, status_code=429, has_retried_429=False)
+
+        pool.mark_exhausted_and_rotate.assert_not_called()
+        agent._swap_credential.assert_not_called()
+
+    def test_same_identity_oauth_refresh_is_the_only_allowed_auth_recovery(self):
+        """The production pool helper may refresh and retain the exact bound identity."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        refreshed = SimpleNamespace(
+            id="cred-pinned", account_id="account-pinned", runtime_api_key="fresh-key",
+        )
+        agent, pool, _ = self._agent_and_pool(refreshed=refreshed)
+
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=401, has_retried_429=False,
+        )
+
+        assert recovered is True
+        pool.try_refresh_matching.assert_called_once_with(
+            api_key_hint="pinned-key", credential_id="cred-pinned",
+        )
+        pool.mark_exhausted_and_rotate.assert_not_called()
+        agent._swap_credential.assert_called_once_with(refreshed)
+
+    def test_identity_changing_oauth_refresh_is_terminal(self):
+        """A refresh result for a different entry/account cannot replace the pin."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        refreshed = SimpleNamespace(
+            id="cred-replaced", account_id="account-other", runtime_api_key="other-key",
+        )
+        agent, pool, _ = self._agent_and_pool(refreshed=refreshed)
+
+        with pytest.raises(RuntimeError, match="changed identity"):
+            recover_with_credential_pool(agent, status_code=401, has_retried_429=False)
+
+        pool.mark_exhausted_and_rotate.assert_not_called()
+        agent._swap_credential.assert_not_called()
+
+    def test_non_expiry_aware_strategy_keeps_existing_billing_rotation(self):
+        """The pin guard is opt-in and leaves established strategies untouched."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        agent, pool, _ = self._agent_and_pool()
+        pool.strategy = "round_robin"
+        agent._expiry_aware_session_credential = None
+        rotated = SimpleNamespace(id="cred-next", runtime_api_key="next-key")
+        pool.mark_exhausted_and_rotate.return_value = rotated
+
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=402, has_retried_429=False,
+        )
+
+        assert recovered is True
+        pool.mark_exhausted_and_rotate.assert_called_once()
+        agent._swap_credential.assert_called_once_with(rotated)
+
+    def test_recovery_chain_does_not_convert_pinned_429_into_a_retry(self):
+        """The real post-classification call path surfaces the guarded failure."""
+        from agent.error_classifier import FailoverReason
+        from agent.turn_recovery import recover_after_classification
+
+        agent, pool, _ = self._agent_and_pool()
+        pool.strategy = "fill_first"  # A configuration change cannot unpin a session.
+        classified = SimpleNamespace(
+            reason=FailoverReason.rate_limit, billing_unverified=False,
+        )
+        retry = SimpleNamespace(has_retried_429=False)
+
+        with pytest.raises(RuntimeError, match="(?i)pinned.*expiry-aware"):
+            recover_after_classification(
+                agent, Exception("rate limited"), classified, retry, status_code=429,
+                error_context=None, messages=[], api_messages=[],
+            )
+
+        pool.mark_exhausted_and_rotate.assert_not_called()
 
 
     def test_api_key_hint_from_pool_current_when_agent_key_missing(self):

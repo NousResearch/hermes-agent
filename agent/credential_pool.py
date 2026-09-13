@@ -5,6 +5,7 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 
 import logging
+import math
 import os
 import random
 import threading
@@ -116,12 +117,215 @@ STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
 STRATEGY_RANDOM = "random"
 STRATEGY_LEAST_USED = "least_used"
+STRATEGY_EXPIRY_AWARE = "expiry_aware"
 SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
+    STRATEGY_EXPIRY_AWARE,
 }
+
+# ``expiry_aware`` is deliberately admission-only. A future integration
+# supplies account-bound, read-only usage snapshots; the credential pool never
+# reads runtime auth state or performs usage requests on its hot path.
+EXPIRY_AWARE_USAGE_STALE_AFTER_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class CodexAccountUsage:
+    """Read-only Codex quota observation bound to one account.
+
+    ``remaining_fraction`` is a quota signal, never a request-count estimate.
+    ``reset_at`` and ``observed_at`` are epoch seconds. Incomplete, stale, or
+    conflicting observations are intentionally rejected by
+    :func:`select_expiry_aware_entry` so callers retain their existing routing
+    semantics instead of guessing from partial telemetry.
+    """
+
+    account_id: str
+    remaining_fraction: float
+    reset_at: float
+    observed_at: float
+
+
+@dataclass(frozen=True)
+class CodexAccountUsageWindows(CodexAccountUsage):
+    """A Codex observation with explicitly identified short and weekly windows.
+
+    ``remaining_fraction``/``reset_at`` retain the weekly FEFO values inherited
+    from :class:`CodexAccountUsage`; callers must supply the short-window
+    availability independently.  This distinct type keeps legacy unit seams
+    compatible while preventing live admission from silently treating an
+    unlabeled ``secondary`` window as weekly.
+    """
+
+    short_window_remaining_fraction: float
+    # Kept separately from the weekly FEFO reset so cached telemetry can be
+    # invalidated when *either* provider window rolls over.
+    short_window_reset_at: Optional[float] = None
+
+
+def _expiry_aware_time_window(
+    now: Optional[float], stale_after_seconds: float,
+) -> Optional[Tuple[float, float]]:
+    """Return finite selection-clock bounds, or reject unsafe caller input."""
+
+    try:
+        observed_now = time.time() if now is None else float(now)
+        max_age = float(stale_after_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) for value in (observed_now, max_age)) or max_age < 0:
+        return None
+    return observed_now, max_age
+
+
+def _trusted_expiry_aware_usage(
+    usage: Any,
+    *,
+    observed_now: float,
+    max_age: float,
+) -> Optional[Tuple[str, float, float, float]]:
+    """Normalize one fresh, account-bound quota observation without guessing."""
+
+    if not isinstance(usage, CodexAccountUsage):
+        return None
+    account_id = str(usage.account_id or "").strip()
+    try:
+        remaining = float(usage.remaining_fraction)
+        reset_at = float(usage.reset_at)
+        observed_at = float(usage.observed_at)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not account_id
+        or not all(math.isfinite(value) for value in (remaining, reset_at, observed_at))
+        or remaining < 0.0
+        or remaining > 1.0
+        or reset_at <= observed_now
+        or observed_at > observed_now
+        or observed_now - observed_at > max_age
+    ):
+        return None
+    if isinstance(usage, CodexAccountUsageWindows):
+        try:
+            short_remaining = float(usage.short_window_remaining_fraction)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(short_remaining) or not 0.0 <= short_remaining <= 1.0:
+            return None
+        # Both provider quota windows are admission requirements.  Keep their
+        # values separate: the weekly allowance is the documented tie break,
+        # while the short window is an eligibility gate only.
+        return account_id, remaining, reset_at, short_remaining
+    return account_id, remaining, reset_at, 1.0
+
+
+def _expiry_aware_entry_account_id(entry: Any) -> Optional[str]:
+    extra = getattr(entry, "extra", None)
+    fallback = extra.get("account_id") if isinstance(extra, dict) else None
+    value = getattr(entry, "account_id", fallback)
+    return value if isinstance(value, str) and value and value == value.strip() else None
+
+
+def _expiry_aware_fallback_entries(
+    observations: Iterable[Tuple[Any, Any]],
+    *,
+    now: Optional[float] = None,
+    stale_after_seconds: float = EXPIRY_AWARE_USAGE_STALE_AFTER_SECONDS,
+) -> Tuple[List[Any], bool]:
+    """Return deterministic fallbacks and whether all entries are trusted exhausted.
+
+    Unknown, stale, malformed, and identity-conflicting data never marks an
+    entry exhausted. Only distinct account-bound observations with exactly zero
+    remaining quota are excluded from the legacy fill-first fallback.
+    """
+
+    observed_entries = list(observations)
+    window = _expiry_aware_time_window(now, stale_after_seconds)
+    if window is None:
+        return [entry for entry, _usage in observed_entries], False
+    observed_now, max_age = window
+
+    normalized = [
+        (entry, _trusted_expiry_aware_usage(usage, observed_now=observed_now, max_age=max_age))
+        for entry, usage in observed_entries
+    ]
+    account_counts: Dict[str, int] = {}
+    for _entry, usage in normalized:
+        if usage is not None:
+            account_counts[usage[0]] = account_counts.get(usage[0], 0) + 1
+
+    exhausted_entries = {
+        id(entry)
+        for entry, usage in normalized
+        if usage is not None and (usage[1] == 0.0 or usage[3] == 0.0) and account_counts[usage[0]] == 1
+        and usage[0] == _expiry_aware_entry_account_id(entry)
+    }
+    fallbacks = [entry for entry, _usage in observed_entries if id(entry) not in exhausted_entries]
+    return fallbacks, bool(observed_entries) and not fallbacks
+
+
+def select_expiry_aware_entry(
+    entries: Iterable[Any],
+    usage_for_entry: Callable[[Any], Optional[CodexAccountUsage]],
+    *,
+    now: Optional[float] = None,
+    stale_after_seconds: float = EXPIRY_AWARE_USAGE_STALE_AFTER_SECONDS,
+) -> Optional[Any]:
+    """Return the FEFO candidate only when every entry has trustworthy usage.
+
+    The lookup is intentionally narrow: it receives the pool entry and returns
+    an already account-bound observation. It keeps network/auth lifecycle out
+    of this selection package. ``None`` means the caller must use its normal
+    strategy. This deterministic fail-open contract covers missing, stale,
+    malformed, and conflicting account usage.
+    """
+
+    window = _expiry_aware_time_window(now, stale_after_seconds)
+    if window is None:
+        return None
+    observed_now, max_age = window
+
+    candidates: List[Tuple[float, float, str, Any]] = []
+    seen_accounts: Set[str] = set()
+    for entry in entries:
+        try:
+            usage = usage_for_entry(entry)
+        except Exception:
+            return None
+        normalized = _trusted_expiry_aware_usage(
+            usage,
+            observed_now=observed_now,
+            max_age=max_age,
+        )
+        if normalized is None:
+            return None
+        account_id, remaining, reset_at, short_remaining = normalized
+        # The probe is passed the concrete entry, not a re-selected credential.
+        # Reject a result whose declared account cannot be tied back to that
+        # entry; accepting it would let one account's quota admit another.
+        expected_account_id = _expiry_aware_entry_account_id(entry)
+        if not expected_account_id or expected_account_id != account_id:
+            return None
+        if account_id in seen_accounts or remaining <= 0.0 or short_remaining <= 0.0:
+            return None
+        seen_accounts.add(account_id)
+        entry_id = getattr(entry, "id", None)
+        if not isinstance(entry_id, str) or not entry_id or entry_id != entry_id.strip():
+            return None
+        # The documented ordering is FEFO, then retain the larger amount of
+        # usable weekly allowance, then use the persisted entry identity as a
+        # stable deterministic final tie break.  Do not use pool list position:
+        # an auth-store reorder must not change an otherwise equal admission.
+        candidates.append((reset_at, -remaining, entry_id, entry))
+
+    # FEFO: earliest weekly reset first; equal windows prefer more remaining
+    # weekly allowance, then a stable entry id.
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: candidate[:3])[3]
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
@@ -174,6 +378,9 @@ _EXTRA_KEYS = frozenset({
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
     # a billing bench to a 60s transient cooldown.
     "failure_reason",
+    # Stable, non-secret Codex account provenance.  It is required to bind a
+    # usage request and its cache entry to the precise pool credential.
+    "account_id",
 })
 
 # Nous singleton metadata mirrored between auth.json state and ``entry.extra``.
@@ -234,6 +441,14 @@ class PooledCredential:
         self.auth_type = _normalize_pool_auth_type(self.provider, self.access_token, self.auth_type)
 
     def __getattr__(self, name: str):
+        if name == "account_id" and self.provider == "openai-codex":
+            metadata = self.extra.get(name)
+            auth = _decode_jwt_claims(self.access_token).get("https://api.openai.com/auth", {})
+            claim = auth.get("chatgpt_account_id") if isinstance(auth, dict) else None
+            if metadata is not None and claim is not None and metadata != claim:
+                return None
+            value = claim if claim is not None else metadata
+            return value if isinstance(value, str) and value and value == value.strip() else None
         if name in _EXTRA_KEYS:
             return self.extra.get(name)
         raise AttributeError(f"'{type(self).__name__}' object has no attribute {name!r}")
@@ -928,6 +1143,15 @@ class CredentialPool(CredentialPoolAdminMixin):
         # providers only); set by load_pool(), consumed by add_entry().
         self._borrowed_root_ids: Set[str] = set()
         self._strategy = get_pool_strategy(provider)
+        # Deliberately unset by default: this package adds only the selection
+        # seam. A later session-admission integration owns fetching and binding
+        # account usage to pool entries.
+        self._expiry_aware_usage_lookup: Optional[
+            Callable[[PooledCredential], Optional[CodexAccountUsage]]
+        ] = None
+        # Prepared by the admission layer before selection. Values are keyed
+        # by the non-secret pool entry id; selection never invokes a probe.
+        self._expiry_aware_usage_snapshots: Dict[str, Optional[CodexAccountUsage]] = {}
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
         # design) still serializes its pool mutations; in-lock callers
@@ -947,6 +1171,11 @@ class CredentialPool(CredentialPoolAdminMixin):
         self._unmatched_rotation_streak: int = 0
 
     # ---- read accessors ---------------------------------------------------
+
+    @property
+    def strategy(self) -> str:
+        """Configured strategy, exposed without allowing session-time mutation."""
+        return self._strategy
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -993,6 +1222,34 @@ class CredentialPool(CredentialPoolAdminMixin):
     def entries(self) -> List[PooledCredential]:
         with self._lock:
             return list(self._entries)
+
+    def set_expiry_aware_usage_lookup(
+        self,
+        lookup: Optional[Callable[[PooledCredential], Optional[CodexAccountUsage]]],
+    ) -> None:
+        """Install the read-only account-usage seam for Codex admission.
+
+        Callers must return a fresh :class:`CodexAccountUsage` already bound to
+        the account represented by the entry. The pool neither fetches usage
+        nor accesses auth/config here. Invalid or absent data falls back to
+        normal fill-first behavior under ``expiry_aware``.
+        """
+
+        with self._lock:
+            self._expiry_aware_usage_lookup = lookup
+
+    def set_expiry_aware_usage_snapshots(
+        self,
+        snapshots: Dict[str, Optional[CodexAccountUsage]],
+    ) -> None:
+        """Install pre-fetched, account-bound telemetry for the next selections.
+
+        This write is deliberately separate from telemetry preparation: callers
+        perform all probes before acquiring the pool's selection lock.
+        """
+
+        with self._lock:
+            self._expiry_aware_usage_snapshots = dict(snapshots)
 
     def _is_sole_credential(self) -> bool:
         """DEAD entries never re-enter rotation, so <=1 non-DEAD entry means nothing to rotate to."""
@@ -1783,6 +2040,48 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     # ---- selection ---------------------------------------------------------
 
+    def select_exact(self, entry_id: str) -> Optional[PooledCredential]:
+        """Resolve one configured entry, refreshing only that entry if needed."""
+        if not isinstance(entry_id, str) or not entry_id:
+            return None
+
+        with self._lock:
+            entry = next((candidate for candidate in self._entries if candidate.id == entry_id), None)
+
+        if entry is None:
+            return None
+
+        # ``id`` and the provider-issued account id are stable, non-secret
+        # provenance. Do not compare a credential token to decide whether a
+        # concurrent refresh/reload changed the selected account.
+        entry_account_id = entry.account_id
+
+        if self._entry_needs_refresh(entry):
+            refreshed = self._refresh_entry(entry, force=False)
+            if refreshed is None:
+                return None
+            refreshed_account_id = refreshed.account_id
+            if refreshed.id != entry_id or refreshed_account_id != entry_account_id:
+                return None
+
+        with self._lock:
+            entry = next((candidate for candidate in self._entries if candidate.id == entry_id), None)
+            if entry is None or entry.account_id != entry_account_id:
+                return None
+            # ``select_exact`` must not bypass the pool's eligibility gate.
+            # A caller requesting an id may race a failure update, but may not
+            # receive an exhausted/dead entry after that update.
+            if entry.last_status == STATUS_DEAD:
+                return None
+            if entry.last_status == STATUS_EXHAUSTED:
+                until = _exhausted_until(entry, sole_credential=self._is_sole_credential())
+                if until is None or until > time.time():
+                    return None
+                entry = replace(entry, **_CLEAR_STATUS)
+            if entry.auth_type == AUTH_TYPE_OAUTH and not (entry.access_token or "").strip():
+                return None
+            return entry
+
     def select(self) -> Optional[PooledCredential]:
         entry, pending_refresh = self._select_under_lock()
         if pending_refresh:
@@ -1935,6 +2234,38 @@ class CredentialPool(CredentialPoolAdminMixin):
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
+        elif self._strategy == STRATEGY_EXPIRY_AWARE:
+            entry = None
+            if self.provider == "openai-codex" and self._expiry_aware_usage_snapshots:
+                # Telemetry was prepared before this selection acquired the
+                # pool lock. FEFO and fallback reason about one immutable map.
+                selection_now = time.time()
+                observations = [
+                    (candidate, self._expiry_aware_usage_snapshots.get(candidate.id))
+                    for candidate in available
+                ]
+                usage_by_entry = {id(candidate): usage for candidate, usage in observations}
+                entry = select_expiry_aware_entry(
+                    available,
+                    lambda candidate: usage_by_entry.get(id(candidate)),
+                    now=selection_now,
+                )
+                if entry is None:
+                    fallbacks, all_trusted_exhausted = _expiry_aware_fallback_entries(
+                        observations,
+                        now=selection_now,
+                    )
+                    if fallbacks:
+                        entry = fallbacks[0]
+                    elif all_trusted_exhausted:
+                        self._current_id = None
+                        self._log_no_available_entries()
+                        return None, pending_refresh
+            # Unknown, stale, malformed, and conflicting usage retains the
+            # deterministic fill-first fallback; only trusted exhaustion is
+            # excluded from it.
+            if entry is None:
+                entry = available[0]
         else:
             entry = available[0]
         # Count the selection under every strategy. The counter is ``least_used``'s

@@ -1318,6 +1318,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'vault.save_login.request':
+        patchOverlayState({
+          vaultSaveLogin: {
+            origin: ev.payload.origin,
+            requestId: ev.payload.request_id,
+            site: ev.payload.site
+          }
+        })
+        setStatus(`save login for ${ev.payload.site}`)
+        ringPromptBell()
+
+        return
+
+      case 'vault.save_login.expire':
+        patchOverlayState(prev =>
+          prev.vaultSaveLogin?.requestId === ev.payload.request_id ? { ...prev, vaultSaveLogin: null } : prev
+        )
+
+        return
+
       case 'vault.unlock.request':
         patchOverlayState({
           vaultUnlock: {

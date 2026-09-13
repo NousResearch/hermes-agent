@@ -65,6 +65,7 @@ import { useConfigSync } from './useConfigSync.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
+import { submitVaultSaveLogin } from './vaultSaveLogin.js'
 import { useSubmission } from './useSubmission.js'
 
 const BRACKET_PASTE_ON = '\x1b[?2004h'
@@ -1070,6 +1071,24 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
+  const answerVaultSaveLogin = useCallback(
+    (identifier: string, password: string) => {
+      if (!overlay.vaultSaveLogin) {
+        return
+      }
+
+      const requestId = overlay.vaultSaveLogin.requestId
+
+      return submitVaultSaveLogin(rpc, requestId, identifier, password).then(result => {
+        if (result) {
+          patchOverlayState({ vaultSaveLogin: null })
+          patchUiState({ status: 'running…' })
+        }
+      })
+    },
+    [overlay.vaultSaveLogin, rpc]
+  )
+
   const answerVaultUnlock = useCallback(
     (password: string) => {
       if (!overlay.vaultUnlock) {
@@ -1200,6 +1219,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
@@ -1224,6 +1244,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       closeLiveSession,

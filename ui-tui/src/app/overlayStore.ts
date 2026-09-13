@@ -18,6 +18,7 @@ const buildOverlayState = (): OverlayState => ({
   petPicker: false,
   pluginsHub: false,
   secret: null,
+  vaultSaveLogin: null,
   vaultUnlock: null,
   sessions: false,
   skillsHub: false,
@@ -45,6 +46,7 @@ export const $isBlocked = computed(
     skillsHub,
     subscription,
     sudo,
+    vaultSaveLogin,
     vaultUnlock,
     widget
   }) =>
@@ -64,6 +66,7 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
+      vaultSaveLogin ||
       vaultUnlock ||
       widget
     )

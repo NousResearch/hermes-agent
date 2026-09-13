@@ -1621,8 +1621,10 @@ export type {
   HermesPlugin,
   PluginContext,
   PluginContribution,
+  PluginFileDialogOptions,
   PluginNativeNotificationInput,
   PluginNotificationAction,
+  PluginOpenDialogOptions,
   PluginOs,
   PluginRestOptions,
   PluginStorage

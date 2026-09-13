@@ -3490,8 +3490,8 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
-    def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
-        """Reasoning-only responses no longer trigger compression — prefill then accepted."""
+    def test_reasoning_only_local_clean_stop_returns_immediately(self, agent):
+        """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
@@ -3505,7 +3505,6 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
-        # 6 responses: original + 2 prefill + 3 retries after prefill exhaustion
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 6),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -3517,26 +3516,18 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        # The bare "(empty)" sentinel is never delivered for reasoning-only
-        # exhaustion: the labeled reasoning excerpt (which may contain the
-        # answer) replaces it at the terminal. See
-        # test_empty_terminal_reasoning_surface.py; #34452's explainer still
-        # covers the truly-empty case.
-        assert result["final_response"] != "(empty)"
-        assert "only internal reasoning" in result["final_response"]
-        assert "reasoning only" in result["final_response"]
-        assert result["turn_exit_reason"] == "empty_response_exhausted"
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        assert result["final_response"] == "reasoning only"
+        assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+        assert result["api_calls"] == 1
 
-    def test_reasoning_only_response_prefill_then_empty(self, agent):
-        """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
+    def test_reasoning_only_response_returns_on_first_call(self, agent):
+        """Structured reasoning-only clean stops bypass the empty-response ladder."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        # 6 responses: 1 original + 2 prefill + 3 retries after prefill exhaustion
         agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
             patch.object(agent, "_persist_session"),
@@ -3545,13 +3536,8 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        # Reasoning-only exhaustion delivers the labeled reasoning excerpt
-        # instead of the bare "(empty)" sentinel (see
-        # test_empty_terminal_reasoning_surface.py).
-        assert result["final_response"] != "(empty)"
-        assert "only internal reasoning" in result["final_response"]
-        assert "structured reasoning answer" in result["final_response"]
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        assert result["final_response"] == "structured reasoning answer"
+        assert result["api_calls"] == 1
 
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):

@@ -172,6 +172,23 @@ def _strip_title_prefix(text: str) -> str:
     return text[6:].strip() if text.lower().startswith("title:") else text
 
 
+def _is_truncated_structured_output(raw: str) -> bool:
+    """Return whether *raw* is truncated structured output rather than prose.
+
+    This is called only after strict JSON parsing and the loose ``"title"``
+    scan fail. Structural signatures avoid rejecting legitimate Markdown
+    emphasis or quoted prose titles.
+    """
+    if not raw:
+        return False
+    # An odd fence count means a Markdown code block was never closed.
+    if raw.count("```") % 2:
+        return True
+    # A leading object or array after failed parsing is incomplete structured
+    # output, including unquoted-key variants the loose scan cannot extract.
+    return raw.lstrip().startswith(("{", "["))
+
+
 def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
@@ -194,8 +211,12 @@ def _extract_title_text(content: str) -> str:
     if match:
         with suppress(ValueError):
             return json.loads(f'"{match.group(1)}"').strip()
-        return match.group(1).strip()
-    # Prose fallback: scrub <think> blocks so reasoning can't leak into a title.
+    # A low output-token cap can cut structured output before the closing
+    # quote, brace, or fence. Do not persist that fragment as a title.
+    if _is_truncated_structured_output(raw):
+        return ""
+    # Prose fallback. Reuse the canonical scrubber so reasoning-model output
+    # (</think>…) can't leak into a title, then keep the first real line.
     try:
         from agent.agent_runtime_helpers import strip_think_blocks
         raw = strip_think_blocks(None, raw).strip()

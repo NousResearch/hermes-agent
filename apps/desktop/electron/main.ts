@@ -357,6 +357,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { createRosterRefreshThrottle } from './roster-refresh-throttle'
 import { fetchRosterSourceData } from './roster-source-fetch'
 import {
   classifyStoredSecret,
@@ -15812,28 +15813,50 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
   )
 }
 
-ipcMain.handle('hermes:agents:roster', async () => {
-  const registry = readDesktopConnectionsRegistry()
-  const enumerations = await enumerateRegistryAgentSources(registry)
+// One throttle for the roster IPC below: the roster is a single global
+// snapshot, so its window/backoff state is global too. A clean pass resets it;
+// a refused/unreachable source doubles the wait up to a minute.
+const rosterRefreshThrottle = createRosterRefreshThrottle()
 
-  return {
-    agents: buildAgentRoster(enumerations, { primaryConnectionId: registry.primary }),
-    // The active gateway owns the renderer's profiles.list — union agents
-    // that report THIS connection are the same identities, not extra rows.
-    // Expose the primary id so the plugin merger can annotate them in place
-    // instead of appending duplicates (remote-only desktops doubled every
-    // bot otherwise; see #88344).
-    primaryConnectionId: registry.primary,
-    sources: enumerations.map(({ connection, error, installId, profiles }) => ({
-      connectionId: connection.id,
-      label: connection.label,
-      kind: connection.kind,
-      reachable: profiles !== null,
-      ...(installId ? { installId } : {}),
-      ...(error ? { error } : {})
-    }))
-  }
-})
+ipcMain.handle('hermes:agents:roster', () =>
+  // Bounded/coalesced refresh (#104227): several surfaces fetch this roster —
+  // the sidebar on mount/focus/registry change, the skills pane, and every
+  // profile-routed SDK call — and each pass enumerates EVERY registered
+  // source; for a not-yet-pooled source that dials or spawns a backend. When
+  // the pool cap refuses the spawn (after the coordinator's 30s slot wait) the
+  // roster stays "incomplete", so the sidebar store's 5s retry window keeps
+  // asking and every fetch re-attempts the refused spawn: refresh → refused
+  // spawn → refresh. The throttle collapses concurrent callers onto one
+  // enumeration and makes a pass that came back with a real source error wait
+  // longer before the next.
+  rosterRefreshThrottle.run(
+    async () => {
+      const registry = readDesktopConnectionsRegistry()
+      const enumerations = await enumerateRegistryAgentSources(registry)
+
+      return {
+        agents: buildAgentRoster(enumerations, { primaryConnectionId: registry.primary }),
+        // The active gateway owns the renderer's profiles.list — union agents
+        // that report THIS connection are the same identities, not extra rows.
+        // Expose the primary id so the plugin merger can annotate them in place
+        // instead of appending duplicates (remote-only desktops doubled every
+        // bot otherwise; see #88344).
+        primaryConnectionId: registry.primary,
+        sources: enumerations.map(({ connection, error, installId, profiles }) => ({
+          connectionId: connection.id,
+          label: connection.label,
+          kind: connection.kind,
+          reachable: profiles !== null,
+          ...(installId ? { installId } : {}),
+          ...(error ? { error } : {})
+        }))
+      }
+    },
+    // `connect-on-demand` is a deliberate skip (an un-dialed SSH source), not a
+    // failure — only a real dial/spawn refusal backs the refresh off.
+    payload => payload.sources.some(source => Boolean(source.error) && source.error !== 'connect-on-demand')
+  )
+)
 
 // Registry-scoped fresh WS URL: the (connectionId, profile) analogue of
 // hermes:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.

@@ -56,12 +56,18 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  // Windows drive letters (e.g. D:) are parsed as URL schemes by new URL(),
+  // causing 'D:/Users/test/文件.json' to fail. Detect and handle them first.
+  if (/^[a-z]:[\\\/]/i.test(path)) {
+    return path.split(/[\\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
 
     return url.pathname.split('/').filter(Boolean).pop() || path
   } catch {
-    return path.split(/[\\/]/).filter(Boolean).pop() || path
+    return path.split(/[\\\/]/).filter(Boolean).pop() || path
   }
 }
 

@@ -203,6 +203,12 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'compression_recovery_deadline', 'compression_ineffective_count'),
         )),
         ('26 2026-09-02T14:22Z 8e4366d358', (('+', 'tool_names', 'last_read_at'),)),
+        ('27 2026-09-13T00:00Z project-affinity', (
+            ('+', 'project_id', 'git_metadata_generation'),
+            ('+', 'project_root', 'project_id'),
+            ('+', 'project_affinity_generation', 'project_root'),
+            ('+', 'project_context_hash', 'project_affinity_generation'),
+        )),
         ),
     ),
     "messages": _TableHistory(

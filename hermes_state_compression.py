@@ -209,13 +209,16 @@ class SessionCompressionMixin:
                    id, source, model, model_config, system_prompt,
                    system_prompt_hash,
                    parent_session_id, cwd, git_branch, git_repo_root,
+                   project_id, project_root, project_affinity_generation, project_context_hash,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, started_at
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
+                parent["project_id"], parent["project_root"], parent["project_affinity_generation"],
+                parent["project_context_hash"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
                 parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
@@ -257,6 +260,7 @@ class SessionCompressionMixin:
                     f"Compression lease lost before publication: {parent_session_id}")
             parent = conn.execute(
                 """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
+                          project_id, project_root, project_affinity_generation, project_context_hash,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name
                    FROM sessions WHERE id = ?""",

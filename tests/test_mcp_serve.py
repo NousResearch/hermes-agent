@@ -1408,7 +1408,8 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        bumped_mtime = bridge._state_db_mtime + 2
+        os.utime(db_path, (bumped_mtime, bumped_mtime))  # deterministic across coarse filesystems
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1

@@ -116,9 +116,10 @@ class _ScriptedWebSocket(_FakeWebSocket):
     a clean close.
     """
 
-    def __init__(self, anext_behavior):
+    def __init__(self, anext_behavior, pong_ok=False):
         super().__init__()
         self._anext_behavior = anext_behavior
+        self.pong_ok = pong_ok
         self.exited = False
 
     async def __aenter__(self):
@@ -133,6 +134,19 @@ class _ScriptedWebSocket(_FakeWebSocket):
     async def __anext__(self):
         return await self._anext_behavior()
 
+    async def ping(self, data=None):
+        """NIP-42 relays answer RFC 6455 control pings via the transport; script both outcomes.
+
+        Mirrors the real Connection.ping() contract: returns promptly with an
+        awaitable; the awaitable resolves with the latency on pong, or never
+        when the relay is dead.
+        """
+        if self.pong_ok:
+            fut = asyncio.get_running_loop().create_future()
+            fut.set_result(0.0)
+            return fut
+        return asyncio.get_running_loop().create_future()  # never resolves: the pong never comes
+
 
 @pytest.mark.asyncio
 async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, caplog):
@@ -146,6 +160,7 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
 
     adapter = _make_adapter()
     monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+    monkeypatch.setattr(_buzz_mod, "_WS_IDLE_PROBE_TIMEOUT", 0.05)  # dead relay: probe must fail fast too
     caplog.set_level(logging.WARNING)
 
     sockets = []
@@ -177,6 +192,100 @@ async def test_websocket_loop_reconnects_when_read_goes_silent(monkeypatch, capl
     assert len(sockets) >= 2, "idle read watchdog did not force a reconnect"
     assert sockets[0].exited, "the silent connection was not closed before reconnecting"
     assert any("went silent" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_reconnects_when_idle_ping_gets_no_pong(monkeypatch, caplog):
+    """Idle read + failed liveness probe must reconnect (the repaired #98097 cover).
+
+    A truly dead relay yields no app frames AND no pong, so the watchdog must
+    still take the reconnect path after probing — the probe narrows the
+    #98097 cover, it does not remove it.
+    """
+    import logging
+
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+    monkeypatch.setattr(_buzz_mod, "_WS_IDLE_PROBE_TIMEOUT", 0.05)
+    caplog.set_level(logging.WARNING)
+
+    sockets = []
+
+    async def dead_anext():
+        await asyncio.Event().wait()  # never yields, never raises
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(dead_anext, pong_ok=False)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(sockets) < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+    finally:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert len(sockets) >= 2, "idle watchdog with a dead relay (no pong) did not force a reconnect"
+    assert sockets[0].exited, "the dead connection was not closed before reconnecting"
+    assert any("went silent" in record.message for record in caplog.records)
+    assert any("no pong" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_websocket_loop_survives_idle_when_relay_answers_ping(monkeypatch):
+    """A healthy-but-quiet relay (no app frames, pongs fine) must NOT be reconnected.
+
+    The herc flap (2026-09-10): the relay answered transport pings the whole
+    time, yet the 300s idle guard killed the healthy connection every 5
+    minutes. The liveness probe must distinguish this case and keep reading.
+    """
+    adapter = _make_adapter()
+    monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
+
+    sockets = []
+    probes = []
+
+    async def quiet_anext():
+        await asyncio.Event().wait()  # relay is healthy but sends nothing
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(quiet_anext, pong_ok=True)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    orig_ping = _ScriptedWebSocket.ping
+
+    async def counting_ping(self, data=None):
+        probes.append(time.monotonic())
+        return await orig_ping(self, data)
+
+    monkeypatch.setattr(_ScriptedWebSocket, "ping", counting_ping)
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        await asyncio.sleep(0.4)  # several idle cycles' worth of time
+    finally:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert len(sockets) == 1, "healthy-but-quiet relay was reconnected"
+    assert len(probes) >= 2, "liveness probe was not repeated on successive idle reads"
 
 
 @pytest.mark.asyncio

@@ -278,12 +278,16 @@ def _fleet_row(
 _NOT_EXPECTED_STATES = {"stopped", "startup_failed"}
 
 
-def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> list[dict[str, Any]]:
+def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> Optional[list[dict[str, Any]]]:
     """Snapshot every profile's gateway code identity vs. the current tree.
 
     Rollout safety: ``down`` requires membership in ``pre_restart_pids`` — a stale state file from a
     long-dead gateway (machine reboot, manual kill weeks ago) must NOT fail every future update.
     Without a pre-restart snapshot (``None``/empty) dead PIDs are skipped (historical behavior).
+
+    Returns ``None`` when the sweep is INCOMPLETE (a profile probe raised, or setup failed):
+    callers must treat ``None`` as "evidence unavailable", never as "no gateways found".
+    A clean sweep returns ``[]`` (completed, nothing found) or the row list.
 
     ``stale``   — gateway stamped a code_sha that differs from the updated checkout's HEAD (it is still
     serving pre-update modules). ``unknown`` — gateway predates the code-identity stamp (started before this
@@ -296,41 +300,56 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
     _pre_restart = {int(p) for p in (pre_restart_pids or []) if isinstance(p, int)}
     results: list[dict[str, Any]] = []
     expected_sha = _code_identity(refresh=True).get("sha")
+    aborted = False
     try:
         from gateway.status import read_runtime_status, runtime_status_pid_is_live
 
         for profile, home in _profile_homes():
-            sock = _socket_identity(home)
-            if sock is not None:
-                pid, identity = sock
-                row = _fleet_row(profile, pid, identity.get("code_sha"), identity.get("code_version"), expected_sha)
-                results.append({**row, "source": "socket"})
-                continue
-            record = read_runtime_status(home / "gateway_state.json")
-            if not record:
-                continue
+            # Per-profile isolation: one broken profile must not abort the sweep into a
+            # silent partial result that callers could mistake for a complete snapshot.
             try:
-                pid = int(record.get("pid"))
-            except (TypeError, ValueError):
-                continue
-            if runtime_status_pid_is_live(record):
-                results.append(
-                    _fleet_row(profile, pid, record.get("code_sha"), record.get("code_version"), expected_sha)
-                )
-                continue
-            # Dead PID (or a live PID recycled by an unrelated process during the update's own
-            # churn): a DOWN row only when this exact pid was alive at update start AND the record
-            # still claims a running state — "the restart phase stopped it and nothing came back."
-            # Everything else (clean stop, startup failure, long-dead stale record) keeps the no-row
-            # behavior so the rollout can't false-positive. ``_pre_restart`` is a bare PID set, not
-            # (pid, start_time) pairs, so a recycled PID from gateway A landing in B's stale record
-            # could still mislabel B as down — inherent to the snapshot's data model.
-            # See #93258.
-            gw_state = record.get("gateway_state")
-            if pid in _pre_restart and isinstance(gw_state, str) and gw_state and gw_state not in _NOT_EXPECTED_STATES:
-                results.append(_fleet_row(profile, pid, None, record.get("code_version"), None, state="down"))
+                sock = _socket_identity(home)
+                if sock is not None:
+                    pid, identity = sock
+                    row = _fleet_row(profile, pid, identity.get("code_sha"), identity.get("code_version"), expected_sha)
+                    results.append({**row, "source": "socket"})
+                    continue
+                record = read_runtime_status(home / "gateway_state.json")
+                if not record:
+                    continue
+                try:
+                    pid = int(record.get("pid"))
+                except (TypeError, ValueError):
+                    continue
+                if runtime_status_pid_is_live(record):
+                    results.append(
+                        _fleet_row(profile, pid, record.get("code_sha"), record.get("code_version"), expected_sha)
+                    )
+                    continue
+                # Dead PID (or a live PID recycled by an unrelated process during the update's own
+                # churn): a DOWN row only when this exact pid was alive at update start AND the record
+                # still claims a running state — "the restart phase stopped it and nothing came back."
+                # Everything else (clean stop, startup failure, long-dead stale record) keeps the no-row
+                # behavior so the rollout can't false-positive. ``_pre_restart`` is a bare PID set, not
+                # (pid, start_time) pairs, so a recycled PID from gateway A landing in B's stale record
+                # could still mislabel B as down — inherent to the snapshot's data model.
+                # See #93258.
+                gw_state = record.get("gateway_state")
+                if pid in _pre_restart and isinstance(gw_state, str) and gw_state and gw_state not in _NOT_EXPECTED_STATES:
+                    results.append(_fleet_row(profile, pid, None, record.get("code_version"), None, state="down"))
+            except Exception as exc:
+                # A failed profile read means the sweep is INCOMPLETE. Return None (not the
+                # partial rows) so fail-closed callers never treat a broken probe as a clean
+                # empty/full snapshot. See the lease-with-verification contract in
+                # hermes_cli/update_cmd_fleet.py.
+                aborted = True
+                logger.debug("Fleet version probe failed for profile %s: %s", profile, exc)
     except Exception as exc:
+        # Setup-level failure (imports, enumeration): the sweep never ran.
+        aborted = True
         logger.debug("Fleet version probe failed: %s", exc)
+    if aborted:
+        return None
     return results
 
 

@@ -791,6 +791,85 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
     assert acct.cost_usd == 0.0123
 
 
+@pytest.mark.parametrize(
+    ("requested_provider", "actual_provider", "actual_model", "rerouted"),
+    [
+        ("nous", "openai-codex", "gpt-5.6-sol", True),
+        ("anthropic", "anthropic", "claude-opus-4-8", False),
+        ("auto", "openai-codex", "gpt-5.6-sol", False),
+    ],
+)
+def test_moa_reference_route_reporting(
+    monkeypatch, requested_provider, actual_provider, actual_model, rerouted
+):
+    from agent import moa_loop
+
+    aggregator_calls = []
+    priced_routes = []
+    reference_outputs = []
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            route_info = kwargs.get("route_info")
+            if route_info is not None:
+                route_info.update(provider=actual_provider, model=actual_model)
+            return _response_with_usage()
+        aggregator_calls.append(kwargs)
+        return _response("synthesized guidance")
+
+    def fake_estimate(model, _usage, *, provider=None, base_url=None, **_kwargs):
+        priced_routes.append((provider, model, base_url))
+        return SimpleNamespace(amount_usd=0.01, status="estimated", source="table")
+
+    run_references = moa_loop._run_references_parallel
+
+    def capture_reference_outputs(*args, **kwargs):
+        outputs = run_references(*args, **kwargs)
+        reference_outputs.extend(outputs)
+        return outputs
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop, "_run_references_parallel", capture_reference_outputs
+    )
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": slot["provider"],
+            "model": slot["model"],
+            "base_url": "https://example.test/v1",
+        },
+    )
+    monkeypatch.setattr("agent.usage_pricing.estimate_usage_cost", fake_estimate)
+
+    result = moa_loop.aggregate_moa_context(
+        user_prompt="review this",
+        api_messages=[{"role": "user", "content": "review this"}],
+        reference_models=[
+            {"provider": requested_provider, "model": "anthropic/claude-opus-4.8"}
+        ],
+        aggregator={"provider": "openrouter", "model": "aggregator"},
+        degraded_reference_policy="loud",
+    )
+
+    requested = f"{requested_provider}:anthropic/claude-opus-4.8"
+    actual = f"{actual_provider}:{actual_model}"
+    label = f"{requested} -> {actual}" if rerouted else requested
+    private_prompt = aggregator_calls[0]["messages"][0]["content"]
+    assert f"Reference 1 — {label}" in private_prompt
+    assert f"References: {label}" in result
+    accounting = reference_outputs[0][2]
+    assert accounting.provider == actual_provider
+    assert accounting.model == actual_model
+    assert accounting.rerouted is rerouted
+    if rerouted:
+        assert f"Reference models rerouted: {label}" in private_prompt
+    else:
+        assert "Reference models rerouted" not in private_prompt
+    assert priced_routes == [
+        (actual_provider, actual_model, None if rerouted else "https://example.test/v1")
+    ]
 
 
 def test_canonical_usage_add():

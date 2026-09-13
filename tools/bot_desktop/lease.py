@@ -14,7 +14,6 @@ an action admitted under one lease can tell that control changed underneath it.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import threading
@@ -24,6 +23,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
+
+try:
+    import fcntl
+except ImportError:  # Windows/macOS without fcntl: computer_use imports this module on every call, and no
+    fcntl = None     # multi-process Bot Desktop exists there, so the cross-process lock degrades to a no-op.
 
 AGENT = "agent"
 HUMAN = "human"
@@ -90,14 +94,18 @@ class _locked:
         self._fh = None
 
     def __enter__(self):
+        if fcntl is None:
+            return self
         self._lockfile.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self._lockfile, "a+", encoding="utf-8")  # noqa: SIM115 — closed in __exit__
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)  # type: ignore[union-attr]
-        self._fh.close()  # type: ignore[union-attr]
+        if self._fh is None:
+            return
+        fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        self._fh.close()
 
 
 def get(profile_key: Optional[str] = None) -> Lease:

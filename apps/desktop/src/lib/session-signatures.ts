@@ -17,6 +17,7 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       other != null &&
       session.id === other.id &&
       session._lineage_root_id === other._lineage_root_id &&
+      session.spawned_by_session_id === other.spawned_by_session_id &&
       session.title === other.title &&
       session.source === other.source &&
       session.profile === other.profile &&

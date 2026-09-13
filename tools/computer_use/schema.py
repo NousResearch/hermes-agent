@@ -153,6 +153,7 @@ _PROPERTIES: Dict[str, Any] = {
         ),
     },
     "seconds": {"type": "number", "description": "wait: seconds to pause (max 30). wait_for_human: how long to block for the hand-back (default 600, max 1800)."},
+    "grace": {"type": "number", "description": "wait_for_human: seconds to wait for someone to take over before returning no_takeover (default 60); once a human holds control the full `seconds` applies."},
     "raise_window": {
         "type": "boolean",
         "description": (

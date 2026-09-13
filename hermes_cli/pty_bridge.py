@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import fcntl
+import fcntl  # windows-footgun: ok — POSIX-only module by design (see docstring)
 import os
 import select
 import signal
 import struct
 import sys
-import termios
+import termios  # windows-footgun: ok — POSIX-only module by design (see docstring)
 import time
 from typing import Optional, Sequence
 

@@ -4,6 +4,7 @@ password cache, /dev/tty prompt, the quote-aware shell scanner behind the real-s
 Split out of ``tools/terminal_tool.py``; every public/patched name is re-imported there so
 ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before."""
 
+import contextlib
 import logging
 import os
 import platform
@@ -480,22 +481,60 @@ def _nnp_sudo_unit_from_proc(proc) -> str | None:
     return None
 
 
+_NNP_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _format_nnp_env_line(key: str, value: str) -> str | None:
+    """One systemd EnvironmentFile assignment. Empty values are written so a
+    user-manager variable cannot fill an omitted key."""
+    if not isinstance(key, str) or not isinstance(value, str):
+        return None
+    if not _NNP_ENV_KEY_RE.match(key):
+        return None
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace('"', '\\"')
+    )
+    return f'{key}="{escaped}"'
+
+
 def _write_nnp_env_file(env: dict, directory: str | None = None) -> str:
-    """Owner-only systemd EnvironmentFile for the NNP sudo unit."""
+    """Owner-only systemd EnvironmentFile for the NNP sudo unit.
+
+    Lossless vs the Popen env: empty values are emitted as ``KEY=""`` so systemd
+    does not inherit a stale non-empty value from the user manager. Values are
+    double-quoted with C-style escapes so whitespace/quotes/backslashes survive
+    EnvironmentFile parsing.
+    """
     fd, path = tempfile.mkstemp(prefix="hermes-nnp-env-", suffix=".env", dir=directory)
     try:
-        os.fchmod(fd, 0o600)
-        lines: list[str] = []
-        for key, value in env.items():
-            if not isinstance(key, str) or not key or not isinstance(value, str) or not value:
-                continue
-            if "\n" in key or "\n" in value:
-                continue
-            lines.append(f"{key}={value}")
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        lines = [
+            line
+            for key, value in env.items()
+            if (line := _format_nnp_env_line(key, value)) is not None
+        ]
         os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
     finally:
         os.close(fd)
+    if hasattr(os, "chmod") and sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
     return path
+
+
+def _release_nnp_sudo_env_file(proc) -> None:
+    """Unlink the per-process EnvironmentFile exactly once (success, kill, timeout)."""
+    path = getattr(proc, "_nnp_sudo_env_file", None)
+    if not path:
+        return
+    with contextlib.suppress(AttributeError):
+        proc._nnp_sudo_env_file = None
+    with contextlib.suppress(OSError):
+        os.unlink(path)
 
 
 def _stop_nnp_sudo_unit(unit: str | None) -> None:

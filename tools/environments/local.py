@@ -864,12 +864,17 @@ class LocalEnvironment(BaseEnvironment):
             _stop_nnp_sudo_unit(unit)
             with contextlib.suppress(AttributeError):
                 proc._nnp_sudo_unit = None
-        env_file = getattr(proc, "_nnp_sudo_env_file", None)
-        if env_file:
-            with contextlib.suppress(OSError):
-                os.unlink(env_file)
-            with contextlib.suppress(AttributeError):
-                proc._nnp_sudo_env_file = None
+        from tools.terminal_tool_sudo import _release_nnp_sudo_env_file
+        _release_nnp_sudo_env_file(proc)
+
+    def _wait_for_process(self, proc, timeout: int = 120, **kwargs):
+        """Base wait, then drop the EnvironmentFile once the unit has finished."""
+        try:
+            return super()._wait_for_process(proc, timeout, **kwargs)
+        finally:
+            if proc.poll() is not None:
+                from tools.terminal_tool_sudo import _release_nnp_sudo_env_file
+                _release_nnp_sudo_env_file(proc)
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

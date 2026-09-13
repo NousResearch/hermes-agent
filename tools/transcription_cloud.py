@@ -3,8 +3,8 @@
 OpenAI-SDK-shaped backends (groq, openai, deepinfra), Mistral Voxtral, REST multipart
 backends (xAI, ElevenLabs), and OpenAI audio credential resolution (config > keyless
 local server > env > managed Nous gateway). Facade-owned state and helpers
-(``_HAS_OPENAI``, ``_resolve_provider_key``, ``_resolve_stt_language``, ``_load_stt_config``,
-``get_env_value``) are read lazily from ``tools.transcription_tools``.
+(``_HAS_OPENAI``, ``_resolve_provider_key``, ``_resolve_stt_language``, ``_load_stt_config``)
+are read lazily from ``tools.transcription_tools``.
 """
 
 from __future__ import annotations
@@ -227,7 +227,8 @@ def _transcribe_xai(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe via xAI ``POST /v1/stt`` (multipart). Supports ITN, diarization, word timestamps."""
-    from tools.transcription_tools import _load_stt_config, _resolve_stt_language, get_env_value
+    from hermes_cli.config import get_env_value
+    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
     from tools.xai_http import resolve_xai_http_credentials
     if prompt:
         _log_prompt_unsupported("STT provider 'xai'")
@@ -295,7 +296,8 @@ def _transcribe_elevenlabs(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using ElevenLabs Scribe STT API."""
-    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language, get_env_value
+    from hermes_cli.config import get_env_value
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
     if prompt:
         _log_prompt_unsupported("STT provider 'elevenlabs'")
     api_key = _resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")

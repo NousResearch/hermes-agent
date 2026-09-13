@@ -43,23 +43,10 @@ from tools.transcription_command import (
 logger = logging.getLogger(__name__)
 
 
-def get_env_value(name, default=None):
-    """Read env values through the live config module (resolved per call: tests monkeypatch it around import)."""
-    try:
-        from hermes_cli.config import get_env_value as _get_env_value
-    except ImportError:
-        return os.getenv(name, default)
-    value = _get_env_value(name)
-    return default if value is None else value
-
-
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     """STT API key via the shared voice-key resolver (config > env/.env > credential pool); resolved per call."""
-    try:
-        from tools.tool_backend_helpers import resolve_provider_secret
-    except ImportError:  # pragma: no cover — helpers are in-repo
-        return str(get_env_value(env_var) or "").strip()
-    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+    from tools.tool_backend_helpers import resolve_provider_secret
+    return resolve_provider_secret(env_var, provider_id)
 
 
 def _safe_find_spec(module_name: str) -> bool:

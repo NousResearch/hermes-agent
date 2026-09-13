@@ -109,12 +109,8 @@ def _xai_credentials_present() -> bool:
         return True
     except Exception:
         pass
-    try:
-        from tools.xai_http import get_env_value as _xai_get_env_value
-        if str(_xai_get_env_value("XAI_API_KEY") or "").strip():
-            return True
-    except Exception:
-        pass
+    if str(get_env_value("XAI_API_KEY") or "").strip():
+        return True
     try:
         from agent.secret_scope import get_secret
     except ImportError:  # pragma: no cover — secret_scope is in-repo

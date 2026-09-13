@@ -959,15 +959,22 @@ def _await_resume_history(sid: str, current: dict) -> bool:
         return _sessions.get(sid) is current
 
 
-def _attach_built_agent(current: dict, agent) -> None:
-    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation())."""
+def _attach_built_agent(sid: str, current: dict, agent) -> bool:
+    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
+    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
+    nothing, so the caller owns closing the orphan (#49852)."""
     # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
-    current["agent"] = agent
+    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
+    with _sessions_lock:
+        if _sessions.get(sid) is not current:
+            return False
+        current["agent"] = agent
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
+    return True
 
 
 def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
@@ -989,8 +996,8 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
     """Release build scopes and settle ownership of the late notify registration + dedicated db handle."""
     if scopes is not None:
         _release_build_profile_scopes(scopes)
-    # Reaped mid-build: _attach_worker closed the worker; only a late notify registration can still
-    # leak (session.close unregistered before _build registered).
+    # Reaped after the agent was attached: _attach_worker closed the worker; only a late notify
+    # registration can still leak (session.close unregistered before _build registered).
     with _sessions_lock:
         replaced = _sessions.get(sid) is not current
     if replaced and notify_registered:
@@ -1049,7 +1056,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
-            _attach_built_agent(current, agent)
+            # Attach atomically against session teardown: ``session.close`` may have popped this
+            # session while the expensive build was in flight, in which case teardown could not close
+            # an agent that did not exist yet. Release the orphan immediately and do not keep wiring
+            # workers/callbacks for a dead session (#49852).
+            if not _attach_built_agent(sid, current, agent):
+                with contextlib.suppress(Exception):
+                    if hasattr(agent, "close"):
+                        agent.close()
+                return
             # No eager slash-worker pre-warm (slash.exec spawns on demand): each worker forks the full stdio
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
             notify_registered = _wire_session_agent(sid, key, agent)

@@ -1250,6 +1250,69 @@ def test_usage_ticker_emits_wrapped_usage_payload(monkeypatch):
     assert payload == {"usage": {"input": 1200, "total": 2400}}
 
 
+def test_usage_ticker_emits_tool_result_growth_from_real_get_usage(monkeypatch):
+    """A tool append moves occupancy even before provider counters advance."""
+    from agent.usage_anchor import capture_usage_anchor
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append(payload)
+    )
+    messages = [{"role": "user", "content": "start"}]
+    turn_base = capture_usage_anchor(1_000, 20, messages)
+    assert turn_base is not None
+    messages.append({"role": "assistant", "content": "first tool call"})
+    messages.append({"role": "tool", "tool_call_id": "call-0", "content": "first result"})
+    messages.append({
+        "role": "assistant",
+        "content": "second tool call",
+        "reasoning_content": "stale deliberation " * 10_000,
+    })
+    messages.append({"role": "tool", "tool_call_id": "call-1", "content": "second result"})
+    messages.append({"role": "assistant", "content": "calling final tool"})
+    agent = types.SimpleNamespace(
+        model="fixture",
+        session_input_tokens=50_000,
+        session_output_tokens=200,
+        session_prompt_tokens=50_000,
+        session_completion_tokens=200,
+        session_total_tokens=50_200,
+        session_api_calls=1,
+        _session_messages=messages,
+        _turn_base_usage_anchor=turn_base,
+        _usage_anchor=capture_usage_anchor(40_000, 100, messages),
+        context_compressor=types.SimpleNamespace(
+            context_length=100_000,
+            last_prompt_tokens=40_000,
+            last_real_prompt_tokens=40_000,
+            compression_count=0,
+        ),
+    )
+    baseline = server._get_usage(agent)
+    assert baseline["context_used"] < 2_000  # old assistant thinking is excluded
+    assert baseline["context_source"] == "provider_usage_plus_estimate"
+    assert baseline["context_estimated"] is True
+
+    stop, thread = server._start_usage_ticker("sess-1", agent, interval=0.01)
+    messages.append({"role": "tool", "tool_call_id": "call-2", "content": "tool result " * 80})
+    try:
+        deadline = time.time() + 1.0
+        while not events and time.time() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+
+    assert events, "real _get_usage ticker missed transcript-only growth"
+    usage = events[0]["usage"]
+    assert usage["input"] == baseline["input"] == 50_000
+    assert usage["total"] == baseline["total"] == 50_200
+    assert usage["context_used"] > baseline["context_used"]
+    assert usage["context_used"] < 2_000  # stale assistant thinking is not re-charged
+    assert usage["context_source"] == "provider_usage_plus_estimate"
+    assert usage["context_estimated"] is True
+
+
 def test_usage_ticker_skips_unchanged_snapshots(monkeypatch):
     # A single long API call leaves the token counters frozen for many
     # intervals; the ticker must emit nothing at all (the client already has

@@ -3324,7 +3324,7 @@ class BasePlatformAdapter(ABC):
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
         result = await _send(content)
-        if result.success:
+        if result.success or self._send_retry_is_final(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: it should back off
@@ -3370,6 +3370,8 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
+                if self._send_retry_is_final(result):
+                    return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
                 # The failure kind can change between attempts (a transient error may
@@ -3413,10 +3415,23 @@ class BasePlatformAdapter(ABC):
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
-        fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
+        fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
+
+    def _send_retry_is_final(self, result: "SendResult") -> bool:
+        """True when a failed send must be returned as-is: neither a retry nor the plain-text
+        fallback can fix it (a structured auth/target refusal). Default: never."""
+        return False
+
+    async def _send_plain_fallback(
+            self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> "SendResult":
+        """Last-resort send after a non-transient failure; platforms whose markup is not the
+        likely culprit override it (Photon drops rich links instead of adding the banner)."""
+        return await self.send(
+            chat_id=chat_id, content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            reply_to=reply_to, metadata=metadata)
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:

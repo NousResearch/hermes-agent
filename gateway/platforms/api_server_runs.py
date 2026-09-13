@@ -13,9 +13,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     from aiohttp import web
-    from aiohttp.web_request import RequestKey
 except ImportError:
     web = None  # type: ignore[assignment]
+try:
+    from aiohttp.web_request import RequestKey
+except ImportError:
+    # Separate block: aiohttp < 3.14 lacks RequestKey, and a shared except
+    # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
@@ -318,10 +322,16 @@ class _RunLaunch:
     declared_selected: bool
     user_message: str
     conversation_history: List[Dict[str, str]]
+    # #98619: only continuation paths that reload session history may grant wake authority —
+    # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
+    # caller-supplied conversation_history is authoritative for the turn; neither consumes a
+    # SessionDB delivery row, so both stay default-denied.
+    session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
 
     @property
     def approval_session_key(self) -> str:
@@ -349,6 +359,23 @@ def _retire_live_run(self, run_id: str) -> None:
 
 def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(self, run_id, self._run_streams, self._run_streams_created)
+
+
+async def _resolve_live_session_id(self, session_id: str) -> str:
+    """Adopt the live compression-continuation tip for a client-addressed session (#98619):
+    a /v1/runs run bound to a pre-rotation id would otherwise load a stale history slice and
+    write its turn into the closed parent (CompressionSessionClosedError). Same canonical
+    resolution ``/api/sessions/{id}/messages`` reads use; fails open to the original id."""
+    db = await self._ensure_session_db_async()
+    resolver = getattr(db, "resolve_resume_session_id", None) if db is not None else None
+    if not callable(resolver):
+        return session_id
+    try:
+        resolved = await asyncio.to_thread(resolver, session_id)
+        return str(resolved) if resolved else session_id
+    except Exception:
+        logger.debug("/v1/runs live-session resolve failed for %s", session_id, exc_info=True)
+        return session_id
 
 
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
@@ -390,6 +417,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
     if not user_message:
         return _json_error(_openai_error, "No user message found in input", status=400)
+    try:
+        turn_author = _api_server._request_turn_author(body)
+    except ValueError as exc:
+        return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
     conversation_history, instructions, stored_session_id, history_err = (
         _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
     if history_err is not None:
@@ -416,15 +447,31 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     limited = self._concurrency_limited_response()
     if limited is not None:
         return limited
-    if not conversation_history and session_id and not previous_response_id:
-        conversation_history = await self._conversation_history_for_session(str(session_id))
     run_id = f"run_{uuid.uuid4().hex}"
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
     # An explicit or chained session owns its routing key and is never rebound to the header.
     _declared_selected = not session_id and bool(gateway_session_key)
-    session_id = session_id or self._declared_conversation_session(gateway_session_key) or run_id
+    selected_session_id = session_id or (
+        self._declared_conversation_session(gateway_session_key) if _declared_selected else None)
+    # A client-addressed id from before a compression rotation must adopt the live tip (#98619):
+    # history loads from it, the turn writes to it, and a detached delivery row persisted to it
+    # is what the next same-id run consumes below.
+    if selected_session_id:
+        selected_session_id = await _resolve_live_session_id(self, str(selected_session_id))
+    session_id = selected_session_id or run_id
+    # History loads for the session the request actually selected — including one resolved from
+    # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next
+    # same-key run's context (#98619).  previous_response_id continuations keep their
+    # ResponseStore snapshot as history (they cannot consume a SessionDB delivery row and are
+    # accordingly denied wake capability in _run_agent_sync); the fresh run_id fallback has
+    # nothing persisted to load yet.  Wake authority is fixed here, before the load can
+    # overwrite ``conversation_history``: a caller-supplied history is authoritative for this
+    # turn, never consumes the SessionDB delivery row, and is denied on the same contract.
+    session_history_delivery = not previous_response_id and not conversation_history
+    if not conversation_history and selected_session_id and not previous_response_id:
+        conversation_history = await self._conversation_history_for_session(str(selected_session_id))
     q = self._run_streams[run_id] = asyncio.Queue()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
@@ -443,14 +490,15 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history,
+        conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        turn_author=turn_author)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -485,8 +533,19 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
+                profile=run.request_profile or "",
                 browser_control_principal=run.browser_control_principal,
-                browser_control_transport_family=run.browser_control_transport_family)
+                browser_control_transport_family=run.browser_control_transport_family,
+                # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
+                # own continuation path reloads session history — an explicit body/chained
+                # session id or a declared X-Hermes-Session-Key conversation (both load
+                # SessionDB in _handle_runs), or the run_id fallback the client can post back
+                # as body.session_id.  A previous_response_id continuation consumes its
+                # ResponseStore snapshot instead and can never see a SessionDB delivery row,
+                # so it stays default-denied until a merge contract exists for that chain;
+                # likewise a caller-supplied conversation_history is authoritative for the
+                # turn and never reads the delivery row, so it is denied the same way.
+                session_history_delivery="1" if run.session_history_delivery else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
             if run.agent_kwargs["room_dispatch"] is not None:
@@ -496,9 +555,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # /v1/runs owns its agent lifecycle (no TurnRunner): record process ownership
             # so stop/cancel reaps only the background processes this run created.
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
+            # Passed only when set: a human turn keeps today's call shape.
+            author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id)
+                task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)

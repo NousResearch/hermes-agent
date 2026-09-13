@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from hermes_cli.timefmt import coerce_epoch
+
 _DURATION_RE = re.compile(
     r"^(\d+(?:\.\d+)?)\s*"
     r"(s|sec|secs|second|seconds|"
@@ -51,8 +53,8 @@ def parse_point_in_time(value: str, flag: str) -> float:
 
 
 def format_epoch(ts: Optional[float]) -> str:
-    """Render an epoch timestamp as a short local-time string."""
-    return "-" if ts is None else datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+    """Render an epoch timestamp as a short local-time string; ``-`` when unset or corrupt."""
+    return "-" if (ts := coerce_epoch(ts)) is None else datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 # (filter key, argparse attr, CLI flag, description template) for the four epoch bounds.

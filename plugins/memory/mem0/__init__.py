@@ -12,7 +12,6 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import os
 import threading
 import time
 from contextlib import suppress
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -32,6 +31,39 @@ _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # Placeholder user_id. initialize() treats it as "no operator-configured user_id"
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
 _DEFAULT_USER_ID = "hermes-user"
+
+# sync_turn sends the whole turn to the backend for fact extraction. OSS embedding
+# models often have small context windows (bge-small-zh-v1.5: 512 tokens ≈ 500 chars;
+# jina-embeddings-v3: 8192), and oversized turns make backend.add() raise — Ollama
+# answers HTTP 500, hosted APIs return INPUT_TOKEN_LIMIT_EXCEEDED — which _try only
+# logs, silently dropping the turn's memory extraction. Cap each message up front.
+# The default fits a 512-token embedder (measured: 450 OK, 600 -> HTTP 500 on
+# bge-small-zh-v1.5:f16); ``sync_max_chars`` in mem0.json raises it for larger windows.
+_SYNC_MSG_MAX_CHARS = 450
+
+
+# Sentence ends recognized when trimming a synced message. Deliberately unordered:
+# the LAST boundary of ANY kind wins, so one CJK stop early in a mixed-script turn
+# cannot outrank a Latin stop near the end of the window. ``".\n"`` is not listed —
+# its index can never exceed the bare ``"."`` it starts with.
+_SYNC_SENTENCE_ENDS = ("。", "！", "？", ".", "!", "?")
+
+
+def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
+    """Cap a synced message at its last sentence boundary within ``max_len``.
+
+    Short messages pass through unchanged; long ones keep the last complete
+    sentence inside the window so fact extraction still sees coherent statements,
+    with a hard cut as fallback when no boundary exists (or one only appears in
+    the first third of the window, which usually means unsegmented input).
+    """
+    if len(text) <= max_len:
+        return text
+    window = text[:max_len]
+    cut = max(window.rfind(sep) for sep in _SYNC_SENTENCE_ENDS)
+    if cut > max_len // 3:
+        return text[:cut + 1]
+    return text[:max_len]
 
 
 def _is_client_error(exc: Exception) -> bool:
@@ -48,16 +80,36 @@ def _read_mem0_json(config_path: Path) -> dict:
     return {}
 
 
+def _scoped_env(name: str) -> str:
+    """Profile-scoped read of a non-secret mem0 setting; no scope under multiplex = unset (never
+    ``os.environ``). Only the API key may fail closed — OSS mode has none to read (#99121)."""
+    try:
+        return get_secret(name, "") or ""
+    except UnscopedSecretError:
+        return ""
+
+
 def _load_config() -> dict:
     """Env vars provide defaults; $HERMES_HOME/mem0.json overrides individual keys.
     Layering avoids a silent failure when the JSON file exists but lacks fields
     like ``api_key`` that the user set in ``.env``."""
     from hermes_constants import get_hermes_home
-    config = {"mode": os.environ.get("MEM0_MODE", "platform"), "api_key": get_secret("MEM0_API_KEY", ""), "host": os.environ.get("MEM0_HOST", ""), "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"), "oss": {}}
-    if os.environ.get("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
-        config["user_id"] = os.environ["MEM0_USER_ID"]
+    # Identity (user/agent id), host and mode are .env values like the key: read them through the
+    # profile scope too, or a secondary profile's memories land in the default profile's account.
+    config = {"mode": _scoped_env("MEM0_MODE") or "platform", "host": _scoped_env("MEM0_HOST"),
+              "agent_id": _scoped_env("MEM0_AGENT_ID") or "hermes", "oss": {}}
+    if user_id := _scoped_env("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
+        config["user_id"] = user_id
     file_cfg = _read_mem0_json(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+    # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
+    # backend from the local ``oss`` config and has no platform credential to resolve. Decide after
+    # mem0.json overrode the env fallback so a scope-less multiplex caller can load an OSS config
+    # without weakening fail-closed reads for credentialed modes.
+    if config.get("mode", "platform") == "oss":
+        config.setdefault("api_key", "")
+    elif not config.get("api_key"):
+        config["api_key"] = get_secret("MEM0_API_KEY", "")
     return config
 
 
@@ -91,6 +143,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = self._backend = self._sync_thread = self._prefetch_thread = None
         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
+        self._sync_max_chars = _SYNC_MSG_MAX_CHARS
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
@@ -196,6 +249,7 @@ class Mem0MemoryProvider(MemoryProvider):
         _rr = cfg.get("rerank", False)
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
+        self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -266,7 +320,10 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _sync():
             if self._backend is not None:
-                messages = [{"role": "user", "content": user_content}, {"role": "assistant", "content": assistant_content}]
+                messages = [
+                    {"role": "user", "content": _truncate_for_sync(user_content, self._sync_max_chars)},
+                    {"role": "assistant", "content": _truncate_for_sync(assistant_content, self._sync_max_chars)},
+                ]
                 self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
 
         with self._sync_lock:

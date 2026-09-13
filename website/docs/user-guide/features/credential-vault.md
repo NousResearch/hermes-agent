@@ -61,6 +61,12 @@ CLI through its non-interactive channel (`op signin` on stdin, `bw unlock
 --passwordenv` in the child's environment) and keeps only the session token in
 memory. The agent never sees the master password, the token, or any login.
 
+For a 1Password item with several website URLs, Hermes lists a separate handle
+for each distinct saved origin. Use the handle for the page you are filling;
+passwords and saved authenticator codes remain bound to that exact scheme,
+host, and port. Duplicate URLs on the same origin appear only once. Previously
+issued `op:<item-id>` handles still use the first valid saved origin.
+
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 

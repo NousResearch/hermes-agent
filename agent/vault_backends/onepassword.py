@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -105,36 +106,44 @@ class OnePasswordLoginBackend(LoginBackend):
         out: List[VaultItemMeta] = []
         for item in raw if isinstance(raw, list) else []:
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
-            origin = _first_origin(urls)
-            if not origin:
-                continue
             username = str(item.get("additional_information") or "").strip() or None
-            out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origin),
-                origin=origin, created_at=str(item.get("created_at") or ""),
-                identifier_type="username" if username else None, identifier=username))
+            for origin in _origins(urls):
+                # Bind each handle to one origin, not a URL index that can change on reorder.
+                out.append(VaultItemMeta(
+                    id=f"{self.prefix}{item.get('id')}#{origin}", kind="login", label=str(item.get("title") or origin),
+                    origin=origin, created_at=str(item.get("created_at") or ""),
+                    identifier_type="username" if username else None, identifier=username))
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
-        return next((m for m in self.list_items() if m.id == handle), None)
+        for meta in self.list_items():
+            if meta.id == handle:
+                return meta
+            # Previously issued op:<id> handles retain the first-valid-origin binding.
+            if "#" not in handle and meta.id.partition("#")[0] == handle:
+                return replace(meta, id=handle)
+        return None
 
     def resolve_password(self, handle: str) -> str:
-        item_id = handle[len(self.prefix):]
+        item_id = handle[len(self.prefix):].partition("#")[0]
         return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", handle[len(self.prefix):].partition("#")[0], "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None
 
 
-def _first_origin(urls: List[str]) -> Optional[str]:
+def _origins(urls: List[str]) -> List[str]:
+    origins = []
     for u in urls:
         try:
-            return normalize_origin(u)
+            origin = normalize_origin(u)
         except Exception:
             continue
-    return None
+        if origin not in origins:
+            origins.append(origin)
+    return origins

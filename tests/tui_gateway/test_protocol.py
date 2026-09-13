@@ -51,6 +51,82 @@ def capture(server):
     return server, buf
 
 
+def test_desktop_config_write_deny_stops_file_write(server, tmp_path, monkeypatch):
+    """A Desktop/TUI deny must reach the shared config-write gate and stop I/O."""
+    from tools import approval
+    from tools.file_tools import write_file_tool
+
+    sid = "desktop-config-write"
+    session_key = "desktop-config-write-agent"
+    target = tmp_path / "config.yaml"
+    events = []
+    result_holder = {}
+    server._sessions[sid] = {"session_key": session_key, "history": []}
+
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setattr(approval, "is_approval_bypass_active", lambda: False)
+    monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(target.resolve()))
+    monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+    monkeypatch.setattr("tools.file_tools._get_file_approval_callback", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "gateway.run",
+        types.SimpleNamespace(_redact_approval_command=lambda value: value),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, event_sid, payload=None: events.append((event, event_sid, payload)) or True,
+    )
+
+    approval.clear_session(session_key)
+    approval.unregister_gateway_notify(session_key)
+    approval.register_gateway_notify(
+        session_key, lambda data: server._emit_approval_request(sid, data)
+    )
+
+    def write_config():
+        token = approval.set_current_session_key(session_key)
+        try:
+            result_holder["result"] = write_file_tool(
+                str(target), "approvals:\n  mode: off\n"
+            )
+        finally:
+            approval.reset_current_session_key(token)
+
+    worker = threading.Thread(target=write_config, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 2
+        while not events and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert events, "Desktop/TUI did not receive the config-write approval event"
+        event, event_sid, payload = events[0]
+        assert (event, event_sid) == ("approval.request", sid)
+        assert payload["pattern_key"] == "plugin_rule:hermes_config_write"
+
+        response = server.handle_request(
+            {
+                "id": "config-deny",
+                "method": "approval.respond",
+                "params": {"session_id": sid, "choice": "deny"},
+            }
+        )
+        assert response["result"] == {"resolved": 1}
+    finally:
+        approval.resolve_gateway_approval(session_key, "deny", resolve_all=True)
+        worker.join(timeout=2)
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+    assert not worker.is_alive(), "config write did not return after Desktop/TUI denial"
+    result = json.loads(result_holder["result"])
+    assert result.get("error"), result
+    assert "denied" in result["error"].lower()
+    assert not target.exists()
+
+
 # ── JSON-RPC envelope ────────────────────────────────────────────────
 
 

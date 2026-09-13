@@ -2205,7 +2205,7 @@ class TestApprovalTimeoutIsNotConsent:
 
 class TestCheckSensitiveFileWriteGuardGateway:
     """#45563 / #45692 sweeper follow-up: check_sensitive_file_write_guard routes
-    through the shared ``_run_approval_gate`` core. The existing file_tools
+    through ``request_tool_approval``. The existing file_tools
     tests only exercise the CLI-callback path and the no-approval-surface
     block; these cover the gateway notify round trip the shared core adds —
     approve, deny, and the no-notify-callback pending fallback — so the
@@ -2252,9 +2252,13 @@ class TestCheckSensitiveFileWriteGuardGateway:
 
         result_holder = {}
         def _check():
-            result_holder["r"] = mod.check_sensitive_file_write_guard(
-                "write_file", "/home/user/.hermes/config.yaml",
-            )
+            token = mod.set_current_session_key(self.SESSION_KEY)
+            try:
+                result_holder["r"] = mod.check_sensitive_file_write_guard(
+                    "write_file", "/home/user/.hermes/config.yaml",
+                )
+            finally:
+                mod.reset_current_session_key(token)
         t = threading.Thread(target=_check)
         t.start()
         for _ in range(50):
@@ -2277,9 +2281,13 @@ class TestCheckSensitiveFileWriteGuardGateway:
 
         result_holder = {}
         def _check():
-            result_holder["r"] = mod.check_sensitive_file_write_guard(
-                "patch", "/home/user/.hermes/config.yaml",
-            )
+            token = mod.set_current_session_key(self.SESSION_KEY)
+            try:
+                result_holder["r"] = mod.check_sensitive_file_write_guard(
+                    "patch", "/home/user/.hermes/config.yaml",
+                )
+            finally:
+                mod.reset_current_session_key(token)
         t = threading.Thread(target=_check)
         t.start()
         for _ in range(50):
@@ -2305,7 +2313,7 @@ class TestCheckSensitiveFileWriteGuardGateway:
         )
         assert result["approved"] is False
         assert result.get("status") == "approval_required"
-        assert result["pattern_key"] == "modify Hermes config file"
+        assert result["pattern_key"] == "plugin_rule:hermes_config_write"
 
     def test_gateway_deny_blocks_write_file_tool_end_to_end(self, tmp_path, monkeypatch):
         """The gateway deny path must actually stop the write — not just
@@ -2325,7 +2333,13 @@ class TestCheckSensitiveFileWriteGuardGateway:
         from tools.file_tools import write_file_tool
         result_holder = {}
         def _write():
-            result_holder["r"] = write_file_tool(str(fake_config), "approvals:\n  mode: off\n")
+            token = mod.set_current_session_key(self.SESSION_KEY)
+            try:
+                result_holder["r"] = write_file_tool(
+                    str(fake_config), "approvals:\n  mode: off\n"
+                )
+            finally:
+                mod.reset_current_session_key(token)
         t = threading.Thread(target=_write)
         t.start()
         for _ in range(50):

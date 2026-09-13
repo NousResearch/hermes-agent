@@ -2303,6 +2303,7 @@ def request_tool_approval(
     reason: str,
     *,
     rule_key: str = "",
+    display_target: str = "",
     approval_callback=None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
@@ -2329,6 +2330,9 @@ def request_tool_approval(
             on the same tool persist independently (answering ``[a]lways`` to
             "write to ~/.ssh" does NOT auto-approve a later "send email" rule
             on the same tool).
+        display_target: Optional human-facing target for the approval prompt.
+            When omitted, a synthetic tool label is used. This affects display
+            only; approval persistence always uses ``rule_key``.
         approval_callback: Optional CLI callback for interactive prompts
             (same contract as ``check_dangerous_command``).
 
@@ -2357,9 +2361,11 @@ def request_tool_approval(
     # session/permanent allowlist machinery as command patterns, namespaced
     # to avoid ever colliding with a real command pattern key.
     pattern_key = f"plugin_rule:{key_suffix}"
-    # A synthetic "command" string for the display/allowlist layer. It never
-    # executes; it only labels the gate. Namespaced identically.
-    display_target = f"<{tool_name}> (plugin approval rule)"
+    # A synthetic "command" string for the display layer. It never executes;
+    # it only labels the gate. Callers with a useful concrete target may supply
+    # one without changing the namespaced allowlist key above.
+    if not display_target:
+        display_target = f"<{tool_name}> (plugin approval rule)"
 
     return _run_approval_gate(
         pattern_key=pattern_key,
@@ -2952,60 +2958,32 @@ def check_all_command_guards(command: str, env_type: str,
 
 def check_sensitive_file_write_guard(tool_name: str, filepath: str,
                                      approval_callback=None) -> dict:
-    """Approve a file-tool write to a security-sensitive Hermes file.
+    """Route a config-file write through the shared tool approval gate.
 
-    The terminal guard has command-pattern detection for shell edits of
-    ``~/.hermes/config.yaml``. File tools bypass shell strings, so they need an
-    explicit approval request for the same security boundary instead of a hard
-    refusal. Routes the actual decision through ``_run_approval_gate`` — the
-    same core ``check_dangerous_command``/``request_tool_approval`` share —
-    instead of re-deriving session/permanent allowlist, cron_mode, and
-    CLI/gateway dispatch here; a third parallel implementation of that gate is
-    exactly the drift the shared core exists to prevent. ``request_tool_approval``
-    itself isn't reused directly because its synthetic ``<tool> (plugin
-    approval rule)`` display is built for tool-agnostic plugin escalations —
-    here the concrete ``tool_name filepath`` command is more useful to show.
+    File tools bypass shell-string detection, so config-path classification
+    needs this small adapter.  The actual CLI, gateway, cron, session, and
+    fail-closed behavior belongs to :func:`request_tool_approval`; a stable
+    rule key keeps config writes in their own allowlist scope.
 
-    ``approval_mode == "off"`` is checked here, before the gate, because this
-    file IS the approval policy itself: an "off" bypass is a deliberate,
-    config-write-specific carve-out the shared gate doesn't (and shouldn't)
-    know about, unlike the fail-closed-when-no-human default below, which
-    matches the shared gate's own policy for "no approval surface" — never
-    treat it as consent.
+    ``approval_mode == "off"`` remains a deliberately narrow bypass here:
+    the target file is the approval policy itself, and that config-specific
+    rule does not belong in the general-purpose approval gate.
     """
-    pattern_key = "modify Hermes config file"
     description = (
         f"{tool_name} modifying Hermes config file (~/.hermes/config.yaml). "
         "This file controls approvals.mode, yolo settings, and persistent "
         "approval allowlists."
     )
-    command = f"{tool_name} {filepath}"
 
     if is_approval_bypass_active():
         return {"approved": True, "message": None}
 
-    return _run_approval_gate(
-        pattern_key=pattern_key,
-        description=description,
-        display_target=command,
+    return request_tool_approval(
+        tool_name,
+        description,
+        rule_key="hermes_config_write",
+        display_target=f"{tool_name} {filepath}",
         approval_callback=approval_callback,
-        cron_deny_message=(
-            "BLOCKED: Hermes config file edit requires approval, but cron "
-            "jobs run without a user present to approve it. Use a normal "
-            "interactive session, or set approvals.cron_mode: approve only "
-            "for intentionally trusted cron profiles."
-        ),
-        autoapprove_log_prefix=(
-            "AUTO-APPROVED Hermes config file edit in non-interactive "
-            "non-gateway context"
-        ),
-        fail_closed_when_no_human=True,
-        no_human_block_message=(
-            "BLOCKED: Hermes config file edit requires explicit approval, "
-            "but this file tool call has no interactive, gateway, or ask-mode "
-            "approval surface. Do not retry through another tool; ask the "
-            "user to approve the config edit or use 'hermes config'."
-        ),
     )
 
 

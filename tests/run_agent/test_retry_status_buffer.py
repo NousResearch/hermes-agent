@@ -10,6 +10,7 @@ from __future__ import annotations
 
 
 from run_agent import AIAgent
+from gateway.display_config import resolve_display_setting
 
 
 def _make_bare_agent():
@@ -24,6 +25,27 @@ def _make_bare_agent():
     agent._executing_tools = False
     agent._print_fn = None
     return agent
+
+
+def test_quiet_recovery_keeps_terminal_failure_diagnostics():
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = emitted.append
+    agent.show_provider_fallback_notices = False
+    agent._pending_fallback_notice = ["Recovered using provider B"]
+    agent._emit_pending_fallback_notice()
+    assert emitted == []
+    assert agent._pending_fallback_notice is None
+    agent._buffer_status("Provider B failed too")
+    agent._flush_status_buffer()
+    assert emitted == ["Provider B failed too"]
+
+
+def test_fallback_visibility_is_platform_scoped_and_defaults_on():
+    config = {"display": {"platforms": {"slack": {"provider_fallback_notices": "false"}}}}
+    assert resolve_display_setting(config, "slack", "provider_fallback_notices") is False
+    assert resolve_display_setting(config, "cli", "provider_fallback_notices") is True
+    assert resolve_display_setting({}, "slack", "provider_fallback_notices") is True
 
 
 def test_buffer_status_accumulates_then_flushes(capsys):

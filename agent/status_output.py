@@ -159,14 +159,15 @@ class StatusOutputMixin:
             buf.clear()
 
     def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery: a provider switch is durable
-        state operators must see, unlike the retry chatter ``_clear_status_buffer`` drops. Emitted once, then
+        """Surface the optional one-shot fallback-switch notice on successful recovery. Emitted once, then
         cleared; on terminal failure the buffered switch line is flushed instead (``_flush_status_buffer``)."""
         notice = getattr(self, "_pending_fallback_notice", None)
         if not notice:
             return
         # Clear before emitting so a (swallowed) callback error can't leave a stale re-emit.
         self._pending_fallback_notice = None
+        if not getattr(self, "show_provider_fallback_notices", True):
+            return
         for item in notice if isinstance(notice, list) else [notice]:
             try:
                 self._emit_status(str(item))

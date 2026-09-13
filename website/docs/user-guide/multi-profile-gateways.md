@@ -806,13 +806,33 @@ install that is already multiplexing is left alone. `hermes update` also does
 nothing when no secondary profile runs its own gateway — it never flips modes
 on an install where nothing was running.
 
+### Boundaries `hermes update` never crosses on its own
+
+The unattended hook only folds profiles that share **one UNIX user, one service
+domain and one `profiles/` tree** — the shape `hermes profile create` produces.
+A standalone secondary behind any of these boundaries stops the automatic path:
+
+| boundary | example |
+|---|---|
+| different service manager or scope | default on user systemd, a secondary on **system** systemd (or launchd), or the default detached with a service-managed secondary |
+| different UNIX user | a system unit with its own `User=`, or a live gateway owned by another uid |
+| `HERMES_HOME` outside `<default home>/profiles/` | a unit pinning `HERMES_HOME=/opt/hermes/profiles/emma` |
+
+In that case `hermes update` prints the boundary it found plus
+`hermes gateway migrate --multiplex`, and changes nothing — no unit is removed
+and `gateway.multiplex_profiles` stays off. Collapsing such a fleet replaces a
+kernel-enforced boundary (file ownership, `User=`) with in-process isolation,
+which is an operator's decision. The explicit command still makes it: the same
+findings appear as **notices** in `hermes gateway migrate --multiplex --dry-run`
+so you can read them first, and `--multiplex` proceeds when you confirm.
+
 ### Opting out of the automatic migration
 
-Set `gateway.auto_migrate: false` on the **default** profile to keep the
-automatic fold from ever running on this install:
+Set `gateway.auto_multiplex_migration: false` on the **default** profile to keep
+the automatic fold from ever running on this install:
 
 ```bash
-hermes config set gateway.auto_migrate false
+hermes config set gateway.auto_multiplex_migration false
 ```
 
 `hermes update` then leaves per-profile gateways exactly as they are, with no

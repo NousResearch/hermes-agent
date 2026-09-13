@@ -13,7 +13,6 @@ import contextlib
 import json
 import logging
 import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -38,7 +37,8 @@ class ProfileGateway:
     home: Path
     pid: Optional[int] = None
     service: Optional[tuple[str, bool]] = None  # ("systemd", system) | ("launchd", False)
-    unix_user: Optional[str] = None
+    uid: Optional[int] = None  # owner of the gateway process/unit; None = unknown (never "different")
+    runtime_home: Optional[Path] = None  # HERMES_HOME the installed unit pins, when it differs from ``home``
 
     @property
     def is_default(self) -> bool:
@@ -58,6 +58,7 @@ class ProfileGateway:
         return {
             "profile": self.name, "home": str(self.home), "pid": self.pid,
             "service": None if self.service is None else {"kind": self.service[0], "system": self.service[1]},
+            "uid": self.uid, "runtime_home": None if self.runtime_home is None else str(self.runtime_home),
         }
 
 
@@ -167,6 +168,11 @@ def _live_gateway_pid(home: Path) -> Optional[int]:
     return None
 
 
+def _gateway_identity(home: Path, pid: Optional[int], service: Optional[tuple[str, bool]]) -> tuple[Optional[int], Path]:
+    from hermes_cli.gateway_migrate_guards import gateway_identity
+    return gateway_identity(home, pid, service)
+
+
 def _installed_service(home: Path) -> Optional[tuple[str, bool]]:
     """Installed service kind for ``home``'s gateway (unit / plist on disk), else None."""
     from hermes_cli import gateway as gw
@@ -177,47 +183,6 @@ def _installed_service(home: Path) -> Optional[tuple[str, bool]]:
                     return ("systemd", system)
         if gw.is_macos() and gw.get_launchd_plist_path().exists():
             return ("launchd", False)
-    return None
-
-
-def _gateway_unix_user(home: Path, pid: Optional[int], service: Optional[tuple[str, bool]]) -> Optional[str]:
-    """Best-effort owner identity for an installed or live gateway.
-
-    A system unit's ``User=`` is authoritative even when the process is stopped. User-scope
-    systemd and launchd services run as this account; a live process takes precedence when its
-    owner can be inspected. ``None`` means the owner cannot be established, not a different user.
-    """
-    if pid is not None:
-        with contextlib.suppress(OSError):
-            return f"uid:{os.stat(f'/proc/{pid}').st_uid}"
-        with contextlib.suppress(OSError, ValueError):
-            result = subprocess.run(
-                ["ps", "-o", "uid=", "-p", str(pid)], capture_output=True, text=True,
-                check=False, timeout=2,
-            )
-            if result.returncode == 0 and (uid := result.stdout.strip()):
-                return f"uid:{int(uid)}"
-    if service is None:
-        with contextlib.suppress(OSError):
-            return f"uid:{home.stat().st_uid}"
-        return None
-    kind, system = service
-    if kind == "systemd" and system:
-        from hermes_cli import gateway as gw
-        with _home_env(home):
-            with contextlib.suppress(OSError):
-                user = gw._read_systemd_user_from_unit(gw.get_systemd_unit_path(system=True))
-                if user:
-                    with contextlib.suppress(KeyError):
-                        import pwd
-                        return f"uid:{pwd.getpwnam(user).pw_uid}"
-                    return f"user:{user}"
-        # A systemd system unit with no User= runs as root.
-        return "uid:0"
-    if kind in {"systemd", "launchd"}:
-        return f"uid:{os.geteuid()}"
-    with contextlib.suppress(OSError):
-        return f"uid:{home.stat().st_uid}"
     return None
 
 
@@ -257,25 +222,6 @@ def _read_multiplex_flag(default_home: Path) -> bool:
     cfg = read_user_config_raw(cfg_path) or {}
     gateway_section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
     return bool(cfg.get("multiplex_profiles") or gateway_section.get("multiplex_profiles"))
-
-
-def _read_auto_migrate_flag(default_home: Path) -> bool:
-    """``gateway.auto_migrate`` in the DEFAULT profile's config.yaml: may ``hermes update`` fold
-    this install onto a multiplexed gateway on its own? Absent (the default) means yes; an explicit
-    ``false`` is a durable opt-out that survives updates, so an operator who wants to stay on
-    per-profile gateways does not have to re-decide after every release. Only the AUTO path reads
-    this — ``hermes gateway migrate --multiplex`` is an explicit request and always proceeds."""
-    cfg_path = default_home / "config.yaml"
-    if not cfg_path.exists():
-        return True
-    from hermes_cli.config import read_user_config_raw
-    cfg = read_user_config_raw(cfg_path) or {}
-    gateway_section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
-    for source in (gateway_section, cfg):
-        value = source.get("auto_migrate")
-        if value is not None:
-            return bool(value)
-    return True
 
 
 def _write_multiplex_flag(default_home: Path, value: bool) -> None:
@@ -439,41 +385,6 @@ _PREFLIGHT_CHECKS: tuple[Callable[[MigrationPlan, dict[str, object]], None], ...
 )
 
 
-def _auto_migration_blockers(plan: MigrationPlan) -> list[str]:
-    """Guards for the unattended update hook.
-
-    Auto-migration removes services, so it must not fold gateways from another service domain,
-    account, or Hermes-home tree into the default service. The explicit command remains available
-    for an operator who has reviewed and intentionally reconciled such a fleet.
-    """
-    blockers: list[str] = []
-    profile_root = (plan.default_home / "profiles").resolve()
-    # The auto-migration target is always the default gateway.  Unlike the explicit
-    # command, it must not elect a secondary's service when the default is detached:
-    # doing so would silently move the default into a different service domain.
-    target_service = plan.default.service
-    default_user = plan.default.unix_user
-    for profile in plan.standalone_secondaries:
-        try:
-            profile.home.resolve().relative_to(profile_root)
-        except ValueError:
-            blockers.append(
-                f"Profile '{profile.name}' has HERMES_HOME outside {profile_root}; keep it standalone or move it "
-                f"under {profile_root} before running {MIGRATE_COMMAND}."
-            )
-        if profile.service != target_service:
-            blockers.append(
-                f"Profile '{profile.name}' uses a different service manager or scope than the default migration "
-                f"target; keep it standalone or align its gateway service before running {MIGRATE_COMMAND}."
-            )
-        if default_user and profile.unix_user and profile.unix_user != default_user:
-            blockers.append(
-                f"Profile '{profile.name}' runs as {profile.unix_user}, while the default gateway runs as "
-                f"{default_user}; keep it standalone or align the UNIX user before running {MIGRATE_COMMAND}."
-            )
-    return blockers
-
-
 def _load_profile_configs(plan: MigrationPlan) -> dict[str, object]:
     configs: dict[str, object] = {}
     with _multiplex_read_mode():
@@ -489,13 +400,12 @@ def build_migration_plan() -> MigrationPlan:
     """Enumerate profiles + their gateway footprint, then run every preflight check."""
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
     default_home = _default_home()
-    profiles = [
-        ProfileGateway(
-            name=name, home=home, pid=(pid := _live_gateway_pid(home)),
-            service=(service := _installed_service(home)), unix_user=_gateway_unix_user(home, pid, service),
-        )
-        for name, home in _profile_homes()
-    ]
+    profiles = []
+    for name, home in _profile_homes():
+        pid, service = _live_gateway_pid(home), _installed_service(home)
+        uid, runtime_home = _gateway_identity(home, pid, service)
+        profiles.append(ProfileGateway(name=name, home=home, pid=pid, service=service, uid=uid,
+                                       runtime_home=None if runtime_home == home else runtime_home))
     plan = MigrationPlan(
         default_home=default_home, profiles=profiles,
         multiplex_flag_on=_read_multiplex_flag(default_home),
@@ -507,9 +417,10 @@ def build_migration_plan() -> MigrationPlan:
     configs = _load_profile_configs(plan)
     for check in _PREFLIGHT_CHECKS:
         check(plan, configs)
-    plan.notices.extend(
-        f"Automatic migration guard: {blocker}" for blocker in _auto_migration_blockers(plan)
-    )
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers
+    # Notices, not blockers: the explicit command is the operator's decision; only the update hook
+    # refuses to cross these boundaries on its own.
+    plan.notices.extend(f"Not migrated automatically by `hermes update`: {b}" for b in auto_migration_blockers(plan))
     plan.notices.append(
         "Profiles created after the migration are served by the running multiplexer as soon as "
         "they exist (it rescans profiles/ on create/delete and every 30s)."
@@ -615,7 +526,7 @@ def format_update_warning(plan: MigrationPlan, auto_blockers: list[str]) -> list
     return [
         "⚠ Your profiles each run their own gateway. A single multiplexed gateway is the recommended",
         "  setup, but this install cannot be migrated automatically yet:",
-        *[f"    • {b}" for b in [*plan.blockers, *auto_blockers]],
+        *[f"    • {b}" for b in (*plan.blockers, *auto_blockers)],
         f"  After fixing the above, run:  {MIGRATE_COMMAND}",
         "  (`hermes update` will migrate automatically once nothing blocks it.)",
     ]
@@ -878,16 +789,16 @@ def cmd_migrate(args) -> None:
 def maybe_auto_migrate_after_update() -> None:
     """``hermes update`` hook: with >= 2 profiles, per-profile gateways present and multiplex off,
     migrate automatically when unblocked (deterministic, never prompts) or print the blocker block.
-    ``gateway.auto_migrate: false`` on the default profile opts out durably."""
-    if _host_supports_migration() is not None:
-        return
-    if not _read_auto_migrate_flag(_default_home()):
+    ``gateway.auto_multiplex_migration: false`` on the default profile opts out; a secondary behind a
+    service-domain / UNIX-user / HERMES_HOME boundary blocks this path only (the explicit command decides)."""
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers, auto_migration_opted_out
+    if _host_supports_migration() is not None or auto_migration_opted_out(_default_home()):
         return
     plan = build_migration_plan()
     if plan.already_multiplexed or len(plan.profiles) < 2 or not plan.standalone_secondaries:
         return
     print()
-    auto_blockers = _auto_migration_blockers(plan)
+    auto_blockers = auto_migration_blockers(plan)
     if plan.blocked or auto_blockers:
         _print(format_update_warning(plan, auto_blockers))
         return

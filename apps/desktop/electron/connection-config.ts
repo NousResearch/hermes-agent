@@ -905,6 +905,76 @@ function apiRequestRegistryConnectionId(request): null | string {
   return id
 }
 
+export interface SelectedConnectionApiDispatchOptions {
+  /** Exact registry identity of the selected primary when it is remote. */
+  remotePrimaryConnectionId?: null | string
+}
+
+export interface SelectedConnectionApiDispatchDeps<T = unknown> {
+  dispatchProfile: (request: any) => Promise<T>
+  dispatchRegistry: (request: any, connectionId: string) => Promise<T>
+}
+
+function configApiPathname(path): string {
+  const rawPath = String(path || '')
+
+  try {
+    return new URL(rawPath, 'https://example.invalid').pathname
+  } catch {
+    return ''
+  }
+}
+
+function isConfigApiPath(pathname: string): boolean {
+  return pathname === '/api/config' || pathname.startsWith('/api/config/')
+}
+
+function isConfigWriteMethod(method): boolean {
+  const normalized = String(method || 'GET').toUpperCase()
+
+  return normalized === 'PUT' || normalized === 'PATCH' || normalized === 'DELETE'
+}
+
+/**
+ * Dispatch a renderer API request so config reads and writes stay on one host.
+ *
+ * Explicit connection pins remain authoritative. Untagged config GETs may
+ * inherit the current remote registry primary so a handoff cannot spawn a
+ * local backend just to serve settings. Untagged config writes must not: the
+ * record's captured `(connectionId, profile)` pin is the only legal target.
+ * If that pin is missing, the write fails closed instead of retargeting the
+ * current primary or falling back locally.
+ */
+async function dispatchApiRequestForSelectedConnection<T>(
+  request,
+  options: SelectedConnectionApiDispatchOptions,
+  deps: SelectedConnectionApiDispatchDeps<T>
+): Promise<T> {
+  const explicitConnectionId = apiRequestRegistryConnectionId(request)
+  const pathname = configApiPathname(request?.path)
+  const remotePrimaryConnectionId = isConfigApiPath(pathname)
+    ? String(options.remotePrimaryConnectionId || '').trim()
+    : ''
+
+  if (explicitConnectionId) {
+    return deps.dispatchRegistry(request, explicitConnectionId)
+  }
+
+  if (isConfigApiPath(pathname) && isConfigWriteMethod(request?.method)) {
+    if (remotePrimaryConnectionId) {
+      throw new Error(
+        'Config write refused: the request is not bound to a connection/profile route.'
+      )
+    }
+
+    return deps.dispatchProfile(request)
+  }
+
+  const connectionId = remotePrimaryConnectionId
+
+  return connectionId ? deps.dispatchRegistry(request, connectionId) : deps.dispatchProfile(request)
+}
+
 export interface ProfileApiRequestRoute {
   /** Profile passed to ensureBackend; null selects the primary backend. */
   backendProfile: null | string
@@ -1051,6 +1121,7 @@ export {
   cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  dispatchApiRequestForSelectedConnection,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,

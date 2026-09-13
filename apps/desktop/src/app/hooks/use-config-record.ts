@@ -1,6 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
+import { useRef } from 'react'
 
-import { getHermesConfigRecord, type ProfileScope, profileScopeKey } from '@/hermes'
+import { type ProfileScope, profileScopeKey } from '@/api/client'
+import { peekConfigReadOrigin } from '@/api/config'
+import { getHermesConfigRecord } from '@/hermes'
 import { queryClient, writeCache } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
 
@@ -27,15 +30,38 @@ export const hermesConfigKey = (profile?: ProfileScope) =>
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.
 // `profile` scopes both the query key and the fetch; omitting it preserves the
 // exact app-wide behavior (base key, `profileScoped(undefined)` fallback).
-export const useHermesConfigRecord = (profile?: ProfileScope) =>
-  useQuery({
+export const useHermesConfigRecord = (profile?: ProfileScope) => {
+  const writeScopeRef = useRef<{ connectionId?: string; profile?: string } | null>(null)
+  const scopeKey = profileScopeKey(profile)
+  const scopeKeyRef = useRef(scopeKey)
+
+  if (scopeKeyRef.current !== scopeKey) {
+    scopeKeyRef.current = scopeKey
+    writeScopeRef.current = null
+  }
+
+  const query = useQuery({
     queryKey: hermesConfigKey(profile),
     // null/undefined both mean "no override" → fetch with undefined so
     // capabilityScoped falls back to the app-wide active profile (passing null
     // would wrongly target the primary backend).
-    queryFn: () => getHermesConfigRecord(profile ?? undefined),
+    queryFn: async () => {
+      const record = await getHermesConfigRecord(profile ?? undefined)
+
+      if (!writeScopeRef.current) {
+        writeScopeRef.current = peekConfigReadOrigin(record) ?? {}
+      }
+
+      return record
+    },
     staleTime: 0
   })
+
+  return {
+    ...query,
+    writeScope: writeScopeRef.current
+  }
+}
 
 // setHermesConfigCache writes the app-wide (base-key) record. Pass a profile to
 // write the suffixed per-profile cache instead — keeps the selector's optimistic

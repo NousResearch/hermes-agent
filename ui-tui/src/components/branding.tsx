@@ -6,7 +6,7 @@ import unicodeSpinners from 'unicode-animations'
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { PanelSection, SessionInfo } from '../types.js'
+import type { McpServerStatus, PanelSection, SessionInfo } from '../types.js'
 
 import { Accordion } from './accordion.js'
 import { ShimmerRows } from './loaders.js'
@@ -209,6 +209,38 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
+/** One MCP server row. Exported so the wire→render contract can be pinned in a test:
+ *  the MCP accordion is collapsed by default, so ``SessionPanel`` never renders these rows. */
+export function McpServerLine({ s, t }: { s: McpServerStatus; t: Theme }) {
+  return (
+    <Text wrap="truncate">
+      <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+      <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
+      <Text color={t.color.muted}>: </Text>
+      {s.connected ? (
+        <Text color={t.color.text}>
+          {s.tools} tool{s.tools === 1 ? '' : 's'}
+        </Text>
+      ) : s.disabled || s.status === 'disabled' ? (
+        <Text color={t.color.muted}>disabled</Text>
+      ) : s.status === 'connecting' ? (
+        <Text color={t.color.warn}>connecting</Text>
+      ) : s.status === 'lazy' ? (
+        // Registered from the schema cache, process not spawned yet: its tools are callable,
+        // so it shows its cached count. Without this branch it fell through to the red
+        // "failed" default — the same misreport the CLI banner fixes here.
+        <Text color={t.color.text}>
+          {s.tools} tool{s.tools === 1 ? '' : 's'} <Text color={t.color.muted}>(lazy)</Text>
+        </Text>
+      ) : s.status === 'configured' ? (
+        <Text color={t.color.muted}>configured</Text>
+      ) : (
+        <Text color={t.color.error}>failed</Text>
+      )}
+    </Text>
+  )
+}
+
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
@@ -312,24 +344,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const mcpBody = () => (
     <>
       {(info.mcp_servers ?? []).map(s => (
-        <Text key={s.name} wrap="truncate">
-          <Text color={t.color.muted}>{`  ${s.name} `}</Text>
-          <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
-          <Text color={t.color.muted}>: </Text>
-          {s.connected ? (
-            <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
-            </Text>
-          ) : s.disabled || s.status === 'disabled' ? (
-            <Text color={t.color.muted}>disabled</Text>
-          ) : s.status === 'connecting' ? (
-            <Text color={t.color.warn}>connecting</Text>
-          ) : s.status === 'configured' ? (
-            <Text color={t.color.muted}>configured</Text>
-          ) : (
-            <Text color={t.color.error}>failed</Text>
-          )}
-        </Text>
+        <McpServerLine key={s.name} s={s} t={t} />
       ))}
     </>
   )

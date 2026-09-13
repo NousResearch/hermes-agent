@@ -128,7 +128,9 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 
 `_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import, so
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation. Multiplex
+islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+channels (`profile_channels.py` derives the token/allowlist/platform-section key set from the adapter
+registry + `gateway/config_env._ENV_STEPS`, never a hand list; `--clone-channels` opts in). Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
 `profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
 `profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).

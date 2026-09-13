@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from hermes_cli.timeouts import resolve_bedrock_sdk_timeout
+
 logger = logging.getLogger(__name__)
 
 # boto3 is not in the [all] extras; lazy_deps installs it on demand.
@@ -37,6 +39,8 @@ except Exception:
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
+# Production entries are ``(read_timeout, client)`` so a config reload cannot keep a
+# 60s boto3 pool. Tests plant a bare client under the region key; lookup accepts both.
 
 # Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
 # Converse. Narrow allowlist so GPT-OSS models stay on the native path.
@@ -69,11 +73,42 @@ def _require_boto3():
     return boto3
 
 
+def _bedrock_botocore_config(read_timeout: float):
+    """botocore Config: long read, short connect, no SDK retries (Hermes owns retry)."""
+    from botocore.config import Config
+    return Config(
+        read_timeout=float(read_timeout),
+        connect_timeout=10,
+        retries={"max_attempts": 1, "mode": "standard"},
+    )
+
+
 def _cached_client(cache: Dict[str, Any], service: str, region: str):
-    """Get or create a per-region boto3 client using the default credential chain."""
-    if region not in cache:
-        cache[region] = _require_boto3().client(service, region_name=region)
-    return cache[region]
+    """Get or create a per-region boto3 client using the default credential chain.
+
+    Cache values are ``(read_timeout, client)`` so a changed
+    ``providers.bedrock.request_timeout_seconds`` rebuilds the pool. A bare
+    client (tests) is returned as-is and never overwritten.
+    """
+    timeout = resolve_bedrock_sdk_timeout()
+    existing = cache.get(region)
+    if existing is not None:
+        if (
+            isinstance(existing, tuple)
+            and len(existing) == 2
+            and isinstance(existing[0], (int, float))
+            and not isinstance(existing[0], bool)
+        ):
+            cached_timeout, client = existing
+            if cached_timeout == timeout:
+                return client
+        else:
+            return existing
+    client = _require_boto3().client(
+        service, region_name=region, config=_bedrock_botocore_config(timeout),
+    )
+    cache[region] = (timeout, client)
+    return client
 
 
 def _get_bedrock_runtime_client(region: str):
@@ -168,11 +203,17 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
 
 
 def build_bedrock_openai_http_client(region: str, *, timeout: Optional[float] = None):
-    """Build an httpx client that SigV4-signs Bedrock OpenAI requests."""
-    kwargs: Dict[str, Any] = {"auth": BedrockOpenAISigV4Auth(region)}
-    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
-        kwargs["timeout"] = timeout
-    return httpx.Client(**kwargs)
+    """Build an httpx client that SigV4-signs Bedrock OpenAI requests.
+
+    A missing timeout must not fall through to httpx's 5s default — Terra/GPT-5.6
+    prefill routinely exceeds that. Use ``providers.bedrock.request_timeout_seconds``
+    / ``HERMES_API_TIMEOUT`` / 1800s, with a 10s connect cap matching AnthropicBedrock.
+    """
+    read = timeout if (isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0) else resolve_bedrock_sdk_timeout()
+    return httpx.Client(
+        auth=BedrockOpenAISigV4Auth(region),
+        timeout=httpx.Timeout(timeout=float(read), connect=10.0),
+    )
 
 
 def configure_bedrock_openai_client_kwargs(client_kwargs: Dict[str, Any], *, timeout: Optional[float] = None) -> Dict[str, Any]:

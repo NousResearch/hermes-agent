@@ -1928,6 +1928,10 @@ class TestBedrockReasoningStaleFloor:
             ("us.anthropic.claude-sonnet-4-6-v1:0", 180.0),
             # region prefix variations still strip correctly.
             ("eu.anthropic.claude-sonnet-4-5-v1:0", 180.0),
+            ("global.openai.gpt-5.6-terra", 600.0),
+            ("openai.gpt-5.6-terra", 600.0),
+            ("openai.gpt-5.6-sol", 600.0),
+            ("openai.gpt-5.6-luna", 600.0),
         ],
     )
     def test_bedrock_reasoning_models_resolve_floor(self, model_id, expected):

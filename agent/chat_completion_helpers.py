@@ -638,7 +638,11 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
             break
     base_candidates = [name]
     if "." in name:
-        base_candidates.append(name.rsplit(".", 1)[1])   # claude-opus-4-6-v1:0
+        # Provider namespace (``openai.gpt-5.6-terra`` / ``anthropic.claude-…``)
+        # plus the historical last-dot split for ids that only have that one
+        # namespace dot (``anthropic.claude-opus-4-6-v1:0``).
+        base_candidates.append(name.split(".", 1)[1])
+        base_candidates.append(name.rsplit(".", 1)[1])
         base_candidates.append(name.replace(".", "-", 1))  # deepseek-r1-v1:0
     candidates = dict.fromkeys(
         form for cand in base_candidates

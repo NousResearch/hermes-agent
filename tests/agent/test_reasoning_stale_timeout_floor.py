@@ -79,6 +79,13 @@ import pytest
     ("anthropic/claude-fable-5", 600.0),
     ("claude-fable-5", 600.0),
     ("claude-fable", 600.0),
+    # Bedrock Mantle GPT-5.6 (slash catalog ids). Dotted Bedrock inference
+    # profile ids are covered by _bedrock_reasoning_stale_floor.
+    ("openai/gpt-5.6-terra", 600.0),
+    ("gpt-5.6-terra", 600.0),
+    ("openai/gpt-5.6-sol", 600.0),
+    ("openai/gpt-5.6-luna", 600.0),
+    ("gpt-5.6-terra-pro", 600.0),
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),

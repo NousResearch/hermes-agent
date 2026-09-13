@@ -233,8 +233,11 @@ model:
 # implicit non-stream stale detector is auto-disabled for local endpoints
 # and can scale upward for very large contexts.
 #
-# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
-# SDK paths) — those use boto3 with its own timeout configuration.
+# AWS Bedrock honors the same keys on every transport: Converse (boto3
+# read_timeout), AnthropicBedrock (Fable/Claude), and Mantle OpenAI
+# Responses (Terra / GPT-5.6). SDK retries stay at 0/1 — Hermes' outer
+# loop owns retry. Compression.context_timeout_seconds does not extend
+# these sockets.
 #
 # providers:
 #   ollama-local:
@@ -249,6 +252,9 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+#   bedrock:
+#     request_timeout_seconds: 1800  # boto3 / AnthropicBedrock / Mantle httpx read timeout
+#     stale_timeout_seconds: 900     # thinking models (Terra, Fable) before first token
 
 # =============================================================================
 # Unified Timeouts (operation deadlines)

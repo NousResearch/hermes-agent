@@ -465,7 +465,11 @@ class ClientLifecycleMixin:
     def _request_anthropic_client_key(self) -> tuple:
         """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
         if getattr(self, "provider", None) == "bedrock":
-            return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
+            return (
+                "bedrock",
+                getattr(self, "_bedrock_region", "us-east-1") or "us-east-1",
+                get_provider_request_timeout(self.provider, self.model),
+            )
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
@@ -484,7 +488,7 @@ class ClientLifecycleMixin:
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
-            return build_anthropic_bedrock_client(key[1])
+            return build_anthropic_bedrock_client(key[1], timeout=key[2] if len(key) > 2 else None)
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:

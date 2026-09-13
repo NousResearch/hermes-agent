@@ -102,5 +102,37 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     assert agent2._resolved_api_call_timeout() == 1800.0
 
 
+def test_resolve_bedrock_sdk_timeout_config_wins_over_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    _write_config(tmp_path, """\
+        providers:
+          bedrock:
+            request_timeout_seconds: 450
+        """)
+    monkeypatch.setenv("HERMES_API_TIMEOUT", "999")
+    import importlib
+    from hermes_cli import config as cfg_mod
+    importlib.reload(cfg_mod)
+    from hermes_cli import timeouts as to_mod
+    importlib.reload(to_mod)
+    assert to_mod.resolve_bedrock_sdk_timeout() == 450.0
+
+
+def test_resolve_bedrock_sdk_timeout_env_then_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    _write_config(tmp_path, "")
+    monkeypatch.setenv("HERMES_API_TIMEOUT", "777")
+    import importlib
+    from hermes_cli import config as cfg_mod
+    importlib.reload(cfg_mod)
+    from hermes_cli import timeouts as to_mod
+    importlib.reload(to_mod)
+    assert to_mod.resolve_bedrock_sdk_timeout() == 777.0
+    monkeypatch.delenv("HERMES_API_TIMEOUT", raising=False)
+    assert to_mod.resolve_bedrock_sdk_timeout() == 1800.0
+
+
 
 

@@ -708,7 +708,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
         # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
         from agent.anthropic_adapter import build_anthropic_bedrock_client
         _br_region = agent._bedrock_region = _bedrock_region_from_url(base_url)
-        agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
+        agent._anthropic_client = build_anthropic_bedrock_client(_br_region, timeout=_provider_timeout)
         agent._anthropic_api_key = "aws-sdk"
         agent._is_anthropic_oauth = False
         agent.api_key = "aws-sdk"

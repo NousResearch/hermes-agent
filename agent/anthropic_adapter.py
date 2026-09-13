@@ -406,16 +406,24 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     return _new_sdk_client(sdk, kwargs, headers)
 
 
-def build_anthropic_bedrock_client(region: str):
+def build_anthropic_bedrock_client(region: str, timeout: float = None):
     """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
     SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
     budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
-    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K."""
+    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
+
+    ``timeout`` is the read budget (connect stays 10s). When omitted, uses
+    ``providers.bedrock.request_timeout_seconds`` / ``HERMES_API_TIMEOUT`` / 1800s —
+    the same resolver as Converse and Mantle, not the native Anthropic 900s default.
+    """
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+    if not (isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0):
+        from hermes_cli.timeouts import resolve_bedrock_sdk_timeout
+        timeout = resolve_bedrock_sdk_timeout()
     return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(None),
+        aws_region=region, timeout=_client_timeout(timeout),
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers=_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]),
     )

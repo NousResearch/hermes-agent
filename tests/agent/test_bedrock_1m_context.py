@@ -46,11 +46,16 @@ class TestBedrockContext1MBeta:
         fake_sdk = MagicMock()
         fake_sdk.AnthropicBedrock = MagicMock()
 
-        with patch.object(adapter, "_anthropic_sdk", fake_sdk):
+        with patch.object(adapter, "_anthropic_sdk", fake_sdk), patch(
+            "hermes_cli.timeouts.resolve_bedrock_sdk_timeout", return_value=1800.0,
+        ):
             adapter.build_anthropic_bedrock_client(region="us-west-2")
 
         call_kwargs = fake_sdk.AnthropicBedrock.call_args.kwargs
         assert call_kwargs["aws_region"] == "us-west-2"
+        assert call_kwargs["timeout"].read == 1800.0
+        assert call_kwargs["timeout"].connect == 10.0
+        assert call_kwargs["max_retries"] == 0
 
         default_headers = call_kwargs.get("default_headers") or {}
         beta_header = default_headers.get("anthropic-beta", "")
@@ -61,3 +66,15 @@ class TestBedrockContext1MBeta:
         # Other common betas still present — no regression.
         assert "interleaved-thinking-2025-05-14" in beta_header
         assert "fine-grained-tool-streaming-2025-05-14" in beta_header
+
+    def test_build_anthropic_bedrock_client_honors_timeout_kwarg(self):
+        import agent.anthropic_adapter as adapter
+
+        fake_sdk = MagicMock()
+        fake_sdk.AnthropicBedrock = MagicMock()
+        with patch.object(adapter, "_anthropic_sdk", fake_sdk):
+            adapter.build_anthropic_bedrock_client(region="us-west-2", timeout=450)
+
+        timeout = fake_sdk.AnthropicBedrock.call_args.kwargs["timeout"]
+        assert timeout.read == 450.0
+        assert timeout.connect == 10.0

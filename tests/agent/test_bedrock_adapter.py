@@ -1421,3 +1421,79 @@ class TestBearerTokenRoutesToConverse:
         runtime = self._resolve(monkeypatch, bearer=False)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True
+
+
+class TestBedrockSdkTimeout:
+    """Converse boto3 and Mantle httpx must honor resolve_bedrock_sdk_timeout.
+
+    Compression worker budgets do not reach these sockets; a missing timeout
+    used to leave httpx at 5s and boto3 at 60s.
+    """
+
+    def test_runtime_client_uses_botocore_read_timeout(self, monkeypatch):
+        from agent.bedrock_adapter import reset_client_cache, _get_bedrock_runtime_client
+
+        reset_client_cache()
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.resolve_bedrock_sdk_timeout", lambda model=None: 321.0,
+        )
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.40.0"
+        captured = {}
+
+        def _client(service, region_name=None, config=None):
+            captured["service"] = service
+            captured["region"] = region_name
+            captured["config"] = config
+            return MagicMock(name="bedrock-runtime")
+
+        fake_boto3.client.side_effect = _client
+        with patch("agent.bedrock_adapter._require_boto3", return_value=fake_boto3):
+            client = _get_bedrock_runtime_client("us-east-1")
+
+        assert captured["service"] == "bedrock-runtime"
+        assert captured["region"] == "us-east-1"
+        cfg = captured["config"]
+        assert cfg is not None
+        assert cfg.read_timeout == 321.0
+        assert cfg.connect_timeout == 10
+        assert cfg.retries["max_attempts"] == 1
+        assert client is not None
+        reset_client_cache()
+
+    def test_mantle_http_client_never_uses_httpx_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.resolve_bedrock_sdk_timeout", lambda model=None: 1800.0,
+        )
+        from agent.bedrock_adapter import build_bedrock_openai_http_client
+
+        client = build_bedrock_openai_http_client("us-east-1")
+        try:
+            assert client.timeout.read == 1800.0
+            assert client.timeout.connect == 10.0
+        finally:
+            client.close()
+
+    def test_mantle_http_client_honors_explicit_timeout(self):
+        from agent.bedrock_adapter import build_bedrock_openai_http_client
+
+        client = build_bedrock_openai_http_client("us-east-1", timeout=300)
+        try:
+            assert client.timeout.read == 300.0
+            assert client.timeout.connect == 10.0
+        finally:
+            client.close()
+
+    def test_configure_openai_kwargs_forwards_timeout(self):
+        from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
+
+        kwargs = {
+            "api_key": "aws-sdk",
+            "base_url": "https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+        }
+        configure_bedrock_openai_client_kwargs(kwargs, timeout=300)
+        http = kwargs["http_client"]
+        try:
+            assert http.timeout.read == 300.0
+        finally:
+            http.close()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 
 def _coerce_timeout(raw: object) -> float | None:
     try:
@@ -38,6 +40,20 @@ def get_provider_request_timeout(provider_id: str, model: str | None = None) -> 
 def get_provider_stale_timeout(provider_id: str, model: str | None = None) -> float | None:
     """Return a configured non-stream stale timeout in seconds, if any."""
     return _configured_timeout(provider_id, model, "stale_timeout_seconds", "stale_timeout_seconds")
+
+
+def resolve_bedrock_sdk_timeout(model: str | None = None) -> float:
+    """Socket read timeout for every Bedrock transport (Converse, AnthropicBedrock, Mantle).
+
+    ``providers.bedrock.request_timeout_seconds`` (or a per-model ``timeout_seconds``)
+    wins; otherwise ``HERMES_API_TIMEOUT``; otherwise 1800s. This is the value that
+    must reach boto3 ``read_timeout`` / httpx — compression worker budgets do not.
+    """
+    configured = get_provider_request_timeout("bedrock", model)
+    if configured is not None:
+        return configured
+    env_timeout = _coerce_timeout(os.getenv("HERMES_API_TIMEOUT"))
+    return env_timeout if env_timeout is not None else 1800.0
 
 
 def _get_model_config(provider_config: dict[str, object], model: str | None) -> dict[str, object] | None:

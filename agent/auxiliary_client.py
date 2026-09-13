@@ -4351,7 +4351,7 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
         from agent.bedrock_adapter import (
             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
             is_openai_bedrock_model, bedrock_openai_base_url, resolve_bedrock_bearer_token,
-            configure_bedrock_openai_client_kwargs,
+            configure_bedrock_openai_client_kwargs, resolve_bedrock_sdk_timeout,
         )
         from agent.anthropic_adapter import build_anthropic_bedrock_client
     except ImportError:
@@ -4366,20 +4366,21 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
     region = resolve_bedrock_runtime_region()
     default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
     final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+    sdk_timeout = resolve_bedrock_sdk_timeout(final_model)
     if is_openai_bedrock_model(final_model):
         # Module-level lazy ``OpenAI`` proxy on purpose so tests can patch("agent.auxiliary_client.OpenAI").
         client_kwargs: Dict[str, Any] = {
             "api_key": resolve_bedrock_bearer_token() or "aws-sdk",
             "base_url": bedrock_openai_base_url(region),
         }
-        configure_bedrock_openai_client_kwargs(client_kwargs)
+        configure_bedrock_openai_client_kwargs(client_kwargs, timeout=sdk_timeout)
         client = OpenAI(**client_kwargs)
         logger.debug("resolve_provider_client: bedrock-openai (%s, %s)", final_model, region)
         return (client if raw_codex else CodexAuxiliaryClient(client, final_model)), final_model
     base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
     if is_anthropic_bedrock_model(final_model):
         try:
-            real_client = build_anthropic_bedrock_client(region)
+            real_client = build_anthropic_bedrock_client(region, timeout=sdk_timeout)
         except ImportError as exc:
             logger.warning("resolve_provider_client: cannot create Bedrock client: %s", exc)
             return None, None

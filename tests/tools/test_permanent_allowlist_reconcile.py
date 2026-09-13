@@ -36,22 +36,23 @@ def fake_config(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.save_config", _save, raising=False)
 
     saved_approved = set(approval._permanent_approved)
-    saved_baseline = set(approval._permanent_baseline)
+    saved_baseline = dict(approval._permanent_baseline_by_home)
     approval._permanent_approved.clear()
-    approval._permanent_baseline = set()
+    approval._permanent_baseline_by_home.clear()
     try:
         yield store
     finally:
         approval._permanent_approved.clear()
         approval._permanent_approved.update(saved_approved)
-        approval._permanent_baseline = saved_baseline
+        approval._permanent_baseline_by_home.clear()
+        approval._permanent_baseline_by_home.update(saved_baseline)
 
 
 def _start_process_with(store, entries):
     """Simulate import-time load against the current file contents."""
     store["command_allowlist"] = list(entries)
     approval.load_permanent(set(entries))
-    approval._permanent_baseline = set(entries)
+    approval._permanent_baseline_by_home[""] = set(entries)
 
 
 # ── the two halves of the bug ─────────────────────────────────────────

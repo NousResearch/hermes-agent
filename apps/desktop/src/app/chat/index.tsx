@@ -9,6 +9,7 @@ import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
+import { TranscriptMediaOwnerProvider } from '@/components/assistant-ui/markdown-text'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -49,7 +50,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
+import { $focusedStoredSessionId, sessionTileDelegate, sessionTileOwnerRoute } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 
@@ -295,13 +296,31 @@ function ChatRuntimeBoundary({
   const transcriptTailStates = useStore($transcriptTailBySessionId)
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
+  const ownerRoute =
+    storedId && view.kind === 'tile'
+      ? sessionTileOwnerRoute(storedId)
+      : storedId
+        ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+        : undefined
 
-  const tailProfile = ownerRoute
-    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
-    : undefined
+  const mediaOwner = useMemo(
+    () =>
+      ownerRoute
+        ? {
+            connectionId: ownerRoute.connectionId,
+            mode: ownerRoute.mode,
+            profile: ownerRoute.targetProfile || ownerRoute.profile
+          }
+        : connection
+          ? { connectionId: connection.connectionId, mode: connection.mode, profile: connection.profile }
+          : undefined,
+    [connection, ownerRoute]
+  )
+
+  const tailProfile = useMemo(
+    () => (ownerRoute ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile } : undefined),
+    [ownerRoute]
+  )
 
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
@@ -357,9 +376,11 @@ function ChatRuntimeBoundary({
   })
 
   return (
-    <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
-    </TranscriptWindowProvider>
+    <TranscriptMediaOwnerProvider value={mediaOwner}>
+      <TranscriptWindowProvider value={transcriptWindow}>
+        <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      </TranscriptWindowProvider>
+    </TranscriptMediaOwnerProvider>
   )
 }
 

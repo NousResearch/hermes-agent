@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -32,6 +33,34 @@ from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_f
 logger = logging.getLogger(__name__)
 
 _GITHUB_HOSTS = {"github.com", "gist.github.com"}
+
+_HTTP_URL_RE = re.compile(r"https?://[^\s'\"<>|]+")
+
+
+def without_credentials(text: str) -> str:
+    """*text* with credentials stripped from every HTTP(S) URL it contains.
+
+    Pass a bare URL and the URL comes back with its ``user:password@`` userinfo
+    (and its query/fragment, which can carry a ``?token=``) removed. Pass a git
+    error line and each embedded URL is scrubbed in place, so a remote URL git
+    echoed into stderr cannot smuggle a PAT into a toast, a log, or a pasted bug
+    report. One implementation for both directions — there is deliberately no
+    second scrubber for a call site to pick instead.
+
+    Non-HTTP transports (``git@host:owner/repo``) and already-clean URLs are
+    returned unchanged; URLs with no hostname are left alone rather than
+    mangled.
+    """
+    def _scrub(match: "re.Match[str]") -> str:
+        parsed = urllib.parse.urlsplit(match.group(0))
+        if not parsed.hostname:
+            return match.group(0)
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+
+    return _HTTP_URL_RE.sub(_scrub, text or "")
 
 
 def _https_origin(url: str) -> Optional[str]:

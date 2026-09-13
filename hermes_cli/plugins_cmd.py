@@ -511,14 +511,14 @@ def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url
 
 
 def _scrub_git_url(git_url: str) -> str:
-    """Strip credentials and query/fragment data from an HTTP Git URL."""
-    parsed = urllib.parse.urlsplit(git_url)
-    if parsed.scheme in {"http", "https"} and parsed.hostname:
-        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-        if parsed.port is not None:
-            host = f"{host}:{parsed.port}"
-        return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
-    return git_url
+    """Strip credentials and query/fragment data from an HTTP Git URL.
+
+    Delegates to the shared ``git_credentials.without_credentials`` so the
+    installer and the review-pane git ops scrub identically — see #101351.
+    """
+    from hermes_cli.git_credentials import without_credentials
+
+    return without_credentials(git_url)
 
 
 def _canonical_source(git_url: str, subdir: Optional[str]) -> str:

@@ -304,6 +304,25 @@ def _close_time_checkpoint_configurable() -> bool:
             and hasattr(sqlite3.Connection, "setconfig"))
 
 
+def _redact_transcript_record(value: Any) -> Any:
+    """``value`` with secrets masked inside every string, structure preserved.
+
+    The diverted breadcrumb is a persisted recovery artifact, not a wire copy, so
+    it is redacted unconditionally (``force=True``) rather than gated on the
+    user's display-redaction preference: the token would otherwise outlive the
+    debug session in a file an agent may go on to commit (#101351).
+    """
+    from agent.redact import redact_sensitive_text
+
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, dict):
+        return {key: _redact_transcript_record(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_transcript_record(item) for item in value]
+    return value
+
+
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""
@@ -317,7 +336,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
         for msg in messages:
             if msg is not None:
                 record = msg if isinstance(msg, dict) else {"content": str(msg)}
-                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+                handle.write(json.dumps(_redact_transcript_record(record), ensure_ascii=False, default=str) + "\n")
     return path
 
 

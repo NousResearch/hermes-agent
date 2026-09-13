@@ -2456,9 +2456,14 @@ def load_env() -> Dict[str, str]:
 
 
 def invalidate_env_cache() -> None:
-    """Clear the load_env() memo so the next call sees a write even on coarse-mtime filesystems."""
+    """Clear the load_env() memo AND ``agent.secret_scope``'s per-path ``.env`` memo so the next call
+    sees a write even on coarse-mtime filesystems; the writers that already call this
+    (save_env_value / remove_env_value / sanitize_env_file) need not know about both caches."""
+    from agent.secret_scope import invalidate_env_file_cache
+
     global _env_cache
     _env_cache = None
+    invalidate_env_file_cache()
 
 
 def _sanitize_env_lines(lines: list) -> list:

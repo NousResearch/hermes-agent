@@ -5133,9 +5133,8 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._extra_str_set("allowed_topics", "TELEGRAM_ALLOWED_TOPICS")
 
     def _telegram_ignored_threads(self) -> set[int]:
-        raw = self.config.extra.get("ignored_threads")
-        if raw is None:
-            raw = _scoped_gate_env("TELEGRAM_IGNORED_THREADS")
+        """Thread ids to skip: scoped ``TELEGRAM_IGNORED_THREADS`` → ``config.extra`` → none."""
+        raw = _extra_or_secret(self.config.extra, "ignored_threads", "TELEGRAM_IGNORED_THREADS", "", blank_is_unset=False)
         raw = _decode_json_list_literal(raw)
         ignored: set[int] = set()
         for value in (raw if isinstance(raw, list) else str(raw).split(",")):
@@ -5150,17 +5149,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
-        patterns = self.config.extra.get("mention_patterns")
-        if patterns is None:
-            raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
-            if raw:
-                try:
-                    loaded = json.loads(raw)
-                except Exception:
-                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
-                    if not loaded:
-                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
-                patterns = loaded
+        # Scoped env → the profile's YAML → none. Only the env rung is a serialized string (JSON list,
+        # newline- or comma-separated); a YAML string is one literal pattern and is left intact.
+        env_raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
+        if env_raw:
+            try:
+                patterns = json.loads(env_raw)
+            except Exception:
+                patterns = [part.strip() for part in env_raw.splitlines() if part.strip()]
+                if not patterns:
+                    patterns = [part.strip() for part in env_raw.split(",") if part.strip()]
+        else:
+            patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
             return []  # before touching ``self.name``: tests build bare adapters via object.__new__
         return compile_mention_patterns(patterns, log_prefix=self.name, platform_label="telegram", display_label="Telegram", logger_=logger)

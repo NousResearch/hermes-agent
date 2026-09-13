@@ -1014,6 +1014,71 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def test_create_reports_inherited_parent_subscription(monkeypatch, worker_env):
+    """The response reports an effective inherited route, not only a direct one."""
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    conn = kbc.connect()
+    try:
+        kbn.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="telegram",
+            chat_id="parent-chat",
+            thread_id="parent-thread",
+            notifier_profile="default",
+            delivery_mode="notify+wake",
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_create({
+        "title": "inherits parent subscription",
+        "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "parent-chat"
+
+
+def test_create_survives_effective_subscription_readback_failure(monkeypatch, worker_env):
+    """A read-back failure must not turn a successful create into a retry hazard."""
+    from hermes_cli import kanban_db_notify as kbn
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("simulated subscription read-back failure")
+
+    monkeypatch.setattr(kbn, "list_notify_subs", _boom)
+
+    out = kt._handle_create({
+        "title": "read-back failure remains created",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True, d
+    assert d["subscribed"] is False, d
+
+
 def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):
     """The config gate kanban.auto_subscribe_on_create=false must
     suppress auto-subscription even when the session has a delivery

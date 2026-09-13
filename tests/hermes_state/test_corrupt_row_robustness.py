@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 
 import pytest
 
@@ -414,5 +415,64 @@ def test_blob_stored_title_and_reasoning_stay_serializable(tmp_path):
         assert json.dumps(session) and json.dumps(messages)
         # The listing surface shares the same normalization boundary.
         assert all(json.dumps(s) for s in db.list_recent_sessions_bounded())
+    finally:
+        db.close()
+
+
+def test_take_unseen_reactions_normalizes_blob_stored_role(tmp_path):
+    """A BLOB-stored role bypasses text_factory (sqlite3 contract) and used to escape the
+    take_unseen_reactions payload as bytes, so json.dumps(result) raised TypeError. It must
+    degrade to str exactly like every other public read surface (#109465 review, gap 3)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "react to me")
+        row_id = db.latest_message_row_id("s", role="user")
+        db.set_message_reaction("s", row_id, "\U0001f44d", author="user")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET role = ? WHERE id = ?", (b"user \xe2\x9c", row_id)))
+        assert db._conn.execute(
+            "SELECT typeof(role) FROM messages WHERE id = ?", (row_id,)).fetchone()[0] == "blob"
+
+        result = db.take_unseen_reactions("s", author="user")
+        assert result == [{
+            "row_id": row_id, "role": "user \ufffd", "emoji": "\U0001f44d", "text": "react to me"}]
+        assert json.dumps(result)
+    finally:
+        db.close()
+
+
+def test_partial_projection_apis_normalize_blob_stored_cells(tmp_path):
+    """list_never_active_keyed_sessions/list_skill_scaffolded_sessions used to hand out
+    dict(row) directly, letting a corrupt BLOB-stored cell escape the public projection as
+    bytes. They share the _session_row_dict normalization boundary now, so both payloads
+    stay JSON-serializable (#109465 review, gap 3)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db._conn.execute(
+            "INSERT INTO sessions (id, source, session_key, chat_id, chat_type, user_id, "
+            "started_at, message_count, tool_call_count, api_call_count, input_tokens, "
+            "output_tokens, archived, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0)",
+            ("junk", "telegram", b"agent:main:telegram:dm:junk\xe2\x9c", "chat-1", "dm",
+             "user-1", time.time() - 45 * 86400.0))
+        db._conn.commit()
+        keyed = db.list_never_active_keyed_sessions(older_than_days=30)
+        assert [r["id"] for r in keyed] == ["junk"]
+        assert keyed[0]["session_key"] == "agent:main:telegram:dm:junk\ufffd"
+        assert json.dumps(keyed)
+
+        # Content stays TEXT: the selector's LIKE only matches TEXT storage. The BLOB damage
+        # lands on title, which the selector only checks for IS NOT NULL.
+        db.create_session("titled", "cli")
+        db.append_message("titled", "user", '[IMPORTANT: The user has invoked the "work" skill')
+        db.set_session_title("titled", "placeholder title")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = 'titled'", (b"Setup \xe2\x9c",)))
+        assert db._conn.execute(
+            "SELECT typeof(title) FROM sessions WHERE id = 'titled'").fetchone()[0] == "blob"
+        scaffolded = db.list_skill_scaffolded_sessions()
+        assert [r["id"] for r in scaffolded] == ["titled"]
+        assert scaffolded[0]["title"] == "Setup \ufffd"
+        assert json.dumps(scaffolded)
     finally:
         db.close()

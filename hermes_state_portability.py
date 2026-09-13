@@ -230,7 +230,9 @@ class SessionPortabilityMixin:
                 ORDER BY s.started_at DESC
                 LIMIT ?
                 """, (SKILL_SCAFFOLD_SQL_LIKE, int(limit)))
-        return [dict(row) for row in rows]
+        # Shared normalization boundary: a BLOB-stored title/content cell bypasses text_factory
+        # and must not escape the public projection as bytes (#109465 review).
+        return [self._session_row_dict(row) for row in rows]
 
     # ── Export ─────────────────────────────────────────────────────────────
 

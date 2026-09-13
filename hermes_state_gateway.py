@@ -311,7 +311,9 @@ class SessionGatewayMixin:
             """,
             (cutoff,),
         )
-        return [dict(r) for r in rows]
+        # Same normalization boundary as the other public session projections: a corrupt cell
+        # stored in BLOB storage bypasses text_factory and must not escape as bytes (#109465 review).
+        return [self._session_row_dict(r) for r in rows]
 
     def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
         """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id

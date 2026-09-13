@@ -5,6 +5,9 @@ import gzip
 import io
 import logging
 import os
+import shutil
+import stat
+import tempfile
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -43,6 +46,50 @@ def _build_gzip_member(line: str) -> bytes:
     return member.getvalue()
 
 
+def _append_gzip_member_atomically(filename: str, payload: bytes) -> None:
+    """Append a complete member with a stable lock and atomic destination replace.
+
+    A process can be killed at any point during a regular-file write, including
+    between short writes. Building the new file beside the destination keeps a
+    killed writer from ever publishing a partial gzip member. The sidecar lock
+    remains stable across ``os.replace`` so concurrent writers cannot split the
+    critical section when the destination inode changes.
+    """
+    directory = os.path.dirname(os.path.abspath(filename)) or "."
+    lock_name = f"{filename}.lock"
+    with open(lock_name, "a+b") as lock_file:
+        locked = False
+        try:
+            _lock_append_handle(lock_file, True)
+            locked = True
+            existing_mode = None
+            if os.path.exists(filename):
+                existing_mode = stat.S_IMODE(os.stat(filename).st_mode)
+            fd, staged_name = tempfile.mkstemp(
+                prefix=f".{os.path.basename(filename)}.", suffix=".tmp", dir=directory
+            )
+            try:
+                with os.fdopen(fd, "wb") as staged:
+                    if os.path.exists(filename):
+                        with open(filename, "rb") as existing:
+                            shutil.copyfileobj(existing, staged)
+                    staged.write(payload)
+                    staged.flush()
+                    os.fsync(staged.fileno())
+                if existing_mode is not None:
+                    os.chmod(staged_name, existing_mode)
+                os.replace(staged_name, filename)
+            finally:
+                if os.path.exists(staged_name):
+                    os.unlink(staged_name)
+        finally:
+            if locked:
+                try:
+                    _lock_append_handle(lock_file, False)
+                except (OSError, ValueError):
+                    pass
+
+
 def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):
     """Append a ShareGPT-format entry, gzip-compressed by default."""
     if filename is None:
@@ -52,34 +99,8 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: boo
         line = json.dumps(entry, ensure_ascii=False) + "\n"  # serialize before taking the lock
         is_gzip = str(filename).endswith(".gz")
         if is_gzip:
-            # Finalize the complete gzip member away from the destination. A
-            # killed worker can then leave no half-written member for the next
-            # append to consume.
             payload = _build_gzip_member(line)
-            with open(filename, "ab") as raw:
-                locked = False
-                try:
-                    append_start = raw.seek(0, os.SEEK_END)
-                    # Lock the stable raw descriptor for the one-shot append;
-                    # Windows locking must never use a moving gzip wrapper.
-                    _lock_append_handle(raw, True)
-                    locked = True
-                    try:
-                        raw.write(payload)
-                        raw.flush()
-                    except Exception:
-                        # A short write or failed flush must not poison the
-                        # concatenated gzip stream for later workers.
-                        raw.truncate(append_start)
-                        raw.flush()
-                        raise
-                    locked = False
-                finally:
-                    if locked:
-                        try:
-                            _lock_append_handle(raw, False)
-                        except (OSError, ValueError):
-                            pass
+            _append_gzip_member_atomically(filename, payload)
         else:
             with open(filename, "a", encoding="utf-8") as text_file:
                 locked = False

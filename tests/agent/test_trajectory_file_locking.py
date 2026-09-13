@@ -78,38 +78,25 @@ def test_interrupted_gzip_member_never_reaches_destination(tmp_path):
         assert json.loads(stream.readline())["conversations"][0]["value"] == "after-interruption"
 
 
-def test_failed_gzip_append_rolls_back_partial_member(tmp_path, monkeypatch):
-    """A write failure must restore the stream to its pre-append EOF."""
+def test_failed_gzip_replace_leaves_previous_members_intact(tmp_path, monkeypatch):
+    """A failed atomic publication must not damage the existing gzip stream."""
     target = tmp_path / "partial-trajectory.jsonl.gz"
-    real_open = open
+    save_trajectory([{"from": "human", "value": "before-failure"}], "m", True, str(target))
 
-    class PartialAppend:
-        def __init__(self):
-            self.raw = real_open(target, "ab")
+    def fail_replace(_staged, _destination):
+        raise OSError("simulated publication failure")
 
-        def __enter__(self):
-            return self
+    monkeypatch.setattr("agent.trajectory.os.replace", fail_replace)
+    save_trajectory([{"from": "human", "value": "not-published"}], "m", True, str(target))
 
-        def __exit__(self, exc_type, exc, tb):
-            return self.raw.__exit__(exc_type, exc, tb)
+    with gzip.open(target, "rt", encoding="utf-8") as stream:
+        assert json.loads(stream.readline())["conversations"][0]["value"] == "before-failure"
 
-        def __getattr__(self, name):
-            return getattr(self.raw, name)
-
-        def write(self, payload):
-            self.raw.write(payload[:7])
-            raise OSError("simulated disk-full write")
-
-    monkeypatch.setattr("agent.trajectory._lock_append_handle", lambda *_args: None)
-    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: PartialAppend())
-
-    save_trajectory([{"from": "human", "value": "broken"}], "m", True, str(target))
-
-    assert not target.exists() or target.stat().st_size == 0
     monkeypatch.undo()
     save_trajectory([{"from": "human", "value": "after-failure"}], "m", True, str(target))
     with gzip.open(target, "rt", encoding="utf-8") as stream:
-        assert json.loads(stream.readline())["conversations"][0]["value"] == "after-failure"
+        values = [json.loads(line)["conversations"][0]["value"] for line in stream]
+    assert values == ["before-failure", "after-failure"]
 
 
 @pytest.mark.windows_only

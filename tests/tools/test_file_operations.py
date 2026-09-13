@@ -16,6 +16,7 @@ from tools.file_operations import (
     PatchResult,
     SearchResult,
     ShellFileOperations,
+    _RAW_READ_MAX_BYTES,
     normalize_read_pagination,
     normalize_search_pagination,
 )
@@ -417,6 +418,27 @@ class TestShellFileOpsHelpers:
 
         assert result.error is None
         assert result.content == "alpha\n"
+
+    def test_read_file_raw_rejects_oversized_file(self, mock_env):
+        """read_file_raw must not cat a file above _RAW_READ_MAX_BYTES into memory."""
+        big = _RAW_READ_MAX_BYTES + 1
+
+        def side_effect(command, **kwargs):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
+                return {"output": f"{big}\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "text\n", "returncode": 0}
+            if command.startswith("cat "):
+                raise AssertionError("cat must not run for an oversized file")
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file_raw("/tmp/test/big.log")
+
+        assert result.error is not None
+        assert "too large" in result.error
+        assert result.file_size == big
 
 
 class TestSearchPathValidation:

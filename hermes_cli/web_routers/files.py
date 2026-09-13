@@ -494,7 +494,17 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        # Sibling temp + os.replace, same crash-safety contract as
+        # stream_upload_to_path: a mid-write crash never leaves a torn file.
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(tmp_fd, "wb") as out:
+                out.write(data)
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
     return _managed_write_result(policy, target, display_path)
 
 
@@ -675,9 +685,14 @@ async def fs_write_text(payload: FsWriteText):
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
 
-    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    # mkstemp, not a PID-stamped name: a predictable sibling temp lets another
+    # local process pre-create (or symlink) the path in a shared directory.
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".hermes-tmp", dir=str(target.parent))
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as out:
+            out.write(text)
         os.replace(tmp, target)
     except PermissionError:
         tmp.unlink(missing_ok=True)

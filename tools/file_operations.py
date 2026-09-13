@@ -150,6 +150,11 @@ MISSING_SENTINEL = "__hermes_missing__"
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
 
+# read_file_raw cats the whole file into memory (no paging). Cap it so a huge
+# target - reached via the write path's per-path lock, among others - can't
+# exhaust memory; callers that need a slice should use the paginated read.
+_RAW_READ_MAX_BYTES = 50 * 1024 * 1024
+
 
 def _new_sentinel(prefix: str) -> str:
     """Per-call separator line for a compound shell probe. 128 random bits make a
@@ -982,6 +987,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         is_binary, sample_bytes = self._detect_binary(path)
         if is_binary:
             return ReadResult(is_binary=True, file_size=file_size, error=describe_binary_file(sample_bytes, file_size))
+        if file_size > _RAW_READ_MAX_BYTES:
+            return ReadResult(
+                file_size=file_size,
+                error=(f"File is too large ({file_size:,} bytes, limit is "
+                       f"{_RAW_READ_MAX_BYTES:,}). Read a range with offset/limit instead."))
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")

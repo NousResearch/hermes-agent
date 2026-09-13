@@ -316,7 +316,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected")
+        "_ever_connected", "_sse_fallback")
 
     def __init__(self, name: str):
         self.name = name
@@ -345,6 +345,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._session_proven: bool = False
         # Never cleared (unlike _ready): separates first-connect from reconnect failures.
         self._ever_connected: bool = False
+        # Latched when Streamable HTTP falls back to SSE on initial connect.
+        self._sse_fallback: bool = False
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
@@ -456,6 +458,9 @@ _CONNECT_RETRY_BASE_BACKOFF_SEC, _CONNECT_RETRY_MAX_BACKOFF_SEC = 30.0, 600.0
 # — they keep the count and timestamp in sync.
 _server_error_counts: Dict[Any, int] = {}
 _server_breaker_opened_at: Dict[Any, float] = {}
+# True while every strike in the current streak was the tool's own error payload
+# (server reachable, call rejected); this keeps the open-breaker wording true.
+_server_errors_all_application: Dict[Any, bool] = {}
 _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 
 # Trust-tier gating (``trust: full | untrusted``): on an untrusted server every write-capable
@@ -470,25 +475,27 @@ _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 
 
-def _bump_server_error(server_name: str) -> None:
+def _bump_server_error(server_name: str, *, application: bool = False) -> None:
     """Count a failure; at the threshold (re)stamp the breaker-open time. Keyed by the calling
     scope's connection so one profile's failing server never opens another profile's breaker."""
     from tools.mcp_tool_scope import _resolve_server_key
-    with _lock:
-        key = _resolve_server_key(server_name, lock_held=True)
-        n = _server_error_counts.get(key, 0) + 1
-        _server_error_counts[key] = n
-        if n >= _CIRCUIT_BREAKER_THRESHOLD:
-            _server_breaker_opened_at[key] = time.monotonic()
+    key = _resolve_server_key(server_name)
+    n = _server_error_counts.get(key, 0) + 1
+    _server_error_counts[key] = n
+    _server_errors_all_application[key] = application and (
+        n == 1 or _server_errors_all_application.get(key, False)
+    )
+    if n >= _CIRCUIT_BREAKER_THRESHOLD:
+        _server_breaker_opened_at[key] = time.monotonic()
 
 
 def _reset_server_error(server_name: str) -> None:
     """Close the breaker on any unambiguous success signal."""
     from tools.mcp_tool_scope import _resolve_server_key
-    with _lock:
-        key = _resolve_server_key(server_name, lock_held=True)
-        _server_error_counts[key] = 0
-        _server_breaker_opened_at.pop(key, None)
+    key = _resolve_server_key(server_name)
+    _server_error_counts[key] = 0
+    _server_breaker_opened_at.pop(key, None)
+    _server_errors_all_application.pop(key, None)
 
 
 # Connection keys opted into parallel tool calls. Outside multiplexing these remain bare raw

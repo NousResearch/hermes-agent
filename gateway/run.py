@@ -1596,7 +1596,12 @@ def _reload_runtime_env_preserving_config_authority() -> None:
 
 
 def _bridge_max_turns_from_config(home: "Path") -> None:
-    """Re-bridge agent.max_turns (+ sessions.*) per turn; managed overlay applies or it reverts."""
+    """Re-bridge agent.max_turns (+ sessions.*) per turn; managed overlay applies or it reverts.
+    Skipped inside a served secondary's scope: the env slots are the launch profile's and
+    hermes_state reads the routed profile's ``sessions.*`` from its own config under scope."""
+    from gateway.platforms._shared import profile_scoped
+    if profile_scoped():
+        return
     config_path = home / 'config.yaml'
     if not config_path.exists():
         return
@@ -2120,7 +2125,7 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
-from gateway.run_turn import GatewayTurnMixin
+from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
 from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
@@ -2544,6 +2549,7 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+_INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -2676,7 +2682,7 @@ def _watch_gateway_turn_inactivity(
 
 _CONTROL_INTERRUPT_MESSAGES = frozenset({
     _INTERRUPT_REASON_STOP.lower(), _INTERRUPT_REASON_RESET.lower(),
-    _INTERRUPT_REASON_TIMEOUT.lower(), _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
+    _INTERRUPT_REASON_TIMEOUT.lower(), _INTERRUPT_REASON_EVICTED.lower(), _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
     _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(), _INTERRUPT_REASON_GATEWAY_RESTART.lower()})
 
 
@@ -2922,12 +2928,16 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
 
 def _parse_session_key(session_key: str) -> "dict | None":
-    """Parse a session key (``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
+    """Parse a session key (``agent:{profile}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id`` is omitted.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if len(parts) >= 5 and parts[0] == "agent" and (
+        parts[1] == "main" or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", parts[1])
+    ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
+        if parts[1] != "main":
+            result["profile"] = parts[1]
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -3041,8 +3051,12 @@ def _normalize_empty_agent_response(
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
     hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
     (#31884)
+
+    A failed context-overflow turn whose ``final_response`` is only the raw
+    provider envelope is rewritten too; curated agent text survives.
     """
-    if response:
+    is_overflow = is_context_overflow_failure_result(agent_result, history_len)
+    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
@@ -3060,9 +3074,7 @@ def _normalize_empty_agent_response(
                 "⚠️ Session storage was temporarily unavailable, so this "
                 "turn was stopped to protect your conversation history. "
                 "Your message should already be saved — please send it again in a moment.")
-        if any(p in error_str for p in (
-                "context", "token", "too large", "too long", "exceed", "payload")) or (
-                "400" in error_str and history_len > 50):
+        if is_overflow:
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or /reset to start fresh.")
@@ -4282,23 +4294,30 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+    def _profile_name_for_source(
+        self, source: SessionSource, adapter_profile: Optional[str] = None,
+    ) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes (most specific wins).
         ``None`` = default/active profile. Gated on ``multiplex_profiles``, since the scoped run only
         activates under multiplexing; otherwise keys would be profile-namespaced while the agent ran in
-        ``agent:main``."""
+        ``agent:main``. ``adapter_profile`` identifies the profile owning the receiving bot,
+        so a route can require that transport ownership."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
+        if adapter_profile is None:
+            owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
+            if isinstance(owner, tuple):
+                adapter_profile = owner[1]
         from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None))
+                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
@@ -5128,9 +5147,9 @@ def _start_gateway_start_cron_and_housekeeping(runner):
                 cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
-                # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's
-                # cron through the default bot (even before that profile's adapter connects).
-                cron_start_kwargs["default_profile"] = "default"
+                # runner.adapters belongs to the launch profile; naming it keeps the ticker from routing
+                # a secondary's cron through the wrong bot, including a named multiplex launch.
+                cron_start_kwargs["default_profile"] = runner._primary_profile_name
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
                     [p[0] if isinstance(p, tuple) else p for p in profile_homes])

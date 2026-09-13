@@ -2472,9 +2472,6 @@ OPTIONAL_ENV_VARS = {
     "GMI_BASE_URL": _base_url("GMI Cloud"),
     "ACTUAL_API_KEY": _prov("Actual Computer inference key (ac_...)",
         "Actual Computer inference key", "https://actual.inc/user/keys"),
-    "ACTUAL_BASE_URL": _prov(
-        "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline "
-        "daemon)", "Actual Computer base URL (leave empty for hosted relay)", None, password=False),
     "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
         "https://app.fireworks.ai/settings/users/api-keys"),
     "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",

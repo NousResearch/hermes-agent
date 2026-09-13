@@ -178,6 +178,14 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def owns_reasoning_policy(self, **context: Any) -> bool:
+        """Return True when this profile owns whether reasoning is emitted."""
+        return False
+
+    def sanitize_request_kwargs(self, api_kwargs: dict[str, Any], **context: Any) -> dict[str, Any]:
+        """Apply provider-owned cleanup after request overrides are merged."""
+        return api_kwargs
+
     def build_client_kwargs_extras(self, **context: Any) -> dict[str, Any]:
         """Provider-specific OpenAI client keyword arguments.
 

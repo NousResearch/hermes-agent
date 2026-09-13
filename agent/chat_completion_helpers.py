@@ -708,6 +708,22 @@ def _attach_source_provenance_sidecar(
 def _dispatch_provider_request(agent, request, callback):
     """Apply the exact provider-bound egress policy at a physical call site."""
 
+    # Native SDK callers can enter the provider path with a live Relay turn
+    # before the normal conversation loop has stamped its per-request fields.
+    # Reuse that already-authoritative turn identity; never invent identity for
+    # an unmanaged call, which must remain fail-closed at the firewall.
+    if _destination_requires_egress_firewall(agent) and not getattr(agent, "_current_turn_id", ""):
+        from agent import relay_runtime
+        active_turn = relay_runtime.active_turn()
+        if active_turn is not None:
+            turn_id = str(getattr(active_turn, "turn_id", "") or "")
+            if turn_id:
+                agent._current_turn_id = turn_id
+                agent._current_api_request_id = (
+                    f"{turn_id}:api:1"
+                    if not getattr(agent, "_current_api_request_id", "") else agent._current_api_request_id
+                )
+
     if not _destination_requires_egress_firewall(agent):
         return callback(request)
     from agent.llm_egress_runtime import dispatch_authorized_agent_request
@@ -1716,6 +1732,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.long_context_tier: "long-context tier unavailable",
     FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",
     FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
+    FailoverReason.egress_policy_blocked: "local egress policy blocked the request",
     FailoverReason.unknown: "provider failure",
 }
 
@@ -1769,6 +1786,17 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     return "chat_completions"
 
 
+def _fallback_destination_class(fb: dict):
+    """Classify a fallback endpoint using the same egress policy as the active request."""
+    from agent.llm_egress_firewall import classify_destination
+
+    return classify_destination(
+        provider=str(fb.get("provider") or ""),
+        base_url=fb.get("base_url"),
+        api_mode=fb.get("api_mode"),
+    )
+
+
 def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
@@ -1802,7 +1830,10 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     return False
 
 
-def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
+def _should_skip_fallback_candidate(
+    agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set,
+    reason: "FailoverReason | None" = None,
+) -> bool:
     """True when the entry is already unavailable, malformed, locally unusable, or resolves
     to the backend that just failed (falling back to it would loop the failure)."""
     if fb_key in unavailable:
@@ -1810,6 +1841,14 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
+    if reason == FailoverReason.egress_policy_blocked:
+        from agent.llm_egress_firewall import DestinationClass
+        destination = _fallback_destination_class(fb)
+        if destination not in (DestinationClass.LOCAL_PROCESS, DestinationClass.LOOPBACK):
+            logger.warning(
+                "Fallback skip: %s/%s is a remote destination (%s); egress policy blocked the "
+                "current request, so only local fallbacks are eligible", fb_provider, fb_model, destination)
+            return True
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
@@ -1908,6 +1947,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    if reason == FailoverReason.unsupported_thinking:
+        return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
     while True:
@@ -1921,7 +1962,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
-        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+        if _should_skip_fallback_candidate(
+            agent, fb, fb_key, fb_provider, fb_model, unavailable, reason=reason,
+        ):
             continue
 
         try:

@@ -1351,6 +1351,9 @@ def create_task(
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
+    # JSON-RPC/CLI callers may pass an explicit null for an omitted optional
+    # field. Keep the public default invariant at the DB boundary.
+    workspace_kind = workspace_kind or "scratch"
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
@@ -3648,7 +3651,8 @@ def promote_task(
         if unsatisfied:
             return False, (
                 f"unsatisfied parent dependencies: "
-                f"{', '.join(unsatisfied)} (use --force to override)"
+                f"{', '.join(unsatisfied)}; resolve the parent or "
+                f"unlink <parent_id> {task_id}"
             )
 
     if dry_run:

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_home_override, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
@@ -181,7 +181,12 @@ _READ_ONLY_IOERR_RETRY_ATTEMPTS, _READ_ONLY_IOERR_RETRY_BACKOFF_S = 3, 0.05
 
 def _default_db_path() -> Path:
     """Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, else
-    ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import)."""
+    ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import).
+    A context-local profile route takes precedence over the process/test pin so multiplexed turns
+    cannot open the launch profile's database."""
+    override = get_hermes_home_override()
+    if override:
+        return Path(override) / "state.db"
     return DEFAULT_DB_PATH if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH else get_hermes_home() / "state.db"
 
 

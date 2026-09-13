@@ -388,6 +388,12 @@ PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
+    # Keys represented by typed fields stay out of ``extra``; every other
+    # platform-specific setting is preserved there for adapter hooks.
+    _TYPED_KEYS = frozenset({
+        "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text",
+    })
     enabled: bool = False
     token: Optional[str] = None
     api_key: Optional[str] = None  # API key if different from token
@@ -418,8 +424,13 @@ class PlatformConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
-        # The typing/restart-notification keys may be top-level or bridged into ``extra``; top-level wins.
-        extra = _coerce_dict(data.get("extra", {}))
+        # Adapters read settings from ``extra`` while users commonly write
+        # them directly under the platform block. Preserve both spellings;
+        # explicit ``extra`` values win on clashes.
+        extra = {
+            **{k: v for k, v in data.items() if k not in cls._TYPED_KEYS},
+            **_coerce_dict(data.get("extra", {})),
+        }
 
         def toplevel_or_extra(key: str) -> Any:
             value = data.get(key)

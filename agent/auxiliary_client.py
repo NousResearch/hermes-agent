@@ -20,6 +20,7 @@ import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -2397,6 +2398,101 @@ _RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
 )
 
 
+def _auxiliary_egress_binding(
+    client: Any,
+    *,
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+) -> tuple[Any, Any] | None:
+    """Build the identity and route used to authorize protected auxiliary calls."""
+    from agent.llm_egress_runtime import provider_uses_egress_firewall
+
+    normalized_provider = _normalize_aux_provider(provider)
+    if (
+        os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") != "1"
+        and not provider_uses_egress_firewall(normalized_provider)
+    ):
+        return None
+    from agent.source_provenance import DEFAULT_POLICY_DIGEST
+
+    runtime = _normalize_main_runtime(None)
+    raw_runtime = _RUNTIME_MAIN_CONTEXT.get() or {}
+    relay = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    request_id = str(relay.get("request_id") or f"aux-{uuid.uuid4().hex}")
+    session_id = str(
+        runtime.get("session_id")
+        or raw_runtime.get("session_id")
+        or f"aux-session:{request_id}"
+    )
+    turn_id = str(raw_runtime.get("turn_id") or f"{session_id}:aux:{str(relay.get('task') or 'call')}")
+    policy_digest = str(
+        raw_runtime.get("policy_digest")
+        or raw_runtime.get("llm_egress_policy_digest")
+        or DEFAULT_POLICY_DIGEST
+    )
+    base_url = str(getattr(client, "base_url", "") or "")
+    if not base_url.startswith(("http://", "https://")):
+        base_url = str(raw_runtime.get("base_url") or "")
+    if not base_url.startswith(("http://", "https://")):
+        base_url = {
+            "openai-codex": "https://chatgpt.com/backend-api/codex",
+            "anthropic": "https://api.anthropic.com/v1",
+        }.get(normalized_provider, _NOUS_DEFAULT_BASE_URL)
+    resolved_api_mode = str(
+        api_mode
+        or ("codex_responses" if normalized_provider == "openai-codex" else "chat_completions")
+    )
+    attrs = {
+        "provider": normalized_provider,
+        "model": str(model or ""),
+        "base_url": base_url,
+        "api_mode": resolved_api_mode,
+        "session_id": session_id,
+        "_current_turn_id": turn_id,
+        "_current_api_request_id": request_id,
+        "_llm_egress_policy_digest": policy_digest,
+        "_llm_egress_state_dir": Path(get_hermes_home()) / "egress",
+    }
+    if str(relay.get("task") or "") == "compression":
+        attrs.update(
+            _llm_egress_max_serialized_bytes=2_000_000,
+            _llm_egress_max_conservative_tokens=666_667,
+            _llm_egress_max_sanitized_bytes=2_000_000,
+            _llm_egress_max_sanitized_segment_bytes=32_768,
+            _llm_egress_max_granted_serialized_bytes=2_000_000,
+            _llm_egress_max_granted_conservative_tokens=666_667,
+        )
+    agent = SimpleNamespace(**attrs)
+    route = SimpleNamespace(
+        provider=normalized_provider,
+        model=str(model or ""),
+        base_url=base_url,
+        api_mode=resolved_api_mode,
+    )
+    return agent, route
+
+
+def _dispatch_auxiliary_request(
+    client: Any,
+    request: dict[str, Any],
+    callback: Callable[[dict[str, Any]], Any],
+    *,
+    provider: str | None,
+    model: str | None,
+    api_mode: str | None,
+) -> Any:
+    binding = _auxiliary_egress_binding(
+        client, provider=provider, model=model or request.get("model"), api_mode=api_mode
+    )
+    if binding is None:
+        return callback(request)
+    from agent.llm_egress_runtime import dispatch_authorized_agent_request
+
+    agent, route = binding
+    return dispatch_authorized_agent_request(agent, request, callback, route=route)
+
+
 @contextlib.contextmanager
 def _relay_aux_call_scope(args: tuple, kwargs: dict):
     """Bind a fresh relay call context for one auxiliary call; mark it failed on any exception."""
@@ -2482,9 +2578,13 @@ def _relay_sync_completion(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
-    # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
-    # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
+    # The progress hook is installed per TASK, so every attempt streams through the existing callback.
     callback = create or (lambda request: _create_with_progress(client, request))
+    raw_callback = callback
+    callback = lambda request: _dispatch_auxiliary_request(
+        client, request, raw_callback, provider=provider,
+        model=request.get("model"), api_mode=api_mode,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2506,8 +2606,21 @@ async def _relay_async_completion(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
-    # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
+    raw_callback = callback
+
+    async def _authorized_callback(request: dict[str, Any]) -> Any:
+        binding = _auxiliary_egress_binding(
+            client, provider=provider, model=request.get("model"), api_mode=api_mode,
+        )
+        if binding is None:
+            return await raw_callback(request)
+        from agent.llm_egress_runtime import dispatch_authorized_agent_request
+        agent, route = binding
+        result = dispatch_authorized_agent_request(agent, request, raw_callback, route=route)
+        return await result if inspect.isawaitable(result) else result
+
+    callback = _authorized_callback
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -2525,9 +2638,14 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
+    callback = lambda request: _dispatch_auxiliary_request(
+        client, request,
+        lambda authorized: client.chat.completions.create(**authorized),
+        provider=provider, model=kwargs.get("model"), api_mode=api_mode,
+    )
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return client.chat.completions.create(**kwargs)
+        return callback(kwargs)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     return relay_llm.stream_current(

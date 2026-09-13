@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home, named_profile_home
+from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -164,7 +165,7 @@ _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 def _oneshot_run_claim_ttl_seconds() -> float:
     """One-shot running-claim TTL from ``HERMES_CRON_TIMEOUT``: unset/invalid → 600s → 1800s;
     ``0`` (unlimited) → the fixed floor; positive N → ``max(N * headroom, floor)``."""
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
     try:
         timeout = float(raw) if raw else _DEFAULT_CRON_INACTIVITY_TIMEOUT
     except (ValueError, TypeError):
@@ -523,16 +524,15 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op where chmod is unsupported (Windows)."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        os.chmod(path, 0o700)
+    """Owner-only (0700) via the shared helper, including managed/container policy."""
+    from hermes_cli.config import _secure_dir as _shared_secure_dir
+    _shared_secure_dir(path)
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op where chmod is unsupported (Windows)."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        if path.exists():
-            os.chmod(path, 0o600)
+    """Owner-only (0600) via the shared helper, including managed/container policy."""
+    from hermes_cli.config import _secure_file as _shared_secure_file
+    _shared_secure_file(path)
 
 
 def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
@@ -1905,6 +1905,32 @@ def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None
             updates["repeat"] = {"times": normalize_repeat_value(_rp), "completed": completed}
 
 
+def _rederive_repeat_for_schedule_change(
+    job: Dict[str, Any], updates: Dict[str, Any]
+) -> None:
+    """Keep the default repeat limit aligned when an update changes schedule kind."""
+    if "schedule" not in updates or "repeat" in updates:
+        return
+    new_schedule = updates["schedule"]
+    if isinstance(new_schedule, str):
+        new_schedule = parse_schedule(new_schedule)
+        updates["schedule"] = new_schedule
+    old_kind = (job.get("schedule") or {}).get("kind")
+    new_kind = new_schedule.get("kind")
+    if old_kind == new_kind:
+        return
+    repeat = dict(job.get("repeat") or {})
+    times = repeat.get("times")
+    if new_kind == "once" and times is None:
+        repeat["times"] = 1
+    elif new_kind != "once" and old_kind == "once" and times == 1:
+        repeat["times"] = None
+    else:
+        return
+    repeat.setdefault("completed", 0)
+    updates["repeat"] = repeat
+
+
 def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
@@ -1944,6 +1970,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)
         previous_schedule_kind = (job.get("schedule") or {}).get("kind")
@@ -1973,6 +2000,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 repeat["times"] = 1 if new_schedule_kind == "once" else None
                 repeat.setdefault("completed", 0)
                 updated["repeat"] = repeat
+        if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
+            updated.pop("pending_slot", None)
         if inference_fields_changed:
             snapshots = _compute_provider_model_snapshots(
                 provider=updated.get("provider"),
@@ -1987,6 +2016,47 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         return _normalize_job_record(updated)
 
     return _with_job(job_id, apply)
+
+
+def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Refresh provider/model snapshots for one job's unpinned inference axes."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
+    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+        provider=job.get("provider"), model=job.get("model"),
+        base_url=job.get("base_url"), no_agent=job.get("no_agent"),
+    )
+    jobs = load_jobs()
+    for i, stored in enumerate(jobs):
+        if stored["id"] != job["id"]:
+            continue
+        jobs[i]["provider_snapshot"] = provider_snapshot
+        jobs[i]["model_snapshot"] = model_snapshot
+        save_jobs(jobs)
+        return _normalize_job_record(jobs[i])
+    return None
+
+
+def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
+    """Refresh snapshots for every job with at least one unpinned inference axis."""
+    updated: List[Dict[str, Any]] = []
+    jobs = load_jobs()
+    changed = False
+    for job in jobs:
+        if bool(job.get("no_agent")) or (job.get("provider") and job.get("model")):
+            continue
+        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+            provider=job.get("provider"), model=job.get("model"),
+            base_url=job.get("base_url"), no_agent=job.get("no_agent"),
+        )
+        job["provider_snapshot"] = provider_snapshot
+        job["model_snapshot"] = model_snapshot
+        changed = True
+        updated.append(_normalize_job_record(job))
+    if changed:
+        save_jobs(jobs)
+    return updated
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:

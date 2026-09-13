@@ -1481,6 +1481,11 @@ class CLICommandsMixin:
     def _worktree_new(self, repo_root: str, rest: str) -> None:
         import cli as _cli
         from hermes_cli.config import load_config
+        if getattr(self, "_conversation_worktree_manager", None) is not None:
+            return _pr(
+                "  ❌ /worktree new is unavailable while conversation isolation is active.",
+                "  Use /new for a fresh isolated conversation or /branch for an independent copy.",
+            )
         try:
             sync_base = bool(load_config().get("worktree_sync", True))
         except Exception:

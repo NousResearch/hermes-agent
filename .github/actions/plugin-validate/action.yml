@@ -35,9 +35,10 @@ runs:
         _HERMES_REF: ${{ inputs.hermes-ref }}
       run: |
         set -euo pipefail
-        # CI-context install from git; the ref lets plugin authors validate
-        # against a pinned hermes release instead of main.
-        pip install "git+https://github.com/NousResearch/hermes-agent@${_HERMES_REF}"
+        # Editable VCS installs use the supported source-install path and do
+        # not invoke the wheel build that fails in plugin repositories whose
+        # CI environment does not carry the Hermes packaging toolchain.
+        pip install -e "git+https://github.com/NousResearch/hermes-agent@${_HERMES_REF}#egg=hermes-agent"
 
     - name: Validate plugin
       shell: bash

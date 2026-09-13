@@ -276,6 +276,113 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+# --- structured options: the worker's choices travel as DATA ---------------
+
+_OPTS = [{"label": "Relax the daily cap to 3", "value": "a"},
+         {"label": "Keep it at 1 and accept the gap", "value": "b"}]
+
+
+def test_block_options_round_trip(worker_env):
+    """kanban_block(options=...) -> payload data, re-readable from the card."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    out = kt._handle_block({"reason": "Which daily cap?", "kind": "needs_input",
+                            "options": _OPTS})
+    d = json.loads(out)
+    assert d["ok"] is True and d["status"] == "blocked"
+    conn = kbc.connect()
+    try:
+        got = kb.block_options_for_task(conn, worker_env)
+        payload = [e for e in kb.list_events(conn, worker_env) if e.kind == "blocked"][-1].payload
+    finally:
+        conn.close()
+    assert payload["options"] == _OPTS
+    assert got["origin"] == "declared"
+    assert got["options"] == _OPTS
+    # text-only surfaces keep the choices too (the canonical line is appended)
+    assert "OPTIONS: a=Relax the daily cap to 3 | b=Keep it at 1 and accept the gap" in got["reason"]
+
+
+def test_block_without_options_is_unchanged(worker_env):
+    """No options -> reason verbatim, payload exactly as before the field."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    out = kt._handle_block({"reason": "need clarification"})
+    assert json.loads(out)["ok"] is True
+    conn = kbc.connect()
+    try:
+        payload = [e for e in kb.list_events(conn, worker_env) if e.kind == "blocked"][-1].payload
+        got = kb.block_options_for_task(conn, worker_env)
+    finally:
+        conn.close()
+    assert "options" not in payload
+    assert payload["reason"] == "need clarification"
+    assert got == {"options": [], "origin": "none", "reason": "need clarification",
+                   "event_kind": "blocked", "event_id": got["event_id"]}
+
+
+def test_block_rejects_malformed_options(worker_env):
+    """A malformed list is a tool error and must NOT block the card."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    d = json.loads(kt._handle_block({"reason": "pick one",
+                                     "options": [{"label": "only a label"}]}))
+    assert "error" in d and "options" in d["error"]
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "running"
+    finally:
+        conn.close()
+
+
+def test_block_schema_publishes_the_options_contract():
+    """The model-facing schema carries the field AND the exact-line-only rule."""
+    from tools.kanban_tools_schemas import KANBAN_BLOCK_SCHEMA
+    params = KANBAN_BLOCK_SCHEMA["parameters"]
+    props = params["properties"]
+    assert params["required"] == ["reason"]  # options stays optional
+    opts = props["options"]
+    assert opts["type"] == "array" and opts["maxItems"] == 4
+    assert set(opts["items"]["required"]) == {"label", "value"}
+    assert set(opts["items"]["properties"]) == {"label", "value"}
+    desc = KANBAN_BLOCK_SCHEMA["description"] + " " + opts["description"]
+    assert "OPTIONS: a=<label> | b=<label>" in desc   # the canonical line
+    assert "ONLY prose form" in desc                  # exact-line-only rule
+    assert "never turned into buttons" in desc        # no prose guessing
+
+
+def test_block_handler_docstring_documents_the_fallback():
+    """The tool docstring spells out the fallback line and its exact form."""
+    from tools import kanban_tools as kt
+    doc = kt._handle_block.__doc__ or ""
+    assert "OPTIONS: a=<label> | b=<label>" in doc
+    assert "column 0" in doc
+    assert "only such line" in doc
+    assert "never" in doc and "guessed into buttons" in doc
+
+
+def test_block_options_are_redacted(worker_env):
+    """A secret-shaped label/value must not reach the payload cleartext."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    secret = "sk-live-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    out = kt._handle_block({"reason": "which key?", "kind": "needs_input",
+                            "options": [{"label": f"Use {secret}", "value": "a"}]})
+    assert json.loads(out)["ok"] is True
+    conn = kbc.connect()
+    try:
+        got = kb.block_options_for_task(conn, worker_env)
+        reason = got["reason"]
+    finally:
+        conn.close()
+    assert secret not in json.dumps(got)
+    assert secret not in reason
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""

@@ -176,7 +176,17 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
-        "block on things you can resolve yourself."
+        "block on things you can resolve yourself. If the human has to PICK "
+        "between choices, declare them in ``options`` (max 4, each a short "
+        "``label`` plus a short ``value`` id): they are stored as data on the "
+        "card, so a UI can render them as buttons instead of parsing your "
+        "prose, and the same choices are appended to the stored reason as "
+        "``OPTIONS: a=<label> | b=<label>`` (skipped when the reason already "
+        "carries one). That exact line — starting at column 0, at most one "
+        "per reason, every part a clean ``id=label`` pair — is the ONLY prose "
+        "form ever recognised; free-form prose (\"reply (a) or (b)\", "
+        "\"1 / 2 / 3\") is never turned into buttons, so put choices in "
+        "``options`` or on that line."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -194,6 +204,30 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "if no parent is open it is recorded as needs_input instead. "
                 "The others surface to a human. Omit only if none apply."
             ),
+        },
+        "options": {
+            "type": "array",
+            "maxItems": 4,
+            "description": (
+                "The choices the human should pick from — up to 4, each a "
+                "short ``label`` (the button text) and a short unique "
+                "``value`` id (e.g. \"a\"). Stored as data on the card so a "
+                "UI can render buttons, and mirrored into the reason as the "
+                "canonical OPTIONS: line. Omit it when you are not asking a "
+                "multiple-choice question; behaviour is then unchanged."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": _prop(
+                        "string",
+                        "Short text for the choice ('Relax the daily cap to 3')."),
+                    "value": _prop(
+                        "string",
+                        "Short unique id for the choice ('a', 'b', '1')."),
+                },
+                "required": ["label", "value"],
+            },
         },
     },
     ["reason"],

@@ -21,6 +21,21 @@ def test_every_required_binary_maps_to_an_installed_package(pm):
     assert not {"xorg-x11-server-utils", "xorg-x11-utils"} & set(runtime.PACKAGES["dnf"]), "retired on Fedora"
 
 
+def test_privileged_executable_resolution_ignores_inherited_path(tmp_path, monkeypatch):
+    attacker = tmp_path / "attacker"
+    system = tmp_path / "system"
+    attacker.mkdir()
+    system.mkdir()
+    for directory in (attacker, system):
+        executable = directory / "sudo"
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(attacker))
+    monkeypatch.setattr(runtime, "_SYSTEM_PATH", str(system))
+
+    assert runtime._system_executable("sudo") == str(system / "sudo")
+
+
 def test_no_running_screen_returns_none_without_grabbing(monkeypatch):
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":99"})
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)

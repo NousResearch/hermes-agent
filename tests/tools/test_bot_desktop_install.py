@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import os
 import threading
 
 import pytest
@@ -12,9 +14,17 @@ from tools.bot_desktop import install, runtime
 @pytest.fixture(autouse=True)
 def _isolated_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: False)
+    system_executables = {
+        "sudo": "/usr/bin/sudo",
+        "apt-get": "/usr/bin/apt-get",
+        "dnf": "/usr/bin/dnf",
+        "pacman": "/usr/bin/pacman",
+    }
+    monkeypatch.setattr(runtime, "_system_executable", system_executables.get)
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda _sudo: False)
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
-    monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y tigervnc-standalone-server")
+    monkeypatch.setattr(runtime, "install_command",
+                        lambda: "/usr/bin/sudo /usr/bin/apt-get install -y tigervnc-standalone-server")
     yield
     install._running.clear()
 
@@ -60,6 +70,39 @@ def test_claim_is_atomic_and_refuses_a_second_claim():
     install.release(key)
 
 
+def test_install_uses_absolute_executables_and_a_scrubbed_environment(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        def __init__(self):
+            self.pid = os.getpid()
+            self.stdin = io.StringIO()
+            self.stdout: list[str] = []
+
+        @staticmethod
+        def wait():
+            return 0
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setenv("PATH", "/home/user/.local/bin:/usr/bin")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+    monkeypatch.setattr(install.subprocess, "Popen", fake_popen)
+
+    command = "/usr/bin/sudo /usr/bin/apt-get install -y package"
+    assert install._run(command, ask_password=lambda: "password", on_line=lambda _line: None,
+                        timeout_seconds=1) == 0
+    assert captured["argv"][:5] == ["/usr/bin/sudo", "-S", "-p", "", "/usr/bin/apt-get"]
+    assert captured["env"] == {
+        "PATH": runtime._SYSTEM_PATH,
+        "DEBIAN_FRONTEND": "noninteractive",
+        "LC_ALL": "C.UTF-8",
+    }
+
+
 @pytest.mark.linux_only
 def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
     """sudo forks the package manager into the same (new) session; killing sudo alone leaves apt/dnf
@@ -67,9 +110,9 @@ def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
     import subprocess
     import time
 
-    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: True)
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda _sudo: True)
     # stand-in for `sudo apt-get ...`: a parent that spawns a child and waits, both in the new session
-    fake = ["sudo"]
+    fake = ["/usr/bin/sudo"]
     real_popen = subprocess.Popen
 
     def popen(argv, **kw):
@@ -79,7 +122,8 @@ def test_timeout_kills_the_package_managers_whole_process_group(monkeypatch):
 
     monkeypatch.setattr(install.subprocess, "Popen", popen)
     lines: list[str] = []
-    code = install._run("sudo apt-get install -y x", ask_password=lambda: "", on_line=lines.append, timeout_seconds=0.5)
+    code = install._run("/usr/bin/sudo /usr/bin/apt-get install -y x",
+                        ask_password=lambda: "", on_line=lines.append, timeout_seconds=0.5)
     assert code != 0
     child = next(int(line.split()[1]) for line in lines if line.startswith("child "))
     from pathlib import Path

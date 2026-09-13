@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -35,6 +36,11 @@ _LAUNCHER = Path(__file__).with_name("launcher.sh")
 # Display numbers below 10 collide with real seats and default Xvfb recipes (:99 is popular too); scan a
 # private band and record the choice so restarts reuse it.
 _DISPLAY_MIN, _DISPLAY_MAX = 20, 89
+
+# Package installation is privileged. Never resolve sudo or a package manager through the gateway's
+# inherited PATH, which commonly contains user-writable directories such as ~/.local/bin.
+_SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+_PACKAGE_MANAGER_BINARIES = {"apt": "apt-get", "dnf": "dnf", "pacman": "pacman"}
 
 # Binaries the launcher execs; the package hint is per distro family.
 REQUIRED_BINARIES = ("Xvnc", "xfwm4", "xfce4-panel", "xfdesktop", "xfsettingsd", "dbus-run-session",
@@ -81,22 +87,32 @@ def missing_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if shutil.which(b) is None]
 
 
+def _system_executable(name: str) -> Optional[str]:
+    """Absolute executable resolved only from root-managed system directories."""
+    executable = shutil.which(name, path=_SYSTEM_PATH)
+    return str(Path(executable).resolve()) if executable else None
+
+
 def package_manager() -> Optional[str]:
-    for pm in ("apt-get", "dnf", "pacman"):
-        if shutil.which(pm):
-            return "apt" if pm == "apt-get" else pm
+    for pm, executable in _PACKAGE_MANAGER_BINARIES.items():
+        if _system_executable(executable):
+            return pm
     return None
 
 
 def install_command() -> Optional[str]:
     pm = package_manager()
-    if pm is None:
+    sudo = _system_executable("sudo")
+    package_manager_executable = _system_executable(_PACKAGE_MANAGER_BINARIES[pm]) if pm else None
+    if pm is None or sudo is None or package_manager_executable is None:
         return None
     pkgs = " ".join(PACKAGES[pm])
     return {
-        "apt": f"sudo apt-get install -y --no-install-recommends {pkgs}",
-        "dnf": f"sudo dnf install -y {pkgs}",
-        "pacman": f"sudo pacman -S --needed --noconfirm {pkgs}",
+        "apt": f"{shlex.quote(sudo)} {shlex.quote(package_manager_executable)} "
+               f"install -y --no-install-recommends {pkgs}",
+        "dnf": f"{shlex.quote(sudo)} {shlex.quote(package_manager_executable)} install -y {pkgs}",
+        "pacman": f"{shlex.quote(sudo)} {shlex.quote(package_manager_executable)} "
+                  f"-S --needed --noconfirm {pkgs}",
     }[pm]
 
 

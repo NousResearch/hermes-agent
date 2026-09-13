@@ -108,6 +108,26 @@ def test_provider_qualified_scorer_model_is_accepted(tmp_path):
     assert receipt.scorer_model == "anthropic/claude-sonnet-4.6"
 
 
+def test_rejected_repeat_benchmark_does_not_persist_an_orphan_receipt(tmp_path):
+    now = [1_000]
+    requests, gate, proposal, cases = _candidate(tmp_path, now)
+    _, first = gate.benchmark(
+        proposal, cases, scorer_model="benchmark-model", scores=(90, 90), scorer_available=True
+    )
+    changed_cases = FrozenBenchmarkCaseSet(case_ids=(_digest("case-c"), _digest("case-d")))
+
+    result, _ = gate.benchmark(
+        proposal, changed_cases, scorer_model="benchmark-model", scores=(95, 95), scorer_available=True
+    )
+
+    assert result.status == "rejected"
+    with gate._connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM specialist_benchmark_receipts").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT result_hash FROM specialist_benchmark_receipts"
+        ).fetchone()[0] == first.result_hash
+
+
 def test_permission_delta_cannot_be_benchmarked_or_activated(tmp_path):
     now = [1_000]
     _, gate, proposal, cases = _candidate(tmp_path, now)
@@ -291,7 +311,15 @@ def test_durable_active_promotion_creates_registry_profile(tmp_path):
         stage_approval, authenticated_operator_identity="portal:operator-1"
     )
     assert gate.stage(proposal, benchmark, verification, stage_approval).status == "staged"
-    assert gate.run_local_no_send_canary(proposal, verification)[0].status == "staged"
+    first_canary_result, first_canary = gate.run_local_no_send_canary(proposal, verification)
+    assert first_canary_result.status == "staged"
+    now[0] += 10
+    second_canary_result, second_canary = gate.run_local_no_send_canary(proposal, verification)
+    assert second_canary_result.status == "staged"
+    assert second_canary is not None and first_canary is not None
+    assert second_canary.result_hash == first_canary.result_hash
+    with gate._connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM specialist_canary_receipts").fetchone()[0] == 1
 
     active_approval = OperatorApproval(
         candidate_id=proposal.candidate_id,

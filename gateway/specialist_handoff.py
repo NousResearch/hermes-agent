@@ -200,28 +200,31 @@ def create_specialist_handoff(
 
         key = _idempotency_key(source)
         db_path = configured_board_db_path(board)
-        effective_decision, candidate_result = _candidate_fallback(
-            decision=effective_decision,
-            signature=signature,
-            resolution=effective_resolution,
-            source_key=key or "",
-            db_path=db_path,
-            candidate_requests=candidate_requests,
-        )
-        # Preserve the established handoff contract for fixed routes while
-        # requiring the new registry-backed path to target a real profile.
-        if signature is not None and not profile_exists(effective_decision.profile):
-            return HandoffResult(False, reason="profile_unavailable")
-
         conn = _hermes_cli_kanban_db_connect.connect(db_path=db_path, board=board)
         try:
-            existing_id = None
             if key:
                 row = conn.execute(
                     "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
                     (key,),
                 ).fetchone()
-                existing_id = row["id"] if row else None
+                if row is not None:
+                    # Resolve the source-message idempotency before reopening a
+                    # terminal candidate; otherwise the task keeps the old
+                    # candidate in its body while the new ledger row is orphaned.
+                    return HandoffResult(True, task_id=row["id"], created=False)
+            effective_decision, candidate_result = _candidate_fallback(
+                decision=effective_decision,
+                signature=signature,
+                resolution=effective_resolution,
+                source_key=key or "",
+                db_path=db_path,
+                candidate_requests=candidate_requests,
+            )
+            # Preserve the established handoff contract for fixed routes while
+            # requiring the new registry-backed path to target a real profile.
+            if signature is not None and not profile_exists(effective_decision.profile):
+                return HandoffResult(False, reason="profile_unavailable")
+
             with kb.write_txn(conn):
                 task_id = kb.create_task(
                     conn, title=effective_decision.title,
@@ -249,7 +252,7 @@ def create_specialist_handoff(
             return HandoffResult(
                 True,
                 task_id=task_id,
-                created=existing_id is None,
+                created=True,
                 candidate_request_id=candidate_result.request_id if candidate_result else None,
                 candidate_status=candidate_result.status if candidate_result else None,
             )

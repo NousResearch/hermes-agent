@@ -355,8 +355,14 @@ class CandidatePromotionGate:
         )
         if status != "passed":
             return PromotionResult("rejected", f"benchmark {status}"), receipt
-        self._store_benchmark(receipt, proposal)
-        snapshot = self._append(proposal.candidate_id, "candidate", "benchmarked", "benchmark_passed", receipt.result_hash)
+        snapshot = self._append(
+            proposal.candidate_id,
+            "candidate",
+            "benchmarked",
+            "benchmark_passed",
+            receipt.result_hash,
+            before_transition=lambda conn: self._insert_benchmark(conn, receipt, proposal),
+        )
         return self._transition_result("benchmarked", snapshot, "benchmark transition rejected"), receipt
 
     def open_disposable_sandbox(
@@ -471,6 +477,9 @@ class CandidatePromotionGate:
             or proof is None
         ):
             return PromotionResult("rejected", "staged durable evidence is required before a no-send canary"), None
+        existing = self._existing_canary(proposal.candidate_id, verification.result_hash)
+        if existing is not None:
+            return PromotionResult("staged", "durable local no-send canary reused", current), existing
         provisional = {
             "candidate_id": proposal.candidate_id,
             "promotion_proof_hash": proof,
@@ -642,13 +651,22 @@ class CandidatePromotionGate:
             return False
         return verifier not in {proposal.proposal_author, proposal.sol_reviewer, benchmark.scorer_model}
 
-    def _append(self, candidate_id: str, expected: str, next_status: str, reason: str, receipt_hash: str) -> CandidateLifecycleSnapshot | None:
+    def _append(
+        self,
+        candidate_id: str,
+        expected: str,
+        next_status: str,
+        reason: str,
+        receipt_hash: str,
+        before_transition: Callable[[object], None] | None = None,
+    ) -> CandidateLifecycleSnapshot | None:
         return self._requests.append_lifecycle_transition(
             candidate_id,
             expected_status=expected,
             next_status=next_status,
             reason_code=reason,
             receipt_hash=receipt_hash,
+            before_transition=before_transition,
         )
 
     @staticmethod
@@ -714,10 +732,13 @@ class CandidatePromotionGate:
     def _store_benchmark(self, receipt: BenchmarkReceipt, proposal: CandidateProposal) -> None:
         with self._connection() as conn:
             with kanban_db.write_txn(conn):
-                conn.execute(
-                    "INSERT INTO specialist_benchmark_receipts (result_hash, candidate_id, proposal_input_hash, proposal_author, sol_reviewer, signature_hash, permissions_hash, case_set_hash, scorer_model, scores_json, pass_threshold, status, issued_at, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (receipt.result_hash, receipt.candidate_id, receipt.proposal_input_hash, proposal.proposal_author, proposal.sol_reviewer, proposal.signature_hash, proposal.permissions_hash, receipt.case_set_hash, receipt.scorer_model, _canonical_json(receipt.scores), receipt.pass_threshold, receipt.status, receipt.issued_at, receipt.expires_at, int(self._clock())),
-                )
+                self._insert_benchmark(conn, receipt, proposal)
+
+    def _insert_benchmark(self, conn: object, receipt: BenchmarkReceipt, proposal: CandidateProposal) -> None:
+        conn.execute(
+            "INSERT INTO specialist_benchmark_receipts (result_hash, candidate_id, proposal_input_hash, proposal_author, sol_reviewer, signature_hash, permissions_hash, case_set_hash, scorer_model, scores_json, pass_threshold, status, issued_at, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (receipt.result_hash, receipt.candidate_id, receipt.proposal_input_hash, proposal.proposal_author, proposal.sol_reviewer, proposal.signature_hash, proposal.permissions_hash, receipt.case_set_hash, receipt.scorer_model, _canonical_json(receipt.scores), receipt.pass_threshold, receipt.status, receipt.issued_at, receipt.expires_at, int(self._clock())),
+        )
 
     def _store_verification(self, receipt: VerificationReceipt) -> None:
         with self._connection() as conn:
@@ -815,6 +836,27 @@ class CandidatePromotionGate:
             return row is not None
         except Exception:
             return False
+
+    def _existing_canary(self, candidate_id: str, verification_hash: str) -> CanaryReceipt | None:
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT * FROM specialist_canary_receipts WHERE candidate_id = ? AND verification_result_hash = ? AND mode = 'local-no-send' AND status = 'passed' ORDER BY id LIMIT 1",
+                    (candidate_id, verification_hash),
+                ).fetchone()
+            if row is None:
+                return None
+            return CanaryReceipt(
+                candidate_id=row["candidate_id"],
+                promotion_proof_hash=row["promotion_proof_hash"],
+                verification_result_hash=row["verification_result_hash"],
+                mode=row["mode"],
+                status=row["status"],
+                issued_at=row["issued_at"],
+                result_hash=row["result_hash"],
+            )
+        except Exception:
+            return None
 
     def _store_proof(self, proposal: CandidateProposal, target: str, profile_id: str | None, benchmark: BenchmarkReceipt, verification: VerificationReceipt, approval: OperatorApproval) -> str | None:
         proof_hash = _hash({"candidate_id": proposal.candidate_id, "target": target, "profile_id": profile_id, "signature_hash": proposal.signature_hash, "permissions_hash": proposal.permissions_hash, "benchmark": benchmark.result_hash, "verification": verification.result_hash, "approval": approval.approval_hash})

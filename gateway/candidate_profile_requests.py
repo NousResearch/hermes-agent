@@ -327,6 +327,7 @@ class CandidateProfileRequests:
         next_status: str,
         reason_code: str,
         receipt_hash: str,
+        before_transition: Callable[[object], None] | None = None,
     ) -> CandidateLifecycleSnapshot | None:
         """Append one monotonic lifecycle observation, never update a candidate.
 
@@ -361,6 +362,8 @@ class CandidateProfileRequests:
                 ).fetchone()
                 if latest is None or latest["lifecycle_status"] != expected_status:
                     return None
+                if before_transition is not None:
+                    before_transition(conn)
                 transition_id = (
                     f"cpr_{original['request_hash'][:24]}_"
                     f"{_hash((candidate_id, expected_status, next_status, receipt_hash))[:8]}"

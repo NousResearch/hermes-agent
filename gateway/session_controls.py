@@ -39,7 +39,8 @@ class AuthorityConnection:
         rid = request.get('id')
         method = request.get('method')
         params = request.get('params') or {}
-        if method == 'session.detach' and not isinstance(params, dict):
+        if not isinstance(params, dict):
+            # Every handler indexes params as a mapping; refuse the frame before ``.get``.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))

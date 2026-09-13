@@ -103,6 +103,15 @@ def _report_conversion_holders(unapplied: "list[tuple[str, Path]]") -> None:
     supervised process respawns and reopens the database before the PRAGMA runs.
     """
     from hermes_state_holders import foreign_state_db_holders
+    from tools.ansi_strip import sanitize_display_text
+
+    def _shown(detail: object) -> str:
+        # ``detail`` is a process command line, a descriptor path or an exception message — untrusted
+        # bytes. Rendered raw, a newline plus a terminal-clear sequence in a process argument can forge
+        # a "no other process holds this database" line into the very diagnostic that gates an offline
+        # database operation. Strip escapes and controls, fold the remaining line breaks, cap the width.
+        text = " ".join(sanitize_display_text(str(detail)).split())
+        return text[:160] + ("…" if len(text) > 160 else "")
 
     scan_unavailable = sys.platform == "win32"  # foreign_state_db_holders short-circuits to [] there
     for name, path in unapplied:
@@ -111,22 +120,31 @@ def _report_conversion_holders(unapplied: "list[tuple[str, Path]]") -> None:
         except Exception as exc:  # a diagnostic must never take doctor down
             holders = [(-1, f"holder scan failed: {exc}")]
         # ``pid < 0`` rows are scan failures, not holders: "cannot prove quiet" is not "quiet".
-        named = [(pid, detail) for pid, detail in holders if pid >= 0]
-        unprovable = [detail for pid, detail in holders if pid < 0]
+        named = [(pid, _shown(detail)) for pid, detail in holders if pid >= 0]
+        unprovable = [_shown(detail) for pid, detail in holders if pid < 0]
+        cannot_prove = bool(unprovable) or scan_unavailable
 
+        listed = ""
         if named:
             listed = ", ".join(f"pid {pid} ({detail})" for pid, detail in named[:5])
-            more = f", and {len(named) - 5} more" if len(named) > 5 else ""
-            check_info(f"{name}: {len(named)} process(es) hold this database or its WAL right now — "
-                       f"{listed}{more}. Stop each through whatever supervises it (its systemd or "
-                       f"launchd unit, s6 or Compose service, Windows task or service, or Hermes "
-                       f"Desktop) — signalling the pid alone lets the supervisor respawn it — then run "
-                       f"a one-time offline `PRAGMA journal_mode=DELETE` on the file.")
-        elif unprovable or scan_unavailable:
+            if len(named) > 5:
+                listed += f", and {len(named) - 5} more"
+
+        if cannot_prove:
+            # A partial scan — some pids found, then a failure row — is still an INCOMPLETE scan: the
+            # holder that matters may be the one it could not see. Name what it did find, but never
+            # let a partial result read as permission to convert.
             why = unprovable[0] if unprovable else "holder enumeration is unavailable on this platform"
-            check_info(f"{name}: cannot prove this database is quiet ({why}). Stop every Hermes process "
+            seen = f" It did find {len(named)} holder(s) — {listed} — but the scan was incomplete." if named else ""
+            check_info(f"{name}: cannot prove this database is quiet ({why}).{seen} Stop every Hermes process "
                        f"for this profile through its owner, confirm nothing holds the file, then run a "
                        f"one-time offline `PRAGMA journal_mode=DELETE` on it.")
+        elif named:
+            check_info(f"{name}: {len(named)} process(es) hold this database or its WAL right now — "
+                       f"{listed}. Stop each through whatever supervises it (its systemd or launchd unit, "
+                       f"s6 or Compose service, Windows task or service, or Hermes Desktop) — signalling "
+                       f"the pid alone lets the supervisor respawn it — then run a one-time offline "
+                       f"`PRAGMA journal_mode=DELETE` on the file.")
         else:
             check_info(f"{name}: no other process holds this database right now — run a one-time offline "
                        f"`PRAGMA journal_mode=DELETE` on it. A gateway, dashboard, cron fire or Desktop "

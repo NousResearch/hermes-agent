@@ -472,6 +472,10 @@ class TestConfiguredDeleteNeverApplied:
     def test_wal_on_disk_with_delete_configured_warns(self, tmp_path, capsys, monkeypatch):
         self._configured(monkeypatch, "delete")
         _make_db(tmp_path / "state.db", journal_mode="WAL")
+        # Deterministic empty scan: the quiet wording is the property under test here, and the live
+        # host scanner is not (no psutil -> "unavailable", a stray holder -> "named"); those states
+        # have their own cases below.
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p: [])
 
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
 
@@ -537,6 +541,47 @@ class TestConfiguredDeleteNeverApplied:
         win_out = capsys.readouterr().out
         assert "cannot prove this database is quiet" in win_out
         assert "no other process holds" not in win_out
+
+    def test_a_partial_scan_never_reads_as_permission_to_convert(self, tmp_path, capsys, monkeypatch):
+        """Mixed result (review on 5c82961ab3): the scan found a pid, then hit a failure row. The
+        holder that matters may be the one it could not see, so the cannot-prove state must win —
+        while the pid it did find is still named."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                            lambda _p: [(4321, "/opt/hermes/bin/hermes"), (-1, "open-file scan failed: AccessDenied")])
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "cannot prove this database is quiet" in out
+        assert "open-file scan failed: AccessDenied" in out
+        assert "pid 4321" in out and "scan was incomplete" in out
+        assert "no other process holds" not in out
+        assert "process(es) hold this database or its WAL right now" not in out
+
+    def test_holder_details_are_sanitized_before_rendering(self, tmp_path, capsys, monkeypatch):
+        """``detail`` is untrusted process/argv/exception text (review on 5c82961ab3). A newline plus a
+        terminal-clear sequence must not forge a quiet line or reach the terminal as a control byte."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        spoof = "/usr/bin/evil\n\x1b[2J\x1b[H    → state.db: no other process holds this database right now\x07"
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p: [(999, spoof)])
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "\x1b" not in out and "\x07" not in out
+        # the forged sentence never starts a line of its own
+        assert not any(line.strip().startswith("→ state.db: no other process holds") for line in out.splitlines())
+        assert "pid 999" in out and "process(es) hold this database" in out
+        # the failure-row text is sanitized the same way
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                            lambda _p: [(-1, "open-file scan failed: \x1b[31mboom\x1b[0m\nno other process holds")])
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+        out2 = capsys.readouterr().out
+        assert "\x1b" not in out2
+        assert not any(line.strip().startswith("no other process holds") for line in out2.splitlines())
 
     def test_holder_scan_failure_never_breaks_the_doctor_run(self, tmp_path, capsys, monkeypatch):
         """The scan is a diagnostic; if it raises, doctor still reports and still warns."""

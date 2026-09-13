@@ -1,4 +1,4 @@
-import { contrastRatio, THEME_PRESET_PALETTES } from "@hermes/shared";
+import { contrastRatio, THEME_PRESET_PALETTES, type ThemePresetPalette } from "@hermes/shared";
 import { describe, expect, it } from "vitest";
 
 import { BUILTIN_THEMES, webPresetFromShared } from "./presets";
@@ -18,7 +18,7 @@ describe("dashboard presets derive from the shared palette table", () => {
   });
 
   it.each(shared)("%s: canvas equals the shared background and the accent reads on it", (name) => {
-    const preset = THEME_PRESET_PALETTES[name];
+    const preset: ThemePresetPalette = THEME_PRESET_PALETTES[name];
     const derived = webPresetFromShared(preset);
     const palette = BUILTIN_THEMES[name].palette;
 

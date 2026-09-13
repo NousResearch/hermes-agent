@@ -183,6 +183,7 @@ class _SecondaryRecoveryAdapter:
         self.fatal_error_retryable = retryable
         self.fatal_error_code = "transport_stale" if retryable else "auth_failed"
         self.fatal_error_message = "Gateway transport stale"
+        self.has_fatal_error = True
         self.connected = False
         self.disconnected = False
 
@@ -576,6 +577,79 @@ class TestSecondaryStartupFailureRecovery:
         assert failed.disconnected is True
         assert runner._background_tasks == set()
         assert runner._profile_failed_platforms == {}
+
+    @pytest.mark.asyncio
+    async def test_fatal_initial_failure_names_reason_in_log(self, monkeypatch, caplog):
+        """#110072: the per-profile connect warning must carry the adapter's
+        fatal code/message — the detail already reaches the runtime-status
+        file, the log line must not stay bare."""
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter()
+        failed.fatal_error_code = "subscription_permission"
+        failed.fatal_error_message = (
+            "Service Account lacks roles/pubsub.subscriber on the subscription"
+        )
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+
+        async def fail_initial_connect(adapter, platform):
+            return False
+
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", fail_initial_connect
+        )
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            connected = await runner._start_one_profile_adapters(
+                "reviewer", "/tmp/reviewer", {}
+            )
+
+        assert connected == 0
+        warnings = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING and "failed to connect" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "subscription_permission" in warnings[0]
+        assert "roles/pubsub.subscriber" in warnings[0]
+        assert "reviewer" in warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_transient_initial_failure_keeps_bare_warning(
+        self, monkeypatch, caplog
+    ):
+        """No fatal recorded → the warning stays exactly as before, so log
+        parsers and greps see no churn on the transient path."""
+        runner = _secondary_recovery_runner()
+        failed = _SecondaryRecoveryAdapter()
+        failed.fatal_error_code = None
+        failed.fatal_error_message = None
+        failed.has_fatal_error = False
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+
+        async def fail_initial_connect(adapter, platform):
+            return False
+
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", fail_initial_connect
+        )
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            connected = await runner._start_one_profile_adapters(
+                "reviewer", "/tmp/reviewer", {}
+            )
+
+        assert connected == 0
+        warnings = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING and "failed to connect" in r.getMessage()
+        ]
+        assert warnings == ["✗ discord failed to connect (profile: reviewer)"]
 
     @pytest.mark.asyncio
     async def test_token_lock_initial_failure_parks_fatal_not_retried(

@@ -33,6 +33,8 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
+import gateway.status as gstatus
+
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -214,25 +216,25 @@ def test_worker_pid_absent_is_tri_state(monkeypatch):
         return _open
 
     # A pid with no /proc entry is positively absent.
-    monkeypatch.setattr(kbd, "open", _fake_open(exc=FileNotFoundError()), raising=False)
+    monkeypatch.setattr(gstatus, "open", _fake_open(exc=FileNotFoundError()), raising=False)
     assert kbd._worker_pid_absent(991104) is True
 
     # An unreadable entry is "unknown", never death.
-    monkeypatch.setattr(kbd, "open", _fake_open(exc=PermissionError("nope")), raising=False)
+    monkeypatch.setattr(gstatus, "open", _fake_open(exc=PermissionError("nope")), raising=False)
     assert kbd._worker_pid_absent(991104) is False
 
     # A live process is present.
-    monkeypatch.setattr(kbd, "open", _fake_open(text=live_status), raising=False)
+    monkeypatch.setattr(gstatus, "open", _fake_open(text=live_status), raising=False)
     assert kbd._worker_pid_absent(991104) is False
 
     # A zombie has exited: absent for a reclaim's purposes.
     monkeypatch.setattr(
-        kbd, "open", _fake_open(text="Name:\tx\nState:\tZ (zombie)\n"), raising=False,
+        gstatus, "open", _fake_open(text="Name:\tx\nState:\tZ (zombie)\n"), raising=False,
     )
     assert kbd._worker_pid_absent(991104) is True
 
     # A live process (this one) is present, and a non-pid is absent.
-    monkeypatch.delattr(kbd, "open", raising=False)
+    monkeypatch.delattr(gstatus, "open", raising=False)
     assert kbd._worker_pid_absent(os.getpid()) is False
     assert kbd._worker_pid_absent(None) is True
     assert kbd._worker_pid_absent(0) is True

@@ -198,7 +198,9 @@ def _read_cache_models(codex_home: Path) -> List[str]:
 
 def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults."""
-    codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
+    from hermes_constants import external_credential_path
+    codex_home = Path(os.getenv("CODEX_HOME", "").strip()
+                      or str(external_credential_path(".codex"))).expanduser()
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:

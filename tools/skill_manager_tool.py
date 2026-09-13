@@ -8,6 +8,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+import functools
 import hashlib
 import json
 from contextlib import ExitStack, suppress
@@ -419,8 +420,78 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
     return text[:n] + (ellipsis if len(text) > n else "")
 
 
+# --- Mutation ledger ----------------------------------------------------------
+# The audit hook hangs off the MUTATION, not off ``skill_manage``. Callers that drive an action
+# handler directly — the dashboard (POST /api/skills, PUT /api/skills/content) and
+# ``agent.learning_mutations.edit_node`` — never reached the entry-point capture, so their
+# writes were invisible to the ledger. ``_ledgered`` makes coverage a property of the mutation:
+# a handler that reports success is recorded, whoever drove it.
+
+# Evidence-only scope, set by skill_manage around the handler call. A direct caller contributes
+# nothing here (it has no session/file_path to give) and its entry is still written.
+_ledger_scope: "_ctxvars.ContextVar[Optional[Dict[str, Any]]]" = _ctxvars.ContextVar(
+    "skill_ledger_scope", default=None)
+
+
+def _capture_before_for(action: str, name: str) -> Optional[List[Dict[str, str]]]:
+    """Best-effort pre-mutation snapshot of the skill's CURRENT location (None on failure)."""
+    with suppress(Exception):
+        from tools import skill_ledger as _ledger
+        found = _find_skill(name)
+        # delete destroys the whole package (consolidation may have re-homed support files
+        # first), so complete it from the newest curator backup or a restore comes back hollow.
+        return _ledger.capture_before(
+            found["path"] if found else None,
+            complete_package=(action == "delete"), skill=name)
+    return None
+
+
+def _ledger_evidence(action: str, result: Dict[str, Any], args: tuple,
+                     kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Entry metadata: delete intent (the curator CLI renders it) plus the caller's scope."""
+    evidence: Dict[str, Any] = {}
+    if action == "delete":
+        evidence.update(
+            absorbed_into=kwargs.get("absorbed_into", args[1] if len(args) > 1 else None),
+            archived=bool(result.get("_archived")))
+    evidence.update(_ledger_scope.get() or {})
+    return evidence
+
+
+def _record_ledger_entry(action: str, name: str, before, result: Dict[str, Any], args: tuple,
+                         kwargs: Dict[str, Any]) -> None:
+    """Append the entry for a mutation that reported success. Never raises."""
+    with suppress(Exception):
+        from tools import skill_ledger as _ledger
+        found = _find_skill(name)
+        _ledger.record_mutation(
+            action, name, before=before if before is not None else [],
+            after_root=found["path"] if found else None,
+            evidence=_ledger_evidence(action, result, args, kwargs))
+
+
+def _ledgered(action: str):
+    """Wrap an action handler so EVERY caller is audited, not just ``skill_manage``.
+
+    The after-state is read back from the skill's current location, so a delete records an
+    empty after-state and a create records the package it just wrote. Telemetry, never a gate:
+    a broken ledger cannot fail the mutation it was describing.
+    """
+    def _decorate(handler):
+        @functools.wraps(handler)
+        def _wrapper(name, *args, **kwargs):
+            before = _capture_before_for(action, name)
+            result = handler(name, *args, **kwargs)
+            if isinstance(result, dict) and result.get("success"):
+                _record_ledger_entry(action, name, before, result, args, kwargs)
+            return result
+        return _wrapper
+    return _decorate
+
+
 # --- Core actions -------------------------------------------------------------
 
+@_ledgered("create")
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
@@ -448,6 +519,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     return result
 
 
+@_ledgered("edit")
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     if err := _validate_frontmatter(content) or _validate_content_size(content):
@@ -462,6 +534,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     return _add_description_prompt_preview(_attach_org_note(result, name, skill_dir), content)
 
 
+@_ledgered("patch")
 def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
                  replace_all: bool = False) -> Dict[str, Any]:
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
@@ -514,6 +587,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     return result
 
 
+@_ledgered("delete")
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
     """Delete a skill. ``absorbed_into``: None = undeclared (legacy, accepted); "" = explicit prune;
     "<skill>" = absorbed into that umbrella, which must exist (so the model can't claim one)."""
@@ -556,6 +630,7 @@ def _rmdir_if_empty(parent: Path, stop: Path) -> None:
         parent.rmdir()
 
 
+@_ledgered("write_file")
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
     if err := _validate_file_path(file_path):
@@ -582,6 +657,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     return result
 
 
+@_ledgered("remove_file")
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
     if err := _validate_file_path(file_path):
@@ -719,20 +795,10 @@ _ACTION_HANDLERS = {
     "remove_file": lambda a: _remove_file(a["name"], a["file_path"])}
 
 
-def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
-    """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
-    clear, curator telemetry, debounced sync push."""
-    with suppress(Exception):
-        from tools import skill_ledger as _ledger
-        _post = _find_skill(name)
-        # delete: consolidation vs prune, and whether the recoverable archive handled it
-        _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
-                     if action == "delete" else {})
-        _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
-        _ledger.record_mutation(
-            action, name, before=ledger_before if ledger_before is not None else [],
-            after_root=_post["path"] if _post else None, evidence=_evidence)
+def _record_success(action, name, result, *, file_path, task_id, session_id) -> None:
+    """Best-effort post-mutation side effects (never break the tool): prompt-cache clear,
+    curator telemetry, debounced sync push. The ledger entry is written by the handler
+    wrapper (``_ledgered``), which every mutating caller passes through."""
     with suppress(Exception):
         from agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -788,26 +854,23 @@ def skill_manage(
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
     with _skill_mutation_lock(name):
-        # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
-        # destroys the whole package (consolidation may have re-homed support files first), so
-        # complete it from the newest curator backup or a restore is hollow.
-        # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
-        # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
-        _ledger_before = None
-        with suppress(Exception):
-            from tools import skill_ledger as _ledger
-            _pre = _find_skill(name)
-            _ledger_before = _ledger.capture_before(
-                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+        # Audit ledger (tracker #79686 P3): the ``_ledgered`` handler wrapper captures the
+        # pre-mutation state and appends the before/after blobs, so coverage follows the mutation
+        # rather than this entry point. The scope below only enriches the entry's evidence with the
+        # caller's session metadata.
         handler = _ACTION_HANDLERS.get(action, lambda a: _err(
             f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-        result = handler({"name": name, **args})
+        token = _ledger_scope.set({k: v for k, v in
+                                   (("session_id", session_id), ("file_path", file_path)) if v})
+        try:
+            result = handler({"name": name, **args})
+        finally:
+            _ledger_scope.reset(token)
         if isinstance(result, str):
             return result  # tool_error JSON for argument-shape problems (patch)
         if result.get("success"):
             _record_success(
-                action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+                action, name, result, file_path=file_path, task_id=task_id, session_id=session_id)
     return json.dumps(result, ensure_ascii=False)
 
 

@@ -783,3 +783,131 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
         assert survivors == seq[len(seq) - len(survivors):], (
             f"writer {k}: rows missing from the middle — a concurrent sweep dropped an append"
         )
+
+
+# ---------------------------------------------------------------------------
+# Coverage is a property of the MUTATION, not of skill_manage()
+# ---------------------------------------------------------------------------
+
+
+def test_direct_handler_caller_leaves_a_ledger_entry(ledger_env):
+    """The dashboard editor (PUT /api/skills/content) and
+    agent.learning_mutations.edit_node drive ``_edit_skill`` directly and never
+    reach skill_manage. A mutation that changes a skill and leaves no ledger
+    entry is the bug: the write path is audited, whichever entry point used it."""
+    from tools import skill_ledger
+    from tools.skill_manager_tool import _edit_skill
+
+    assert _create()["success"] is True
+    edited = _edit_skill(
+        "my-skill", VALID_SKILL_CONTENT.replace("Original body.", "Edited by caller."))
+    assert edited["success"] is True
+
+    rows = [r for r in skill_ledger.list_entries(skill="my-skill") if r["action"] == "edit"]
+    assert len(rows) == 1, "direct handler call left no ledger entry"
+    entry = rows[0]
+    assert entry["before"] and entry["after"]
+
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
+    assert skill_md.read_text(encoding="utf-8") == VALID_SKILL_CONTENT
+
+
+def test_captured_external_mutation_rolls_back(ledger_env, tmp_path, monkeypatch):
+    """A mutation the tool itself captured for a skill under skills.external_dirs
+    must be reversible — otherwise the ledger mints entries that can never be
+    rolled back, which is the opposite of an audit trail."""
+    from agent import skill_utils
+    from tools import skill_ledger
+    from tools.skill_manager_tool import skill_manage
+
+    external = tmp_path / "vault"
+    skill_dir = external / "ext-one"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    original = VALID_SKILL_CONTENT.replace("name: my-skill", "name: ext-one")
+    skill_md.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs",
+                        lambda: [ledger_env["skills"], external])
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [external])
+    before_hash = hashlib.sha256(skill_md.read_bytes()).hexdigest()
+
+    edited = json.loads(skill_manage(
+        action="edit", name="ext-one",
+        content=original.replace("Original body.", "Edited body.")))
+    assert edited["success"] is True
+    assert skill_md.read_text(encoding="utf-8") != original
+
+    entry = [r for r in skill_ledger.list_entries(skill="ext-one")
+             if r["action"] == "edit"][0]
+    assert any(Path(i["path"]).name == "SKILL.md" for i in entry["before"])
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert hashlib.sha256(skill_md.read_bytes()).hexdigest() == before_hash
+
+
+def test_captured_create_dir_mutation_rolls_back(ledger_env, tmp_path, monkeypatch):
+    """A mutation the tool itself captured for a skill under a configured
+    ``skills.create_dir`` outside HERMES_HOME must be reversible — the same
+    defect as the external-dirs case: without the root in the allowed set the
+    ledger mints an entry that can never be rolled back."""
+    from agent import skill_utils
+    from tools import skill_ledger
+    from tools.skill_manager_tool import skill_manage
+
+    fleet = tmp_path / "fleet"
+    skill_dir = fleet / "fleet-one"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    original = VALID_SKILL_CONTENT.replace("name: my-skill", "name: fleet-one")
+    skill_md.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(skill_utils, "get_all_skills_dirs",
+                        lambda: [ledger_env["skills"], fleet])
+    monkeypatch.setattr(skill_utils, "get_skill_create_dir", lambda: fleet)
+    before_hash = hashlib.sha256(skill_md.read_bytes()).hexdigest()
+
+    edited = json.loads(skill_manage(
+        action="edit", name="fleet-one",
+        content=original.replace("Original body.", "Edited body.")))
+    assert edited["success"] is True
+    assert skill_md.read_text(encoding="utf-8") != original
+
+    entry = [r for r in skill_ledger.list_entries(skill="fleet-one")
+             if r["action"] == "edit"][0]
+    assert any(Path(i["path"]).name == "SKILL.md" for i in entry["before"])
+    ok, msg = skill_ledger.rollback_entry(entry["id"])
+    assert ok is True, msg
+    assert hashlib.sha256(skill_md.read_bytes()).hexdigest() == before_hash
+
+
+def test_rollback_refuses_paths_outside_every_configured_root(ledger_env, tmp_path, monkeypatch):
+    """Anti-tamper: the allowed set is resolved from CONFIG, never from the entry,
+    so widening it for external dirs and create_dir does not make rollback a
+    write-anywhere primitive. With create_dir unset, a path under no configured
+    root is still refused, and nothing is written (no pre-rollback safety entry
+    is appended)."""
+    from agent import skill_utils
+    from tools import skill_ledger
+
+    external = tmp_path / "vault"
+    external.mkdir()
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [external])
+    monkeypatch.setattr(skill_utils, "get_skill_create_dir", lambda: None)
+
+    outside = tmp_path / "outside" / "SKILL.md"
+    outside.parent.mkdir()
+    outside.write_text("untouched", encoding="utf-8")
+    entry_id = skill_ledger.append_entry(
+        "patch", "evil",
+        before=[{"path": str(outside), "sha256": skill_ledger._store_blob(outside.read_bytes())}],
+        after=[])
+    assert entry_id is not None
+
+    ok, msg = skill_ledger.rollback_entry(entry_id)
+    assert ok is False
+    assert "outside" in msg
+    assert outside.read_text(encoding="utf-8") == "untouched"
+    assert not [r for r in skill_ledger.list_entries() if r["action"] == "pre-rollback"]

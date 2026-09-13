@@ -658,7 +658,15 @@ def _handle_block(args: dict, **kw) -> str:
                    f"originated from the review lane can record a no-verdict interruption")
         landed = {"block_kind": kind}
         if review_disposition is not None:
-            landed["review_disposition"] = review_disposition
+            # This path deliberately does not write block_kind, so `_ok_landed`
+            # must not be told the caller's kind was persisted: report the
+            # stored value and keep the supplied kind as audit context.
+            persisted = kb.get_task(conn, tid)
+            landed = {
+                "block_kind": persisted.block_kind if persisted else None,
+                "supplied_kind": kind,
+                "review_disposition": review_disposition,
+            }
         return _ok_landed(kb, conn, tid, "blocked", **landed)
 
 

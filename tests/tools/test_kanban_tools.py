@@ -1293,6 +1293,7 @@ def test_block_no_verdict_handler_records_review_interruption(monkeypatch, tmp_p
 
     out = json.loads(kt._handle_block({
         "reason": "no verdict: the dispatched review execution was retired",
+        "kind": "dependency",
         "review_disposition": "none",
     }))
 
@@ -1307,12 +1308,20 @@ def test_block_no_verdict_handler_records_review_interruption(monkeypatch, tmp_p
         assert blocked.payload["verdict"] == "none"
         assert blocked.payload["recurrence_exempt"] is True
         assert blocked.payload["source_status"] == "review"
+        assert blocked.payload["kind"] == "dependency"
         assert not [e for e in events if e.kind == "block_loop_detected"]
+    # The response must report the persisted state, not the kind the caller
+    # supplied: this path deliberately never writes block_kind.
+    assert out["block_kind"] == task.block_kind
+    assert out["supplied_kind"] == "dependency"
 
 
-def test_block_no_verdict_rejected_for_implementation_run(monkeypatch, worker_env):
+def test_block_rejects_no_verdict_outside_review_lane_and_unknown_values(
+    monkeypatch, worker_env,
+):
     """A run claimed from the implementation lane cannot record a no-verdict
-    interruption, and the refusal mutates nothing."""
+    interruption, an unsupported disposition is never treated as an ordinary
+    block, and neither refusal mutates anything."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
@@ -1322,36 +1331,22 @@ def test_block_no_verdict_rejected_for_implementation_run(monkeypatch, worker_en
         before_events = kb.list_events(conn, worker_env)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(before.current_run_id))
 
-    out = json.loads(kt._handle_block({
+    outside_review = json.loads(kt._handle_block({
         "reason": "no verdict: nothing was reviewed",
         "review_disposition": "none",
     }))
+    unknown_value = json.loads(kt._handle_block({
+        "reason": "looks like an escalation",
+        "review_disposition": "escalate",
+    }))
 
-    assert "error" in out, out
-    assert "review" in out["error"]
+    assert "review" in outside_review.get("error", ""), outside_review
+    assert "review_disposition" in unknown_value.get("error", ""), unknown_value
     with kbc.connect() as conn:
         after = kb.get_task(conn, worker_env)
         assert (after.status, after.current_run_id) == ("running", before.current_run_id)
         assert (after.block_kind, after.block_recurrences) == (None, 0)
         assert kb.list_events(conn, worker_env) == before_events
-
-
-def test_block_rejects_unknown_review_disposition(worker_env):
-    """An unsupported disposition is refused instead of being treated as an
-    ordinary block."""
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools as kt
-
-    out = json.loads(kt._handle_block({
-        "reason": "looks like an escalation",
-        "review_disposition": "escalate",
-    }))
-
-    assert "error" in out, out
-    assert "review_disposition" in out["error"]
-    with kbc.connect() as conn:
-        assert kb.get_task(conn, worker_env).status == "running"
 
 
 def test_block_no_verdict_allowed_for_goal_mode_review_run(monkeypatch, tmp_path):

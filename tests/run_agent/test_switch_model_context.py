@@ -24,6 +24,13 @@ class _StubStartupCompressor:
         return None
 
 
+class _BelowFloorStartupCompressor(_StubStartupCompressor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.config_context_length is None:
+            self.context_length = 32_768
+
+
 def test_route_url_normalization_preserves_path_slash_before_query():
     """A path slash before a query changes OpenAI SDK URL joining."""
     assert normalize_route_base_url(
@@ -44,14 +51,15 @@ def test_route_url_normalization_preserves_path_slash_before_query():
 
 
 def _make_direct_start_agent(
-    cfg: dict, *, model: str, provider: str, base_url: str
+    cfg: dict, *, model: str, provider: str, base_url: str,
+    compressor_cls=_StubStartupCompressor,
 ) -> AIAgent:
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.agent_init.ContextCompressor", new=_StubStartupCompressor),
+        patch("agent.agent_init.ContextCompressor", new=compressor_cls),
     ):
         return AIAgent(
             model=model,
@@ -212,6 +220,28 @@ def test_direct_start_preserves_context_for_normalized_default_model_alias():
 
     assert agent.context_compressor.config_context_length == 272_000
     assert agent.context_compressor.context_length == 272_000
+
+
+def test_direct_start_llamacpp_alias_keeps_served_context_override():
+    cfg = {
+        "model": {
+            "default": "qwen-local.gguf",
+            "provider": "llamacpp",
+            "base_url": "",
+            "context_length": 65_536,
+        }
+    }
+
+    agent = _make_direct_start_agent(
+        cfg,
+        model="qwen-local.gguf",
+        provider="custom",
+        base_url="http://127.0.0.1:18434/v1",
+        compressor_cls=_BelowFloorStartupCompressor,
+    )
+
+    assert agent.context_compressor.config_context_length == 65_536
+    assert agent.context_compressor.context_length == 65_536
 
 
 

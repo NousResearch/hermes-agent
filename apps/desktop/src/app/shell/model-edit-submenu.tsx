@@ -96,12 +96,14 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // row made opening the menu itself lag on large catalogs.
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
-      <ModelEditSubmenuBody {...props} />
+      <ModelOptionsContent {...props} />
     </DropdownMenuSubContent>
   )
 }
 
-function ModelEditSubmenuBody({
+/** The options rows themselves, container-free: the catalog mounts them in a
+ *  per-row submenu, the composer's reasoning pill in its own top-level menu. */
+export function ModelOptionsContent({
   canDisableReasoning,
   defaultEffort,
   effort,

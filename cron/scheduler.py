@@ -64,6 +64,28 @@ def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
             release_or_close(db)
 
 
+def _guard_transient_cron_wal_handle(db) -> None:
+    """#109824: stop a cron-opened state.db handle from rotating the WAL generation on close.
+
+    A standalone ``hermes cron run`` / ``tick`` process that ends up the LAST OS connection to
+    state.db runs SQLite's implicit close-time checkpoint on exit; on a WAL-reset-vulnerable
+    SQLite (3.7.0-3.51.2) that can replace the ``state.db-wal`` inode while a live gateway still
+    holds the old generation, stranding the gateway on a deleted WAL generation. Where the
+    runtime can switch that checkpoint off (Python 3.12+ ``setconfig``), suppress it
+    best-effort: committed frames simply stay in the WAL for the next opener to recover (exactly
+    what a SIGKILL leaves behind), and the handle's close() still runs its explicit PASSIVE
+    checkpoint. On runtimes that cannot configure it this is a no-op; the lost-generation
+    retire-unclosed backstop in SessionDB.close() still applies.
+    """
+    if db is None:
+        return
+    try:
+        from hermes_state import guard_transient_wal_handle
+        guard_transient_wal_handle(db)
+    except Exception:
+        logger.debug("cron transient state.db WAL guard skipped", exc_info=True)
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Persist a non-blank, unique title for a finished cron session; returns it (None if unset).
     Runs BEFORE end_session()/close() so no write races the close. Duplicate title (unique-index
@@ -1613,13 +1635,22 @@ def _open_cron_session_db(job: dict):
     try:
         from hermes_state_registry import acquire
 
+        def _acquire_guarded():
+            db = acquire()
+            # #109824: a standalone `hermes cron run` process can be the LAST OS connection to
+            # state.db (the gateway down / mid-restart, the issue's restart cascade); its final
+            # release's implicit close-time checkpoint can then rotate the WAL generation under a
+            # live holder. Suppress that checkpoint on this handle where the runtime allows it.
+            _guard_transient_cron_wal_handle(db)
+            return db
+
         if _session_db_timeout <= 0:
-            return acquire()
+            return _acquire_guarded()
         _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Copy the context so a profile run resolves ITS OWN home/state.db on the worker thread
         # instead of the process-global default.
         _session_db_context = contextvars.copy_context()
-        _session_db_future = _session_db_pool.submit(_session_db_context.run, acquire)
+        _session_db_future = _session_db_pool.submit(_session_db_context.run, _acquire_guarded)
         try:
             return _session_db_future.result(timeout=_session_db_timeout)
         except concurrent.futures.TimeoutError:

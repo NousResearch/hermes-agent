@@ -358,6 +358,25 @@ def _close_time_checkpoint_configurable() -> bool:
             and hasattr(sqlite3.Connection, "setconfig"))
 
 
+def guard_transient_wal_handle(db) -> None:
+    """Best-effort: stop *db* from rotating the shared WAL generation on close.
+
+    A transient, standalone writer (a ``hermes cron run`` / agent cron process) that happens to be
+    the LAST OS-level connection to state.db runs SQLite's internal close-time checkpoint on close;
+    on a WAL-reset-vulnerable build that recreates the ``state.db-wal`` inode and orphans any live
+    gateway's fds to the now-deleted generation (the split-brain behind #109824 / #45383). Where the
+    runtime can switch that checkpoint off (Python 3.12+ ``setconfig``), a cron-opened handle should
+    leave its committed frames for the gateway's periodic checkpoint to reclaim instead of forcing a
+    last-connection reset at its own exit. Safe no-op where it cannot be configured (retire-unclosed
+    remains the lost-generation backstop) or for non-writable / registry-shared instances that do not
+    own a teardown close.
+    """
+    if db is None or db.read_only:
+        return
+    with contextlib.suppress(Exception):
+        db._disable_close_time_checkpoint()
+
+
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""

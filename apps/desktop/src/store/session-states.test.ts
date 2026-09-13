@@ -332,6 +332,30 @@ describe('SessionTile workspace scope', () => {
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
   })
 
+  it('splits a Bot chat loaded in MAIN instead of silently no-oping the drop', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:connection-a::alpha' }
+
+    $selectedStoredSessionId.set('bot-chat')
+    // A real open records the bot scope on the MAIN chat (which has no tile
+    // to carry it). The drag handler then commits the drop with NO explicit
+    // scope — the tab it drags is the workspace pane itself.
+    setSessionTileWorkspaceScope('bot-chat', scope)
+    openSessionTile('bot-chat', 'right', 'workspace', undefined)
+
+    // The minted tile registers its pane (watchSessionTiles) and the drop
+    // hint's reveal adopts it — here, the tree that adoption produces.
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { id: 'workspace-group' }))
+
+    expect(focusOpenSession('bot-chat', scope)).toBe('tile')
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:connection-a::alpha'
+      })
+    ])
+  })
+
   it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
     // The tile was opened when seg-2 was the tip; the conversation has since
     // rotated to seg-3 (projected row carries the full chain). Opening the

@@ -1785,6 +1785,7 @@ Fast mode asks the provider for faster output at a premium price: OpenAI [Priori
 agent:
   service_tier: ""          # "" / normal | fast | auto | cold
   fast_auto_seconds: 60     # window for auto / cold
+  fast_mode_trusted_endpoints: []   # opt-in for self-hosted proxies, see below
 ```
 
 | Mode | When fast params are sent | Use it for |
@@ -1797,6 +1798,21 @@ agent:
 `/fast normal|fast|auto|cold` switches the mode for the session; add `--global` to persist to `config.yaml`. `/fast` alone shows the current mode.
 
 **Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $10 / $50 per MTok in/out on Opus 4.8 and Opus 5), stacking with prompt-cache pricing. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode. Only the per-request parameter changes between requests — the system prompt, tools, and messages stay byte-identical, so the prompt cache survives the window boundary.
+
+### Self-hosted proxies
+
+Fast mode is refused on custom `base_url` routes because a proxy that silently drops `service_tier` / `speed` leaves you paying a premium for a tier that was never delivered. If you run a proxy that forwards the parameter unchanged, opt that exact endpoint in:
+
+```yaml
+agent:
+  service_tier: fast
+  fast_mode_trusted_endpoints:
+    - "llm-proxy:proxy.example.com"    # "<provider>:<hostname>"
+```
+
+Each entry names one provider and one hostname, and both must match — subdomains do not inherit trust, and the entry does not make an unsupported model eligible. Verify your deployment actually passes the parameter through before adding it; if it does not, you gain cost without speed.
+
+Without an entry the toggle behaves inconsistently rather than obviously: a **new** chat has no agent yet, so there is no route to check and `/fast` appears to work, while the same toggle in an **existing** chat is refused with "fast mode is not available for this model".
 
 ## Tool-Use Enforcement
 

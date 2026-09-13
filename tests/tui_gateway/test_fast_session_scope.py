@@ -124,3 +124,54 @@ class TestConfigGetFastSessionScope:
         with patch.object(server, "_load_service_tier", return_value="priority"):
             resp = _get({"key": "fast"})
         assert resp["result"]["value"] == "fast"
+
+
+class TestFastAcceptedOnTrustedProxyRoute:
+    """A live session must not be harder to toggle than a fresh one.
+
+    The other tests here stub ``resolve_fast_mode_overrides``, so the real route
+    gate never runs. It is exactly that gate which rejected an EXISTING chat
+    (live agent supplies provider + base_url) while a NEW chat -- no agent, so
+    nothing to check -- was accepted. Same model, same config, two answers.
+    """
+
+    PROXY_BASE_URL = "https://proxy.example.com/v1"
+
+    def _proxy_agent(self):
+        return SimpleNamespace(
+            reasoning_config=None,
+            service_tier=None,
+            request_overrides={},
+            model="gpt-5.4",
+            provider="llm-proxy",
+            base_url=self.PROXY_BASE_URL,
+            session_id="sess-key",
+        )
+
+    def _set_fast_with_trust(self, session_id, session, trusted):
+        with patch.dict(server._sessions, {session_id: session}, clear=False), \
+                patch.object(server, "_write_config_key"), \
+                patch.object(server, "_persist_live_session_runtime"), \
+                patch.object(server, "_emit"), \
+                patch("hermes_cli.config.load_config",
+                      return_value={"agent": {"fast_mode_trusted_endpoints": trusted}}):
+            return _set({"key": "fast", "session_id": session_id, "value": "fast"})
+
+    def test_live_session_on_opted_in_endpoint_is_accepted(self) -> None:
+        agent = self._proxy_agent()
+        resp = self._set_fast_with_trust(
+            "s-proxy", {"session_key": "k-proxy", "agent": agent},
+            ["llm-proxy:proxy.example.com"])
+
+        assert "error" not in resp, resp.get("error")
+        assert resp["result"]["value"] == "fast"
+        assert agent.service_tier == "priority"
+        assert agent.request_overrides.get("service_tier") == "priority"
+
+    def test_live_session_without_opt_in_is_still_refused(self) -> None:
+        agent = self._proxy_agent()
+        resp = self._set_fast_with_trust(
+            "s-other", {"session_key": "k-other", "agent": agent}, [])
+
+        assert "error" in resp
+        assert agent.service_tier is None

@@ -1,4 +1,6 @@
 import base64
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -89,3 +91,24 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_write_text_uses_distinct_temp_files_for_concurrent_saves(tmp_path):
+    from hermes_cli.web_models import FsWriteText
+    from hermes_cli.web_routers.files import fs_write_text
+
+    target = tmp_path / "note.txt"
+    results = []
+
+    def save(content):
+        results.append(asyncio.run(fs_write_text(FsWriteText(path=str(target), content=content))))
+
+    threads = [threading.Thread(target=save, args=(content,)) for content in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 2
+    assert target.read_text() in {"first", "second"}
+    assert not list(tmp_path.glob(".note.txt.hermes-tmp-*"))

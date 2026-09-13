@@ -675,9 +675,11 @@ async def fs_write_text(payload: FsWriteText):
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
 
-    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.hermes-tmp-", dir=target.parent)
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
         os.replace(tmp, target)
     except PermissionError:
         tmp.unlink(missing_ok=True)

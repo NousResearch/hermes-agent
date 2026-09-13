@@ -1,16 +1,9 @@
 """Tests for hermes_cli.authority — profile-based permission layer."""
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 
 import pytest
-
-# Ensure hermes-agent is on sys.path
-HERMES_AGENT = Path(r"C:\Users\bbask\AppData\Local\hermes\hermes-agent")
-if str(HERMES_AGENT) not in sys.path:
-    sys.path.insert(0, str(HERMES_AGENT))
 
 from hermes_cli import authority
 

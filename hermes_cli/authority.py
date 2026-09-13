@@ -20,18 +20,21 @@ runtime patch-tool guards consult this function instead of hard-coding rules.
 """
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Literal
 
 import yaml
 
-# HERMES_HOME is resolved lazily so we don't import the heavy hermes_constants
-# at module import time (this module is imported by config.py on every load).
-HERMES_HOME = Path(
-    os.environ.get("HERMES_HOME", r"C:\Users\bbask\AppData\Local\hermes")
-)
+from hermes_constants import get_process_hermes_home
+
+# Process home for identity/config files: ``HERMES_HOME`` when set, else the platform default.
+# Resolved through the canonical helper instead of a literal — a contributor-specific path is not
+# profile-safe, since HERMES_HOME is how named profiles and any relocated install are addressed,
+# and the literal is simply wrong on every other machine. No cycle and no meaningful weight:
+# hermes_constants imports stdlib only, and config.py (which imports this module on every load)
+# already imports it for the same two helpers.
+HERMES_HOME = get_process_hermes_home()
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 
 Profile = Literal["production", "principal"]

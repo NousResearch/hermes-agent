@@ -4548,7 +4548,17 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
         return CodexAuxiliaryClient(client_obj, final_model_str)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, req.api_mode)
+    # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
+    # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
+    api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
+    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+
+
+def _profile_declared_messages_wire(provider: str) -> Optional[str]:
+    """``"anthropic_messages"`` when the registered profile declares that api_mode, else None."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(str(provider or "").strip().lower())
+    return "anthropic_messages" if profile is not None and profile.api_mode == "anthropic_messages" else None
 
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:
@@ -6153,7 +6163,8 @@ def _build_call_kwargs(
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
     # /v1/messages. A profile declaring api_mode=anthropic_messages (commandcode-anthropic) is on
     # that wire regardless of URL shape — once it overrides build_api_kwargs_extras the generic
-    # ``extra_body.reasoning`` fallback the adapter used to read is gone, so this is its only path.
+    # ``extra_body.reasoning`` fallback the adapter used to read is gone, so this is the adapter's
+    # only path. _wrap_transport wraps such providers on the same declaration.
     if reasoning_config and isinstance(reasoning_config, dict):
         raw_base = base_url or ""
         if (

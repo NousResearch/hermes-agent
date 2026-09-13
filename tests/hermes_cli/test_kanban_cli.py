@@ -182,3 +182,65 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# kanban gc — honest workspace removal accounting (read-only trees on Windows)
+# ---------------------------------------------------------------------------
+
+
+def _archived_scratch_task(kbc, kb, title):
+    """Create a task and flip it to archived WITHOUT the archive-hook cleanup,
+    simulating the leftover gc is the backstop for."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title=title, assignee="alice",
+                             workspace_kind="scratch")
+    with kbc.connect() as conn:
+        conn.execute("UPDATE tasks SET status='archived' WHERE id=?", (tid,))
+    return tid
+
+
+def test_gc_removes_readonly_workspace_and_counts_it(kanban_home, capsys):
+    """A leftover scratch workspace containing read-only files (git keeps
+    .git/objects 0444; Windows refuses to unlink read-only files) must be
+    fully removed by gc — the old rmtree(ignore_errors=True) silently left
+    it on disk while still counting it as removed."""
+    import os
+    import stat
+
+    tid = _archived_scratch_task(kbc, kb, "gc readonly leftover")
+    ws = kb.workspaces_root() / tid
+    (ws / "repo" / ".git" / "objects").mkdir(parents=True)
+    ro_file = ws / "repo" / ".git" / "objects" / "packfile"
+    ro_file.write_text("object data\n")
+    os.chmod(ro_file, stat.S_IREAD)
+
+    out = kc.run_slash("gc")
+    try:
+        assert not ws.exists(), f"read-only workspace survived gc: {ws}"
+        assert "1 workspace(s)" in out, out
+    finally:
+        if ro_file.exists():  # only if gc left it (test failure path) — restore +w for tmp cleanup
+            os.chmod(ro_file, stat.S_IWRITE | stat.S_IREAD)
+
+
+def test_gc_reports_leftover_instead_of_counting_it(kanban_home, monkeypatch, capsys):
+    """When removal genuinely fails (locked files, non-permission I/O errors),
+    gc must NOT count the workspace as removed — the old code incremented the
+    counter unconditionally after rmtree(ignore_errors=True)."""
+    import shutil as _shutil
+
+    tid = _archived_scratch_task(kbc, kb, "gc unremovable leftover")
+    ws = kb.workspaces_root() / tid
+    ws.mkdir(parents=True)
+    (ws / "locked.db").write_text("held open by a process\n")
+
+    def _no_removal(*args, **kwargs):
+        raise PermissionError(13, "simulated lock: even +w retry cannot remove")
+
+    monkeypatch.setattr(_shutil, "rmtree", _no_removal)
+
+    out = kc.run_slash("gc")
+    assert ws.exists(), "workspace should still be there (removal was simulated as impossible)"
+    assert "0 workspace(s)" in out, out
+    assert "1 left on disk" in out, out
+
+

@@ -282,11 +282,53 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return _poll_loop(args.interval, tick)
 
 
+def _rmtree_onerror_make_writable(func, path, exc):
+    """``shutil.rmtree`` onerror/onexc handler: add +w on PermissionError, then retry *func*.
+
+    Archived scratch workspaces routinely contain read-only trees (git clones keep
+    ``.git/objects`` files 0444, and Windows refuses to unlink a read-only file), so a
+    plain ``rmtree(path, ignore_errors=True)`` silently leaves the whole workspace on
+    disk. Same recovery shape as ``hermes_cli.profiles._rmtree_make_writable``.
+    """
+    import stat
+
+    # onexc(func, path, exc_instance) on 3.12+; onerror(func, path, exc_info_tuple) on 3.11.
+    if isinstance(exc, tuple):
+        exc = exc[1]
+    if not isinstance(exc, PermissionError):
+        raise
+    for target in (path, os.path.dirname(path)):  # parent must be writable for unlink/rmdir
+        if target:
+            try:
+                os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+    func(path)
+
+
+def _rmtree_force(path: Path) -> bool:
+    """Remove *path* best-effort, clearing read-only bits along the way.
+
+    Returns True only when the directory is actually gone afterwards, so callers can
+    count real removals instead of assuming success from ``ignore_errors``.
+    """
+    import shutil
+
+    try:
+        try:
+            shutil.rmtree(path, onexc=_rmtree_onerror_make_writable)
+        except TypeError:  # ``onexc`` is 3.12+; 3.11 has ``onerror``
+            shutil.rmtree(path, onerror=_rmtree_onerror_make_writable)
+    except OSError:
+        pass  # partial failure — the existence check below decides
+    return not path.exists()
+
+
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
-    import shutil
     scratch_root = kb.workspaces_root()
     removed_ws = 0
+    failed_ws = 0
     with kbc.connect_closing() as conn:
         rows = conn.execute(
             "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
@@ -315,16 +357,23 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             # Safety: never delete outside the scratch root.
             continue
         if path.exists() and path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-            removed_ws += 1
+            if _rmtree_force(path):
+                removed_ws += 1
+            else:
+                # Honest reporting: leftovers (locked files, non-permission I/O errors)
+                # must not be counted as removed — see the read-only .git objects case.
+                failed_ws += 1
+                print(f"GC: could not fully remove workspace for {row['id']}: {path}",
+                      file=sys.stderr)
 
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     with kbc.connect_closing() as conn:
         removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
     removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600)
+    leftover_note = f", {failed_ws} left on disk (unremovable)" if failed_ws else ""
     print(f"GC complete: {removed_ws} workspace(s), "
-          f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+          f"{removed_events} event row(s), {removed_logs} log file(s) removed{leftover_note}")
     return 0
 
 

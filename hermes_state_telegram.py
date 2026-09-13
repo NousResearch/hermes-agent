@@ -101,11 +101,18 @@ class SessionTelegramTopicsMixin:
     ``enable``/``bind`` run the migration."""
 
     def _topic_read_one(self, sql: str, params):
-        """``fetchone`` that treats an unmigrated table as None."""
+        """``fetchone`` that auto-applies the v2→v3 schema migration on the first
+        ``OperationalError: no such column: profile_name``, then retries once."""
         try:
             return self._read_one(sql, params)
-        except sqlite3.OperationalError:
-            return None
+        except sqlite3.OperationalError as exc:
+            if "profile_name" not in str(exc):
+                return None
+            try:
+                self.apply_telegram_topic_migration()
+                return self._read_one(sql, params)
+            except Exception:
+                return None
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in. Deliberately NOT

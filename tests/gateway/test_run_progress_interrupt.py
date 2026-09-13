@@ -129,6 +129,33 @@ class PartialTruncationAgent:
         }
 
 
+class SaturatingProgressAgent:
+    """Floods callback telemetry while the async sender is unable to drain."""
+
+    callback_elapsed = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self._interrupt_requested = False
+
+    @property
+    def is_interrupted(self) -> bool:
+        return self._interrupt_requested
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        started = time.monotonic()
+        for index in range(1024):
+            self.tool_progress_callback(
+                "tool.started",
+                "web_search",
+                f"saturation-{index}",
+                {},
+            )
+        type(self).callback_elapsed = time.monotonic() - started
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -249,3 +276,24 @@ async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_pa
             f"event '{leaked_query}' leaked into the UI after interrupt — "
             f"progress_callback / drain loop is not checking is_interrupted"
         )
+
+
+@pytest.mark.asyncio
+async def test_progress_saturation_rejects_events_without_blocking_agent(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("WARNING", logger="gateway.run")
+    SaturatingProgressAgent.callback_elapsed = None
+
+    _, result = await _run_once(
+        monkeypatch,
+        tmp_path,
+        SaturatingProgressAgent,
+        "sess-saturated-progress",
+    )
+
+    assert result["final_response"] == "done"
+    assert SaturatingProgressAgent.callback_elapsed is not None
+    assert SaturatingProgressAgent.callback_elapsed < 0.5
+    assert "Dropped " in caplog.text
+    assert "gateway progress events" in caplog.text

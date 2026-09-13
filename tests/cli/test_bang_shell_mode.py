@@ -14,6 +14,7 @@ import pytest
 
 from hermes_cli.bang_shell import (
     USAGE_HINT,
+    _bang_argv,
     bang_shell_enabled,
     is_bang_command,
     parse_bang_command,
@@ -107,10 +108,14 @@ class TestBangExecution:
         assert code == 42
 
     def test_runs_in_requested_cwd(self, tmp_path):
+        # On Windows, ! commands run in Git Bash, whose `pwd` prints MSYS paths
+        # (/tmp, /d/...) that don't map 1:1 onto Windows paths — ask bash to
+        # print the Windows form via cygpath. macOS resolves /tmp through
+        # /private, so compare realpaths either way.
+        cmd = "cygpath -w \"$(pwd)\"" if os.name == "nt" else "pwd"
         lines = []
-        code = run_bang_command("pwd", cwd=str(tmp_path), writer=lines.append)
+        code = run_bang_command(cmd, cwd=str(tmp_path), writer=lines.append)
         assert code == 0
-        # macOS resolves /tmp through /private, so compare realpaths.
         assert os.path.realpath(lines[-1].strip()) == os.path.realpath(str(tmp_path))
 
     def test_missing_cwd_falls_back_without_crashing(self, tmp_path):
@@ -120,6 +125,40 @@ class TestBangExecution:
         )
         assert code == 0
         assert "ok" in lines
+
+
+# ── Windows shell resolution (Git Bash over cmd.exe) ───────────────────────
+
+class TestBangWindowsShell:
+    def test_windows_prefers_git_bash(self, monkeypatch):
+        """On Windows, `!pwd` must run in Git Bash (`bash -c`), not cmd.exe."""
+        monkeypatch.setattr("hermes_cli.bang_shell.os.name", "nt")
+        monkeypatch.setattr(
+            "tools.environments.local._find_bash",
+            lambda: r"C:\Program Files\Git\bin\bash.exe",
+        )
+        argv, use_shell = _bang_argv("pwd")
+        assert use_shell is False
+        assert argv == [r"C:\Program Files\Git\bin\bash.exe", "-c", "pwd"]
+
+    def test_windows_falls_back_to_shell_without_bash(self, monkeypatch):
+        """No usable bash → historical cmd.exe path (shell=True) must remain."""
+        monkeypatch.setattr("hermes_cli.bang_shell.os.name", "nt")
+
+        def no_bash():
+            raise RuntimeError("Git Bash not found")
+
+        monkeypatch.setattr("tools.environments.local._find_bash", no_bash)
+        argv, use_shell = _bang_argv("pwd")
+        assert use_shell is True
+        assert argv == "pwd"
+
+    def test_posix_keeps_shell_true(self, monkeypatch):
+        """POSIX keeps shell=True so the user's $SHELL is respected."""
+        monkeypatch.setattr("hermes_cli.bang_shell.os.name", "posix")
+        argv, use_shell = _bang_argv("pwd")
+        assert use_shell is True
+        assert argv == "pwd"
 
 
 # ── CLI handler: approval gate, usage hint, exit codes ─────────────────────

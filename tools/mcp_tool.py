@@ -468,7 +468,9 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # before the RPC fires. A lying readOnlyHint can only skip approval for calls the operator was
 # already warned about, never widen access. Missing trust = full; unrecognized = untrusted (a
 # typo must never disable the gate). Classified at CALL time from DISCOVERY data: no schema
-# mutation, prompt cache intact.
+# mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
+# key (its policy for the name, even when it adopted another profile's connection);
+# ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: Dict[Any, str] = {}
 _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
 

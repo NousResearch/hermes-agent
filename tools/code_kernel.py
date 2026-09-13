@@ -262,7 +262,7 @@ class CellAuthority:
         return self.ctx.run(self._invoke, tool_name, tool_args)
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
+        from agent.subagent_lifecycle import dispatch_worker_nested_tool
         previous = None
         if self._callbacks:
             try:
@@ -272,7 +272,7 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return dispatch_worker_nested_tool(tool_name, tool_args, task_id=self.task_id)
         finally:
             if previous is not None:
                 try:

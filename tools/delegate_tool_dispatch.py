@@ -332,6 +332,19 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
         payload["control_hint"] = _BACKGROUND_NOTES["control_hint"]
+    from tools.delegate_tool import _stable_worker_identity
+    workers = [
+        {
+            "task_index": i,
+            "profile": task.get("profile"),
+            "worker_id": identity[0],
+            "run_id": identity[1],
+        }
+        for i, task, child in batch.children
+        if (identity := _stable_worker_identity(child))
+    ]
+    if workers:
+        payload["workers"] = workers
     if batch.live_paths:
         payload["live_transcripts"] = list(batch.live_paths)
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]

@@ -1188,6 +1188,47 @@ def _print_deep_probes() -> None:
     _probe_exit_diag(home / "logs" / "gateway-exit-diag.log")
 
 
+_INVALID_SESSION_ID = 0xFFFFFFFF
+
+
+def _process_session_id(pid: int) -> int | None:
+    """Windows session id that owns `pid`, or None if it can't be queried
+    (process already exited, or we lack query rights)."""
+    session_id = ctypes.c_ulong()
+    if not ctypes.windll.kernel32.ProcessIdToSessionId(ctypes.c_ulong(pid), ctypes.byref(session_id)):
+        return None
+    return session_id.value
+
+
+def _active_console_session_id() -> int | None:
+    """Session id of the interactive desktop, or None when nobody is logged on
+    (``WTSGetActiveConsoleSessionId`` returns 0xFFFFFFFF in that case).
+
+    ``restype`` must be set explicitly: the function returns a DWORD, but ctypes'
+    default ``c_int`` is signed, so the 0xFFFFFFFF sentinel comes back as -1 and
+    silently fails to match ``_INVALID_SESSION_ID`` (same class of bug as #71218)."""
+    ctypes.windll.kernel32.WTSGetActiveConsoleSessionId.restype = ctypes.c_uint
+    session_id = ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()
+    return None if session_id == _INVALID_SESSION_ID else session_id
+
+
+def _session_status_lines(sessions: dict[int, int | None], console_session: int | None, task_name: str) -> list[str]:
+    """Session-id lines for ``hermes gateway status``, plus a warning when a gateway PID is
+    stuck in Session 0 while an interactive desktop session exists. A gateway restarted from
+    an SSH shell (itself a Session-0 service) silently inherits Session 0: Credential Manager
+    becomes unreadable there and GUI helpers fail, with no other visible symptom (#108077)."""
+    lines = [
+        f"  Session: PID {pid} -> {sid if sid is not None else 'unknown'}" for pid, sid in sessions.items()
+    ]
+    if console_session not in (None, 0) and any(sid == 0 for sid in sessions.values()):
+        lines.append(
+            "⚠ Gateway is running in Session 0 (services session) while the interactive "
+            f"desktop is Session {console_session}. Credential Manager and GUI helpers will "
+            f"fail from Session 0. Recovery: schtasks /Run /TN {task_name}"
+        )
+    return lines
+
+
 def status(deep: bool = False) -> None:
     """Print a status report for the Windows gateway service."""
     _assert_windows()
@@ -1210,6 +1251,11 @@ def status(deep: bool = False) -> None:
         print("✗ Gateway service not installed")
 
     print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})" if pids else "✗ No gateway process detected")
+
+    if pids:
+        sessions = {pid: _process_session_id(pid) for pid in pids}
+        for line in _session_status_lines(sessions, _active_console_session_id(), task_name):
+            print(line)
 
     if deep:
         print()

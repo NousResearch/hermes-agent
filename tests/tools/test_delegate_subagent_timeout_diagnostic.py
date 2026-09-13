@@ -45,6 +45,7 @@ class _StubChild:
         self._subagent_id = subagent_id
         self._delegate_depth = 1
         self._delegate_role = "leaf"
+        self._delegate_purpose = "research_evidence"
         self.model = "test/model"
         self.provider = "testprov"
         self.api_mode = "chat_completions"
@@ -210,6 +211,34 @@ class TestRunSingleChildTimeoutDump:
         assert "without making any API call" in result["error"]
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
+
+    def test_timeout_returns_runtime_partial_evidence_and_unresolved_work(self, hermes_home, monkeypatch):
+        child = _StubChild(api_call_count=1, hang_seconds=10.0)
+        child._live_transcript_path = str(hermes_home / "live" / "task.log")
+        child._delegate_runtime_receipts = [{
+            "receipt_id": "dr_timeout_receipt",
+            "tool_name": "web_search",
+            "status": "error",
+            "input_summary": {"argument_keys": ["query"], "targets": {}},
+            "output_sha256": "a" * 64,
+        }]
+        child._session_messages = [
+            {"role": "assistant", "tool_calls": [{
+                "id": "call-1", "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "Error: rate limited"},
+        ]
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["purpose"] == "research_evidence"
+        assert result["provenance_status"] == "partial_runtime_evidence"
+        assert result["runtime_receipts"][0]["receipt_id"] == "dr_timeout_receipt"
+        assert result["partial_evidence"]["tool_trace"][0]["tool"] == "web_search"
+        assert result["unresolved_work"] == [{"goal": "test goal", "reason": "after_llm_calls"}]
+        assert result["tool_failures"][0]["receipt_id"] == "dr_timeout_receipt"
+        assert result["transcript_path"] == child._live_transcript_path
 
 
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────

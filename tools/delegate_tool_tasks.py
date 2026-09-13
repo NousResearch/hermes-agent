@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from agent.delegation_purpose import normalize_delegation_purpose
+
 # Placeholder shapes for batch goal validation: bare 'TODO' / 'task N' labels, or unexpanded template markers. The
 # marker regex is deliberately NARROW — only snake_case / space-separated placeholder identifiers (`<feature_name>`,
 # `{file path}`, `<FEATURE-NAME>`), the shape LLM templates leave behind. Bare single-word brackets must never be
@@ -84,9 +86,12 @@ def _normalize_task_list(
                 f"Either reduce the task count, split into multiple delegate_task calls, or increase "
                 f"delegation.max_concurrent_children in config.yaml."
             )
-        task_list = tasks
+        task_list = list(tasks)
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [{
+            "goal": goal, "context": context, "role": top_role,
+            "purpose": normalize_delegation_purpose(None),
+        }]
         if output_schema is not None:
             task_list[0]["output_schema"] = output_schema
     else:
@@ -100,6 +105,11 @@ def _normalize_task_list(
             return None, f"Task {i} must be an object, got {type(task).__name__}."
         if not task.get("goal", "").strip():
             return None, f"Task {i} is missing a 'goal'."
+        try:
+            purpose = normalize_delegation_purpose(task.get("purpose"))
+        except ValueError as exc:
+            return None, f"Task {i} {exc}"
+        task_list[i] = {**task, "purpose": purpose}
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None
     return (None, batch_error) if batch_error else (task_list, None)

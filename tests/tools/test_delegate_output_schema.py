@@ -343,7 +343,7 @@ def _make_mock_parent():
 class TestDelegateTaskDispatch:
     def test_non_dict_output_schema_rejected(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 2}),
             patch(
                 "tools.delegate_tool._resolve_delegation_credentials",
                 return_value={
@@ -368,7 +368,7 @@ class TestDelegateTaskDispatch:
 
     def test_invalid_json_schema_rejected_at_dispatch(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 2}),
             patch(
                 "tools.delegate_tool._resolve_delegation_credentials",
                 return_value={

@@ -68,7 +68,7 @@ def _normalize_role(r: Optional[str]) -> str:
         return "leaf"
     return r_norm
 
-DEFAULT_MAX_ITERATIONS = 250
+DEFAULT_MAX_ITERATIONS = 10
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds (cycles of _HEARTBEAT_INTERVAL with no progress). Progress = iteration, current_tool OR
 # last_activity_ts advancing; an in-flight model wait refreshes last_activity_ts, so slow models are not "idle". Idle
@@ -176,6 +176,7 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[Dict[str, Any]] = None,
+    purpose: Optional[str] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -202,7 +203,7 @@ def _build_child_agent(
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=max_spawn, child_depth=child_depth, purpose=purpose,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -261,7 +262,9 @@ def _build_child_agent(
     # reference), and no parent teardown can close it out from under a background child (#81267).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
+    from agent.delegation_purpose import normalize_delegation_purpose
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    child._delegate_purpose = normalize_delegation_purpose(purpose)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -387,7 +390,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, purpose=t.get("purpose"),
+                role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -637,6 +641,12 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "purpose": _p(
+                            "string",
+                            "Why this child exists. research_evidence gathers and verifies without direct artifact "
+                            "mutation; bounded_implementation may change only the explicitly delegated scope.",
+                            enum=["research_evidence", "bounded_implementation"],
+                        ),
                         "output_schema": _p(
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
@@ -660,7 +670,7 @@ DELEGATE_TASK_SCHEMA = {
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
                     },
-                    "required": ["goal"],
+                    "required": ["goal", "purpose"],
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },

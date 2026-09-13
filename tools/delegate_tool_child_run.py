@@ -36,6 +36,7 @@ def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: f
     return {
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
         "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
+        "purpose": _str_or_none(getattr(child, "_delegate_purpose", None)),
     }
 
 def _append_missed_steer(entry: Dict[str, Any], late_steer: Optional[str]) -> None:
@@ -479,6 +480,37 @@ def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
 
+
+def _timeout_evidence_packet(child: Any, goal: str, timeout_phase: str) -> Dict[str, Any]:
+    """Runtime-owned partial evidence for a child that did not reach finalization."""
+    messages = getattr(child, "_session_messages", None)
+    tool_trace = _build_tool_trace(messages if isinstance(messages, list) else [])
+    raw_receipts = getattr(child, "_delegate_runtime_receipts", None)
+    receipts = [dict(item) for item in raw_receipts if isinstance(item, dict)] if isinstance(raw_receipts, list) else []
+    receipt_failures = [
+        {
+            "receipt_id": item.get("receipt_id"), "tool": item.get("tool_name"),
+            "status": item.get("status"), "target": item.get("input_summary"),
+        }
+        for item in receipts if item.get("status") not in (None, "ok")
+    ]
+    traced_failures = [
+        {"tool": item.get("tool"), "status": item.get("status"), "target": item.get("input_summary")}
+        for item in tool_trace if item.get("status") not in (None, "ok")
+    ]
+    transcript_path = getattr(child, "_live_transcript_path", None)
+    return {
+        "partial_evidence": {"runtime_receipts": receipts, "tool_trace": tool_trace},
+        "unresolved_work": [{"goal": str(goal or "")[:1000], "reason": timeout_phase}],
+        "tool_failures": receipt_failures or traced_failures,
+        "transcript_path": transcript_path if isinstance(transcript_path, str) and transcript_path else None,
+        "runtime_receipts": receipts,
+        "cited_receipt_ids": [],
+        "fabricated_receipt_ids": [],
+        "provenance_status": "partial_runtime_evidence" if receipts else "no_runtime_evidence",
+    }
+
+
 def _build_result_entry(
     child: Any, result: Dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
 ) -> Dict[str, Any]:
@@ -522,6 +554,7 @@ def _build_result_entry(
             "output": _num(getattr(child, "session_completion_tokens", 0)),
         },
         "tool_trace": _build_tool_trace(result.get("messages") or []),
+        "purpose": _str_or_none(getattr(child, "_delegate_purpose", None)),
         # Captured before the finally block calls child.close() so the parent thread can fire subagent_stop with the
         # correct role; stripped before the dict is serialised back to the model (as is _child_cost_usd, folded into
         # the parent's session cost by the aggregator).
@@ -791,15 +824,19 @@ class _ChildRun:
         if diagnostic_path:
             _err += f" Diagnostic: {diagnostic_path}"
         status = "timeout" if is_timeout else "error"
+        timeout_phase = "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None
         _error_entry = {
             "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
             "timeout_seconds": child_timeout if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
-            "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
+            "timeout_phase": timeout_phase,
             "_child_role": getattr(child, "_delegate_role", None),
+            "purpose": _str_or_none(getattr(child, "_delegate_purpose", None)),
             "diagnostic_path": diagnostic_path,
         }
+        if is_timeout and timeout_phase is not None:
+            _error_entry.update(_timeout_evidence_packet(child, self.goal, timeout_phase))
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:

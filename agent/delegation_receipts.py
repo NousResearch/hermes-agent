@@ -87,6 +87,7 @@ def prepare_runtime_receipt(
         "receipt_id": f"dr_{uuid.uuid4().hex[:24]}",
         "child_session_id": session_id,
         "child_subagent_id": subagent_id or None,
+        "purpose": str(getattr(agent, "_delegate_purpose", "") or "") or None,
         "tool_call_id": str(tool_call_id),
         "tool_name": str(tool_name or "tool"),
         "status": normalized_status,

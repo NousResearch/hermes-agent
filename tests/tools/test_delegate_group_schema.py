@@ -34,7 +34,13 @@ def test_legacy_group_replay_remains_accepted_and_delivery_policy_controls_units
     tasks = [{"goal": "Review first module", "group": "join"}, {"goal": "Review second module", "group": "join"}, {"goal": "Review third module"}]
     assert _strip_model_hidden_task_fields(tasks) is tasks
     normalized, error = _normalize_task_list(None, None, tasks, None, "leaf", 3)
-    assert error is None and normalized == tasks
+    assert error is None
+    assert tasks == [
+        {"goal": "Review first module", "group": "join"},
+        {"goal": "Review second module", "group": "join"},
+        {"goal": "Review third module"},
+    ]
+    assert all(task["purpose"] == "research_evidence" for task in normalized)
     batch = _Batch(**{field.name: None for field in fields(_Batch)})
     batch.children = [(i, task, None) for i, task in enumerate(tasks)]
     for enabled in (False, True):

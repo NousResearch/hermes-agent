@@ -14,17 +14,17 @@ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the 
 # match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 
-_DEFAULT_MAX_CONCURRENT_CHILDREN = 10
+_DEFAULT_MAX_CONCURRENT_CHILDREN = 1
 # One-shot guard: _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild, so the >10 cost advisory would otherwise log on every turn.
 _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
 _MIN_SPAWN_DEPTH = 1  # floor for the configurable cap; MAX_DEPTH stays the default
 _LEGACY_MAX_ASYNC_WARNED = False
-# No default wall-clock cap on children: legitimate heavy work (deep reviews, research fan-outs, slow reasoning
-# models) was being killed mid-task. Stuck-child detection is the heartbeat staleness monitor;
-# delegation.child_timeout_seconds opts back in.
-DEFAULT_CHILD_TIMEOUT: Optional[float] = None
+# A bounded child must eventually return evidence or an explicit timeout packet.
+# 15 minutes still permits bounded reviews while preventing abandoned work from
+# living forever behind a healthy heartbeat.
+DEFAULT_CHILD_TIMEOUT: Optional[float] = 900.0
 
 def _cfg() -> dict:
     """The ``delegation`` section, read through the origin so tests can patch it."""
@@ -83,7 +83,7 @@ def _warn_once(flag_name: str, message: str, *args: Any) -> None:
         logger.warning(message, *args)
 
 def _get_max_concurrent_children() -> int:
-    """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
+    """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 1.
 
     Floor of 1 is the only bound enforced; there is no ceiling.
     """
@@ -129,13 +129,12 @@ def _parse_timeout(raw: Any) -> Optional[float]:
     return None if parsed <= 0 else max(30.0, parsed)
 
 def _get_child_timeout() -> Optional[float]:
-    """Hard wall-clock cap for one child, or None (default: no timeout). Failures should come from what the child does
-    (API/tool errors, iteration budget), not a stopwatch; stuck children are caught by the heartbeat staleness
-    monitor. delegation.child_timeout_seconds > 0 opts in (floor 30 s); 0 or negative disables. Env fallback:
+    """Hard wall-clock cap for one child (default: 900 seconds). Explicit 0 or negative disables the cap; positive
+    values have a 30-second floor. Stuck children are also caught by the heartbeat staleness monitor. Env fallback:
     DELEGATION_CHILD_TIMEOUT_SECONDS."""
     return _knob(
         "child_timeout_seconds", "DELEGATION_CHILD_TIMEOUT_SECONDS", _parse_timeout, DEFAULT_CHILD_TIMEOUT,
-        "delegation.child_timeout_seconds=%r is not a valid number; using default (no timeout)",
+        f"delegation.child_timeout_seconds=%r is not a valid number; using default ({DEFAULT_CHILD_TIMEOUT}s)",
     )
 
 def _get_max_spawn_depth() -> int:

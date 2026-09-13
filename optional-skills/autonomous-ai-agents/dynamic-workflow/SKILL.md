@@ -39,7 +39,7 @@ for serial chains. For a refactor or fix campaign on hermes-agent itself, load
 ## Prerequisites
 
 - `delegate_task` available and `delegation.max_concurrent_children` sized for
-  the wave (default 10; the runtime rejects a `tasks=[]` larger than that with a
+  the wave (default 1; the runtime rejects a `tasks=[]` larger than that with a
   clear error rather than queueing). `delegation.max_spawn_depth >= 2` only if
   children must fan out themselves.
 - A writable run directory resolved from the terminal environment's temp dir

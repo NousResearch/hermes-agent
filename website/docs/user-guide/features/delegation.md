@@ -42,15 +42,24 @@ delegate_task(
 
 ## Parallel Batch
 
-Up to 10 concurrent subagents by default (configurable, no hard ceiling):
+One subagent runs at a time by default. Raise `delegation.max_concurrent_children` explicitly when independent work justifies parallel cost:
 
 ```python
 delegate_task(tasks=[
-    {"goal": "Research topic A", "context": "Focus on recent primary sources"},
-    {"goal": "Research topic B", "context": "Compare the leading explanations"},
-    {"goal": "Fix the build", "context": "Project root: /home/user/project"}
+    {"goal": "Research topic A", "purpose": "research_evidence", "context": "Focus on recent primary sources"},
+    {"goal": "Research topic B", "purpose": "research_evidence", "context": "Compare the leading explanations"},
+    {"goal": "Fix the build", "purpose": "bounded_implementation", "context": "Project root: /home/user/project"}
 ])
 ```
+
+## Task purpose
+
+Every advertised `tasks[]` item declares one of two purposes:
+
+- `research_evidence` — inspect, calculate, test, and report evidence. Direct artifact-mutation tools such as `write_file`, `patch`, and `skill_manage` are Runtime-blocked.
+- `bounded_implementation` — implementation may modify only the files and systems explicitly named by the parent task.
+
+Old saved calls and internal Python callers that omit the field remain accepted and default to `research_evidence`. Purpose is a workflow fence, not an operating-system sandbox: inherited terminal and code-execution tools still follow the existing child toolsets, approvals, and runtime boundaries.
 
 ## Structured Output (`output_schema`)
 
@@ -60,6 +69,7 @@ Each task can carry an optional `output_schema`, a JSON Schema object the child'
 delegate_task(
     tasks=[{
         "goal": "Check which of these three endpoints return 200",
+        "purpose": "research_evidence",
         "context": "https://a.example, https://b.example, https://c.example",
         "output_schema": {
             "type": "object",
@@ -132,14 +142,17 @@ Research multiple topics simultaneously and collect summaries:
 delegate_task(tasks=[
     {
         "goal": "Research the current state of WebAssembly in 2025",
+        "purpose": "research_evidence",
         "context": "Focus on: browser support, non-browser runtimes, language support"
     },
     {
         "goal": "Research the current state of RISC-V adoption in 2025",
+        "purpose": "research_evidence",
         "context": "Focus on: server chips, embedded systems, software ecosystem"
     },
     {
         "goal": "Research quantum computing progress in 2025",
+        "purpose": "research_evidence",
         "context": "Focus on: error correction breakthroughs, practical applications, key players"
     }
 ])
@@ -197,16 +210,16 @@ This is off by default because every unit is a new turn for the orchestrator: a 
 
 ```json
 {"tasks": [
-  {"goal": "Review PR #101 ..."},
-  {"goal": "Review PR #102 ..."},
-  {"goal": "Benchmark approach A ...", "group": "bench"},
-  {"goal": "Benchmark approach B ...", "group": "bench"}
+  {"goal": "Review PR #101 ...", "purpose": "research_evidence"},
+  {"goal": "Review PR #102 ...", "purpose": "research_evidence"},
+  {"goal": "Benchmark approach A ...", "purpose": "research_evidence", "group": "bench"},
+  {"goal": "Benchmark approach B ...", "purpose": "research_evidence", "group": "bench"}
 ]}
 ```
 
 The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting (the worker pool grows to the number of live units so no unit waits behind a full pool). An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
-- **Maximum concurrency:** 10 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
+- **Maximum concurrency:** 1 task by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
@@ -339,28 +352,28 @@ Both roles retain `execute_code` (programmatic tool calling) so children can bat
 
 ## Max Iterations
 
-Each subagent has an iteration limit (default: 250) that controls how many tool-calling turns it can take. The limit is set globally in `config.yaml` and applies to every child; it is not a per-call parameter of `delegate_task`:
+Each subagent has an iteration limit (default: 25) that controls how many tool-calling turns it can take. The limit is set globally in `config.yaml` and applies to every child; it is not a per-call parameter of `delegate_task`:
 
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  max_iterations: 60   # lower it for fleets of simple tasks, raise it for long investigations
+  max_iterations: 25   # raise only for a bounded investigation that needs more turns
 ```
 
 A child that exhausts its budget returns with `exit_reason: max_iterations` and `truncated: true`, so the parent can tell a budget stop from a completed task.
 
 ## Child Timeout
 
-By default there is **no wall-clock timeout** on subagents. Children fail only from what they're actually doing — API errors, tool errors, or hitting their iteration budget — never from a delegation-level stopwatch. Earlier releases shipped a hard cap (300s, later 600s), which kept killing legitimately busy children mid-task: deep code reviews, large research fan-outs, and slow reasoning models routinely need more than 10 minutes while making steady progress the whole time.
+By default each subagent has a **900-second (15-minute) wall-clock timeout**. This leaves room for bounded reviews while ensuring abandoned work eventually returns an explicit timeout packet. API errors, tool errors, and the iteration budget can still stop a child earlier.
 
 Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts, and no activity-timestamp ticks), letting the gateway inactivity timeout fire on a truly wedged worker. An in-flight model wait still counts as progress — subagents refresh the activity clock while waiting on the provider, so a slow local / long-prefill completion is not treated as stalled.
 
-If you want a hard cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
+Override or disable the cap per install when needed:
 
 ```yaml
 delegation:
-  child_timeout_seconds: 0     # default: 0 = no timeout
-  # child_timeout_seconds: 1800  # opt-in hard cap (floor 30s)
+  child_timeout_seconds: 900   # default; positive values have a 30-second floor
+  # child_timeout_seconds: 0   # explicit opt-out: no wall-clock cap
 ```
 
 A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
@@ -370,8 +383,25 @@ metadata alongside the error message so parents and hooks can distinguish a
 stopwatch kill from other failures without parsing text: `timeout_seconds`
 (the configured cap), `timed_out_after_seconds` (actual wall clock), and
 `timeout_phase` (`before_first_llm_call` when the child never reached its
-first request, `after_llm_calls` otherwise). All three are `null` on
-non-timeout errors.
+first request, `after_llm_calls` otherwise). It also carries Runtime-owned
+`partial_evidence` (receipts and a sanitized tool trace), `unresolved_work`,
+`tool_failures`, `transcript_path`, and `diagnostic_path`. Timeout evidence does
+not duplicate raw tool-output previews. Timeout-specific fields are absent or
+`null` on non-timeout errors.
+
+## Runtime evidence receipts
+
+During delegated execution, Hermes appends a marker such as
+`[Runtime receipt: dr_...]` to each durably recorded child tool result. The
+receipt is issued by the Child Runtime and binds the child/session identity,
+tool call, status, sanitized targets, and SHA-256 of the full pre-spill output.
+Children are instructed to cite these IDs beside tool-observed claims.
+
+The parent result exposes `runtime_receipts`, `cited_receipt_ids`,
+`fabricated_receipt_ids`, and `provenance_status`. A receipt marker copied or
+invented in prose is not promoted unless the ID exists in the Runtime ledger.
+Pure reasoning children with no tool evidence report `no_runtime_evidence`
+rather than fabricating proof.
 
 ## Failure Visibility
 
@@ -622,8 +652,9 @@ error.
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  max_iterations: 250                       # Max turns per child (default: 250)
-  # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+  max_iterations: 10                        # Max turns per child (default: 10)
+  # max_concurrent_children: 1              # Parallel children per batch (default: 1)
+  # child_timeout_seconds: 900              # Hard child timeout (default: 15 minutes; 0 disables)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.

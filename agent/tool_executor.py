@@ -661,6 +661,16 @@ def _dispatch_authorized_once(
 
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
+        try:
+            from agent.delegation_purpose import purpose_tool_block_message
+
+            block_message = purpose_tool_block_message(agent, ref.name)
+        except Exception:
+            logger.debug("delegation purpose gate failed", exc_info=True)
+            block_message = "Delegation purpose could not be validated; tool execution was blocked."
+        if block_message is not None:
+            block_error_type = "delegation_purpose_block"
+    if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)

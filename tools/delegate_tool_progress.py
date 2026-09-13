@@ -152,12 +152,18 @@ _NESTED_CHILDREN_NOTE = (
 
 def _build_child_system_prompt(
     goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
-    max_spawn_depth: int = 2, child_depth: int = 1,
+    max_spawn_depth: int = 2, child_depth: int = 1, purpose: Optional[str] = None,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    from agent.delegation_purpose import purpose_prompt_block
+
+    parts = [
+        "You are a focused subagent working on a specific delegated task.",
+        purpose_prompt_block(purpose or "research_evidence"),
+        "", f"YOUR TASK:\n{goal}",
+    ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():

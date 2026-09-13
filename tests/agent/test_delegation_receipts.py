@@ -19,6 +19,7 @@ class _FakeAgent:
     def __init__(self, *, flush_ok: bool = True):
         self.session_id = "child-session"
         self._subagent_id = "sa-0-test"
+        self._delegate_purpose = "research_evidence"
         self._current_tool = "read_file"
         self._subdirectory_hints = SimpleNamespace(check_tool_call=lambda *_: "")
         self._flush_messages_to_session_db = lambda _messages: flush_ok
@@ -75,6 +76,7 @@ def test_durable_tool_result_commits_runtime_receipt_and_marker():
     assert committed is not None
     assert len(agent._delegate_runtime_receipts) == 1
     receipt_id = agent._delegate_runtime_receipts[0]["receipt_id"]
+    assert agent._delegate_runtime_receipts[0]["purpose"] == "research_evidence"
     assert messages[0]["role"] == "tool"
     assert f"[Runtime receipt: {receipt_id}]" in messages[0]["content"]
 

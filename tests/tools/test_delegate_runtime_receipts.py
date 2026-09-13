@@ -13,6 +13,7 @@ def _child(receipts=None):
         session_estimated_cost_usd=0.0,
         session_cost_status="exact",
         _delegate_role="leaf",
+        _delegate_purpose="research_evidence",
     )
     if receipts is not None:
         child._delegate_runtime_receipts = receipts
@@ -51,6 +52,7 @@ def test_result_entry_promotes_only_runtime_ledger_citations():
         0, 1.0, _SchemaOutcome(None, None, [], 0),
     )
     assert entry["provenance_status"] == "verified_citations"
+    assert entry["purpose"] == "research_evidence"
     assert entry["cited_receipt_ids"] == [receipt_id]
     assert entry["runtime_receipts"][0]["output_sha256"] == "a" * 64
     assert entry["fabricated_receipt_ids"] == []

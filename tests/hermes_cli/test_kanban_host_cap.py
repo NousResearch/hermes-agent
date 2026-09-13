@@ -218,6 +218,30 @@ def _park_in_review(conn: sqlite3.Connection, title: str, assignee: str) -> str:
     return tid
 
 
+def _hand_off_to_review(
+    conn: sqlite3.Connection,
+    title: str,
+    author: str = "builder",
+    reviewer: str = "reviewer",
+) -> str:
+    """Move a task into ``review`` the way the product does: an author
+    implements it and hands it to a distinct reviewer.
+
+    ``_park_in_review`` writes the status directly, leaving the card owned by
+    its own author with no implementer provenance. The dispatcher refuses to
+    spawn that shape (an author must not review its own change), so tests that
+    need review work which can actually spawn must hand off for real.
+    """
+    tid = kb.create_task(conn, title=title, assignee=author)
+    claimed = kb.claim_task(conn, tid)
+    assert claimed is not None
+    assert kb.request_review(
+        conn, tid, summary="ready", reviewer=reviewer,
+        expected_run_id=claimed.current_run_id,
+    )
+    return tid
+
+
 def test_review_lane_gets_reserved_slot_under_ready_backlog(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
@@ -231,7 +255,7 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
     with kbc.connect() as conn:
         for title in ("ready-1", "ready-2", "ready-3"):
             kb.create_task(conn, title=title, assignee="alice")
-        review_id = _park_in_review(conn, "review-me", "reviewer")
+        review_id = _hand_off_to_review(conn, "review-me")
         res = kbd.dispatch_once(
             conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
         )
@@ -306,7 +330,7 @@ def test_review_budget_still_bounded_by_shared_cap(
     with kbc.connect() as conn:
         kb.create_task(conn, title="ready-1", assignee="alice")
         for i in range(3):
-            _park_in_review(conn, f"review-{i}", "reviewer")
+            _hand_off_to_review(conn, f"review-{i}")
         res = kbd.dispatch_once(
             conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
         )

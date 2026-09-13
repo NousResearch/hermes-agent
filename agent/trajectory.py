@@ -29,7 +29,6 @@ def _lock_append_handle(f, acquire: bool) -> None:
         import msvcrt
         f.seek(0)
         msvcrt.locking(f.fileno(), msvcrt.LK_LOCK if acquire else msvcrt.LK_UNLCK, 1)
-        f.seek(0, os.SEEK_END)
     else:
         import fcntl
         fcntl.flock(f.fileno(), fcntl.LOCK_EX if acquire else fcntl.LOCK_UN)
@@ -43,16 +42,27 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: boo
     try:
         line = json.dumps(entry, ensure_ascii=False) + "\n"  # serialize before taking the lock
         opener = gzip.open if str(filename).endswith(".gz") else open
-        with opener(filename, "at", encoding="utf-8") as f:
+        f = opener(filename, "at", encoding="utf-8")
+        locked = False
+        try:
             # Gateway sessions and batch workers append to the SAME default file; without an
             # exclusive lock around write+flush, entries larger than one write() interleave and the
-            # JSONL stops parsing (#12684).
+            # JSONL stops parsing (#12684). Gzip close writes the member trailer, so the handle must
+            # remain locked through close/finalization as well.
             _lock_append_handle(f, True)
-            try:
-                f.write(line)
-                f.flush()
-            finally:
-                _lock_append_handle(f, False)
+            locked = True
+            f.write(line)
+            f.flush()
+            f.close()
+            locked = False  # close releases the OS handle lock after gzip finalization
+        finally:
+            if locked:
+                try:
+                    _lock_append_handle(f, False)
+                except (OSError, ValueError):
+                    pass
+            if not f.closed:
+                f.close()
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)

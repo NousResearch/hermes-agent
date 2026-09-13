@@ -3,10 +3,13 @@
 import gzip
 import json
 
+import pytest
+
 from hermes_cli.response_compression import (
     _accepts_gzip,
     _is_compressible_content_type,
     _is_excluded_path,
+    SelectiveGZipMiddleware,
 )
 from agent.trajectory import save_trajectory
 
@@ -37,3 +40,35 @@ def test_trajectory_defaults_to_readable_gzip_jsonl(tmp_path, monkeypatch):
     output = tmp_path / "trajectory_samples.jsonl.gz"
     with gzip.open(output, "rt", encoding="utf-8") as stream:
         assert json.loads(stream.readline())["model"] == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_excluded_response_bypasses_compression_in_asgi_path():
+    body = b"<html>" + (b"sensitive response" * 100) + b"</html>"
+
+    async def app(scope, receive, send):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/html"), (b"content-length", str(len(body)).encode())],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    middleware = SelectiveGZipMiddleware(app, minimum_size=0)
+    await middleware(
+        {"type": "http", "path": "/api/status", "headers": [(b"accept-encoding", b"gzip")]},
+        lambda: None,
+        send,
+    )
+
+    start, response = messages
+    headers = dict(start["headers"])
+    assert b"content-encoding" not in headers
+    assert response["body"] == body

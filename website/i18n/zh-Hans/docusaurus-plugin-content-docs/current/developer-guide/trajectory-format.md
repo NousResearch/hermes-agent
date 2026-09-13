@@ -11,13 +11,13 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 
 | 文件 | 时机 |
 |------|------|
-| `trajectory_samples.jsonl` | 成功完成的对话（`completed=True`） |
-| `failed_trajectories.jsonl` | 失败或被中断的对话（`completed=False`） |
+| `trajectory_samples.jsonl.gz` | 成功完成的对话（`completed=True`），gzip 压缩的 JSONL |
+| `failed_trajectories.jsonl.gz` | 失败或被中断的对话（`completed=False`），gzip 压缩的 JSONL |
 
 批量运行器（`batch_runner.py`）按批次写入自定义输出文件
 （例如 `batch_001_output.jsonl`），并附带额外的元数据字段。
 
-可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
+默认轨迹是 gzip 压缩的 JSONL。可通过 `save_trajectory()` 的 `filename` 参数覆盖文件名。
 
 
 ## JSONL 条目格式
@@ -184,7 +184,7 @@ def load_trajectories(path: str):
     return entries
 
 # Filter to successful completions only
-successful = [e for e in load_trajectories("trajectory_samples.jsonl")
+successful = [e for e in load_trajectories("trajectory_samples.jsonl.gz")
               if e.get("completed")]
 
 # Extract just the conversations for training
@@ -196,7 +196,7 @@ training_data = [e["conversations"] for e in successful]
 ```python
 from datasets import load_dataset
 
-ds = load_dataset("json", data_files="trajectory_samples.jsonl")
+ds = load_dataset("json", data_files="trajectory_samples.jsonl.gz")
 ```
 
 规范化的 `tool_stats` schema 确保所有条目具有相同的列，

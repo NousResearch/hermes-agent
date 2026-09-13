@@ -136,6 +136,17 @@ class _SelectiveGZipResponder(GZipResponder):
             )
             return
 
+        # Older Starlette responders do not consult ``content_type_is_excluded``
+        # themselves. Bypass the parent compressor explicitly so excluded
+        # responses (including 206/range and ETagged bodies) retain their
+        # original headers and bytes on every supported API generation.
+        if self.content_type_is_excluded:
+            if not self.started:
+                self.started = True
+                await self.send(self.initial_message)
+            await self.send(message)
+            return
+
         # Starlette renamed this hook from ``send_with_gzip`` to
         # ``send_with_compression``. Resolve the parent hook dynamically so the
         # middleware keeps its allowlist on both supported API generations.

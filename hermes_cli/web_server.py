@@ -34,12 +34,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_cli import __version__
 from hermes_cli.config import load_config
-from hermes_cli.response_compression import SelectiveGZipMiddleware
 
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
+    from hermes_cli.response_compression import SelectiveGZipMiddleware
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -50,6 +50,7 @@ except ImportError:
         from fastapi import FastAPI, HTTPException, Request
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
+        from hermes_cli.response_compression import SelectiveGZipMiddleware
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"

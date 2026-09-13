@@ -1,10 +1,13 @@
 """``save_trajectory()`` appends must be serialized across processes (#12684)."""
+import gzip
 import json
 import subprocess
 import sys
 import textwrap
 import time
 from pathlib import Path
+
+import pytest
 
 from agent.trajectory import save_trajectory
 
@@ -32,6 +35,40 @@ def test_concurrent_process_appends_stay_parseable(tmp_path):
     assert tags == {f"P{n}-{i}" for n in range(6) for i in range(5)}
 
 
+def test_concurrent_gzip_appends_stay_decompressible(tmp_path):
+    """Gzip member trailers are written before the next process may append."""
+    target = tmp_path / "trajectory_samples.jsonl.gz"
+    script = textwrap.dedent(f"""
+        import sys; sys.path.insert(0, {_REPO_ROOT!r})
+        from agent.trajectory import save_trajectory
+        big = "x" * 150_000
+        for i in range(3):
+            save_trajectory([{{"from": "human", "value": f"P{{sys.argv[1]}}-{{i}} " + big}}],
+                            model="m", completed=True, filename={str(target)!r})
+    """)
+    procs = [subprocess.Popen([sys.executable, "-c", script, str(n)], stdin=subprocess.DEVNULL) for n in range(4)]
+    for p in procs:
+        assert p.wait(timeout=120) == 0
+
+    with gzip.open(target, "rt", encoding="utf-8") as stream:
+        entries = [json.loads(line) for line in stream]
+    assert len(entries) == 12
+    assert {entry["conversations"][0]["value"].split(" ", 1)[0] for entry in entries} == {
+        f"P{n}-{i}" for n in range(4) for i in range(3)
+    }
+
+
+@pytest.mark.windows_only
+def test_default_gzip_trajectory_saves_on_windows(tmp_path, monkeypatch):
+    """The default gzip path must work with Windows' file-locking API."""
+    monkeypatch.chdir(tmp_path)
+    save_trajectory([{"from": "human", "value": "hello"}], model="m", completed=True)
+
+    with gzip.open(tmp_path / "trajectory_samples.jsonl.gz", "rt", encoding="utf-8") as stream:
+        assert json.loads(stream.readline())["completed"] is True
+
+
+@pytest.mark.live_system_guard_bypass
 def test_append_honours_a_foreign_exclusive_lock(tmp_path):
     """While another process holds the file lock, save_trajectory() blocks instead of writing through."""
     target = tmp_path / "failed_trajectories.jsonl"
@@ -55,7 +92,8 @@ def test_append_honours_a_foreign_exclusive_lock(tmp_path):
         save_trajectory([{"from": "human", "value": "hi"}], model="m", completed=False, filename=str(target))
         waited = time.monotonic() - started
     finally:
-        holder.kill()
-        holder.wait()
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
     assert waited >= 1.0, f"append went through a held lock after {waited:.2f}s"
     assert json.loads(target.read_text(encoding="utf-8").strip().splitlines()[-1])["completed"] is False

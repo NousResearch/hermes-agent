@@ -218,6 +218,46 @@ def _ensure_test_isolation(db_path: Path) -> None:
             )
 
 
+def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
+    """Create/tighten a writable state database and its sidecars to 0600.
+
+    SQLite otherwise creates ``state.db``, ``-wal``, and ``-shm`` according to
+    the process umask (commonly 0644 under 0022). Use file descriptors so a
+    missing main database is private from its first byte and O_NOFOLLOW can
+    refuse a planted symlink. Read-only SessionDB attachments never call this
+    helper and remain observational.
+    """
+    if os.name == "nt":
+        return
+
+    for index, path in enumerate(
+        (
+            db_path,
+            db_path.with_name(db_path.name + "-wal"),
+            db_path.with_name(db_path.name + "-shm"),
+        )
+    ):
+        flags = os.O_RDONLY
+        if index == 0 and create_main:
+            flags = os.O_WRONLY | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileNotFoundError:
+            continue
+        except IsADirectoryError:
+            # Not a database file at all; sqlite3.connect() raises the
+            # canonical error for this, and a directory leaks no row data.
+            continue
+        try:
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+
+
 # Openings of the background-review harness prompts (agent/background_review.py).
 _REVIEW_HARNESS_PREFIXES = (
     "Review the conversation above and update the skill library",
@@ -625,6 +665,9 @@ class SessionDB(
             # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY
             # on a file that may really be in rollback-journal mode.
             self._wal_active = mode == "wal" and _on_disk_journal_mode(conn) == "wal"
+            # Existing WAL/SHM files may predate the main-file hardening;
+            # normalize any sidecars that became visible during WAL setup.
+            _secure_state_db_files(self.db_path)
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
@@ -637,6 +680,9 @@ class SessionDB(
         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
         # a replacement WAL while a live writer still holds a deleted sidecar inode.
         refuse_deleted_wal_generation(self.db_path)
+        # Create/tighten the main database before sqlite3.connect() so a
+        # permissive process umask can never expose a fresh profile store.
+        _secure_state_db_files(self.db_path, create_main=True)
         self._conn = self._open_writer_conn()
         self._init_schema()
 

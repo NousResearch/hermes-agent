@@ -114,6 +114,56 @@ def test_minimax_login_does_not_launch_anthropic_flow():
 
 
 
+def test_minimax_start_route_honors_poller_mock_on_owning_module(tmp_path, monkeypatch):
+    """A monkeypatch on ``web_server_oauth._minimax_poller`` must intercept the
+    background thread the /start route spawns.
+
+    Regression: the router imported the poller functions at module level, so a
+    test's patch on the owning module was a no-op — the REAL poller ran on the
+    leaked daemon thread, hit the live MiniMax endpoint from CI, and its
+    getaddrinfo call segfaulted a later test's collection (CI flake, run
+    34323790818). The router must resolve pollers late, at spawn time.
+    """
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    fake_user_code_resp = {
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://api.minimax.io/oauth/verify",
+        "expired_in": 600,
+        "interval": 2000,
+        "state": "stub-state",
+    }
+    mock_ran = threading.Event()
+    real_network_hit = threading.Event()
+
+    def fake_poller(session_id):
+        mock_ran.set()
+
+    def fail_poll_token(**kwargs):
+        real_network_hit.set()
+        raise AssertionError("real _minimax_poller body must not run under the mock")
+
+    with patch(
+        "hermes_cli.auth._minimax_request_user_code",
+        return_value=fake_user_code_resp,
+    ), patch(
+        "hermes_cli.auth._minimax_pkce_pair",
+        return_value=("verifier-stub", "challenge-stub", "stub-state"),
+    ), patch(
+        "hermes_cli.auth._minimax_poll_token",
+        fail_poll_token,
+    ), patch(
+        "hermes_cli.web_server_oauth._minimax_poller",
+        fake_poller,
+    ):
+        resp = client.post("/api/providers/oauth/minimax-oauth/start", headers=HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert mock_ran.wait(timeout=5), "patched poller never ran — router bypassed the seam"
+        assert not real_network_hit.is_set()
+    _web_server_oauth._oauth_sessions.pop(resp.json()["session_id"], None)
+
+
 def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
     from hermes_cli import web_server as ws
     from hermes_constants import get_hermes_home

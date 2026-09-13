@@ -38,6 +38,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from report_contract import validate_toolperf_report
+
 ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
 
@@ -147,6 +149,13 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     resdir = ROOT / "results" / model.replace("/", "_") / arm
     resdir.mkdir(parents=True, exist_ok=True)
     meta_path = resdir / "meta.jsonl"
+    try:
+        source_sha = subprocess.run(
+            ["git", "-C", str(Path(pythonpath).resolve()), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        source_sha = "unavailable"
     done = set()
     if meta_path.exists():
         for line in meta_path.read_text(encoding="utf-8").splitlines():
@@ -215,6 +224,7 @@ mode = "overwrite"
                 continue
             rec = {"run_id": run_id, "task": name, "rep": rep, "arm": arm,
                    "model": model, "wall_s": round(dt, 1), "exit": rc,
+                   "source_sha": source_sha,
                    "tail": "\n".join(out.splitlines()[-12:])}
             with open(meta_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
@@ -307,6 +317,27 @@ def report(models):
             print(f"{'TOTAL':20s} | {arm:8s} | {n:2d} {100 * a['ok'] / n:3.0f}% "
                   f"{a['llm'] / n:5.1f} {a['tools'] / n:5.1f} {a['errs'] / n:5.1f} "
                   f"{a['retries'] / n:5.1f} {a['kb'] / n:5.0f} {a['wall'] / n:5.0f}s")
+        provenance = {arm: "unavailable" for arm in ("baseline", "fixes")}
+        for arm in ("baseline", "fixes"):
+            meta_path = mdir / arm / "meta.jsonl"
+            if meta_path.exists():
+                rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()]
+                if rows:
+                    provenance[arm] = rows[0].get("source_sha", "unavailable")
+        report_data = {
+            "baseline_sha": provenance.get("baseline", "unavailable"),
+            "fixes_sha": provenance.get("fixes", "unavailable"),
+            "model": model,
+            "concurrency": max(aggn.values(), default=0),
+            "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
+            "status": "pass" if all(aggn[arm] for arm in ("baseline", "fixes")) else "partial",
+        }
+        errors = validate_toolperf_report(report_data)
+        if errors:
+            raise SystemExit("invalid tool-performance report: " + ", ".join(errors))
+        (mdir / "report.json").write_text(
+            json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
 
 if __name__ == "__main__":

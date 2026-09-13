@@ -5,9 +5,29 @@ import argparse
 import json
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
-from report_contract import validate_report
+if __package__:
+    from .report_contract import validate_report
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.compression_eval.report_contract import validate_report
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    import psutil
+
+    parent = psutil.Process(process.pid)
+    children = parent.children(recursive=True)
+    for child in children:
+        child.terminate()
+    parent.terminate()
+    _, alive = psutil.wait_procs([*children, parent], timeout=10)
+    for child in alive:
+        child.kill()
+    process.wait()
 
 
 def main() -> int:
@@ -15,17 +35,54 @@ def main() -> int:
     parser.add_argument("--harness", type=Path, required=True)
     parser.add_argument("--hermes-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if not args.hermes_root.is_dir() or not args.harness.is_dir() or not args.command:
+    hermes_root = args.hermes_root.expanduser().resolve()
+    harness = args.harness.expanduser().resolve()
+    command = list(args.command)
+    if command[:1] == ["--"]:
+        command.pop(0)
+    if not hermes_root.is_dir() or not harness.is_dir() or not command:
         raise SystemExit("--harness, --hermes-root, and a harness command are required")
-    result = subprocess.run(args.command, cwd=args.harness, env={**os.environ, "HERMES_AGENT_ROOT": str(args.hermes_root)}, text=True, capture_output=True, check=False)
+    if args.timeout_seconds <= 0:
+        raise SystemExit("--timeout-seconds must be positive")
+    report_path = harness / "results" / "latest" / "report.json"
+    if report_path.exists():
+        stale = report_path.with_name(f"report.stale.{time.time_ns()}.json")
+        report_path.replace(stale)
+    try:
+        source_sha = subprocess.run(
+            ["git", "-C", str(hermes_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        ).stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit("unable to resolve --hermes-root source revision") from exc
+    process: subprocess.Popen[str] = subprocess.Popen(
+        command,
+        cwd=harness,
+        env={**os.environ, "HERMES_AGENT_ROOT": str(hermes_root)},
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=args.timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_tree(process)
+        process.communicate()
+        raise SystemExit(f"compression harness timed out after {args.timeout_seconds:g}s") from exc
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if result.returncode:
         raise SystemExit(f"compression harness failed with exit {result.returncode}")
-    report_path = args.harness / "results" / "latest" / "report.json"
     if not report_path.exists():
         raise SystemExit(f"compression report missing: {report_path}")
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("source_sha") != source_sha:
+        raise SystemExit("invalid compression report: source_sha does not match --hermes-root")
     errors = validate_report(report)
     if errors:
         raise SystemExit("invalid compression report: " + ", ".join(errors))

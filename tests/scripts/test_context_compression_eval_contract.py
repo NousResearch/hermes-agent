@@ -2,7 +2,23 @@ from scripts.compression_eval.report_contract import validate_report
 
 
 def report() -> dict[str, object]:
-    return {"schema_version": 1, "source_sha": "a" * 40, "fixture_digest": "b" * 64, "compressed_tokens": 100, "baseline_tokens": 200, "probe_scores": {"accuracy": 5}, "artifact_trail_preserved": True, "continuity_preserved": True, "status": "pass"}
+    return {
+        "schema_version": 1,
+        "source_sha": "a" * 40,
+        "fixture_digest": "b" * 64,
+        "compressed_tokens": 100,
+        "baseline_tokens": 200,
+        "probe_scores": {"accuracy": 5},
+        "artifact_trail_preserved": True,
+        "continuity_preserved": True,
+        "model_provenance": {
+            "compression_model": "compression-model",
+            "evaluator_model": "evaluator-model",
+            "provider": "test-provider",
+            "model_config": "config-digest",
+        },
+        "status": "pass",
+    }
 
 
 def test_valid_report_passes() -> None:
@@ -22,3 +38,12 @@ def test_secret_or_local_path_is_rejected() -> None:
     value = report()
     value["probe_scores"] = {"detail": "OPENAI_API_KEY=secret"}
     assert any(error.startswith("forbidden_marker:") for error in validate_report(value))
+
+
+def test_pass_requires_preservation_and_rejects_nested_credentials() -> None:
+    value = report()
+    value["artifact_trail_preserved"] = False
+    value["probe_scores"] = {"nested": {"OPENAI_API_KEY": "secret"}}
+    errors = validate_report(value)
+    assert "artifact_trail_preserved_must_be_true_for_pass" in errors
+    assert "forbidden_key:report.probe_scores.nested.OPENAI_API_KEY" in errors

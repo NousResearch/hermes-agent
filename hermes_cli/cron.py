@@ -42,12 +42,15 @@ def _active_cron_provider_name() -> str:
 def _builtin_gateway_liveness() -> Optional[bool]:
     """Tri-state liveness of the builtin cron scheduler's trigger (None = unknown).
 
-    The builtin ticker only runs inside the gateway process, so a scheduled job with no live
-    gateway can never fire; non-builtin providers fire jobs without the gateway.
-
-    Chronos) fire through their own machinery and are deliberately exempt — a missing gateway process means
-    nothing for them, so they report active. ``None`` = probe failed; callers must not claim either way. See
-    #87033.
+    Single source of truth shared by the CLI (``_warn_if_gateway_not_running``)
+    and the ``cronjob`` model tool (#87033): the builtin ticker only runs
+    inside the gateway process, so a scheduled job with no live gateway can
+    never fire. Non-builtin providers (e.g. Chronos) fire through their own
+    machinery and are deliberately exempt — a missing gateway process means
+    nothing for them, so they report active. Desktop ``serve`` backends also
+    own the builtin ticker without registering as gateways, so a fresh ticker
+    heartbeat is authoritative scheduler-liveness evidence. ``None`` = probe
+    failed; callers must not claim either way.
     """
     try:
         if _active_cron_provider_name() != "builtin":
@@ -60,9 +63,27 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             if is_gateway_runtime_lock_active():
                 return True
         from hermes_cli.gateway import (
-            find_gateway_pids, named_profile_served_by_running_multiplexer)
-        # Satellite profile: no local gateway.pid, but the default multiplexer ticks its store.
-        return bool(find_gateway_pids()) or named_profile_served_by_running_multiplexer()
+            find_gateway_pids,
+            named_profile_served_by_running_multiplexer,
+        )
+
+        if find_gateway_pids():
+            return True
+        # Satellite profile: no local gateway.pid, but the default multiplexer
+        # ticks this profile's cron store (#97120).
+        if named_profile_served_by_running_multiplexer():
+            return True
+
+        # The Desktop app starts the same builtin ticker from its headless
+        # ``serve`` backend, which intentionally has neither a gateway PID
+        # registration nor a gateway runtime lock. The heartbeat is written by
+        # the ticker loop itself, so freshness proves the scheduler trigger is
+        # alive without broad process-name scanning.
+        from cron.jobs import get_ticker_heartbeat_age, TICKER_INTERVAL_SECONDS
+
+        heartbeat_age = get_ticker_heartbeat_age()
+        stale_after = TICKER_INTERVAL_SECONDS * 3 + 20
+        return heartbeat_age is not None and heartbeat_age <= stale_after
     except Exception:
         return None
 
@@ -358,6 +379,13 @@ def _print_ticker_health(pids: list) -> None:
         _warn("⚠ Gateway is running but the cron ticker looks STALLED — "
               f"no heartbeat for {int(hb_age)}s (expected every ~60s).")
         print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+    elif ok_age is None:
+        # The scheduler loop is alive, but it has not completed a
+        # successful tick yet. This is common for a just-started Desktop
+        # backend and must not be promoted to the green "will fire"
+        # claim solely from its liveness heartbeat.
+        print(color("⚠ Cron ticker is running, but no tick has succeeded yet.", Colors.YELLOW))
+        print("  Wait for the first tick, then re-run `hermes cron status`.")
     elif ok_age is not None and ok_age > STALE_AFTER:  # loop alive but every tick fails
         _warn("⚠ Gateway and cron ticker are running, but no tick has "
               f"succeeded in {int(ok_age)}s — ticks may be failing.")
@@ -415,7 +443,12 @@ def cron_status():
                 gateway_alive_via_lock = is_gateway_runtime_lock_active()
                 lock_pid = get_running_pid() if gateway_alive_via_lock else None
                 pids = [lock_pid] if lock_pid else pids
-        if pids or gateway_alive_via_lock:
+        scheduler_alive_without_gateway = (
+            not pids
+            and not gateway_alive_via_lock
+            and _builtin_gateway_liveness() is True
+        )
+        if pids or gateway_alive_via_lock or scheduler_alive_without_gateway:
             _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))

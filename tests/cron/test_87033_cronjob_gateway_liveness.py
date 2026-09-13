@@ -268,6 +268,7 @@ class TestRuntimeLockFirstLiveness:
                 "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
                 return_value=False,
             ),
+            patch("cron.jobs.get_ticker_heartbeat_age", return_value=None),
         ):
             assert cron_cli._builtin_gateway_liveness() is False
 
@@ -319,6 +320,7 @@ class TestRuntimeLockFirstLiveness:
                 "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
                 return_value=False,
             ),
+            patch("cron.jobs.get_ticker_heartbeat_age", return_value=None),
         ):
             assert cron_cli._builtin_gateway_liveness() is False
 
@@ -368,3 +370,26 @@ class TestCronStatusLockFirst:
     def test_no_lock_no_pids_still_warns(self, hermes_env):
         text = self._run_status(pids=[], lock_active=False)
         assert "NOT fire" in text
+
+    def test_fresh_desktop_ticker_suppresses_not_running_false_alarm(self, hermes_env):
+        """A Desktop ``serve`` backend owns the ticker without gateway PID state."""
+        from cron.jobs import record_ticker_heartbeat
+
+        record_ticker_heartbeat(success=True)
+
+        text = self._run_status(pids=[], lock_active=False)
+
+        assert "Gateway is not running" not in text
+        assert "cron jobs will fire automatically" in text
+
+    def test_desktop_heartbeat_without_success_is_not_reported_green(self, hermes_env):
+        """Liveness alone must not claim that the Desktop ticker can fire jobs."""
+        from cron.jobs import record_ticker_heartbeat
+
+        record_ticker_heartbeat(success=False)
+
+        text = self._run_status(pids=[], lock_active=False)
+
+        assert "Gateway is not running" not in text
+        assert "cron jobs will fire automatically" not in text
+        assert "no tick has succeeded" in text

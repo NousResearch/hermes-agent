@@ -21,6 +21,9 @@ class SkinConfig:
     # `colors`), and vice versa for `dark_colors`.
     light_colors: Dict[str, str] = field(default_factory=dict)
     dark_colors: Dict[str, str] = field(default_factory=dict)
+    content: Dict[str, str] = field(default_factory=dict)
+    light_content: Dict[str, str] = field(default_factory=dict)
+    dark_content: Dict[str, str] = field(default_factory=dict)
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
@@ -30,6 +33,9 @@ class SkinConfig:
 
     def get_color(self, key: str, fallback: str = "") -> str:
         return self.colors.get(key, fallback)
+
+    def get_content_color(self, key: str, fallback: str = "") -> str:
+        return self.content.get(key, fallback)
 
     def get_branding(self, key: str, fallback: str = "") -> str:
         return self.branding.get(key, fallback)
@@ -74,7 +80,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#FF6B6B", "session_label": "#DAA520",
             "session_border": "#8B8682", "completion_menu_bg": "#1a1a2e",
             "completion_menu_current_bg": "#333355", "selection_bg": "#3a3a55",
-            "shell_dollar": "#4dabf7", "voice_status_bg": "#1a1a2e"},
+            "shell_dollar": "#4dabf7", "voice_status_bg": "#1a1a2e",
+            "content": {
+                "markdown_h1": "#92400E", "markdown_h2": "#92400E", "markdown_h3": "#78350F",
+                "markdown_bold": "#5C4718", "markdown_italic": "#5C4718", "markdown_code": "#7C2D12",
+                "markdown_link": "#1E6FC0", "markdown_blockquote": "#9A8A5A", "markdown_bullet": "#B8860B",
+                "markdown_hr": "#D4C088", "tool_verb": "#B8860B", "tool_emoji": "#B45309",
+                "tool_path": "#15803D", "tool_path_modified": "#B45309", "tool_path_read": "#1D4ED8",
+                "tool_url": "#1E6FC0", "tool_duration": "#9A8A5A", "tool_separator": "#9A8A5A",
+            },
+        },
         # Light overlay (merged onto `colors`). Goldenrod ladder: on white the vivid
         # #FFD700/#FFBF00 read as glare and WCAG-darkened mustard (#867000) as mud; the
         # statusbar's goldenrod family (#B8860B/#DAA520) keeps the hue, tames saturation.
@@ -106,7 +121,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#EF5350", "session_label": "#C7A96B",
             "session_border": "#6E584B", "completion_menu_bg": "#2A1212",
             "completion_menu_current_bg": "#5C221D", "selection_bg": "#692620",
-            "shell_dollar": "#DD4A3A", "voice_status_bg": "#2A1212"},
+            "shell_dollar": "#DD4A3A", "voice_status_bg": "#2A1212",
+            "content": {
+                "markdown_h1": "#A93333", "markdown_h2": "#A93333", "markdown_h3": "#C75B1D",
+                "markdown_bold": "#905151", "markdown_italic": "#905151", "markdown_code": "#C58A45",
+                "markdown_link": "#C7A96B", "markdown_blockquote": "#C58A45", "markdown_bullet": "#C58A45",
+                "markdown_hr": "#C58A45", "tool_verb": "#C7A96B", "tool_emoji": "#DD4A3A",
+                "tool_path": "#4A8A7A", "tool_path_modified": "#DD4A3A", "tool_path_read": "#6B8A9A",
+                "tool_url": "#C7A96B", "tool_duration": "#905151", "tool_separator": "#905151",
+            },
+        },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
             "thinking_faces": ["(⚔)", "(⛨)", "(▲)", "(⌁)", "(<>)"],
@@ -150,7 +174,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#F0F0F0", "session_label": "#888888",
             "session_border": "#5E5E5E", "completion_menu_bg": "#1F1F1F",
             "completion_menu_current_bg": "#464646", "selection_bg": "#505050",
-            "shell_dollar": "#aaaaaa", "voice_status_bg": "#1F1F1F"},
+            "shell_dollar": "#aaaaaa", "voice_status_bg": "#1F1F1F",
+            "content": {
+                "markdown_h1": "#aaaaaa", "markdown_h2": "#aaaaaa", "markdown_h3": "#888888",
+                "markdown_bold": "#777777", "markdown_italic": "#777777", "markdown_code": "#606060",
+                "markdown_link": "#aaaaaa", "markdown_blockquote": "#777777", "markdown_bullet": "#aaaaaa",
+                "markdown_hr": "#aaaaaa", "tool_verb": "#aaaaaa", "tool_emoji": "#aaaaaa",
+                "tool_path": "#777777", "tool_path_modified": "#aaaaaa", "tool_path_read": "#777777",
+                "tool_url": "#aaaaaa", "tool_duration": "#777777", "tool_separator": "#777777",
+            },
+        },
         "spinner": {},
         "branding": {**_HERMES_BRANDING, "help_header": "[?] Available Commands"},
         "tool_prefix": "┊"},
@@ -167,7 +200,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#FF7A7A", "session_label": "#7eb8f6",
             "session_border": "#545E6B", "completion_menu_bg": "#151C2F",
             "completion_menu_current_bg": "#324867", "selection_bg": "#3A5375",
-            "shell_dollar": "#7eb8f6", "voice_status_bg": "#151C2F"},
+            "shell_dollar": "#7eb8f6", "voice_status_bg": "#151C2F",
+            "content": {
+                "markdown_h1": "#4169e1", "markdown_h2": "#4169e1", "markdown_h3": "#545E6B",
+                "markdown_bold": "#7eb8f6", "markdown_italic": "#7eb8f6", "markdown_code": "#545E6B",
+                "markdown_link": "#8EA8FF", "markdown_blockquote": "#545E6B", "markdown_bullet": "#4169e1",
+                "markdown_hr": "#545E6B", "tool_verb": "#7eb8f6", "tool_emoji": "#4169e1",
+                "tool_path": "#63D0A6", "tool_path_modified": "#7eb8f6", "tool_path_read": "#4169e1",
+                "tool_url": "#8EA8FF", "tool_duration": "#545E6B", "tool_separator": "#545E6B",
+            },
+        },
         "spinner": {}, "branding": _HERMES_BRANDING, "tool_prefix": "┊"},
     "daylight": {
         "name": "daylight",
@@ -184,7 +226,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#64748B", "completion_menu_bg": "#F8FAFC",
             "completion_menu_current_bg": "#DBEAFE", "completion_menu_meta_bg": "#EEF2FF",
             "completion_menu_meta_current_bg": "#BFDBFE", "selection_bg": "#D3E0FB",
-            "shell_dollar": "#2563EB", "voice_status_bg": "#E5EDF8"},
+            "shell_dollar": "#2563EB", "voice_status_bg": "#E5EDF8",
+            "content": {
+                "markdown_h1": "#1D4ED8", "markdown_h2": "#1D4ED8", "markdown_h3": "#0F766E",
+                "markdown_bold": "#1D4ED8", "markdown_italic": "#1D4ED8", "markdown_code": "#475569",
+                "markdown_link": "#2563EB", "markdown_blockquote": "#475569", "markdown_bullet": "#1D4ED8",
+                "markdown_hr": "#838890", "tool_verb": "#2563EB", "tool_emoji": "#1D4ED8",
+                "tool_path": "#15803D", "tool_path_modified": "#B45309", "tool_path_read": "#1D4ED8",
+                "tool_url": "#2563EB", "tool_duration": "#838890", "tool_separator": "#838890",
+            },
+        },
         "spinner": {},
         "branding": {**_HERMES_BRANDING, "help_header": "[?] Available Commands"},
         "tool_prefix": "│"},
@@ -203,7 +254,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#A0845C", "completion_menu_bg": "#F5EFE0",
             "completion_menu_current_bg": "#E8DCC8", "completion_menu_meta_bg": "#F0E8D8",
             "completion_menu_meta_current_bg": "#DFCFB0", "selection_bg": "#E8DAD0",
-            "shell_dollar": "#8B4513", "voice_status_bg": "#F5F0E8"},
+            "shell_dollar": "#8B4513", "voice_status_bg": "#F5F0E8",
+            "content": {
+                "markdown_h1": "#8B4513", "markdown_h2": "#8B4513", "markdown_h3": "#5C3D11",
+                "markdown_bold": "#8B4513", "markdown_italic": "#8B4513", "markdown_code": "#5C3D11",
+                "markdown_link": "#8B6914", "markdown_blockquote": "#5C3D11", "markdown_bullet": "#8B4513",
+                "markdown_hr": "#A0845C", "tool_verb": "#8B4513", "tool_emoji": "#8B4513",
+                "tool_path": "#15803D", "tool_path_modified": "#DA4D00", "tool_path_read": "#8B6914",
+                "tool_url": "#8B6914", "tool_duration": "#8A8F98", "tool_separator": "#8A8F98",
+            },
+        },
         "spinner": {}, "branding": _HERMES_BRANDING, "tool_prefix": "┊"},
     "poseidon": {
         "name": "poseidon", "description": "Ocean-god theme — deep blue and seafoam",
@@ -218,7 +278,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#D94F4F", "session_label": "#A9DFFF",
             "session_border": "#496884", "completion_menu_bg": "#0F2440",
             "completion_menu_current_bg": "#254D73", "selection_bg": "#2A587F",
-            "shell_dollar": "#5DB8F5", "voice_status_bg": "#0F2440"},
+            "shell_dollar": "#5DB8F5", "voice_status_bg": "#0F2440",
+            "content": {
+                "markdown_h1": "#2A6FB9", "markdown_h2": "#2A6FB9", "markdown_h3": "#44638F",
+                "markdown_bold": "#5DB8F5", "markdown_italic": "#5DB8F5", "markdown_code": "#44638F",
+                "markdown_link": "#A9DFFF", "markdown_blockquote": "#44638F", "markdown_bullet": "#2A6FB9",
+                "markdown_hr": "#44638F", "tool_verb": "#5DB8F5", "tool_emoji": "#2A6FB9",
+                "tool_path": "#6ED7B0", "tool_path_modified": "#5DB8F5", "tool_path_read": "#2A6FB9",
+                "tool_url": "#A9DFFF", "tool_duration": "#44638F", "tool_separator": "#44638F",
+            },
+        },
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
             "thinking_faces": ["(Ψ)", "(∿)", "(≈)", "(⌁)", "(◌)"],
@@ -262,7 +331,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#F5F5F5", "session_label": "#919191",
             "session_border": "#656565", "completion_menu_bg": "#202020",
             "completion_menu_current_bg": "#585858", "selection_bg": "#666666",
-            "shell_dollar": "#E7E7E7", "voice_status_bg": "#202020"},
+            "shell_dollar": "#E7E7E7", "voice_status_bg": "#202020",
+            "content": {
+                "markdown_h1": "#B7B7B7", "markdown_h2": "#B7B7B7", "markdown_h3": "#919191",
+                "markdown_bold": "#D3D3D3", "markdown_italic": "#D3D3D3", "markdown_code": "#656565",
+                "markdown_link": "#B7B7B7", "markdown_blockquote": "#656565", "markdown_bullet": "#B7B7B7",
+                "markdown_hr": "#919191", "tool_verb": "#D3D3D3", "tool_emoji": "#B7B7B7",
+                "tool_path": "#919191", "tool_path_modified": "#D3D3D3", "tool_path_read": "#919191",
+                "tool_url": "#B7B7B7", "tool_duration": "#656565", "tool_separator": "#656565",
+            },
+        },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
             "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(●)"],
@@ -308,7 +386,16 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#7B593A", "completion_menu_bg": "#0B0503",
             "completion_menu_current_bg": "#4A1B07", "completion_menu_meta_bg": "#120806",
             "completion_menu_meta_current_bg": "#5A260D", "selection_bg": "#5A260D",
-            "shell_dollar": "#F29C38", "voice_status_bg": "#2B160E"},
+            "shell_dollar": "#F29C38", "voice_status_bg": "#2B160E",
+            "content": {
+                "markdown_h1": "#C75B1D", "markdown_h2": "#C75B1D", "markdown_h3": "#F29C38",
+                "markdown_bold": "#F29C38", "markdown_italic": "#F29C38", "markdown_code": "#C58A45",
+                "markdown_link": "#FFD39A", "markdown_blockquote": "#C58A45", "markdown_bullet": "#C75B1D",
+                "markdown_hr": "#C58A45", "tool_verb": "#F29C38", "tool_emoji": "#C75B1D",
+                "tool_path": "#4A8A7A", "tool_path_modified": "#F29C38", "tool_path_read": "#C75B1D",
+                "tool_url": "#FFD39A", "tool_duration": "#C58A45", "tool_separator": "#C58A45",
+            },
+        },
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
             "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
@@ -378,6 +465,12 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _mapping_or_empty(value, section: str = "", skin_name: str = "") -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
     default = _BUILTIN_SKINS["default"]
@@ -394,12 +487,28 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
 
     def merged(key: str) -> Dict[str, Any]:
         return {**default.get(key, {}), **section(key)}
+    # Merge colors but extract nested content separately
+    colors_merged = merged("colors")
+    colors_flat = {k: v for k, v in colors_merged.items() if k != "content"}
+    color_raw = section("colors")
+    content_overrides = {}
+    if isinstance(color_raw.get("content"), dict):
+        content_overrides = dict(color_raw.get("content"))
+    top_content = section("content")
+    if top_content:
+        content_overrides = top_content
+    light_content = section("light_content")
+    dark_content = section("dark_content")
+    content = dict(default.get("content", {}))
+    content.update(content_overrides)
+
     # Paired palettes are NOT merged over the default skin's blocks: an empty block means
     # "no hand-tuned variant for that polarity" and consumers (the TUI) fall back to `colors`
     # + automatic adaptation, which beats the default's gold light palette under a crimson skin.
     return SkinConfig(
-        name=skin_name, description=data.get("description", ""), colors=merged("colors"),
+        name=skin_name, description=data.get("description", ""), colors=colors_flat,
         light_colors=section("light_colors"), dark_colors=section("dark_colors"),
+        content=content, light_content=light_content, dark_content=dark_content,
         spinner=merged("spinner"), branding=merged("branding"),
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=section("tool_emojis"), banner_logo=data.get("banner_logo", ""),

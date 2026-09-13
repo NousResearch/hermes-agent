@@ -2650,6 +2650,32 @@ class TestFormatMessage:
         event = ToolCallChunk("browser_exec", preview="click('#go')", args={"code": "click('#go')"})
         assert adapter.format_tool_event(event, mode="all") == "⚙️ browser_exec: `click('#go')`"
 
+    def test_generic_tool_preview_preserves_inner_quotes(self, adapter):
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.stream_events import ToolCallChunk
+
+        # The issue pins "quotes inside the argument remain intact": only the outer wrap
+        # is dropped, and inner double quotes survive both render paths (#110038).
+        ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
+        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        message = TurnRunner(runner, ctx)._progress_build_message(
+            "browser_exec", 'say "hi"', {"code": 'say "hi"'})
+        assert message == '⚙️ browser_exec: `say "hi"`'
+        event = ToolCallChunk("browser_exec", preview='say "hi"', args={"code": 'say "hi"'})
+        assert adapter.format_tool_event(event, mode="all") == '⚙️ browser_exec: `say "hi"`'
+
+    def test_generic_tool_preview_legacy_adapter_keeps_quotes(self):
+        from gateway.run_turn_runner import TurnRunner
+
+        # A duck-typed adapter predating the quote hook must fall back to the historical
+        # quoting instead of raising AttributeError.
+        legacy = SimpleNamespace(format_tool_preview=lambda preview: preview.text)
+        ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
+        runner = SimpleNamespace(_adapter_for_source=lambda source: legacy)
+        message = TurnRunner(runner, ctx)._progress_build_message(
+            "browser_exec", "click('#go')", {"code": "click('#go')"})
+        assert message == "⚙️ browser_exec: \"click('#go')\""
+
     def test_italic_asterisk_conversion(self, adapter):
         assert adapter.format_message("*hello*") == "_hello_"
 

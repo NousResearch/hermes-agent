@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import time
+from collections import deque
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,12 @@ from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
 )
 from typing import Any, Dict, Optional, Tuple
+
+# Follow-ups a turn hands to the ledger redelivery of its refused final (see
+# ``_register_redelivery_followup``): the registry is process-local and bounded two ways, so a row
+# that is never redelivered cannot grow it. The cutoff matches the ledger's own stale window.
+_REDELIVERY_FOLLOWUP_CAP = 64
+_REDELIVERY_FOLLOWUP_TTL_SECONDS = 24 * 3600.0
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -366,6 +373,77 @@ class GatewayStartupMixin:
         for row in await asyncio.to_thread(pending_flood_retries):
             self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
 
+    def _register_redelivery_followup(self, obligation_id: str, followup: Any) -> bool:
+        """Keep ``followup`` (a plain callable) until the ledger redelivers ``obligation_id`` and that
+        send lands; ``_redeliver_claimed_obligations`` fires it then. Used by a post-delivery cleanup
+        that has to stand down because the final it watched was refused: the reply the ledger still owes
+        the reader is what makes its delete safe later. A row this process has already redelivered runs
+        the follow-up at once (the reconnect sweep redelivers inside the refused send's own
+        finalization, before the turn's callback gets to register). Process-local on purpose (the
+        consumer it acts for dies with the process, so a boot-sweep redelivery has nothing to clean up
+        for) and bounded two ways: entries older than the ledger's stale cutoff are dropped, on the
+        next registration and by a timer armed with each new row, and past the cap the oldest
+        registration goes first. Returns False when nothing was registered."""
+        if not obligation_id or not callable(followup):
+            return False
+        landed = getattr(self, "_redelivered_obligation_ids", None)
+        if landed is not None and obligation_id in landed:
+            self._run_redelivery_followup(obligation_id, followup)
+            return True
+        registry = getattr(self, "_redelivery_followups", None)
+        if registry is None:
+            registry = self._redelivery_followups = {}
+        self._prune_redelivery_followups()
+        entry = registry.get(obligation_id)
+        if entry is None:
+            while len(registry) >= _REDELIVERY_FOLLOWUP_CAP:
+                registry.pop(next(iter(registry)), None)
+            entry = registry[obligation_id] = (time.monotonic(), [])
+            # Expiry must not wait for the next registration: a row that is never redelivered (attempts
+            # exhausted, adapter gone) would otherwise keep its closure, and the consumer that closure
+            # holds, alive until the process exits.
+            with suppress(RuntimeError):
+                asyncio.get_running_loop().call_later(
+                    _REDELIVERY_FOLLOWUP_TTL_SECONDS + 1.0, self._prune_redelivery_followups)
+        entry[1].append(followup)
+        return True
+
+    def _prune_redelivery_followups(self) -> None:
+        """Drop follow-ups whose row passed the ledger's stale cutoff without a landed redelivery."""
+        registry = getattr(self, "_redelivery_followups", None)
+        if not registry:
+            return
+        now = time.monotonic()
+        for stale in [oid for oid, (registered_at, _) in registry.items()
+                      if now - registered_at > _REDELIVERY_FOLLOWUP_TTL_SECONDS]:
+            registry.pop(stale, None)
+
+    @staticmethod
+    def _run_redelivery_followup(obligation_id: str, followup: Any) -> bool:
+        try:
+            followup()
+            return True
+        except Exception:
+            logger.debug("redelivery follow-up for obligation %s failed", obligation_id, exc_info=True)
+            return False
+
+    def _fire_redelivery_followups(self, obligation_id: str) -> int:
+        """Run every follow-up registered for a redelivered row, once, each failure isolated, and
+        remember the row as landed so a follow-up that registers late runs at once. Returns how many
+        ran."""
+        if not obligation_id:
+            return 0
+        landed = getattr(self, "_redelivered_obligation_ids", None)
+        if landed is None:
+            landed = self._redelivered_obligation_ids = deque(maxlen=_REDELIVERY_FOLLOWUP_CAP)
+        if obligation_id not in landed:
+            landed.append(obligation_id)
+        registry = getattr(self, "_redelivery_followups", None)
+        entry = registry.pop(obligation_id, None) if registry else None
+        if not entry:
+            return 0
+        return sum(1 for followup in entry[1] if self._run_redelivery_followup(obligation_id, followup))
+
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
@@ -403,6 +481,11 @@ class GatewayStartupMixin:
                         "Redelivered recovered final response to %s:%s (obligation %s, attempt %d)",
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
+                    if not getattr(result, "truncated", False):
+                        # The turn that watched this final get refused may have deferred a cleanup to
+                        # its redelivery (the frozen streamed bubble the final replaces). The reader has
+                        # the complete reply now, so it may run; a truncated send is no replacement.
+                        self._fire_redelivery_followups(row["obligation_id"])
                 else:
                     await asyncio.to_thread(
                         mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")

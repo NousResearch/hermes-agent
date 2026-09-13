@@ -567,6 +567,30 @@ def _try_acquire_file_lock(handle) -> bool:
         return False
 
 
+def _pid_confirmed_dead(pid: int) -> bool:
+    """True only when /proc positively says ``pid`` is gone or a zombie (Linux).
+
+    The authority behind an inconclusive psutil answer: psutil maps a FAILED
+    /proc stat read onto NoSuchProcess/ZombieProcess (psutil #2418), so its
+    "gone" is not a death verdict. A missing /proc entry and ``State: Z`` are
+    conclusive; an unreadable entry (EACCES/EMFILE/ENOMEM under load) is not,
+    and must never be reported as death - one unreadable read is how nine live
+    kanban workers were booked dead in a single dispatcher sweep (#110352).
+    Off Linux there is no /proc to ask, so psutil's answer stands unchanged.
+    """
+    if _IS_WINDOWS or sys.platform != "linux":
+        return True
+    try:
+        with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as fh:
+            state_line = next((ln for ln in fh if ln.startswith("State:")), "")
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    state = state_line.split(":", 1)[1].strip() if ":" in state_line else ""
+    return state.startswith("Z")
+
+
 def _pid_exists(pid: int) -> bool:
     """Cross-platform "is this PID alive" check that does NOT kill the target. CRITICAL on Windows:
     ``os.kill(pid, 0)`` sends ``CTRL_C_EVENT`` to the whole console group (bpo-14484), so prefer
@@ -588,9 +612,10 @@ def _pid_exists(pid: int) -> bool:
             if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return False
         except getattr(psutil, "NoSuchProcess", ()):
-            return False
-        except Exception:
-            pass
+            # psutil folds a FAILED /proc read into NoSuchProcess/ZombieProcess
+            # (psutil #2418), so answer "dead" only when an independent probe
+            # confirms it; an inconclusive read is alive (NousResearch/hermes-agent#110352).
+            return not _pid_confirmed_dead(pid)
         return bool(psutil.pid_exists(pid))
     except ImportError:
         pass  # Fall through to stdlib fallback.

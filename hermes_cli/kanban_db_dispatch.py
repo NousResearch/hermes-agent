@@ -284,24 +284,12 @@ def _worker_pid_absent(pid: Optional[int]) -> bool:
     """
     if not pid or int(pid) <= 0:
         return True
-    if sys.platform != "linux":
-        # No /proc to tell "gone" from "unreadable": keep the single-probe
-        # answer rather than refusing every reclaim on this platform.
-        return not _pid_alive(int(pid))
-    try:
-        with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as fh:
-            state_line = next(
-                (line for line in fh if line.startswith("State:")), "",
-            )
-    except FileNotFoundError:
-        return True  # no proc entry → the pid is gone
-    except OSError:
-        # Unreadable (EACCES/EMFILE/ENOMEM/…): the probe could not tell. Not
-        # evidence of death, and never a reclaim.
-        return False
-    state = state_line.split(":", 1)[1].strip() if ":" in state_line else ""
-    # A zombie has exited and only awaits its parent's reap: not a live worker.
-    return state.startswith("Z")
+    # One primitive for the whole question, shared with ``gateway.status``: the
+    # dispatcher must not re-derive "absent" from a second, differently-broken
+    # probe (see ``gateway.status._pid_confirmed_dead``).
+    from gateway.status import _pid_confirmed_dead
+
+    return _pid_confirmed_dead(int(pid))
 
 
 def _defer_worker_reclaim(

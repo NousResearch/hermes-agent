@@ -309,7 +309,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     keepalive/liveness live in the three mixins."""
 
     __slots__ = (
-        "name", "session", "tool_timeout", "_task", "_ready", "_shutdown_event", "_reconnect_event",
+        "name", "_registry_key", "session", "tool_timeout", "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config", "_sampling", "_elicitation", "_registered_tool_names",
         "_auth_type", "_refresh_lock", "_rpc_lock", "_pending_refresh_tasks", "_pending_call_context",
         "_lifecycle_started_at", "_last_tool_call_at", "_idle_timeout_seconds", "_max_lifetime_seconds",
@@ -320,6 +320,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 
     def __init__(self, name: str):
         self.name = name
+        self._registry_key = name
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
         self._task: Optional[asyncio.Task] = None
@@ -398,6 +399,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 # ---- Module-level state (every mutation under ``_lock``) ----
 
 _servers: Dict[str, MCPServerTask] = {}
+# Internal connection key -> configured server name. A profile-owned OAuth/mTLS session can share
+# a configured name with a peer while retaining a distinct transport and credential scope.
+_server_public_names: Dict[str, str] = {}
 # Profile registry scope per live connection (None outside multiplex) so a multiplexed
 # /reload-mcp tears down only its own profile's servers.
 _server_scope_keys: Dict[str, Optional[str]] = {}
@@ -481,6 +485,9 @@ def _reset_server_error(server_name: str) -> None:
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}
+# Profile overlays need independent provenance for identical public tool names. The legacy global
+# map remains for unscoped callers and older plugins.
+_mcp_tool_server_names_by_scope: Dict[str, Dict[str, str]] = {}
 
 # Dedicated event loop in a background daemon thread; _lock guards the loop handles, _servers,
 # the status maps and the PID ledgers.

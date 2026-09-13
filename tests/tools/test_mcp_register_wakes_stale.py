@@ -61,3 +61,27 @@ def test_register_wakes_stale_cached_server(monkeypatch, tmp_path):
     finally:
         mcp_tool._servers.pop("parked-srv", None)
         mcp_tool._servers.pop("healthy-srv", None)
+
+
+def test_profile_owned_private_stale_server_is_woken(monkeypatch, tmp_path):
+    from hermes_constants import hermes_home_key
+    from tools import mcp_tool
+    from tools import mcp_tool_discovery as discovery
+
+    scope = hermes_home_key(tmp_path / "worker")
+    private_key = f"shared::profile::{scope}"
+    stale = type("Stale", (), {"session": None})()
+    woken = []
+    monkeypatch.setattr(mcp_tool, "_servers", {private_key: stale})
+    monkeypatch.setattr(mcp_tool, "_server_public_names", {private_key: "shared"})
+    monkeypatch.setattr(mcp_tool, "_server_scope_keys", {private_key: scope})
+    monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {private_key: {scope}})
+    monkeypatch.setattr(mcp_tool, "_server_connecting", set())
+    monkeypatch.setattr(mcp_tool, "_lazy_server_configs", {})
+    monkeypatch.setattr(mcp_tool, "_server_connect_errors", {})
+    monkeypatch.setattr(mcp_tool, "_server_connect_retry_after", {})
+    monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: scope)
+    monkeypatch.setattr(discovery._loop, "_signal_reconnect", woken.append)
+
+    assert discovery._select_new_servers({"shared": {"auth": "oauth"}}) == {}
+    assert woken == [stale]

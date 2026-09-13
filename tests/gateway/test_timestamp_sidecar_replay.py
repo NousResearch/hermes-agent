@@ -43,6 +43,18 @@ def test_recovery_cleanup_never_restores_a_sidecar(timestamps, embedded, real_te
         assert replay[0]["content"] == (_render(real_text, expected_timestamp) if timestamps else real_text)
 
 
+def test_gateway_replay_preserves_surface_switch_metadata():
+    replay, _ = _build_gateway_agent_history([{
+        "role": "user", "content": "question",
+        "display_metadata": {"_hermes_surface_switch": {"surface": "tui"}},
+    }])
+
+    assert replay == [{
+        "role": "user", "content": "question",
+        "display_metadata": {"_hermes_surface_switch": {"surface": "tui"}},
+    }]
+
+
 @pytest.fixture
 def responses_agent(tmp_path, monkeypatch):
     """Use the real agent/Responses converter; replace only the network call."""

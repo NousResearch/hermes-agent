@@ -44,10 +44,14 @@ def _enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
-async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
+async def _connect_server(name: str, config: dict, *, registry_key: Optional[str] = None) -> _core.MCPServerTask:
     """Create an MCPServerTask, start it, return once ready (tear down with ``server.shutdown()``
     on the same loop). Raises on bad config, missing HTTP support or connect failure."""
     server = _core.MCPServerTask(name)
+    # A profile-owned connection is constructed with its public OAuth identity, but all
+    # connection-local lifecycle state must already use the private registry key before
+    # the initial handshake starts.
+    server._registry_key = registry_key or name
     claim = _core._connect_server_claim.get()
     if claim is not None:
         claim(server)
@@ -128,7 +132,9 @@ def _note_connect_success(name: str) -> None:
 def _adopt_server(name: str, server: _core.MCPServerTask) -> None:
     """Publish *server* into ``_servers`` with its owning registry scope (under ``_lock``)."""
     with _core._lock:
+        server._registry_key = name
         _core._servers[name] = server
+        _core._server_public_names[name] = server.name
         _core._server_scope_keys[name] = _core._mcp_registry_scope()
 
 
@@ -198,10 +204,13 @@ def _get_connected_server_for_call(server_name: str) -> Optional[_core.MCPServer
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect one server, register its tools; return the registered names."""
     # The claim fires inside _connect_server while this frame is suspended (list, not nonlocal).
+    public_name = _core._server_public_names.get(name, name)
     claimed: List[_core.MCPServerTask] = []
     claim_token = _core._connect_server_claim.set(claimed.append)
     try:
-        server = await asyncio.wait_for(_connect_server(name, config),
+        connect = (_connect_server(public_name, config, registry_key=name)
+                   if name != public_name else _connect_server(public_name, config))
+        server = await asyncio.wait_for(connect,
                                         timeout=config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
     except BaseException:
         server = claimed[0] if claimed else None
@@ -220,7 +229,14 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _core._server_connecting.discard(name)
         _core._server_connect_errors.pop(name, None)
     _adopt_server(name, server)
-    registered_names = _registration._register_server_tools(name, server, config)
+    if public_name == name:
+        # Preserve the established registration call contract for ordinary servers.  The
+        # connection key is only an additional concern when profile-owned sessions share a
+        # configured public name.
+        registered_names = _registration._register_server_tools(public_name, server, config)
+    else:
+        registered_names = _registration._register_server_tools(
+            public_name, server, config, connection_name=name)
     server._registered_tool_names = list(registered_names)
     logger.info("MCP server '%s' (%s): registered %d tool(s): %s", name,
                 "HTTP" if "url" in config else "stdio", len(registered_names), ", ".join(registered_names))
@@ -233,26 +249,83 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     mid-reconnect with tools deregistered, so nothing else can nudge them: signal a reconnect."""
     with _core._lock:
         connecting = set(_core._server_connecting)
+        current_scope = _core._mcp_registry_scope()
         # Only attempt servers that aren't already connected (or currently connecting) and are enabled.
         # Checking ``_server_connecting`` prevents duplicate subprocess spawns when ``discover_mcp_tools()``
         # is called from multiple entry-points before the first batch finishes (#58862).
-        new_servers = {
-            k: v for k, v in servers.items()
-            if k not in _core._servers and k not in connecting and k not in _core._lazy_server_configs
-            and _enabled(v) and not _connect_cooldown_active(k)}
-        stale_cached = [_core._servers[k] for k in servers
-                        if k in _core._servers and getattr(_core._servers[k], "session", None) is None]
+        new_servers = {}
+        new_server_public_names = {}
+        selected_connection_names = {}
+        for server_name, config in servers.items():
+            connection_name = server_name
+            existing = _core._servers.get(server_name)
+            known_keys = (set(_core._server_public_names) | set(_core._server_scope_keys)
+                          | set(_core._server_connecting) | set(_core._server_connect_errors)
+                          | set(_core._server_connect_retry_after)
+                          | set(_core._lazy_server_configs))
+            owned_keys = {
+                key for key in known_keys
+                if _core._server_public_names.get(key, key) == server_name
+            }
+            current_owned_key = next(
+                (key for key in owned_keys if _core._server_scope_keys.get(key) == current_scope),
+                None,
+            )
+            foreign_connection = (existing is not None or server_name in _core._lazy_server_configs
+                                   or server_name in connecting
+                                   or any(_core._server_scope_keys.get(key) != current_scope
+                                          for key in owned_keys))
+            if (current_scope is not None and _registration._profile_owned_auth(config)
+                    and current_owned_key is not None):
+                connection_name = current_owned_key
+            elif (foreign_connection and current_scope is not None
+                  and _registration._profile_owned_auth(config)):
+                # OAuth tokens and mTLS clients are profile-owned even when route config matches.
+                # Give this profile a real connection key so it cannot be skipped by the global name.
+                connection_name = f"{server_name}::profile::{current_scope}"
+            selected_connection_names[server_name] = connection_name
+            if (connection_name not in _core._servers and connection_name not in connecting
+                    and connection_name not in _core._lazy_server_configs
+                    and _enabled(config) and not _connect_cooldown_active(connection_name)):
+                new_servers[connection_name] = config
+                new_server_public_names[connection_name] = server_name
+        stale_cached = [
+            server for key, server in _core._servers.items()
+            if getattr(server, "session", None) is None
+            and _core._server_public_names.get(key, key) in servers
+            and (current_scope is None or _core._server_visible_in_scope(key, current_scope))
+        ]
         _core._server_connecting.update(new_servers)
-        current_scope = _core._mcp_registry_scope()
-        for srv_name in new_servers:
-            _core._server_scope_keys[srv_name] = current_scope
-            _core._server_connect_errors.pop(srv_name, None)
-        # Track which servers opt-in to parallel tool calls (idempotent).
+        for connection_name in new_servers:
+            _core._server_scope_keys[connection_name] = current_scope
+            _core._server_public_names[connection_name] = new_server_public_names[connection_name]
+            _core._server_connect_errors.pop(connection_name, None)
+        # Track the configured raw names for compatibility with the public policy ledger, and
+        # also track each matching internal connection key so profile-owned sessions retain
+        # independent policy when two profiles use the same configured name.
         for srv_name, srv_cfg in servers.items():
+            matching_keys = {
+                key for key, public_name in _core._server_public_names.items()
+                if public_name == srv_name
+            }
+            matching_keys.update(
+                key for key in _core._servers
+                if key == srv_name or _core._server_public_names.get(key) == srv_name
+            )
+            matching_keys.update(
+                key for key in new_servers
+                if _core._server_public_names.get(key, key) == srv_name
+            )
+            current_connection_name = selected_connection_names.get(srv_name, srv_name)
+            policy_keys = matching_keys if current_scope is None else {current_connection_name}
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-                _core._parallel_safe_servers.add(srv_name)
+                if current_scope is None:
+                    _core._parallel_safe_servers.add(srv_name)
+                _core._parallel_safe_servers.update(policy_keys)
             else:
-                _core._parallel_safe_servers.discard(srv_name)
+                if current_scope is None:
+                    _core._parallel_safe_servers.discard(srv_name)
+                _core._parallel_safe_servers.difference_update(policy_keys)
     for srv in stale_cached:
         _loop._signal_reconnect(srv)
     return new_servers
@@ -274,13 +347,15 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
     for name, cfg in new_servers.items():
         if not _resolve_server_lazy(name, cfg):
             continue
-        entry = get_cached_entry(name, config_fingerprint(cfg))
+        public_name = _core._server_public_names.get(name, name)
+        entry = get_cached_entry(public_name, config_fingerprint(cfg))
         if not entry:
             continue
         with _core._lock:
             _core._server_connecting.discard(name)
         try:
-            names = _registration._register_from_cache_sync(name, cfg, entry)
+            names = _registration._register_from_cache_sync(
+                name, cfg, entry, public_name=public_name)
         except Exception as exc:
             logger.warning("Failed lazy MCP registration for '%s': %s", name, exc)
             with _core._lock:
@@ -452,7 +527,11 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     if not tool_name.startswith(MCP_TOOL_NAME_PREFIX):
         return False
     with _core._lock:
-        server_name = _core._mcp_tool_server_names.get(tool_name)
+        scope = _core._mcp_registry_scope()
+        scoped = getattr(_core, "_mcp_tool_server_names_by_scope", {}).get(scope, {})
+        server_name = scoped.get(tool_name)
+        if server_name is None and scope is None:
+            server_name = _core._mcp_tool_server_names.get(tool_name)
         return bool(server_name and server_name in _core._parallel_safe_servers)
 
 
@@ -471,9 +550,13 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
             # servers from a status read scoped to a different profile.
             return include_runtime and _core._server_visible_in_scope(name, current_scope)
 
-        active_servers = {n: s for n, s in _core._servers.items() if visible(n)}
-        connecting = {n for n in _core._server_connecting if visible(n)}
-        connect_errors = {n: e for n, e in _core._server_connect_errors.items() if visible(n)}
+        active_servers = {
+            _core._server_public_names.get(n, n): s for n, s in _core._servers.items() if visible(n)
+        }
+        connecting = {_core._server_public_names.get(n, n) for n in _core._server_connecting if visible(n)}
+        connect_errors = {
+            _core._server_public_names.get(n, n): e for n, e in _core._server_connect_errors.items() if visible(n)
+        }
 
     result: List[dict] = []
     for name, cfg in configured.items():
@@ -534,10 +617,16 @@ def has_registered_mcp_tools() -> bool:
     """True if any MCP server has registered TOOLS (not merely connected), so the per-turn
     refresh hook stays idle for zero-tool servers."""
     with _core._lock:
-        return bool(_core._mcp_tool_server_names)
+        return bool(_core._mcp_tool_server_names or any(
+            getattr(_core, "_mcp_tool_server_names_by_scope", {}).values()))
 
 
 def get_registered_mcp_server_names() -> set:
     """Server names that registered at least one tool (live, filtered — not config.yaml)."""
     with _core._lock:
-        return set(_core._mcp_tool_server_names.values())
+        scope = _core._mcp_registry_scope()
+        if scope is None:
+            names = set(_core._mcp_tool_server_names.values())
+        else:
+            names = set(getattr(_core, "_mcp_tool_server_names_by_scope", {}).get(scope, {}).values())
+        return {_core._server_public_names.get(name, name) for name in names}

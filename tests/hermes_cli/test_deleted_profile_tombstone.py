@@ -210,3 +210,14 @@ class TestNamedProfileHome:
         (profiles_dir / ".deleted").mkdir(parents=True)
         worker = profiles_dir / "worker"
         assert named_profile_home(worker / "logs") == worker
+
+    def test_symlinked_profiles_parent_is_resolved(self, tmp_path):
+        real_root = tmp_path / "real-hermes"
+        real_root.mkdir()
+        (real_root / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (real_root / "profiles").mkdir()
+        alias_profiles = tmp_path / "alias-profiles"
+        alias_profiles.symlink_to(real_root / "profiles", target_is_directory=True)
+        aliased_worker = alias_profiles / "worker"
+
+        assert named_profile_home(aliased_worker / "logs") == real_root / "profiles" / "worker"

@@ -1115,6 +1115,10 @@ def _build_replay_entry(
         and _sidecar
         and content == msg.get("content")):
         entry["api_content"] = _sidecar
+    if isinstance(msg.get("display_metadata"), dict):
+        # Display-only markers are not sent to providers, but they must survive the
+        # gateway's fresh-agent history projection so surface-switch state converges.
+        entry["display_metadata"] = msg["display_metadata"]
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:

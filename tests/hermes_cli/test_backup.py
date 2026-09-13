@@ -2478,12 +2478,19 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     for i in range(4):
         (tmp_path / f"hermes-backup-2026-01-0{i + 1}-000000.zip").write_bytes(b"old")
+    custom_prefixed = tmp_path / "hermes-backup-nightly.zip"
+    custom_prefixed.write_bytes(b"mine-too")
     (tmp_path / "my-archive.zip").write_bytes(b"mine")
 
     backup_mod.run_backup(Namespace(output=None, keep=2))
 
-    kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
-    assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
+    kept = sorted(
+        p.name for p in tmp_path.iterdir() if backup_mod._RUN_BACKUP_NAME_RE.fullmatch(p.name)
+    )
+    assert len(kept) == 2
+    assert "hermes-backup-2026-01-04-000000.zip" in kept
+    assert not (tmp_path / "hermes-backup-2026-01-03-000000.zip").exists()
+    assert custom_prefixed.exists()
     assert (tmp_path / "my-archive.zip").exists()
 
 
@@ -2508,6 +2515,39 @@ def test_run_backup_keeps_previous_zip_when_new_archive_is_incomplete(tmp_path, 
     backup_mod.run_backup(Namespace(output=None, keep=1))
 
     assert previous.exists()
+
+
+def test_run_backup_skips_retention_when_incomplete_marking_fails(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: x\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    previous = tmp_path / "hermes-backup-2026-01-01-000000.zip"
+    previous.write_bytes(b"known-good")
+
+    def incomplete(_zf, _files, _output, *, on_error, **_kwargs):
+        on_error(Path("config.yaml"), RuntimeError("simulated read failure"))
+        return 0
+
+    real_replace = backup_mod.os.replace
+
+    def fail_incomplete_mark(src, dst):
+        if str(dst).endswith("-incomplete.zip"):
+            raise OSError("simulated rename failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(backup_mod, "_write_zip_entries", incomplete)
+    monkeypatch.setattr(backup_mod.os, "replace", fail_incomplete_mark)
+    backup_mod.run_backup(Namespace(output=None, keep=1))
+
+    generated = [p for p in tmp_path.glob("hermes-backup-*.zip") if p != previous]
+    assert previous.exists()
+    assert len(generated) == 1
+    assert generated[0].exists()
 
 
 def test_run_backup_retention_prioritizes_successful_archives(tmp_path):

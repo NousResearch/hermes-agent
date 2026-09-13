@@ -25,7 +25,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.session_persistence import SessionPersistenceMixin
-from agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
+from agent.turn_context import (
+    _merge_gateway_notes, _stamp_api_content_sidecar, compose_user_api_content,
+)
 from hermes_state import SessionDB
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
@@ -52,10 +54,14 @@ class TestSetMessageApiContent:
             rows = db.get_messages("s1")
             turn_1_id, turn_2_id = rows[0]["id"], rows[2]["id"]
 
-            assert db.set_message_api_content("s1", turn_2_id, "ok", "ok\n\nTURN-2") == 1
+            marker = {"_hermes_surface_switch": {"surface": "tui"}}
+            assert db.set_message_api_content(
+                "s1", turn_2_id, "ok", "ok\n\nTURN-2", display_metadata=marker
+            ) == 1
             rows = {r["id"]: r for r in db.get_messages("s1")}
             assert rows[turn_1_id]["api_content"] == "ok\n\nTURN-1"
             assert rows[turn_2_id]["api_content"] == "ok\n\nTURN-2"
+            assert rows[turn_2_id]["display_metadata"] == marker
 
         finally:
             db.close()
@@ -75,6 +81,20 @@ class TestSetMessageApiContent:
             # Archived by compaction: active = 0, so the row is off limits.
             db.archive_and_compact("s1", [{"role": "user", "content": "hello"}])
             assert db.set_message_api_content("s1", row_id, "hello", "x") == 0
+        finally:
+            db.close()
+
+    def test_positional_api_backfill_preserves_display_metadata(self, tmp_path):
+        db = self._open(tmp_path)
+        try:
+            db.append_message("s1", "user", content="hello")
+            marker = {"_hermes_surface_switch": {"surface": "desktop"}}
+            assert db.set_latest_user_api_content(
+                "s1", "hello", "hello\n\nAPI-CONTEXT", display_metadata=marker
+            ) == 1
+            row = db.get_messages("s1")[0]
+            assert row["api_content"] == "hello\n\nAPI-CONTEXT"
+            assert row["display_metadata"] == marker
         finally:
             db.close()
 
@@ -99,6 +119,51 @@ class TestPrologueRowAddressedBackfill:
         )
         agent._session_db.set_message_api_content.assert_not_called()
         agent._session_db.set_latest_user_api_content.assert_not_called()
+
+    def test_preflushed_marker_is_persisted_without_api_sidecar(self, tmp_path):
+        """A trusted surface marker must survive when the API copy is identical or absent."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", source="cli")
+        try:
+            agent = _RealPersistenceAgent(db, "s1")
+            staged = {"role": "user", "content": "hello"}
+            agent._pending_cli_user_message = staged
+            agent._flush_messages_to_session_db([staged], None)
+            marker = {"_hermes_surface_switch": {"surface": "desktop"}}
+            with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+                _build(agent, persist_user_display_metadata=marker)
+
+            row = db.get_messages("s1")[0]
+            assert row["api_content"] is None
+            assert row["display_metadata"] == marker
+        finally:
+            db.close()
+
+    def test_preflushed_multimodal_surface_marker_uses_pre_note_row_content(self, tmp_path):
+        """A surface note appended to live list content must not defeat the row guard."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", source="cli")
+        try:
+            agent = _RealPersistenceAgent(db, "s1")
+            content = [
+                {"type": "text", "text": "look at this"},
+                {"type": "image_url", "image_url": {"url": "https://x/img.png"}},
+            ]
+            staged = {"role": "user", "content": content}
+            agent._flush_messages_to_session_db([staged], None)
+            live = {"role": "user", "content": content, "_row_id": staged["_row_id"]}
+            agent._surface_switch_note = "[System: switched]"
+            marker = {
+                "_hermes_surface_switch": {"surface": "desktop"},
+            }
+            agent._surface_switch_metadata = marker
+
+            _merge_gateway_notes(agent, [live], 0, "")
+            _stamp_api_content_sidecar(agent, [live], 0, "", "", preflight_compressed=False)
+
+            assert db.get_messages("s1")[0]["display_metadata"] == marker
+        finally:
+            db.close()
 
 class _RealPersistenceAgent(SessionPersistenceMixin, _FakeAgent):
     """Stand-in agent with the real SessionPersistenceMixin flush implementation."""

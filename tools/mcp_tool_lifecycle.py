@@ -109,17 +109,48 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
             set(_core._servers) | set(_core._server_scope_keys)
             | set(_core._server_tool_scopes)
             | set(_core._server_connecting) | set(_core._server_connect_errors)
+            | set(_core._lazy_server_configs) | set(_core._lazy_server_tool_names)
             if scope is None else {
-                name for name, owner in _core._server_scope_keys.items() if owner == scope
+                name for name in (
+                    set(_core._server_scope_keys) | set(_core._server_tool_scopes)
+                    | set(_core._lazy_server_configs) | set(_core._lazy_server_tool_names)
+                ) if (_core._server_scope_keys.get(name) == scope
+                      or scope in _core._server_tool_scopes.get(name, ()))
             }
         )
+        selected_names = set(selected)
+        adopted = {
+            name for name in selected_status - selected_names
+            if name in _core._servers and scope in _core._server_tool_scopes.get(name, ())
+        }
+
+    lazy_selected = [name for name in selected_status if name in _core._lazy_server_configs]
+
+    def evict_selected_lazy():
+        if not lazy_selected:
+            return
+        from tools import mcp_tool_registration as _registration
+        for name in lazy_selected:
+            _registration._evict_lazy_server(name, scope)
 
     def clear_selected_status():
         _core._server_connecting.difference_update(selected_status)
         for name in selected_status:
+            if name in adopted:
+                continue
             _core._server_connect_errors.pop(name, None)
             _core._server_scope_keys.pop(name, None)
+            _core._server_public_names.pop(name, None)
             _core._server_tool_scopes.pop(name, None)
+
+    if adopted:
+        from tools import mcp_tool_registration as _registration
+        for name in adopted:
+            _registration._remove_server_scope(name, scope)
+
+    # Lazy entries have no shutdown coroutine, but their scoped registry overlay is still
+    # live. Evict them before any server teardown clears the ownership maps they use.
+    evict_selected_lazy()
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),
@@ -135,6 +166,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
                 for name in selected:
                     _core._servers.pop(name, None)
                     _core._server_scope_keys.pop(name, None)
+                    _core._server_public_names.pop(name, None)
                 clear_selected_status()
                 _clear_connect_cooldowns(None if scope is None else selected_status)
 

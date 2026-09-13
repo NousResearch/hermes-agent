@@ -265,6 +265,82 @@ class TestMCPParallelSafetyProvenance:
                 mcp_tool._parallel_safe_servers.clear()
                 mcp_tool._parallel_safe_servers.update(saved_parallel)
 
+    def test_profile_policy_uses_each_server_connection_key(self, tmp_path, monkeypatch):
+        from hermes_constants import hermes_home_key
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_discovery as discovery
+
+        scope = hermes_home_key(tmp_path / "worker")
+        owner_scope = hermes_home_key(tmp_path / "owner")
+        alpha_key = f"alpha::profile::{scope}"
+        beta_owner_key = f"beta::profile::{owner_scope}"
+        beta_key = f"beta::profile::{scope}"
+        monkeypatch.setattr(mcp_tool, "_servers", {alpha_key: SimpleNamespace(session=object())})
+        monkeypatch.setattr(mcp_tool, "_server_connecting", set())
+        monkeypatch.setattr(mcp_tool, "_lazy_server_configs", {})
+        monkeypatch.setattr(mcp_tool, "_server_connect_errors", {})
+        monkeypatch.setattr(mcp_tool, "_server_connect_retry_after", {})
+        monkeypatch.setattr(mcp_tool, "_server_scope_keys", {
+            alpha_key: scope, beta_owner_key: owner_scope,
+        })
+        monkeypatch.setattr(mcp_tool, "_server_public_names", {
+            alpha_key: "alpha", beta_owner_key: "beta",
+        })
+        monkeypatch.setattr(mcp_tool, "_parallel_safe_servers", set())
+        monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: scope)
+
+        selected = discovery._select_new_servers({
+            "alpha": {"auth": "oauth", "supports_parallel_tool_calls": True},
+            "beta": {"auth": "oauth", "supports_parallel_tool_calls": False},
+        })
+
+        assert list(selected) == [beta_key]
+        assert alpha_key in mcp_tool._parallel_safe_servers
+        assert beta_key not in mcp_tool._parallel_safe_servers
+
+    def test_scoped_registered_names_are_current_profile_public_names(self, tmp_path, monkeypatch):
+        from hermes_constants import hermes_home_key
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_discovery as discovery
+
+        active = hermes_home_key(tmp_path / "active")
+        other = hermes_home_key(tmp_path / "other")
+        active_key = f"shared::profile::{active}"
+        other_key = f"slack::profile::{other}"
+        monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: active)
+        monkeypatch.setattr(mcp_tool, "_mcp_tool_server_names", {})
+        monkeypatch.setattr(mcp_tool, "_mcp_tool_server_names_by_scope", {
+            active: {"mcp__shared__tool": active_key},
+            other: {"mcp__slack__tool": other_key},
+        })
+        monkeypatch.setattr(mcp_tool, "_server_public_names", {
+            active_key: "shared", other_key: "slack-mcp",
+        })
+
+        assert discovery.get_registered_mcp_server_names() == {"shared"}
+
+    def test_lazy_scoped_tools_use_public_registry_toolset(self, tmp_path, monkeypatch):
+        from hermes_constants import hermes_home_key
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_registration as registration
+        from tools.registry import registry
+
+        scope = hermes_home_key(tmp_path / "worker")
+        private_key = f"shared::profile::{scope}"
+        tool_name = "mcp__shared__cached"
+        monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: scope)
+        monkeypatch.setattr(mcp_tool, "_servers", {})
+        monkeypatch.setattr(mcp_tool, "_server_public_names", {private_key: "shared"})
+        monkeypatch.setattr(mcp_tool, "_server_scope_keys", {private_key: scope})
+        monkeypatch.setattr(mcp_tool, "_lazy_server_tool_names", {private_key: [tool_name]})
+        monkeypatch.setattr(registry, "current_scope_key", lambda: scope)
+        registry.register(tool_name, "mcp-shared", {"name": tool_name}, lambda **_kw: None, scope=scope)
+
+        try:
+            assert registration._existing_tool_names() == [tool_name]
+        finally:
+            registry.deregister(tool_name, scope=scope)
+
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
         self, monkeypatch
@@ -421,6 +497,86 @@ class TestMCPStatus:
                 mcp_tool._server_connect_retry_after.update(saved_retry_after)
                 mcp_tool._server_connect_failures.clear()
                 mcp_tool._server_connect_failures.update(saved_failures)
+
+    def test_scoped_shutdown_evicts_lazy_overlay_before_clearing_ownership(self, tmp_path, monkeypatch):
+        """A removed profile-owned lazy server cannot survive ownership teardown."""
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_lifecycle, mcp_tool_loop
+        from tools.mcp_schema_cache import config_fingerprint
+        from tools.registry import registry
+
+        scope = f"profile:{tmp_path / 'work'}"
+        peer_scope = f"profile:{tmp_path / 'peer'}"
+        key = f"shared::profile::{scope}"
+        peer_key = f"shared::profile::{peer_scope}"
+        tool_name = "mcp__shared__cached_shutdown_invariant"
+        config = {"auth": "oauth", "lazy": True, "url": "https://example.test/mcp"}
+
+        monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
+        monkeypatch.setattr(mcp_tool, "_servers", {})
+        monkeypatch.setattr(mcp_tool, "_server_scope_keys", {key: scope, peer_key: peer_scope})
+        monkeypatch.setattr(mcp_tool, "_server_public_names", {key: "shared", peer_key: "shared"})
+        monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {key: {scope}, peer_key: {peer_scope}})
+        monkeypatch.setattr(mcp_tool, "_lazy_server_configs", {key: config})
+        monkeypatch.setattr(mcp_tool, "_lazy_server_fingerprints", {key: config_fingerprint(config)})
+        monkeypatch.setattr(mcp_tool, "_lazy_server_tool_names", {key: [tool_name]})
+        monkeypatch.setattr(mcp_tool, "_mcp_tool_server_names_by_scope", {
+            scope: {tool_name: key},
+        })
+        registry.register(
+            tool_name, "mcp-shared", {"name": tool_name}, lambda **_kwargs: None, scope=scope,
+        )
+
+        try:
+            mcp_tool_lifecycle.shutdown_mcp_servers(scope=scope)
+
+            assert registry.snapshot_registration(tool_name, scope=scope) is None
+            assert key not in mcp_tool._lazy_server_configs
+            assert key not in mcp_tool._lazy_server_fingerprints
+            assert key not in mcp_tool._lazy_server_tool_names
+            assert mcp_tool._server_scope_keys == {peer_key: peer_scope}
+            assert mcp_tool._server_public_names == {peer_key: "shared"}
+        finally:
+            registry.deregister(tool_name, scope=scope)
+
+    def test_scoped_shutdown_removes_only_adopted_profile_overlay(self, tmp_path, monkeypatch):
+        """A peer reload removes its overlay without orphaning the shared owner connection."""
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_lifecycle, mcp_tool_loop
+        from tools.registry import registry
+
+        owner_scope = f"profile:{tmp_path / 'owner'}"
+        request_scope = f"profile:{tmp_path / 'request'}"
+        key = "shared"
+        tool_name = "mcp__shared__adopted_shutdown_invariant"
+        server = SimpleNamespace(session=object(), _registered_tool_names=[tool_name])
+
+        monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
+        monkeypatch.setattr(mcp_tool, "_servers", {key: server})
+        monkeypatch.setattr(mcp_tool, "_server_scope_keys", {key: owner_scope})
+        monkeypatch.setattr(mcp_tool, "_server_public_names", {key: "shared"})
+        monkeypatch.setattr(mcp_tool, "_server_tool_scopes", {key: {owner_scope, request_scope}})
+        monkeypatch.setattr(mcp_tool, "_mcp_tool_server_names_by_scope", {
+            request_scope: {tool_name: key},
+        })
+        monkeypatch.setattr(mcp_tool, "_server_connecting", set())
+        monkeypatch.setattr(mcp_tool, "_server_connect_errors", {})
+        monkeypatch.setattr(mcp_tool, "_server_connect_retry_after", {})
+        monkeypatch.setattr(mcp_tool, "_server_connect_failures", {})
+        registry.register(
+            tool_name, "mcp-shared", {"name": tool_name}, lambda **_kwargs: None, scope=request_scope,
+        )
+
+        try:
+            mcp_tool_lifecycle.shutdown_mcp_servers(scope=request_scope)
+
+            assert registry.snapshot_registration(tool_name, scope=request_scope) is None
+            assert mcp_tool._servers[key] is server
+            assert mcp_tool._server_scope_keys == {key: owner_scope}
+            assert mcp_tool._server_public_names == {key: "shared"}
+            assert mcp_tool._server_tool_scopes == {key: {owner_scope}}
+        finally:
+            registry.deregister(tool_name, scope=request_scope)
 
 
 
@@ -721,6 +877,25 @@ class TestToolHandler:
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
         finally:
             _servers.pop("test_srv", None)
+
+    def test_profile_scoped_errors_render_public_server_name(self, monkeypatch):
+        """Profile-private connection keys stay in state, not model-visible errors."""
+        from tools import mcp_tool
+        from tools.mcp_tool_handlers import _make_tool_handler
+
+        private_key = "shared::profile::worker"
+        public_name = "shared"
+        monkeypatch.setattr(mcp_tool, "_servers", {})
+        monkeypatch.setattr(mcp_tool, "_server_error_counts", {})
+        monkeypatch.setattr(mcp_tool, "_server_breaker_opened_at", {})
+
+        handler = _make_tool_handler(
+            private_key, "echo", 30, public_server_name=public_name,
+        )
+        result = json.loads(handler({}))
+
+        assert public_name in result["error"]
+        assert private_key not in result["error"]
 
 
 class TestRunOnMCPLoopInterrupts:
@@ -1275,40 +1450,43 @@ class TestShutdown:
         assert validate_toolset("test") is False
 
     def test_shutdown_is_parallel(self):
-        """Multiple servers are shut down in parallel via asyncio.gather."""
+        """Multiple servers overlap while shutting down via asyncio.gather."""
         import tools.mcp_tool as mcp_mod
         from tools import mcp_tool_loop as _mcp_loop
         from tools.mcp_tool_lifecycle import shutdown_mcp_servers
         from tools.mcp_tool import _servers
-        import time
 
         _servers.clear()
 
-        # 4 servers each taking 50ms to shut down
-        delay = 0.05
+        active = 0
+        overlap = threading.Event()
+        active_lock = threading.Lock()
         for i in range(4):
             mock_server = MagicMock()
             mock_server.name = f"srv_{i}"
+
             async def slow_shutdown():
-                await asyncio.sleep(delay)
+                nonlocal active
+                with active_lock:
+                    active += 1
+                    if active > 1:
+                        overlap.set()
+                await asyncio.sleep(0.05)
+                with active_lock:
+                    active -= 1
+
             mock_server.shutdown = slow_shutdown
             _servers[f"srv_{i}"] = mock_server
 
         _mcp_loop._ensure_mcp_loop()
         try:
-            start = time.monotonic()
             shutdown_mcp_servers()
-            elapsed = time.monotonic() - start
         finally:
             mcp_mod._mcp_loop = None
             mcp_mod._mcp_thread = None
 
         assert len(_servers) == 0
-        # Parallel: ~1 delay, not 4. Margin covers scheduling jitter but stays
-        # well under the serial total.
-        assert elapsed < delay * 3, (
-            f"Shutdown took {elapsed:.3f}s, expected ~{delay}s (parallel)"
-        )
+        assert overlap.is_set(), "shutdown should await server closures concurrently"
 
 
 # ---------------------------------------------------------------------------
@@ -1788,6 +1966,25 @@ class TestUtilityHandlers:
             assert result["resources"][0]["name"] == "test.txt"
         finally:
             _servers.pop("srv", None)
+
+    def test_profile_scoped_errors_render_public_server_name(self, monkeypatch):
+        """Utility handler errors follow the same public-name boundary as tool calls."""
+        from tools import mcp_tool
+        from tools.mcp_tool_handlers import _make_list_resources_handler
+
+        private_key = "shared::profile::worker"
+        public_name = "shared"
+        monkeypatch.setattr(mcp_tool, "_servers", {})
+        monkeypatch.setattr(mcp_tool, "_server_error_counts", {})
+        monkeypatch.setattr(mcp_tool, "_server_breaker_opened_at", {})
+
+        handler = _make_list_resources_handler(
+            private_key, 30, public_server_name=public_name,
+        )
+        result = json.loads(handler({}))
+
+        assert public_name in result["error"]
+        assert private_key not in result["error"]
 
 
     # -- read_resource --

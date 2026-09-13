@@ -1900,6 +1900,17 @@ class TestEnsureCronDirWidened:
         jobs._ensure_cron_dir(output_dir)
         assert output_dir.is_dir()
 
+    def test_ensure_cron_dir_custom_home_under_profiles_creates_hierarchy(self, tmp_path):
+        """A custom home may contain a ``profiles`` ancestor without being a named profile."""
+        import cron.jobs as jobs
+
+        custom_home = tmp_path / "srv" / "profiles" / "team-hermes"
+        cron_dir = custom_home / "cron" / "output"
+
+        jobs._ensure_cron_dir(cron_dir)
+
+        assert cron_dir.is_dir()
+
     def test_ensure_cron_dir_named_profile_cron_dir_fails_closed(self, tmp_path):
         """The cron dir of a deleted named profile must not be recreated."""
         import cron.jobs as jobs

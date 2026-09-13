@@ -3206,7 +3206,8 @@ def _build_cli_parser():
 
     try:
         from hermes_cli.secure_worker_cli import register_cli as _sw_register
-        _sw_register(subparsers)
+        secure_worker_parser = subparsers.add_parser("secure-worker", help="Run secure worker controls")
+        _sw_register(secure_worker_parser)
     except Exception as _sw_err:
         logger.debug("secure-worker CLI registration failed: %s", _sw_err)
 

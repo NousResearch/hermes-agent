@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -566,6 +567,10 @@ def _print_capped(header: str, lines: List[str], indent: str) -> None:
 
 _RUN_BACKUP_PREFIX = "hermes-backup-"
 _INCOMPLETE_RUN_BACKUP_SUFFIX = "-incomplete"
+_RUN_BACKUP_NAME_RE = re.compile(
+    rf"^{re.escape(_RUN_BACKUP_PREFIX)}\d{{4}}-\d{{2}}-\d{{2}}-\d{{6}}"
+    rf"(?:{re.escape(_INCOMPLETE_RUN_BACKUP_SUFFIX)})?\.zip$"
+)
 
 
 def _resolve_backup_output_path(output: Optional[str]) -> tuple[Path, bool]:
@@ -667,6 +672,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
                 total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
+    incomplete_marked = not errors
     if errors and default_generated:
         incomplete_path = out_path.with_name(
             f"{out_path.stem}{_INCOMPLETE_RUN_BACKUP_SUFFIX}{out_path.suffix}"
@@ -674,6 +680,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         try:
             os.replace(out_path, incomplete_path)
             out_path = incomplete_path
+            incomplete_marked = True
         except OSError as exc:
             logger.warning("Could not mark incomplete backup %s: %s", out_path, exc)
     elapsed = time.monotonic() - t0
@@ -697,7 +704,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
     keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
-    if keep and default_generated:
+    if keep and default_generated and (not errors or incomplete_marked):
         pruned = _prune_run_backup_zips(out_path.parent, keep, "backup")
         if pruned:
             print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
@@ -1636,7 +1643,7 @@ def _prune_run_backup_zips(backup_dir: Path, keep: int, what: str) -> int:
     """
     entries = _newest_first(
         backup_dir,
-        lambda p: p.is_file() and p.name.startswith(_RUN_BACKUP_PREFIX) and p.suffix.lower() == ".zip",
+        lambda p: p.is_file() and _RUN_BACKUP_NAME_RE.fullmatch(p.name) is not None,
     )
     complete = [p for p in entries if not p.stem.endswith(_INCOMPLETE_RUN_BACKUP_SUFFIX)]
     incomplete = [p for p in entries if p.stem.endswith(_INCOMPLETE_RUN_BACKUP_SUFFIX)]

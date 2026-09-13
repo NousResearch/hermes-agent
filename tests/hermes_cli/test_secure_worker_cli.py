@@ -33,6 +33,20 @@ def test_cli_registers_required_commands() -> None:
     }
 
 
+def test_main_wires_secure_worker_as_a_parent_command() -> None:
+    from hermes_cli.main import _build_cli_parser
+
+    parser, _subparsers = _build_cli_parser()
+    commands = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    secure_worker = commands.choices["secure-worker"]
+    nested = next(
+        action for action in secure_worker._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    assert {"audit", "run", "pack", "verify"}.issubset(nested.choices)
+
+
 def test_remote_audit_parser_accepts_manifest_and_policy_proofs(tmp_path: Path) -> None:
     parser = _parser()
     args = parser.parse_args(

@@ -2285,7 +2285,10 @@ class GatewayTurnMixin:
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
+            from tools.mcp_tool import (
+                _servers, _lock, _mcp_tool_server_names_by_scope, _server_public_names,
+                _server_visible_in_scope,
+            )
             from tools.mcp_tool_agent import reprobe_tool_availability
             from tools.registry import registry
 
@@ -2293,10 +2296,16 @@ class GatewayTurnMixin:
 
             def _scoped_server_names() -> set:
                 with _lock:
-                    return {
-                        name for name in _servers
+                    names = {
+                        _server_public_names.get(name, name) for name in _servers
                         if _server_visible_in_scope(name, reload_scope)
                     }
+                    if reload_scope is not None:
+                        names.update(
+                            _server_public_names.get(owner, owner)
+                            for owner in _mcp_tool_server_names_by_scope.get(reload_scope, {}).values()
+                        )
+                    return names
 
             old_servers = _scoped_server_names()
             await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
@@ -2307,9 +2316,13 @@ class GatewayTurnMixin:
 
             connected_servers = _scoped_server_names()
             if reload_scope is not None:
-                from tools.mcp_tool import _mcp_tool_server_names
+                from tools.mcp_tool import _mcp_tool_server_names_by_scope
                 with _lock:
-                    new_tools = [n for n in new_tools if _mcp_tool_server_names.get(n) in connected_servers]
+                    provenance = _mcp_tool_server_names_by_scope.get(reload_scope, {})
+                    new_tools = [
+                        n for n in new_tools
+                        if _server_public_names.get(provenance.get(n), provenance.get(n)) in connected_servers
+                    ]
             # (label, i18n key, names); i18n lines list reconnected first, the injected note added first.
             changes = (
                 ("Reconnected", "gateway.reload_mcp.reconnected", connected_servers & old_servers),

@@ -114,6 +114,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
 
+    # A retry must not keep serving a partial result after the source is removed, disabled, or can no
+    # longer be evaluated. Publish only the snapshot established by this attempt.
+    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+
     try:
         cfg = _load_secrets_config(home)
     except Exception:  # noqa: BLE001 — external sources must not block routing
@@ -143,7 +147,11 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if not report.sources:
         return {}
 
-    _APPLIED_HOMES.add(home_key)
+    # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
+    # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
+    # mixed report are still snapshotted below and can be used while the failed source recovers.
+    if all(src.result.ok for src in report.sources):
+        _APPLIED_HOMES.add(home_key)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
         value = local_env.get(name)
@@ -151,8 +159,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    if values:
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     return dict(values)
 
 

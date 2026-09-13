@@ -325,6 +325,167 @@ def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
     assert seen_env.get("OP_SERVICE_ACCOUNT_TOKEN") == "ops_from-dotenv"
 
 
+def test_cold_profile_hydration_retries_failed_source(tmp_path, monkeypatch):
+    """A failed routed-profile fetch must not make its empty snapshot process-lifetime state."""
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  command:\n    enabled: true\n", encoding="utf-8"
+    )
+    attempts = 0
+
+    def _apply_after_credentials_are_fixed(_cfg, _home_path, environ=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            failed = FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED)
+            return ApplyReport(
+                sources=[SourceReport(name="command", label="command", result=failed)]
+            )
+
+        environ["OPENAI_API_KEY"] = "recovered-key"
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="command",
+                    label="command",
+                    result=FetchResult(secrets={"OPENAI_API_KEY": "recovered-key"}),
+                    applied=["OPENAI_API_KEY"],
+                )
+            ],
+            provenance={
+                "OPENAI_API_KEY": AppliedVar(
+                    name="OPENAI_API_KEY",
+                    source="command",
+                    shape="bulk",
+                    overrode_env=False,
+                )
+            },
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply_after_credentials_are_fixed)
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "OPENAI_API_KEY": "recovered-key"
+    }
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "OPENAI_API_KEY": "recovered-key"
+    }
+    assert attempts == 2
+
+
+def test_cold_profile_hydration_replaces_partial_snapshot_after_failed_retry(
+    tmp_path, monkeypatch
+):
+    """Each retry replaces the prior profile snapshot, including with an empty result."""
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  command:\n    enabled: true\n", encoding="utf-8"
+    )
+    attempts = 0
+
+    def _apply_with_stale_partial_value(_cfg, _home_path, environ=None):
+        nonlocal attempts
+        attempts += 1
+        failed = FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED)
+        if attempts == 1:
+            environ["OPENAI_API_KEY"] = "first-value"
+            return ApplyReport(
+                sources=[
+                    SourceReport(
+                        name="onepassword",
+                        label="1Password",
+                        result=FetchResult(secrets={"OPENAI_API_KEY": "first-value"}),
+                        applied=["OPENAI_API_KEY"],
+                    ),
+                    SourceReport(name="command", label="command", result=failed),
+                ],
+                provenance={
+                    "OPENAI_API_KEY": AppliedVar(
+                        name="OPENAI_API_KEY",
+                        source="onepassword",
+                        shape="bulk",
+                        overrode_env=False,
+                    )
+                },
+            )
+        return ApplyReport(
+            sources=[
+                SourceReport(name="onepassword", label="1Password", result=failed),
+                SourceReport(name="command", label="command", result=failed),
+            ]
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply_with_stale_partial_value)
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "OPENAI_API_KEY": "first-value"
+    }
+    assert env_loader.get_secret_source_values(tmp_path) == {
+        "OPENAI_API_KEY": "first-value"
+    }
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    assert env_loader.get_secret_source_values(tmp_path) == {}
+    assert attempts == 2
+
+
+def test_cold_profile_hydration_clears_partial_snapshot_when_sources_are_removed(
+    tmp_path, monkeypatch
+):
+    """Removing secret sources during a retry must revoke values from a partial snapshot."""
+    from agent.secret_scope import build_profile_secret_scope
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n  command:\n    enabled: true\n", encoding="utf-8"
+    )
+    failed = FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED)
+
+    def _apply_partial_result(_cfg, _home_path, environ=None):
+        environ["OPENAI_API_KEY"] = "partial-key"
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="onepassword",
+                    label="1Password",
+                    result=FetchResult(secrets={"OPENAI_API_KEY": "partial-key"}),
+                    applied=["OPENAI_API_KEY"],
+                ),
+                SourceReport(name="command", label="command", result=failed),
+            ],
+            provenance={
+                "OPENAI_API_KEY": AppliedVar(
+                    name="OPENAI_API_KEY",
+                    source="onepassword",
+                    shape="bulk",
+                    overrode_env=False,
+                )
+            },
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply_partial_result)
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "OPENAI_API_KEY": "partial-key"
+    }
+    assert build_profile_secret_scope(tmp_path)["OPENAI_API_KEY"] == "partial-key"
+
+    config_path.write_text("{}\n", encoding="utf-8")
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    assert env_loader.get_secret_source_values(tmp_path) == {}
+    assert "OPENAI_API_KEY" not in build_profile_secret_scope(tmp_path)
+
+
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
     """Disabled Bitwarden config must not touch the source map."""
 

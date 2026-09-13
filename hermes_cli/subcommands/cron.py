@@ -183,6 +183,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     cron_subparsers.add_parser("doctor", help="Check scheduled jobs for common health issues")
 
+    # restore — disaster-recovery wholesale store replacement. Uses save_jobs(replace=True),
+    # which opts out of the shrink-merge-guard (see cron/jobs.save_jobs). MUST require the
+    # explicit --confirm flag; a bare `hermes cron restore` is a no-op. No silent blast radius.
+    cron_restore = cron_subparsers.add_parser(
+        "restore", aliases=["replace-jobs"],
+        help="Wholesale-replace jobs.json from a backup file (disaster recovery; requires --confirm)")
+    cron_restore.add_argument(
+        "file", help="Path to a jobs.json backup produced by `hermes cron export` or a snapshot copy")
+    _flag(cron_restore, "--confirm",
+        help="REQUIRED: acknowledge that the current jobs.json will be replaced by the backup")
+    cron_restore.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Validate the backup file and show what would be replaced, without writing")
+
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)
     add_accept_hooks_flag(cron_parser)

@@ -5,6 +5,7 @@ fingerprint keying, read/write round-trip, and invalidation behavior.
 """
 
 import tools.mcp_schema_cache as msc
+from tools import mcp_tool_registration as _mcp_registration
 
 
 class TestConfigFingerprint:
@@ -43,23 +44,15 @@ class TestCacheRoundTrip:
         assert entry is not None
         assert msc.tools_from_cache_entry(entry) == tools
         assert msc.utility_tools_from_cache_entry(entry) == []
-        assert msc.has_cached_entry("srv", "fp1")
 
     def test_fingerprint_mismatch_returns_none(self, monkeypatch, tmp_path):
         self._isolate(monkeypatch, tmp_path)
         msc.write_cache_entry("srv", "fp1", tools=[], utility_tools=[])
         assert msc.get_cached_entry("srv", "OTHER") is None
-        assert not msc.has_cached_entry("srv", "OTHER")
 
     def test_missing_server_returns_none(self, monkeypatch, tmp_path):
         self._isolate(monkeypatch, tmp_path)
         assert msc.get_cached_entry("nope", "fp") is None
-
-    def test_clear_cache_entry(self, monkeypatch, tmp_path):
-        self._isolate(monkeypatch, tmp_path)
-        msc.write_cache_entry("srv", "fp1", tools=[], utility_tools=[])
-        msc.clear_cache_entry("srv")
-        assert msc.get_cached_entry("srv", "fp1") is None
 
     def test_corrupt_cache_file_is_tolerated(self, monkeypatch, tmp_path):
         self._isolate(monkeypatch, tmp_path)
@@ -67,7 +60,7 @@ class TestCacheRoundTrip:
         assert msc.get_cached_entry("srv", "fp") is None
         # And writes recover the file.
         msc.write_cache_entry("srv", "fp", tools=[], utility_tools=[])
-        assert msc.has_cached_entry("srv", "fp")
+        assert msc.get_cached_entry("srv", "fp") is not None
 
     def test_malformed_entry_shapes_are_tolerated(self):
         assert msc.tools_from_cache_entry({"tools": "nope"}) == []
@@ -110,3 +103,89 @@ class TestWriteSkip:
         # Changed payload → rewrite.
         msc.write_cache_entry("srv", "fp2", tools=tools, utility_tools=[])
         assert len(saves) == 2
+
+
+class TestWriteThroughPreservesSchema:
+    """Regression: the write-through path must persist real tool parameters.
+
+    ``mcp`` 2.0 renamed ``Tool.inputSchema`` to ``input_schema``, keeping the
+    camelCase spelling only as a *serialization* alias — pydantic aliases do
+    not apply to attribute access, so ``getattr(tool, "inputSchema")`` returns
+    None on 2.x instead of raising. The cache-write path used exactly that
+    bare read, so every entry landed on disk with ``"inputSchema": {}``. A
+    server later registered from that cache (``lazy: true``) was advertised to
+    the model with every parameter stripped, which makes required-argument
+    tools such as zhihu's ``zhida`` (``query`` + ``model`` both required)
+    uncallable.
+
+    These tests drive the live ``_register_server_tools`` write-through with a
+    genuine SDK ``Tool`` so the field-rename is actually exercised — the mock
+    fixtures elsewhere build ``SimpleNamespace`` objects and cannot catch it.
+    (Salvaged from #91451 / #102129.)
+    """
+
+    _SCHEMA = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "model": {"type": "string"},
+        },
+        "required": ["query", "model"],
+    }
+
+    def _cache_write_through(self, tmp_path, monkeypatch):
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from mcp.types import Tool
+
+        import tools.mcp_tool as mt
+        from tools.registry import ToolRegistry
+
+        monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
+        # Registration records per-server state in module globals (lazy tool names, trust
+        # levels, read-only hints...); isolate them so the probe server never leaks into
+        # later tests such as ``discover_mcp_tools() == []`` assertions.
+        for attr in ("_lazy_server_tool_names", "_lazy_server_configs", "_lazy_server_fingerprints",
+                     "_mcp_tool_server_names", "_server_trust_levels", "_tool_read_only_hints"):
+            monkeypatch.setattr(mt, attr, {})
+        server = mt.MCPServerTask("probe_srv")
+        server._tools = [
+            Tool(name="zhida", description="知乎直答", inputSchema=self._SCHEMA)
+        ]
+        server.session = MagicMock()
+
+        with patch("tools.registry.registry", ToolRegistry()):
+            registered = _mcp_registration._register_server_tools("probe_srv", server, {})
+        assert registered, "tool was not registered; write-through never fired"
+        entry = json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))["probe_srv"]
+        return entry
+
+    def test_cached_schema_keeps_properties(self, tmp_path, monkeypatch):
+        cached = self._cache_write_through(tmp_path, monkeypatch)["tools"][0]["inputSchema"]
+        assert set(cached.get("properties", {})) == {"query", "model"}, (
+            "write-through persisted an empty schema — the SDK field rename "
+            "was read with a bare camelCase getattr"
+        )
+
+    def test_cached_schema_keeps_required(self, tmp_path, monkeypatch):
+        cached = self._cache_write_through(tmp_path, monkeypatch)["tools"][0]["inputSchema"]
+        assert cached.get("required") == ["query", "model"]
+
+    def test_cache_round_trip_reaches_agent_schema(self, tmp_path, monkeypatch):
+        """The whole point of the cache: a lazy server re-advertises params."""
+        from unittest.mock import patch
+
+        import tools.mcp_tool as mt
+        from tools import mcp_tool_registration as _mcp_registration
+        from tools.registry import ToolRegistry
+
+        entry = self._cache_write_through(tmp_path, monkeypatch)
+        lazy_reg = ToolRegistry()
+        with patch("tools.registry.registry", lazy_reg):
+            names = _mcp_registration._register_from_cache_sync("probe_srv", {}, entry)
+        assert names, "lazy registration produced no tools"
+        schema = lazy_reg.get_schema("mcp__probe_srv__zhida")
+        assert schema is not None, "lazy path did not register the tool"
+        assert set(schema["parameters"].get("properties", {})) == {"query", "model"}
+        assert schema["parameters"].get("required") == ["query", "model"]

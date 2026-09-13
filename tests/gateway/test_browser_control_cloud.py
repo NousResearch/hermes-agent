@@ -9,6 +9,7 @@ from gateway.browser_control_broker import (
     get_browser_control_broker,
 )
 from hermes_cli import web_server
+import hermes_cli.web_server_chat as _web_server_chat
 from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
 from tui_gateway import server
 from tui_gateway.ws import WSTransport
@@ -29,8 +30,8 @@ def _fake_ticket_subprotocol_ws(ticket):
         query_params={},
         headers={
             "sec-websocket-protocol": (
-                f"{web_server._GATEWAY_WS_PROTOCOL}, "
-                f"{web_server._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}"
+                f"{_web_server_chat._GATEWAY_WS_PROTOCOL}, "
+                f"{_web_server_chat._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}"
             )
         },
         client=SimpleNamespace(host="203.0.113.7"),
@@ -54,12 +55,12 @@ def test_dashboard_ticket_identity_is_carried_forward_without_trusting_rpc_param
     ticket = mint_ticket(user_id="user-fixture", provider="provider-fixture")
     ws = _fake_ticket_ws(ticket)
 
-    assert web_server._ws_auth_ok(ws) is True
+    assert _web_server_chat._ws_auth_ok(ws) is True
     assert ws._hermes_auth_identity == {
         "user_id": "user-fixture",
         "provider": "provider-fixture",
     }
-    assert web_server._ws_auth_ok(_fake_ticket_ws(ticket)) is False
+    assert _web_server_chat._ws_auth_ok(_fake_ticket_ws(ticket)) is False
 
 
 def test_dashboard_ticket_subprotocol_carries_the_same_server_identity(gated_dashboard):
@@ -67,12 +68,12 @@ def test_dashboard_ticket_subprotocol_carries_the_same_server_identity(gated_das
     ticket = mint_ticket(user_id="subprotocol-user", provider="provider-fixture")
     ws = _fake_ticket_subprotocol_ws(ticket)
 
-    assert web_server._ws_auth_ok(ws) is True
+    assert _web_server_chat._ws_auth_ok(ws) is True
     assert ws._hermes_auth_identity == {
         "user_id": "subprotocol-user",
         "provider": "provider-fixture",
     }
-    assert ws._hermes_ws_subprotocol == web_server._GATEWAY_WS_PROTOCOL
+    assert ws._hermes_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
 
 
 def test_ws_transport_records_only_server_authenticated_identity():

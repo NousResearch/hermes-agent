@@ -15,14 +15,25 @@ from tools.mcp_oauth import (
     OAuthNonInteractiveError,
     build_oauth_auth,
     remove_oauth_tokens,
-    _find_free_port,
     _can_open_browser,
     _is_interactive,
-    _wait_for_callback,
     _make_callback_handler,
     _make_redirect_handler,
     _paste_callback_reader,
 )
+
+
+def _find_free_port() -> int:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def _wait_for_callback():
+    """Await the per-flow waiter on the legacy module-level port (the removed shim)."""
+    import tools.mcp_oauth as mod
+    return await mod._make_callback_waiter(mod._oauth_port)()
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -150,15 +161,54 @@ class TestHermesTokenStorage:
 
 
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
+        import asyncio
+        from mcp.shared.auth import OAuthMetadata
+        from tools.mcp_oauth_device import DeviceOAuthMetadata
+
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("bad-server")
-
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
         (d / "bad-server.json").write_text("NOT VALID JSON{{{")
-
-        import asyncio
         assert asyncio.run(storage.get_tokens()) is None
+        for raw in ('NOT VALID JSON{{{', '[]', 'null', '"cached-secret"', '42', 'true', '{}'):
+            path = d / "bad-server.meta.json"
+            path.write_text(raw)
+            assert storage.load_oauth_metadata() is None
+            assert path.read_text() == raw
+
+        metadata = {"issuer": "https://example.com", "token_endpoint": "https://example.com/token",
+                    "response_types_supported": ["code"], "authorization_endpoint": "https://example.com/auth"}
+        for device in (False, True):
+            if device:
+                metadata.pop("authorization_endpoint")
+                metadata["device_authorization_endpoint"] = "https://example.com/device"
+            path = d / "bad-server.meta.json"
+            path.write_text(json.dumps(metadata))
+            loaded = storage.load_oauth_metadata()
+            assert type(loaded) is (DeviceOAuthMetadata if device else OAuthMetadata)
+            assert str(loaded.token_endpoint) == metadata["token_endpoint"]
+            assert json.loads(path.read_text()) == metadata
+
+    def test_corrupt_tokens_warning_never_echoes_the_token_material(self, tmp_path, monkeypatch, caplog):
+        """A pydantic ValidationError's str() includes the raw input; the corrupt-store warning must
+        name the failing fields only (#102308)."""
+        import asyncio
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("bad-server")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        secret = "sk-live-QQQQQQQQ"  # short enough that pydantic's input echo does not elide it
+        # access_token must be a str: a one-element list fails validation on THAT field, and pydantic's
+        # message echoes the failing field's input — i.e. the token.
+        (d / "bad-server.json").write_text(json.dumps({"access_token": [secret], "token_type": "Bearer"}))
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            assert asyncio.run(storage.get_tokens()) is None
+        assert any("Corrupt" in r.message for r in caplog.records)
+        assert secret not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +553,7 @@ class TestCallbackPortReservation:
         monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
 
         async def drive():
-            task = asyncio.create_task(mod._wait_for_callback())
+            task = asyncio.create_task(_wait_for_callback())
             threading.Thread(
                 target=_hit_callback_when_ready,
                 args=(f"http://127.0.0.1:{port}/callback?code=abc123&state=xyz",),
@@ -814,7 +864,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         monkeypatch.setattr(mod.asyncio, "sleep", no_sleep)
 
         with pytest.raises(OAuthNonInteractiveError, match="interactive session"):
-            asyncio.run(mod._wait_for_callback())
+            asyncio.run(_wait_for_callback())
         fake_server.assert_not_called()
 
     def test_redirect_handler_rejects_and_does_not_open_browser(self, monkeypatch, capsys):
@@ -1072,7 +1122,7 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
         mo, "HTTPServer", side_effect=OSError("address already in use")
     ):
         with pytest.raises(mo.OAuthNonInteractiveError) as excinfo:
-            asyncio.run(mo._wait_for_callback())
+            asyncio.run(_wait_for_callback())
 
     msg = str(excinfo.value)
     assert "54321" in msg

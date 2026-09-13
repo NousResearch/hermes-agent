@@ -29,7 +29,7 @@ class TestOpenaiBackendInstructions:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
             from tools.tts_tool import _generate_openai_tts
             kwargs = {}
@@ -74,7 +74,7 @@ class TestToolLevelInstructions:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)), \
              patch("tools.tts_tool._load_tts_config",
                    return_value={"provider": "openai"}):

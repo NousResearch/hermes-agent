@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools import mcp_death_supervisor, mcp_tool
+from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix", reason="the supervisor is POSIX-only (process groups)"
@@ -617,10 +618,10 @@ def _stdio_connection(child_pid, fake_supervisor):
         # First call is the pids_before baseline; the second reports our child
         # as the newly spawned server.
         patch(
-            "tools.mcp_tool._snapshot_child_pids",
+            "tools.mcp_tool_lifecycle._snapshot_child_pids",
             side_effect=[set(), {child_pid}],
         ),
-        patch("tools.mcp_tool._write_stderr_log_header"),
+        patch("tools.mcp_tool_config._write_stderr_log_header"),
         patch("tools.mcp_tool._get_mcp_stderr_log", return_value=None),
         patch(
             "tools.mcp_tool._spawn_death_supervisor",
@@ -713,19 +714,19 @@ def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypat
     """
     fake = _FakeSupervisor()
     monkeypatch.setattr(mcp_tool, "_spawn_death_supervisor", lambda: fake)
-    monkeypatch.setattr(mcp_tool.time, "sleep", lambda _s: None)  # skip the SIGTERM grace wait
+    monkeypatch.setattr(_mcp_lifecycle.time, "sleep", lambda _s: None)  # skip the SIGTERM grace wait
     a = subprocess.Popen(_VICTIM, start_new_session=True)
     b = subprocess.Popen(_VICTIM, start_new_session=True)
     try:
         pg_a, pg_b = os.getpgid(a.pid), os.getpgid(b.pid)
         with mcp_tool._lock:
-            mcp_tool._stdio_pids[a.pid] = "profile-a"
-            mcp_tool._stdio_pids[b.pid] = "profile-b"
-            mcp_tool._stdio_pgids[a.pid] = pg_a
-            mcp_tool._stdio_pgids[b.pid] = pg_b
+            _mcp_lifecycle._stdio_pids[a.pid] = "profile-a"
+            _mcp_lifecycle._stdio_pids[b.pid] = "profile-b"
+            _mcp_lifecycle._stdio_pgids[a.pid] = pg_a
+            _mcp_lifecycle._stdio_pgids[b.pid] = pg_b
         mcp_tool._update_death_supervisor("register", [pg_a, pg_b])
 
-        mcp_tool._kill_orphaned_mcp_children(include_active=True, server_name="profile-a")
+        _mcp_lifecycle._kill_orphaned_mcp_children(include_active=True, server_name="profile-a")
         a.wait(timeout=10)
 
         assert b.poll() is None, "scoped teardown of profile-a killed profile-b's server"
@@ -734,7 +735,7 @@ def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypat
             "scoped teardown released the OTHER owner's group from the supervisor"
         )
         assert mcp_tool._supervised_pgids == {pg_b}
-        assert b.pid in mcp_tool._stdio_pids and b.pid in mcp_tool._stdio_pgids
+        assert b.pid in _mcp_lifecycle._stdio_pids and b.pid in _mcp_lifecycle._stdio_pgids
     finally:
         for p in (a, b):
             _kill(p.pid)
@@ -744,8 +745,8 @@ def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypat
                 pass
         with mcp_tool._lock:
             for p in (a, b):
-                mcp_tool._stdio_pids.pop(p.pid, None)
-                mcp_tool._stdio_pgids.pop(p.pid, None)
+                _mcp_lifecycle._stdio_pids.pop(p.pid, None)
+                _mcp_lifecycle._stdio_pgids.pop(p.pid, None)
 
 
 @pytest.mark.live_system_guard_bypass

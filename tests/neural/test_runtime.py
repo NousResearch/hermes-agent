@@ -1,5 +1,6 @@
 from neural.events import NeuralEvent
 from neural.neurons import Neuron
+from neural.perception import ConversationCell
 from neural.processing import NeuralProcessor
 from neural.runtime import NeuralRuntime
 
@@ -41,3 +42,16 @@ def test_runtime_exposes_advisory_neural_processing():
 
     assert len(signals) == 1
     assert signals[0].value == 0.6
+
+
+def test_runtime_can_publish_a_sensory_cell_observation():
+    runtime = NeuralRuntime()
+    received = []
+    runtime.bus.subscribe("conversation.observed", received.append)
+
+    event = runtime.sense(ConversationCell(), {"text": "hello"}, correlation_id="turn-2")
+
+    assert event in received
+    assert event.source == "conversation"
+    assert event.event_type == "conversation.observed"
+    assert event.correlation_id == "turn-2"

@@ -6,6 +6,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   $cronSessions,
+  $kanbanSessions,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -162,9 +163,12 @@ const profileKeyForRow = (row: SessionInfo): string => normalizeProfileKey(row.p
  *  id; a tie breaks toward the live gateway, since both opening a session and
  *  running one swap the gateway onto that session's profile. */
 function resolveLoadedRow(storedSessionId: string): SessionInfo | undefined {
-  const matches = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).filter(row =>
-    sessionMatchesStoredId(row, storedSessionId)
-  )
+  const matches = rowsFor([
+    $sessions.get(),
+    $cronSessions.get(),
+    $messagingSessions.get(),
+    $kanbanSessions.get()
+  ]).filter(row => sessionMatchesStoredId(row, storedSessionId))
 
   if (matches.length < 2) {
     return matches[0]
@@ -300,7 +304,7 @@ export function ackStoredSessionId(storedSessionId: null | string, profileHint?:
  *  user just dismissed on the next list refresh. Rows not loaded keep their
  *  state: an unseen session in a collapsed profile stays honestly unread. */
 export function ackAllSessionsRead(): void {
-  for (const row of rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])) {
+  for (const row of rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get(), $kanbanSessions.get()])) {
     ackSessionRow(row)
   }
 }
@@ -466,11 +470,11 @@ function recomputeUnread(): void {
     return Boolean(bucket?.includes(durableId) || bucket?.includes(row.id))
   }
 
-  // Watermark + marker unread for chat and cron rows. The selected skip stays
-  // profile-blind here (unlike the persisted writes): the paint layer is keyed
-  // by row id, so dotting a same-id row from another profile would just put a
-  // dot on the session you have open.
-  for (const row of rowsFor([$sessions.get(), $cronSessions.get()])) {
+  // Watermark + marker unread for chat, cron, and kanban rows. The selected
+  // skip stays profile-blind here (unlike the persisted writes): the paint
+  // layer is keyed by row id, so dotting a same-id row from another profile
+  // would just put a dot on the session you have open.
+  for (const row of rowsFor([$sessions.get(), $cronSessions.get(), $kanbanSessions.get()])) {
     if (isSelected(row, selected)) {
       continue
     }
@@ -494,7 +498,7 @@ function recomputeUnread(): void {
   }
 
   // Preserve live-edge ids whose row isn't loaded yet.
-  const loadedRows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
+  const loadedRows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get(), $kanbanSessions.get()])
 
   for (const id of $unreadFinishedSessionIds.get()) {
     if (id !== selected && !unread.includes(id) && !loadedRows.some(row => sessionMatchesStoredId(row, id))) {
@@ -557,7 +561,7 @@ function rehydrateFromDiskOnce(): void {
 
 function onListChange(): void {
   rehydrateFromDiskOnce()
-  ingestRows(rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]))
+  ingestRows(rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get(), $kanbanSessions.get()]))
   recomputeUnread()
 }
 
@@ -572,6 +576,7 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
   $sessions.listen(onListChange)
   $cronSessions.listen(onListChange)
   $messagingSessions.listen(onListChange)
+  $kanbanSessions.listen(onListChange)
 
   // Opening a session acks it durably (the transient atom is already cleared
   // synchronously by setSelectedStoredSessionId — this is the persisted half).

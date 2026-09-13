@@ -42,6 +42,7 @@ import {
   $sidebarCronOpen,
   $sidebarFiltersActive,
   $sidebarGrouping,
+  $sidebarKanbanOpen,
   $sidebarMessagingOpenIds,
   $sidebarOrdering,
   $sidebarPinsOpen,
@@ -63,6 +64,7 @@ import {
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
   setSidebarCronOpen,
+  setSidebarKanbanOpen,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
@@ -117,6 +119,7 @@ import { openRouteTile } from '@/store/route-tiles'
 import {
   $cronSessions,
   $gatewayState,
+  $kanbanSessions,
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
@@ -471,6 +474,7 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  const kanbanOpen = useStore($sidebarKanbanOpen)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
@@ -478,6 +482,7 @@ export function ChatSidebar({
   const currentView = focusedSessionIsTile ? 'chat' : routeView
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
+  const kanbanSessions = useStore($kanbanSessions)
   const cronJobs = useStore($cronJobs)
   const messagingSessions = useStore($messagingSessions)
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
@@ -547,6 +552,8 @@ export function ChatSidebar({
   const messagingOpenIds = useStore($sidebarMessagingOpenIds)
   // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
+  // Rows revealed in the Kanban section (same reveal pattern as messaging).
+  const [kanbanVisible, setKanbanVisible] = useState<number | undefined>(undefined)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
 
@@ -670,16 +677,21 @@ export function ChatSidebar({
     [cronSessions, profileScope]
   )
 
+  const visibleKanbanSessions = useMemo(
+    () => filterSessionsByProfileScope(kanbanSessions, profileScope),
+    [kanbanSessions, profileScope]
+  )
+
   const visibleMessagingSessions = useMemo(
     () => filterSessionsByProfileScope(messagingSessions, profileScope),
     [messagingSessions, profileScope]
   )
 
   // Index sessions by every id a pin might be stored under — recents, cron,
-  // AND messaging, since all three can be pinned (see session-index.ts).
+  // messaging, AND kanban, since all four can be pinned (see session-index.ts).
   const sessionByAnyId = useMemo(
-    () => buildSessionByAnyId(visibleSessions, visibleCronSessions, visibleMessagingSessions),
-    [visibleSessions, visibleCronSessions, visibleMessagingSessions]
+    () => buildSessionByAnyId(visibleSessions, visibleCronSessions, visibleMessagingSessions, visibleKanbanSessions),
+    [visibleSessions, visibleCronSessions, visibleMessagingSessions, visibleKanbanSessions]
   )
 
   // Local pin ids first (hand-picked order), then server-flagged pins the
@@ -691,10 +703,18 @@ export function ChatSidebar({
       resolvePinnedSessions(
         pinnedSessionIds,
         sessionByAnyId,
-        [...visibleSessions, ...cronSessions, ...messagingSessions],
+        [...visibleSessions, ...cronSessions, ...messagingSessions, ...kanbanSessions],
         unconfirmedPinWrites
       ),
-    [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
+    [
+      pinnedSessionIds,
+      sessionByAnyId,
+      visibleSessions,
+      cronSessions,
+      messagingSessions,
+      kanbanSessions,
+      unconfirmedPinWrites
+    ]
   )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
@@ -2034,6 +2054,39 @@ export function ChatSidebar({
                   />
                 )
               })}
+
+            {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && visibleKanbanSessions.length > 0 && (
+              <SidebarSessionsSection
+                activeSessionId={activeSidebarSessionId}
+                contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                emptyState={null}
+                footer={
+                  (kanbanVisible ?? NON_SESSION_INITIAL_ROWS) < visibleKanbanSessions.length ? (
+                    <SidebarLoadMoreRow
+                      onClick={() =>
+                        setKanbanVisible(prev => (prev ?? NON_SESSION_INITIAL_ROWS) + NON_SESSION_LOAD_STEP)
+                      }
+                      step={Math.min(
+                        NON_SESSION_LOAD_STEP,
+                        Math.max(0, visibleKanbanSessions.length - (kanbanVisible ?? NON_SESSION_INITIAL_ROWS))
+                      )}
+                    />
+                  ) : null
+                }
+                label={s.kanbanSessions}
+                labelIcon={<Codicon name="checklist" size="0.5625rem" />}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onResumeSession={onResumeSession}
+                onToggle={() => setSidebarKanbanOpen(!kanbanOpen)}
+                onTogglePin={pinSession}
+                onToggleUnread={toggleUnread}
+                open={kanbanOpen}
+                pinned={false}
+                rootClassName="shrink-0 p-0"
+                sessions={visibleKanbanSessions.slice(0, kanbanVisible ?? NON_SESSION_INITIAL_ROWS)}
+              />
+            )}
 
             {!trimmedQuery && !worktreeGroupingActive && showsAdvancedChrome && cronJobs.length > 0 && (
               <SidebarCronJobsSection

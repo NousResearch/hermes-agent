@@ -17,9 +17,9 @@
  * same rule session-dot-state applies per session):
  *
  * 1. LOADED ROWS — every listed chat/messaging row claims its own scope from
- *    its (connection_id, profile) tags. Cron rows are deliberately EXCLUDED:
- *    cron runs finish unwatched by design and counting them would turn every
- *    profile's square into a permanently lit cron-run counter (#93552).
+ *    its (connection_id, profile) tags. Cron and kanban rows are deliberately
+ *    EXCLUDED: those runs finish unwatched by design and counting them would
+ *    turn every profile's square into a permanently lit run counter (#93552).
  * 2. UNLISTED RUNTIMES — a live (busy / needs-input) session whose row is not
  *    loaded (an inactive profile's background work, a hidden Bot Chat) claims
  *    the scope its socket proved (runtimeSessionOwner: the exact registry
@@ -45,7 +45,14 @@ import type { SessionInfo } from '@/types/hermes'
 import { $activeConnectionId } from './connections'
 import { $fleetRoster } from './fleet-roster'
 import { $profiles, normalizeProfileKey } from './profile'
-import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from './session'
+import {
+  $cronSessions,
+  $kanbanSessions,
+  $messagingSessions,
+  $sessions,
+  sessionMatchesStoredId,
+  sessionPinId
+} from './session'
 import { $sessionDotStateById } from './session-dot-state'
 import { $sessionStates, runtimeSessionOwner } from './session-states'
 import { $unreadFinishedMarkers } from './session-unread'
@@ -114,12 +121,13 @@ export const $profileDotStateByScope = computed(
     $sessions,
     $messagingSessions,
     $cronSessions,
+    $kanbanSessions,
     $unreadFinishedMarkers,
     $profiles,
     $fleetRoster,
     $activeConnectionId
   ],
-  (dots, states, sessions, messaging, cron, markers, profiles, roster, activeConnectionId) => {
+  (dots, states, sessions, messaging, cron, kanban, markers, profiles, roster, activeConnectionId) => {
     const tallies = new Map<string, Tally>()
 
     const tallyFor = (scope: string): Tally => {
@@ -169,7 +177,7 @@ export const $profileDotStateByScope = computed(
     // decides scope for work the row lists cannot see.
     const listedIds = new Set<string>()
 
-    for (const row of [...chatRows, ...cron]) {
+    for (const row of [...chatRows, ...cron, ...kanban]) {
       listedIds.add(row.id)
 
       if (row._lineage_root_id) {
@@ -213,7 +221,7 @@ export const $profileDotStateByScope = computed(
     // The marker bucket is a BARE profile name; attribute it to a gateway scope
     // only when every source that names this profile agrees on which gateway
     // that is.
-    const allRows: readonly SessionInfo[] = [...chatRows, ...cron]
+    const allRows: readonly SessionInfo[] = [...chatRows, ...cron, ...kanban]
 
     for (const [profile, ids] of Object.entries(markers)) {
       const rowsInProfile = allRows.filter(row => profileKeyOf(row) === profile)

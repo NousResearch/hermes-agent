@@ -937,6 +937,11 @@ export function stampMessagingRowsWithListServer(
   return changed ? next : (rows as SessionInfo[])
 }
 
+// Kanban dispatcher worker sessions are their own slice for the same reason
+// cron is: the board's always-newest worker sessions would crowd recents out
+// of the page budget. Powers the collapsed "Kanban" sidebar section (#85219).
+export const $kanbanSessions = atom<SessionInfo[]>([])
+export const KANBAN_SECTION_LIMIT = 50
 // Exact per-platform conversation totals, keyed by source id. Empty until a
 // per-platform "load more" fetch resolves it (the combined seed fetch only
 // knows the aggregate), so sections fall back to their loaded count.
@@ -985,15 +990,15 @@ function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo
 
 /**
  * Every session row the renderer knows, for OWNER lookups. The sidebar splits
- * its fetch into three source-scoped slices ($sessions / $cronSessions /
- * $messagingSessions), and each slice's rows carry the same `profile` (and,
+ * its fetch into four source-scoped slices ($sessions / $cronSessions /
+ * $messagingSessions / $kanbanSessions), and each slice's rows carry the same `profile` (and,
  * when tagged, `connection_id`) stamps — but the owner ladder's row rung only
  * searched recents. A cron or messaging session's approval.respond (or any
  * session-scoped RPC) therefore found no owner, and on a registry-topology
  * install failed closed with SessionOwnerResolutionError even though the row
  * naming its owner was already in memory, one atom over. Concatenation order
  * mirrors lookup priority: recents first (they can carry fresher optimistic
- * connection tags), then the cron and messaging slices. Unlisted-draft stubs
+ * connection tags), then the cron, messaging, and kanban slices. Unlisted-draft stubs
  * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
  * shadows its stub, so a listed session never resolves off a stale stamp.
  */
@@ -1001,14 +1006,15 @@ export function ownerLookupSessionRows(): SessionInfo[] {
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
   const stubs = $unlistedSessionOwnerRows.get()
+  const kanban = $kanbanSessions.get()
 
   // Recents-only stays the common case; keep its array identity (no copy) so
   // per-list memo caches (lineageAliases) keyed on the reference still hit.
-  if (!cron.length && !messaging.length) {
+  if (!cron.length && !messaging.length && !kanban.length) {
     return withUnlistedOwnerStubs($sessions.get(), stubs)
   }
 
-  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
+  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging, ...kanban], stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed
@@ -1394,6 +1400,7 @@ export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($session
 export const setUnlistedSessionOwnerRows = (next: Updater<SessionInfo[]>) => updateAtom($unlistedSessionOwnerRows, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
+export const setKanbanSessions = (next: Updater<SessionInfo[]>) => updateAtom($kanbanSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($messagingPlatformTotals, next)
 export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($messagingTruncated, next)

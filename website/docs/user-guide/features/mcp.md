@@ -269,7 +269,7 @@ mcp_servers:
     auth: oauth
 ```
 
-On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. That first connection's budget covers the whole consent window (`oauth.timeout`, default 5 minutes, plus a margin), so approving in the browser at your own pace does not cancel the flow. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
 
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
@@ -382,7 +382,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `identity_header` | mapping | Optional per-user identity header for HTTP/SSE servers — `{name, value_from: static\|profile, value}` |
 | `timeout` | number | Tool call timeout |
-| `connect_timeout` | number | Initial connection timeout (also bounds the MCP `initialize` handshake) |
+| `connect_timeout` | number | Initial connection timeout (also bounds the MCP `initialize` handshake). On an `auth: oauth` server, `hermes mcp add` / `install` default it to `oauth.timeout` + 15s (5m15s by default) so the browser consent fits inside that first connection; `hermes mcp login` always uses at least 315s. Set it explicitly to override |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |

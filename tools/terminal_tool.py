@@ -978,6 +978,13 @@ def _plan_execution(
         guidance = _foreground_background_guidance(command)
         if guidance:
             raise _Rejected(_error_json(guidance, status="error"))
+        # An unquoted heredoc writing a file lets bash expand backticks/$()/$VAR in the
+        # body before it reaches disk, silently corrupting the content with no error.
+        # Refuse it in favour of write_file, which this tool's own description says to use.
+        from tools.shell_heredoc import detect_unquoted_heredoc_file_write
+        heredoc_warning = detect_unquoted_heredoc_file_write(command)
+        if heredoc_warning:
+            raise _Rejected(_error_json(heredoc_warning, status="error"))
         if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
             promoted = timeout
 
@@ -1403,6 +1410,7 @@ _PLUGIN_COMPAT_LAZY = {
     'is_persistent_env': ('tools.terminal_tool_lifecycle', 'is_persistent_env'),
     'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
     'resolve_modal_backend_state': ('tools.tool_backend_helpers', 'resolve_modal_backend_state'),
+    'detect_unquoted_heredoc_file_write': ('tools.shell_heredoc', 'detect_unquoted_heredoc_file_write'),
     'strip_inert_heredoc_bodies': ('tools.shell_heredoc', 'strip_inert_heredoc_bodies'),
 }
 

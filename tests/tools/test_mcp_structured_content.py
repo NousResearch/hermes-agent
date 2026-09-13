@@ -264,6 +264,7 @@ class TestContentStructuredArbitration:
             ("1", True),
             ("0", False),
             ('{"outer":{"value":1}}', {"outer": {"value": True}}),
+            ('[{"outer":{"value":0}}]', [{"outer": {"value": False}}]),
         ],
     )
     def test_bool_and_number_are_not_deduplicated(self, _patch_mcp_server, text, structured):
@@ -337,15 +338,19 @@ class TestStructuredErrors:
                 },
             )
         )
-        mcp_tool._server_error_counts["test-server"] = 2
-        handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
-        data = json.loads(handler({}))
-        assert data == {
-            "error": "Readable validation failure",
-            "structuredContent": payload,
-            "_meta": {"com.example/error-code": "E_FILTER"},
-        }
-        assert mcp_tool._server_error_counts["test-server"] == 0
+        mcp_tool._reset_server_error("test-server")
+        try:
+            handler = _mcp_handlers._make_tool_handler("test-server", "my-tool", 30.0)
+            data = json.loads(handler({}))
+            assert data == {
+                "error": "Readable validation failure",
+                "structuredContent": payload,
+                "_meta": {"com.example/error-code": "E_FILTER"},
+            }
+            assert mcp_tool._server_error_counts["test-server"] == 1
+            assert mcp_tool._server_errors_all_application["test-server"] is True
+        finally:
+            mcp_tool._reset_server_error("test-server")
 
 
 class TestDroppedBlockNotice:

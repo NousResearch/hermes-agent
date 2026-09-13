@@ -121,6 +121,62 @@ def test_mixed_refs_report_both_kinds_separately(kanban_home):
     assert len(_verify_children(conn)) == 1
 
 
+def test_pinned_db_env_resolves_cross_board_reference(kanban_home, monkeypatch):
+    """A dispatched worker has its OWN board's DB pinned via ``HERMES_KANBAN_DB``.
+
+    Cross-board lookups must ignore that pin: the pin identifies the caller's
+    board, not every board, so a citation to a sibling board's task stays a
+    legit ``cross_board_references`` and never becomes a phantom.
+    """
+    kb.create_board("other-board")
+    other = connect(board="other-board")
+    remote_id = kb.create_task(other, title="lives elsewhere", assignee="sysadmin")
+    other.close()
+
+    pinned = kb.kanban_db_path(board="default")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+
+    conn = connect(board="default")
+    current = Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve()
+    assert current == pinned.resolve()  # the pin is authoritative for our own board
+    other_paths = dict(kb._other_board_db_paths(conn))
+    assert other_paths.get("other-board") == kb.board_dir("other-board") / "kanban.db"
+    assert "default" not in other_paths  # our own board is excluded, not aliased in
+
+    tid = kb.create_task(conn, title="cites another board", assignee="sysadmin")
+    assert kb.complete_task(conn, tid, summary=f"Probe {remote_id} ran on the shared board.") is True
+
+    kinds = _kinds(conn, tid)
+    assert "cross_board_references" in kinds
+    assert "suspected_hallucinated_references" not in kinds
+    assert _verify_children(conn) == []
+    assert _payload(conn, tid, "cross_board_references")["refs"] == {remote_id: "other-board"}
+
+
+def test_pinned_db_env_still_flags_true_phantom(kanban_home, monkeypatch):
+    """The fix must not make the scanner blind: an id on NO board is still a
+    phantom and still spawns exactly one ``verify:`` child in a pinned env."""
+    kb.create_board("other-board")
+    other = connect(board="other-board")
+    kb.create_task(other, title="lives elsewhere", assignee="sysadmin")
+    other.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+    conn = connect(board="default")
+    tid = kb.create_task(conn, title="invents a task", assignee="coder")
+    fake = "t_deadbeef99"
+    assert kb.complete_task(conn, tid, summary=f"Verified via {fake} which passed.") is True
+
+    kinds = _kinds(conn, tid)
+    assert "suspected_hallucinated_references" in kinds
+    assert "cross_board_references" not in kinds
+    assert _payload(conn, tid, "suspected_hallucinated_references")["phantom_refs"] == [fake]
+    children = _verify_children(conn)
+    assert len(children) == 1
+    assert children[0]["title"] == "verify: invents a task"
+    assert children[0]["assignee"] == "coder"
+
+
 def test_local_reference_is_silent(kanban_home):
     """An id that exists on THIS board is neither phantom nor cross-board."""
     conn = connect(board="default")

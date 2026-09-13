@@ -493,6 +493,27 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def board_db_path_unpinned(board: Optional[str] = None) -> Path:
+    """``kanban.db`` path for a *named* board, ignoring ``HERMES_KANBAN_DB``.
+
+    ``HERMES_KANBAN_DB`` is pinned into every dispatched worker and is only
+    authoritative for the caller's OWN board (:func:`kanban_db_path`). Resolving
+    a sibling board through it would collapse every slug onto the pinned file,
+    so cross-board lookups (:func:`_other_board_db_paths`) must use this helper:
+    pure path derivation, ``default`` -> ``<root>/kanban.db`` (back-compat),
+    else ``board_dir(slug)/kanban.db``.
+
+    Also ignores ``HERMES_KANBAN_WORKSPACES_ROOT`` / ``HERMES_KANBAN_ATTACHMENTS_ROOT``
+    (unrelated pins) — only the boards root and the slug feed the path.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
@@ -2692,7 +2713,12 @@ def _other_board_db_paths(conn: sqlite3.Connection) -> list[tuple[str, Path]]:
 
     A worker legitimately cites tasks that live on another board (e.g. a shared
     cross-tenant board), so a ``t_<hex>`` id absent from THIS board's DB must be
-    resolved against the others before it is called hallucinated."""
+    resolved against the others before it is called hallucinated.
+
+    Paths come from :func:`board_db_path_unpinned` — NOT :func:`kanban_db_path` —
+    because dispatched workers carry ``HERMES_KANBAN_DB`` pinned to their own
+    board; through that override every slug resolves to the pinned file, is
+    skipped as "the current board", and the caller sees no other boards at all."""
     current: Optional[Path] = None
     try:
         current = Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve()
@@ -2708,7 +2734,7 @@ def _other_board_db_paths(conn: sqlite3.Connection) -> list[tuple[str, Path]]:
         if not slug:
             continue
         try:
-            path = kanban_db_path(board=slug)
+            path = board_db_path_unpinned(slug)
         except Exception:
             continue
         try:

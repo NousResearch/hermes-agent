@@ -353,6 +353,12 @@ export interface VaultUnlockRequestPayload {
   request_id: string
 }
 
+export interface VaultSaveLoginRequestPayload {
+  origin: string
+  request_id: string
+  site: string
+}
+
 export interface VaultCodeRequestPayload {
   hint?: string
   request_id: string
@@ -576,7 +582,7 @@ export interface BackendGatewayEventMap {
   'vault.code.expire': RequestExpirePayload
   'vault.code.request': VaultCodeRequestPayload
   'vault.save_login.expire': RequestExpirePayload
-  'vault.save_login.request': Record<string, unknown>
+  'vault.save_login.request': VaultSaveLoginRequestPayload
   'vault.unlock.expire': RequestExpirePayload
   'vault.unlock.request': VaultUnlockRequestPayload
   'voice.interrupted': Record<string, unknown>

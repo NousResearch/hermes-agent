@@ -3414,10 +3414,96 @@ def _exit_invalid(msg: str) -> None:
     sys.exit(1)
 
 
+_BRACKET_INDEX_RE = re.compile(r"\[(\d+)\]")
+
+
+def _canonicalize_list_index_key(key: str) -> str:
+    """Rewrite bracket list-indices to the bare numeric segments _set_nested navigates:
+    ``fallback_providers[1].provider`` -> ``fallback_providers.1.provider`` (#109611).
+
+    The bracket form is what users type (it mirrors YAML/JSON), but as a raw dotted
+    segment it lands as a literal ``fallback_providers[1]`` mapping — an address the
+    runtime never reads — while the command reports success. Malformed brackets
+    (non-integer, empty, unbalanced, negative) exit non-zero: they are always a
+    typo, and writing them as literal keys produces dead config.
+    """
+    if "[" not in key and "]" not in key:
+        return key
+    indices = _BRACKET_INDEX_RE.findall(key)
+    # Substitute each [N] with '.N' IN PLACE so the path order is preserved
+    # (a[0].b -> a.0.b, not a.b.0).
+    cleaned = _BRACKET_INDEX_RE.sub(lambda m: f".{m.group(1)}", key)
+    # Everything between the brackets must have been exactly a non-negative integer,
+    # and no stray bracket may remain (balanced, well-formed [N] groups only).
+    if "[" in cleaned or "]" in cleaned or not indices:
+        _exit_invalid(
+            f"✗ Invalid config key: {key!r} — list indices use [N] with a non-negative "
+            "integer N (e.g. 'fallback_providers[1].provider').")
+    return cleaned
+
+
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
-    """Write only the user's raw config back (never the merged defaults)."""
+    """Write only the user's raw config back (never the merged defaults).
+
+    Round-trip writer (ruamel): a plain PyYAML dump drops every comment in the
+    file, so `hermes config set` used to delete trailing comment blocks that
+    document the section being edited — while reporting success (#109611).
+    The already-mutated plain ``user_config`` is applied onto the round-trip
+    document IN PLACE (dicts recursed into, scalars/lists replaced only when
+    they actually differ) so a changed list element does not discard the
+    comment node attached to its parent list. Falls back to the plain atomic
+    dump only where ruamel is unavailable.
+    """
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    try:
+        from utils import _roundtrip_dump, _roundtrip_load
+    except ImportError:
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        return
+    yaml_rt, doc = _roundtrip_load(config_path)
+
+    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    # YAML 1.1 ambiguity guard (mirrors utils.atomic_roundtrip_yaml_save): ruamel's
+    # rt-dumper emits plain scalars under YAML 1.2 rules where only true/false/null
+    # are reserved — a str like "off" or "yes" would dump unquoted and round-trip
+    # back as a boolean under the YAML 1.1 readers used elsewhere. PyYAML's dumper
+    # (the pre-#109611 writer) auto-quoted these; ruamel does not, so every string
+    # this writer inserts is guarded, recursively.
+    _ambiguous = {"y", "n", "yes", "no", "true", "false", "on", "off", "null", "~"}
+
+    def _scalar(value):
+        if isinstance(value, str) and value.lower() in _ambiguous:
+            return DoubleQuotedScalarString(value)
+        if isinstance(value, list):
+            return [_scalar(item) for item in value]
+        if isinstance(value, dict):
+            return CommentedMap((k, _scalar(v)) for k, v in value.items())
+        return value
+
+    def _apply_in_place(dst, src) -> None:
+        for key, value in src.items():
+            current = dst.get(key)
+            if isinstance(value, dict) and isinstance(current, dict):
+                _apply_in_place(current, value)
+            elif isinstance(value, list) and isinstance(current, list) and len(value) == len(current):
+                # A same-length list is an in-place edit of its elements (a changed
+                # list element must not discard the comment node attached to the
+                # list — #109611): recurse positionally.
+                for i, item in enumerate(value):
+                    cur = current[i]
+                    if isinstance(item, dict) and isinstance(cur, dict):
+                        _apply_in_place(cur, item)
+                    elif item != cur:
+                        current[i] = _scalar(item)
+            elif value != current:
+                dst[key] = _scalar(value)
+        for key in [k for k in dst if k not in src]:
+            del dst[key]  # explicit absence: an unset key must leave the file
+
+    _apply_in_place(doc, user_config)
+    _roundtrip_dump(config_path, yaml_rt, doc)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
@@ -3447,6 +3533,11 @@ def set_config_value(key: str, value: str, force: bool = False):
         _exit_invalid(
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
+    # Bracket list-indices (#109611): 'fallback_providers[1].provider' as a raw
+    # segment writes a literal dead 'fallback_providers[1]' mapping while
+    # reporting success. Canonicalize to the numeric-segment form _set_nested
+    # actually navigates; malformed brackets are a typo and never a legit key.
+    key = _canonicalize_list_index_key(key)
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
         # Unified lifecycle: also rotates any config.yaml mirror of the old value.
@@ -3485,6 +3576,13 @@ def set_config_value(key: str, value: str, force: bool = False):
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
+    except IndexError:
+        # A bracket/numeric list index that does not exist (lists are never grown):
+        # fail with the supported syntax instead of a raw traceback (#109611).
+        _exit_invalid(
+            f"✗ Invalid config key: {key!r} — the list index is out of range. "
+            "Indices address EXISTING elements; edit the list as a whole to add one "
+            "(hermes config set <key> \"<yaml list>\").")
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
@@ -3519,6 +3617,9 @@ def set_config_value(key: str, value: str, force: bool = False):
 
 def get_config_value(key: str, *, as_json: bool = False):
     """Print a resolved configuration value."""
+    # Mirror set_config_value's bracket-index canonicalization (#109611) so
+    # `config get fallback_providers[1].model` addresses the same key `set` wrote.
+    key = _canonicalize_list_index_key(key)
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -3539,6 +3640,8 @@ def unset_config_value(key: str):
     if is_managed():
         managed_error("unset configuration values")
         return
+    # Mirror set_config_value's bracket-index canonicalization (#109611).
+    key = _canonicalize_list_index_key(key)
     _exit_if_key_managed(key, "unset")
 
     if _is_env_config_key(key):

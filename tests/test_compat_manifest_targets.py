@@ -73,6 +73,57 @@ def test_moved_lazy_pointers_resolve_to_the_split_off_siblings_object():
     assert not bad, f"compat pointers resolve to a different object than the facade's own sibling binds: {bad}"
 
 
+class TestXAIVideoCompatEntryPoint:
+    """``run_xai_video_generation`` must take the provider's path, not the raw coroutine.
+
+    ``XAIVideoGenProvider.generate`` calls ``_run_xai_video``, which resolves credentials and
+    is the only thing that supplies the async flow's keyword-only ``api_key``/``base_url``. A
+    restored entry point that calls the flow directly cannot satisfy those, so it raises out
+    of the plugin instead of returning the structured error shape every other entry point
+    returns (``run_xai_video_edit`` / ``run_xai_video_extend`` both delegate).
+    """
+
+    @staticmethod
+    def _args(**overrides):
+        args = dict(
+            prompt="a cat on a skateboard", model=None, explicit_model=False, image_url=None,
+            reference_image_urls=None, duration=None, aspect_ratio="16:9", resolution="720p",
+        )
+        args.update(overrides)
+        return args
+
+    def test_without_credentials_it_returns_the_auth_required_error(self, monkeypatch):
+        import plugins.video_gen.xai as xai
+
+        monkeypatch.setattr(xai, "_resolve_xai_credentials", lambda: ("", "https://api.x.ai/v1"))
+        result = xai.run_xai_video_generation(**self._args())
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+        assert result["provider"] == "xai"
+        assert "XAI_API_KEY" in result["error"]
+
+    def test_resolved_credentials_reach_the_async_flow(self, monkeypatch):
+        import plugins.video_gen.xai as xai
+
+        seen = {}
+
+        async def _recorder(**kwargs):
+            seen.update(kwargs)
+            return {"success": True, "video": "/tmp/out.mp4"}
+
+        monkeypatch.setattr(
+            xai, "_resolve_xai_credentials", lambda: ("fake-key", "https://api.x.ai/v1"),
+        )
+        monkeypatch.setattr(xai, "_generate_xai_video_async", _recorder)
+        result = xai.run_xai_video_generation(**self._args(prompt="a dog", aspect_ratio="1:1"))
+        assert result == {"success": True, "video": "/tmp/out.mp4"}
+        assert seen["api_key"] == "fake-key"
+        assert seen["base_url"] == "https://api.x.ai/v1"
+        # …and the caller's own arguments still arrive unchanged.
+        assert seen["prompt"] == "a dog"
+        assert seen["aspect_ratio"] == "1:1"
+        assert seen["resolution"] == "720p"
+
 def test_kanban_db_connect_opens_a_kanban_board(tmp_path, monkeypatch):
     """The historical ``kanban_db.connect(board=...)`` opens a Kanban DB, not projects.db."""
     import hermes_cli.kanban_db as kanban_db

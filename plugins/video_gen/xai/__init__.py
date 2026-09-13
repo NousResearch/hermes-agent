@@ -336,21 +336,19 @@ def run_xai_video_generation(
     aspect_ratio: str,
     resolution: str,
 ) -> Dict[str, Any]:
-    return _run_xai_video_coroutine(
-        _generate_xai_video_async(
-            prompt=prompt,
-            model=model,
-            explicit_model=explicit_model,
-            image_url=image_url,
-            reference_image_urls=reference_image_urls,
-            duration=duration,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-        ),
-        operation_label="generation",
-        model=model,
+    # Same path as XAIVideoGenProvider.generate: _run_xai_video resolves the credentials
+    # that _generate_xai_video_async requires as keyword-only arguments.
+    return _run_xai_video(
+        "generation",
+        _generate_xai_video_async,
         prompt=prompt,
+        model=model,
+        explicit_model=explicit_model,
+        image_url=image_url,
+        reference_image_urls=reference_image_urls,
+        duration=duration,
         aspect_ratio=aspect_ratio,
+        resolution=resolution,
     )
 
 def _run_xai_video_coroutine(

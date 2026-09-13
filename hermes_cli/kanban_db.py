@@ -92,8 +92,11 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
+# Repeated block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
+# Accumulates across ALL non-dependency kinds for the task's lifetime (reset
+# only by a successful complete_task) -- switching ``kind`` between blocks
+# must never reset this counter (see t_e2f7128f incident, 2026-09).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -932,11 +935,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
-    -- to ``blocked`` for a human. Preserved across unblock so a re-block for
-    -- the SAME kind can be recognised as a loop.
+    -- to ``blocked`` for a human. Preserved across unblock for observability
+    -- (recorded on the block_loop_detected payload), but no longer gates the
+    -- recurrence count -- a re-block with a DIFFERENT kind than the prior one
+    -- still counts as a loop cycle (fixed 2026-09; see BLOCK_RECURRENCE_LIMIT).
     block_kind           TEXT,
-    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
+    -- Unblock-loop counter. Incremented each time a task is re-blocked for any
+    -- non-dependency reason after having been unblocked, REGARDLESS of
+    -- whether this block's kind matches the previous one. When it reaches
     -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
@@ -2987,19 +2993,34 @@ def _route_block(
 
     ``dependency`` never enters the human ``blocked`` bucket: it waits in
     ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
-    as something to "unblock". Every other kind counts unblock-loop
-    recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
-    incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    as something to "unblock" -- and it never advances ``block_recurrences``.
+
+    Every other kind (``needs_input``, ``capability``, ``transient``, or
+    untyped ``None``) counts toward ONE accumulating unblock-loop counter for
+    the task, REGARDLESS of whether this block's ``kind`` matches the kind of
+    the previous block. ``block_task`` only fires from running/ready (AFTER an
+    unblock returned the task to the pool), so any such block reaching here is
+    itself one more block/unblock cycle since the last successful completion
+    -- that is what the counter must measure, not whether the stated reason
+    happens to repeat verbatim. Gating the increment on ``prev_kind == kind``
+    let a task alternate kinds (e.g. ``needs_input`` -> untyped ->
+    ``needs_input``) and reset to 1 every single time, so it could cycle
+    blocked/unblocked forever without ever reaching BLOCK_RECURRENCE_LIMIT
+    (see t_e2f7128f, 2026-09: runs 85/86/87 each read recurrences=1 despite
+    being the 3rd re-block in one session). ``prev_kind`` is still recorded on
+    ``block_kind`` and on the event payload for observability, but no longer
+    participates in the increment decision. At ``BLOCK_RECURRENCE_LIMIT`` the
+    task routes to ``triage`` for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
-    recurrences = prev_recurrences + 1 if prev_kind == kind else 1
+    recurrences = prev_recurrences + 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
-    payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
+    payload = {
+        "reason": reason, "kind": kind, "prev_kind": prev_kind,
+        "recurrences": recurrences, "source_status": source_status,
+    }
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload

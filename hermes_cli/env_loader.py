@@ -8,9 +8,11 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv.main import DotEnv
+from dotenv.variables import parse_variables
 from utils import atomic_replace, fast_safe_load
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,12 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
+# Reload scope → (pre-dotenv baseline, values published by the preceding load). A new load peels off
+# its own preceding output only when it is still present. This keeps cyclic interpolation idempotent
+# without freezing changes made by the shell, an earlier dotenv layer, or the terminal config bridge.
+_DOTENV_RELOAD_STATES: dict[str, tuple[dict[str, str | None], dict[str, str]]] = {}
+_DOTENV_LOAD_LOCK = threading.RLock()
+
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
 # profile's .env. Credentials are excluded: shell exports are a documented way to supply them, and
@@ -54,7 +62,9 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     return set(load_env_file(path))
 
 
-def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
+def _clear_known_keys_missing_from_dotenv(
+    path: Path, *, environ: MutableMapping[str, str] | None = None
+) -> set[str]:
     """After ``.env`` loaded with override, delete inherited ``_PROFILE_MANAGED_ENV_KEYS`` it does not
     define. Deliberately NARROW: only keys that change *which provider path* is used.
 
@@ -62,11 +72,15 @@ def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
     ``#67027`` semantics).
     """
     if not path.exists():
-        return
+        return set()
+    target = os.environ if environ is None else environ
     defined = _env_keys_defined_in_dotenv(path)
+    removed: set[str] = set()
     for key in _PROFILE_MANAGED_ENV_KEYS:
-        if key not in defined and key in os.environ:
-            del os.environ[key]
+        if key not in defined and key in target:
+            del target[key]
+            removed.add(key)
+    return removed
 
 
 def get_secret_source(env_var: str) -> str | None:
@@ -227,17 +241,235 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
-def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+def _normal_env_key(name: str, *, case_insensitive: bool) -> str:
+    return name.upper() if case_insensitive else name
+
+
+def _normalized_environment(
+    environ: Mapping[str, str | None], *, case_insensitive: bool
+) -> dict[str, str | None]:
+    return {
+        _normal_env_key(name, case_insensitive=case_insensitive): value
+        for name, value in environ.items()
+    }
+
+
+class _InterpolationEnvironment(dict[str, str | None]):
+    """Mapping used by python-dotenv atoms with Windows-compatible key lookup."""
+
+    def __init__(self, values: Mapping[str, str | None], *, case_insensitive: bool):
+        self._case_insensitive = case_insensitive
+        super().__init__(
+            _normalized_environment(values, case_insensitive=case_insensitive)
+        )
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return super().get(
+            _normal_env_key(key, case_insensitive=self._case_insensitive), default
+        )
+
+
+def _read_dotenv_assignments(path: Path) -> list[tuple[str, str | None]]:
+    """Read and decode one immutable snapshot, then parse it without interpolation."""
+    raw = path.read_bytes()
     try:
-        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
-        # first key name and silently drop it from os.environ under its canonical name.
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
+        decoded = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raw = path.read_bytes()  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
+        # Strip a UTF-8 BOM by hand before the existing Latin-1 fallback.
         if raw.startswith(codecs.BOM_UTF8):
             raw = raw[len(codecs.BOM_UTF8) :]
-        load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
-    _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
+        decoded = raw.decode("latin-1")
+    parser = DotEnv(
+        dotenv_path=None,
+        stream=io.StringIO(decoded),
+        interpolate=False,
+        override=True,
+    )
+    return list(parser.parse())
+
+
+def _resolve_dotenv_assignments(
+    assignments: Iterable[tuple[str, str | None]],
+    *,
+    environ: Mapping[str, str],
+    override: bool,
+    case_insensitive: bool,
+) -> dict[str, str | None]:
+    """Resolve python-dotenv atoms against a private mapping, preserving its precedence."""
+    current = _normalized_environment(environ, case_insensitive=case_insensitive)
+    resolved_by_key: dict[str, str | None] = {}
+    resolved: dict[str, str | None] = {}
+
+    for name, value in assignments:
+        if value is None:
+            result = None
+        else:
+            if override:
+                interpolation_values = {**current, **resolved_by_key}
+            else:
+                interpolation_values = {**resolved_by_key, **current}
+            interpolation_env = _InterpolationEnvironment(
+                interpolation_values, case_insensitive=case_insensitive
+            )
+            result = "".join(
+                atom.resolve(interpolation_env) for atom in parse_variables(value)
+            )
+
+        normalized_name = _normal_env_key(
+            name, case_insensitive=case_insensitive
+        )
+        resolved_by_key[normalized_name] = result
+        resolved[name] = result
+
+    return resolved
+
+
+def _set_environment_value(
+    environ: MutableMapping[str, str],
+    name: str,
+    value: str,
+    *,
+    case_insensitive: bool,
+) -> None:
+    if case_insensitive:
+        normalized_name = _normal_env_key(name, case_insensitive=True)
+        for existing in tuple(environ):
+            if _normal_env_key(existing, case_insensitive=True) == normalized_name:
+                if existing != name:
+                    del environ[existing]
+                break
+    environ[name] = value
+
+
+def _load_dotenv_into(
+    path: Path,
+    *,
+    environ: MutableMapping[str, str],
+    override: bool,
+    case_insensitive: bool,
+) -> set[str]:
+    assignments = _read_dotenv_assignments(path)
+    resolved = _resolve_dotenv_assignments(
+        assignments,
+        environ=environ,
+        override=override,
+        case_insensitive=case_insensitive,
+    )
+    applied: set[str] = set()
+    existing = _normalized_environment(environ, case_insensitive=case_insensitive)
+    for name, value in resolved.items():
+        normalized_name = _normal_env_key(name, case_insensitive=case_insensitive)
+        if value is None or (not override and normalized_name in existing):
+            continue
+        _set_environment_value(
+            environ, name, value, case_insensitive=case_insensitive
+        )
+        existing[normalized_name] = value
+        applied.add(name)
+    return applied
+
+
+def _prepare_reload_environment(
+    scope: str, *, case_insensitive: bool
+) -> dict[str, str]:
+    """Return a private environment with this scope's prior output peeled off."""
+    prepared = dict(os.environ)
+    state = _DOTENV_RELOAD_STATES.get(scope)
+    if state is None:
+        return prepared
+    baseline, published = state
+    current = _normalized_environment(prepared, case_insensitive=case_insensitive)
+    for normalized_name, previous_value in published.items():
+        if current.get(normalized_name) != previous_value:
+            continue
+        for existing in tuple(prepared):
+            if _normal_env_key(existing, case_insensitive=case_insensitive) == normalized_name:
+                del prepared[existing]
+        baseline_value = baseline.get(normalized_name)
+        if baseline_value is not None:
+            prepared[normalized_name] = baseline_value
+    return prepared
+
+
+def _publish_environment(
+    environ: Mapping[str, str], names: Iterable[str], *, case_insensitive: bool
+) -> None:
+    normalized = _normalized_environment(environ, case_insensitive=case_insensitive)
+    for name in names:
+        value = normalized.get(
+            _normal_env_key(name, case_insensitive=case_insensitive)
+        )
+        if value is not None:
+            _set_environment_value(
+                os.environ, name, value, case_insensitive=case_insensitive
+            )
+
+
+def _record_reload_state(
+    scope: str,
+    *,
+    baseline_environ: Mapping[str, str],
+    names: Iterable[str],
+    case_insensitive: bool,
+) -> None:
+    baseline_values = _normalized_environment(
+        baseline_environ, case_insensitive=case_insensitive
+    )
+    current = _normalized_environment(os.environ, case_insensitive=case_insensitive)
+    normalized_names = {
+        _normal_env_key(name, case_insensitive=case_insensitive) for name in names
+    }
+    _DOTENV_RELOAD_STATES[scope] = (
+        {name: baseline_values.get(name) for name in normalized_names},
+        {
+            name: current[name]
+            for name in normalized_names
+            if current.get(name) is not None
+        },
+    )
+
+
+def _load_dotenv_with_fallback(
+    path: Path,
+    *,
+    override: bool,
+    environ: MutableMapping[str, str] | None = None,
+    case_insensitive: bool | None = None,
+) -> set[str]:
+    """Load one snapshot privately; publish only completed values when no mapping is supplied."""
+    if case_insensitive is None:
+        case_insensitive = os.name == "nt"
+    if environ is not None:
+        return _load_dotenv_into(
+            path,
+            environ=environ,
+            override=override,
+            case_insensitive=case_insensitive,
+        )
+
+    scope = f"dotenv:{path.resolve()}"
+    with _DOTENV_LOAD_LOCK:
+        private_env = _prepare_reload_environment(
+            scope, case_insensitive=case_insensitive
+        )
+        baseline_env = dict(private_env)
+        applied = _load_dotenv_into(
+            path,
+            environ=private_env,
+            override=override,
+            case_insensitive=case_insensitive,
+        )
+        _publish_environment(
+            private_env, applied, case_insensitive=case_insensitive
+        )
+        _record_reload_state(
+            scope,
+            baseline_environ=baseline_env,
+            names=applied,
+            case_insensitive=case_insensitive,
+        )
+        _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
+        return applied
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
@@ -346,55 +578,101 @@ def load_hermes_dotenv(
     loaded: list[Path] = []
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
-
-    if user_env.exists():  # normalize formatting / strip NULs before parsing
-        _sanitize_env_file_if_needed(user_env)
-    if project_env_path and project_env_path.exists():
-        _sanitize_env_file_if_needed(project_env_path)
-
-    if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
-        loaded.append(user_env)
-        _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
-
-    # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
-    # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
-    # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
-    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False)
+    case_insensitive = os.name == "nt"
+    project_key = str(project_env_path.resolve()) if project_env_path else ""
+    reload_scope = f"hermes:{home_path.resolve()}:{project_key}"
 
-    if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
-        loaded.append(project_env_path)
+    # One reload scope spans every dotenv layer. Resolving each file independently would let a managed
+    # self-reference mistake the preceding managed result for a newly changed lower layer. Keep the whole
+    # operation serialized and private, then publish completed values only.
+    with _DOTENV_LOAD_LOCK:
+        private_env = _prepare_reload_environment(
+            reload_scope, case_insensitive=case_insensitive
+        )
+        baseline_env = dict(private_env)
+        dotenv_names: set[str] = set()
+        removed_names: set[str] = set()
 
-    # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
-    # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
-    # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the
-    # self-lock preflight exit 2 again.
-    from hermes_cli import _early_recovery
+        if user_env.exists():  # normalize formatting / strip NULs before parsing
+            _sanitize_env_file_if_needed(user_env)
+        if project_env_path and project_env_path.exists():
+            _sanitize_env_file_if_needed(project_env_path)
 
-    # External secret sources are skipped in two updater situations: 1. ``load_external_secrets=False`` —
-    # the caller is an ``update`` invocation that must not import optional secret-manager libraries
-    # (Bitwarden → cryptography → ``_rust.pyd``) into the process that replaces that same environment on
-    # Windows (#73381, #86735). 2. A fresh ``hermes update`` retry just completed a deferred dependency
-    # install before importing this module. Do not remap native secret-source dependencies in that same
-    # updater process or the self-lock preflight will recreate the marker and exit 2 again. Dotenv and
-    # managed env still load in both cases; only external source resolution is unnecessary for the updater.
-    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
-        _apply_external_secret_sources(home_path)
-    _apply_managed_env()
+        if user_env.exists():
+            dotenv_names.update(
+                _load_dotenv_with_fallback(
+                    user_env, override=True, environ=private_env
+                )
+            )
+            loaded.append(user_env)
+            removed_names.update(
+                _clear_known_keys_missing_from_dotenv(
+                    user_env, environ=private_env
+                )
+            )
 
-    # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in
-    # ~/.hermes/.env win on every reload and flip the backend mid-session in long-lived processes.
-    # Re-apply the explicit terminal keys LAST, after the managed overlay, so the merged config lands.
-    # config.yaml is the documented source of truth for terminal.* settings, but the dotenv loads above run
-    # with override=True — so a stale TERMINAL_ENV=docker left in ~/.hermes/.env (e.g. written by an older
-    # `hermes setup` before the user switched terminal.backend in config.yaml) silently wins again on every
-    # reload. Startup launchers bridge config→env once, but long-lived processes (gateway per-turn reload,
-    # cron standalone runs) call load_hermes_dotenv() repeatedly and used to flip the effective backend back
-    # to the stale .env value mid-session (#29186, #67323).
-    _reapply_terminal_config_bridge(home_path)
+        # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
+        # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
+        # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
+        if op_env.exists() and not private_env.get("OP_SERVICE_ACCOUNT_TOKEN"):
+            dotenv_names.update(
+                _load_dotenv_with_fallback(
+                    op_env, override=False, environ=private_env
+                )
+            )
+
+        if project_env_path and project_env_path.exists():
+            dotenv_names.update(
+                _load_dotenv_with_fallback(
+                    project_env_path, override=not loaded, environ=private_env
+                )
+            )
+            loaded.append(project_env_path)
+
+        _publish_environment(
+            private_env, dotenv_names, case_insensitive=case_insensitive
+        )
+        for name in removed_names:
+            normalized_name = _normal_env_key(
+                name, case_insensitive=case_insensitive
+            )
+            for existing in tuple(os.environ):
+                if (
+                    _normal_env_key(
+                        existing, case_insensitive=case_insensitive
+                    )
+                    == normalized_name
+                ):
+                    del os.environ[existing]
+        _sanitize_loaded_credentials()
+
+        # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must
+        # not import optional secret-manager native libraries into the process replacing that environment.
+        from hermes_cli import _early_recovery
+
+        if (
+            load_external_secrets
+            and not _early_recovery._should_skip_external_secret_sources()
+        ):
+            _apply_external_secret_sources(home_path)
+
+        managed_env = dict(os.environ)
+        managed_names = _apply_managed_env(environ=managed_env)
+        _publish_environment(
+            managed_env, managed_names, case_insensitive=case_insensitive
+        )
+        _sanitize_loaded_credentials()
+
+        # config.yaml owns terminal.*. Re-apply its explicit keys LAST, after the managed overlay, so a
+        # stale dotenv value cannot flip the backend in a long-lived process (#29186, #67323).
+        _reapply_terminal_config_bridge(home_path)
+        _record_reload_state(
+            reload_scope,
+            baseline_environ=baseline_env,
+            names=dotenv_names | managed_names | removed_names,
+            case_insensitive=case_insensitive,
+        )
 
     return loaded
 
@@ -413,7 +691,9 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
         pass
 
 
-def _apply_managed_env() -> None:
+def _apply_managed_env(
+    *, environ: MutableMapping[str, str] | None = None
+) -> set[str]:
     """Apply the managed-scope .env last, with override, so it beats user/shell. Does NOT stop the agent
     from later mutating os.environ (v1 relies on filesystem permissions). Fail-open: never blocks startup."""
     try:
@@ -421,14 +701,16 @@ def _apply_managed_env() -> None:
 
         managed_dir = managed_scope.get_managed_dir()
     except Exception:  # noqa: BLE001 — managed scope must never block startup
-        return
+        return set()
     if managed_dir is None:
-        return
+        return set()
     managed_env = managed_dir / ".env"
     if not managed_env.exists():
-        return
+        return set()
     _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True)
+    return _load_dotenv_with_fallback(
+        managed_env, override=True, environ=environ
+    )
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

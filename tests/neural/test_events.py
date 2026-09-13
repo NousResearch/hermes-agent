@@ -24,6 +24,16 @@ def test_neural_event_is_immutable():
         event.source = "other"
 
 
+def test_neural_event_payload_is_isolated_from_caller_mutation():
+    payload = {"nested": {"items": ["initial"]}}
+    event = NeuralEvent(source="test", event_type="observation", payload=payload)
+
+    payload["nested"]["items"].append("mutated")
+    payload["nested"] = {"items": ["replaced"]}
+
+    assert event.payload == {"nested": {"items": ["initial"]}}
+
+
 def test_neural_signal_has_bounded_value_and_confidence():
     signal = NeuralSignal(source="risk", target="guardian", value=0.75, confidence=0.9)
 

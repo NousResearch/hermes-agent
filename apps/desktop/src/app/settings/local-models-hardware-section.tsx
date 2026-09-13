@@ -5,7 +5,7 @@ import { Cpu, Monitor, Package, Zap } from '@/lib/icons'
 import type { LocalHardware } from '@/types/hermes'
 
 import { gbLabel } from './local-model-download-progress'
-import { Pill, SettingsSection } from './primitives'
+import { SettingsSection } from './primitives'
 
 export interface LocalModelsHardwareSectionProps {
   hardware: LocalHardware | undefined
@@ -26,17 +26,27 @@ export function LocalModelsHardwareSection({ hardware }: LocalModelsHardwareSect
             </span>
           )}
 
-          <span className="inline-flex items-center gap-1.5">
-            <Cpu className="size-3.5" />
-            {copy.vram(gbLabel(hardware.vram_total_bytes))}
-          </span>
+          {/* One pool on UMA: the backend reports the same unified total as
+              both vram_total_bytes and ram_total_bytes, so rendering the
+              pair would present one memory as two. */}
+          {hardware.uma ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Cpu className="size-3.5" />
+              {copy.unifiedMemory} ({gbLabel(hardware.vram_total_bytes)})
+            </span>
+          ) : (
+            <>
+              <span className="inline-flex items-center gap-1.5">
+                <Cpu className="size-3.5" />
+                {copy.vram(gbLabel(hardware.vram_total_bytes))}
+              </span>
 
-          <span className="inline-flex items-center gap-1.5">
-            <Package className="size-3.5" />
-            {copy.ram(gbLabel(hardware.ram_total_bytes))}
-          </span>
-
-          {hardware.uma && <Pill>{copy.unifiedMemory}</Pill>}
+              <span className="inline-flex items-center gap-1.5">
+                <Package className="size-3.5" />
+                {copy.ram(gbLabel(hardware.ram_total_bytes))}
+              </span>
+            </>
+          )}
         </div>
       ) : (
         <p className="py-1 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">

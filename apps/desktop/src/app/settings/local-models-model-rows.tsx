@@ -216,7 +216,7 @@ export function CatalogModelRow({ model, status, jobs }: CatalogModelRowProps): 
                   {copy.pillTooBig}
                 </Pill>
               </Tip>
-            ) : model.spilled ? (
+            ) : model.spilled || status.runtime_backend === 'cpu' ? (
               <Tip label={model.quant_reason ?? model.fit_summary}>
                 <Pill tone="warn">
                   <Cpu className="mr-1 size-3" />

@@ -388,6 +388,24 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
+    # Guard against symlinks: a text-suffixed alias pointing to a binary document
+    # bypasses the extension check above.  Check the *original* path for a symlink,
+    # then inspect the resolved target's extension.
+    try:
+        original = Path(filepath).expanduser()
+        if original.is_symlink():
+            target = str(original.resolve())
+            if has_opaque_document_extension(target):
+                ext = target[target.rfind("."):].lower()
+                return (
+                    f"Refusing to write plain text to '{filepath}' — symlink target "
+                    f"'{target}' is a binary document ({ext}). A text write cannot "
+                    "produce a valid document container and would corrupt the file. "
+                    "Use the docx/xlsx/powerpoint skills or a library like "
+                    "python-docx/openpyxl/python-pptx via the terminal to create or "
+                    "edit this document.")
+    except OSError:
+        pass
     if is_pdf_path(filepath):
         try:
             resolved = Path(_resolve_path_for_task(filepath, task_id))

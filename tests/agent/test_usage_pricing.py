@@ -962,3 +962,108 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_user_pricing_override_precedence():
+    """User-configured pricing in config.yaml overrides built-in snapshots."""
+    from agent.usage_pricing import get_user_pricing_entry
+
+    cfg = {
+        "model_pricing": {
+            "openai/custom-gpt": {
+                "input": "1.50",
+                "output": "6.00",
+                "cache_read": "0.20",
+                "cache_write": "1.00",
+                "request": "0.01",
+                "source": "custom_contract",
+                "version": "contract-v1",
+            },
+            "claude-sonnet-4-6": {
+                "input": "2.50",
+                "output": "12.50",
+            },
+        }
+    }
+
+    # Custom model lookup
+    custom_entry = get_user_pricing_entry("custom-gpt", provider="openai", config=cfg)
+    assert custom_entry is not None
+    assert custom_entry.input_cost_per_million == Decimal("1.50")
+    assert custom_entry.output_cost_per_million == Decimal("6.00")
+    assert custom_entry.cache_read_cost_per_million == Decimal("0.20")
+    assert custom_entry.cache_write_cost_per_million == Decimal("1.00")
+    assert custom_entry.request_cost == Decimal("0.01")
+    assert custom_entry.source == "custom_contract"
+    assert custom_entry.pricing_version == "contract-v1"
+
+    # Built-in model override takes precedence over official docs snapshot
+    override_entry = get_pricing_entry("claude-sonnet-4-6", provider="anthropic", config=cfg)
+    assert override_entry is not None
+    assert override_entry.input_cost_per_million == Decimal("2.50")
+    assert override_entry.output_cost_per_million == Decimal("12.50")
+    assert override_entry.source == "user_override"
+
+    # Cost estimate uses user pricing
+    res = estimate_usage_cost(
+        "claude-sonnet-4-6",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=100_000),
+        provider="anthropic",
+        config=cfg,
+    )
+    # 1M * 2.50 + 0.1M * 12.50 = 2.50 + 1.25 = 3.75
+    assert res.amount_usd == Decimal("3.75")
+    assert res.source == "user_override"
+
+
+def test_deepseek_and_bedrock_direct_routes():
+    """Direct provider calls to deepseek and bedrock resolve correctly (#108775)."""
+    route_ds = resolve_billing_route("deepseek-chat", provider="deepseek")
+    assert route_ds.provider == "deepseek"
+    assert route_ds.billing_mode == "official_docs_snapshot"
+
+    entry_ds = get_pricing_entry("deepseek-chat", provider="deepseek")
+    assert entry_ds is not None
+    assert entry_ds.input_cost_per_million == Decimal("0.15")
+
+    route_bedrock = resolve_billing_route("anthropic.claude-sonnet-4-6", provider="bedrock")
+    assert route_bedrock.provider == "bedrock"
+    assert route_bedrock.billing_mode == "official_docs_snapshot"
+
+    entry_bedrock = get_pricing_entry("anthropic.claude-sonnet-4-6", provider="bedrock")
+    assert entry_bedrock is not None
+    assert entry_bedrock.input_cost_per_million == Decimal("3.00")
+
+
+def test_relay_and_proxy_canonical_provider_fallback():
+    """Relays, proxies, and transit model ids fall back to canonical model pricing (#108775)."""
+    # Relay running Claude through an OpenAI-compatible relay
+    entry = get_pricing_entry("claude-sonnet-4-6", provider="relay-proxy")
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("3.00")
+    assert entry.output_cost_per_million == Decimal("15.00")
+
+    # Relay with vendor prefix e.g. "anthropic/claude-opus-4-6"
+    entry_prefixed = get_pricing_entry("anthropic/claude-opus-4-6", provider="custom-gw")
+    assert entry_prefixed is not None
+    assert entry_prefixed.input_cost_per_million == Decimal("5.00")
+    assert entry_prefixed.output_cost_per_million == Decimal("25.00")
+
+    # DeepSeek model via generic OpenAI-compatible provider
+    entry_ds = get_pricing_entry("deepseek-v4-flash", provider="openai-relay")
+    assert entry_ds is not None
+    assert entry_ds.input_cost_per_million == Decimal("0.15")
+
+
+def test_unpriced_models_labeled_unpriced_and_null_usd():
+    """Unpriced models never return $0.0 silently; they return status='unknown', label='unpriced', amount_usd=None."""
+    res = estimate_usage_cost(
+        "totally-unpriced-mock-model",
+        CanonicalUsage(input_tokens=5000, output_tokens=1000),
+        provider="unknown-provider",
+    )
+    assert res.status == "unknown"
+    assert res.amount_usd is None
+    assert res.label == "unpriced"
+    assert "Pricing snapshot not available" in res.notes[0]
+

@@ -712,6 +712,16 @@ class CLIInfoMixin:
         print(f"  Total tokens:              {agent.session_total_tokens:>10,}")
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
+        cost_status = getattr(agent, "session_cost_status", "unknown")
+        cost_usd = getattr(agent, "session_estimated_cost_usd", 0.0)
+        if cost_status == "unknown" and cost_usd == 0.0:
+            print(f"  Estimated cost:            {'unpriced (unknown)':>10}")
+        elif cost_status == "included":
+            print(f"  Estimated cost:            {'included':>10}")
+        else:
+            from decimal import Decimal
+            from agent.usage_pricing import format_cost_label
+            print(f"  Estimated cost:            {format_cost_label(Decimal(str(cost_usd))):>10}")
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""

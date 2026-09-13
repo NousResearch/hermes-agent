@@ -312,9 +312,11 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
 
 
 # Picker slugs → snapshot provider key ("openai-api" is the slug for direct
+# Picker slugs → snapshot provider key ("openai-api" is the slug for direct
 # api.openai.com). Google and Fireworks are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
     "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "minimax": "minimax", "minimax-cn": "minimax-cn",
+    "deepseek": "deepseek", "deepseek-api": "deepseek", "bedrock": "bedrock",
 }
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
@@ -329,7 +331,7 @@ def resolve_billing_route(
     model = (model_name or "").strip()
     if not provider_name and "/" in model:
         inferred_provider, bare_model = model.split("/", 1)
-        if inferred_provider in {"anthropic", "openai", "google"}:
+        if inferred_provider in {"anthropic", "openai", "google", "deepseek", "minimax", "minimax-cn", "bedrock", "fireworks"}:
             provider_name = inferred_provider
             model = bare_model
 
@@ -356,6 +358,10 @@ def resolve_billing_route(
             snapshot_provider = "google"
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
+        elif provider_name == "deepseek" or host("api.deepseek.com"):
+            snapshot_provider = "deepseek"
+        elif provider_name == "bedrock":
+            snapshot_provider = "bedrock"
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
@@ -393,6 +399,30 @@ def _normalize_anthropic_model_name(model: str) -> str:
 _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
 
 
+def _infer_canonical_provider(model: str) -> Optional[str]:
+    """Infer the upstream model provider from canonical model names or prefixes.
+    Used as a fallback for relays, proxies, and transit model ids."""
+    m = (model or "").lower().strip()
+    if "/" in m:
+        prefix, rest = m.split("/", 1)
+        if prefix in {"anthropic", "openai", "google", "deepseek", "minimax", "bedrock", "fireworks"}:
+            return prefix
+        m = rest
+    if m.startswith("claude-") or "claude-" in m:
+        return "anthropic"
+    if m.startswith(("gpt-", "o1-", "o3-", "o4-", "o1", "o3", "o4")) or "-gpt-" in m:
+        return "openai"
+    if m.startswith("gemini-") or "gemini-" in m:
+        return "google"
+    if m.startswith("deepseek-") or "deepseek-" in m:
+        return "deepseek"
+    if m.startswith("minimax-") or "minimax-" in m:
+        return "minimax"
+    if m.startswith("amazon.nova-") or m.startswith("anthropic.claude-"):
+        return "bedrock"
+    return None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
@@ -400,7 +430,129 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         return entry
     normalize = _MODEL_NORMALIZERS.get(route.provider)
     normalized = normalize(model) if normalize else model
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+    if normalized != model:
+        entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+        if entry:
+            return entry
+
+    # Relay / transit / alias fallback: if provider lookup failed (e.g. model routed
+    # via an OpenAI-compatible relay, custom proxy, or alias), check the canonical
+    # provider inferred from the model id.
+    inferred_provider = _infer_canonical_provider(model) or _infer_canonical_provider(route.model)
+    if inferred_provider and inferred_provider != route.provider:
+        canon_entry = _OFFICIAL_DOCS_PRICING.get((inferred_provider, model))
+        if canon_entry:
+            return canon_entry
+        canon_norm = _MODEL_NORMALIZERS.get(inferred_provider)
+        canon_normalized = canon_norm(model) if canon_norm else model
+        if canon_normalized != model:
+            canon_entry = _OFFICIAL_DOCS_PRICING.get((inferred_provider, canon_normalized))
+            if canon_entry:
+                return canon_entry
+    return None
+
+
+def get_user_pricing_entry(
+    model_name: str, provider: Optional[str] = None, config: Optional[dict] = None
+) -> Optional[PricingEntry]:
+    """Look up user-configured pricing override from config.yaml.
+
+    Supports:
+    model_pricing:
+      "provider/model": {input: ..., output: ..., cache_read: ..., cache_write: ..., request: ..., source: ..., version: ...}
+      "model": {input: ..., output: ...}
+    Also tolerates `pricing.overrides`, `pricing.models`, or `pricing_overrides`.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except Exception:
+            config = None
+    if not isinstance(config, dict):
+        return None
+
+    overrides = (
+        config.get("model_pricing")
+        or (config.get("pricing") or {}).get("overrides")
+        or (config.get("pricing") or {}).get("models")
+        or config.get("pricing_overrides")
+    )
+    if not isinstance(overrides, dict):
+        return None
+
+    model = (model_name or "").strip()
+    provider_str = (provider or "").strip().lower()
+    bare_model = model.split("/")[-1]
+
+    candidates: list[str] = []
+    if provider_str and model:
+        candidates.append(f"{provider_str}/{model}")
+        if bare_model != model:
+            candidates.append(f"{provider_str}/{bare_model}")
+    if model:
+        candidates.append(model)
+    if bare_model != model:
+        candidates.append(bare_model)
+
+    raw_entry: Optional[dict[str, Any]] = None
+    for cand in candidates:
+        if cand in overrides and isinstance(overrides[cand], dict):
+            raw_entry = overrides[cand]
+            break
+        cand_lower = cand.lower()
+        for k, v in overrides.items():
+            if isinstance(k, str) and k.lower() == cand_lower and isinstance(v, dict):
+                raw_entry = v
+                break
+        if raw_entry is not None:
+            break
+
+    if raw_entry is None:
+        return None
+
+    def get_rate(*keys: str) -> Optional[Decimal]:
+        for k in keys:
+            if k in raw_entry and raw_entry[k] is not None:
+                dec = _to_decimal(raw_entry[k])
+                if dec is not None:
+                    return dec
+        return None
+
+    input_cost = get_rate("input", "input_cost_per_million", "prompt", "input_cost")
+    output_cost = get_rate("output", "output_cost_per_million", "completion", "output_cost")
+    cache_read = get_rate("cache_read", "cache_read_cost_per_million", "cached_prompt", "cache_read_cost")
+    cache_write = get_rate("cache_write", "cache_write_cost_per_million", "cache_creation", "cache_write_cost")
+    request_cost = get_rate("request", "request_cost")
+
+    if input_cost is None and output_cost is None and request_cost is None:
+        return None
+
+    raw_source = str(raw_entry.get("source") or "").strip().lower()
+    source: CostSource = "custom_contract" if raw_source == "custom_contract" else "user_override"
+    version = str(raw_entry.get("version") or raw_entry.get("pricing_version") or "user-override").strip()
+
+    tier_threshold = raw_entry.get("tier_threshold_tokens")
+    try:
+        tier_threshold_tokens = int(tier_threshold) if tier_threshold is not None else None
+    except (ValueError, TypeError):
+        tier_threshold_tokens = None
+
+    return PricingEntry(
+        input_cost_per_million=input_cost,
+        output_cost_per_million=output_cost,
+        cache_read_cost_per_million=cache_read,
+        cache_write_cost_per_million=cache_write,
+        request_cost=request_cost,
+        source=source,
+        pricing_version=version,
+        source_url=raw_entry.get("url") or raw_entry.get("source_url"),
+        tier_threshold_tokens=tier_threshold_tokens,
+        input_cost_per_million_above=get_rate("input_cost_per_million_above", "input_above"),
+        output_cost_per_million_above=get_rate("output_cost_per_million_above", "output_above"),
+        cache_read_cost_per_million_above=get_rate("cache_read_cost_per_million_above", "cache_read_above"),
+        cache_write_cost_per_million_above=get_rate("cache_write_cost_per_million_above", "cache_write_above"),
+    )
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
@@ -441,8 +593,13 @@ def _pricing_entry_from_metadata(
 
 def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, config: Optional[dict] = None,
 ) -> Optional[PricingEntry]:
+    # 1. User pricing override has highest priority
+    user_entry = get_user_pricing_entry(model_name, provider=provider, config=config)
+    if user_entry:
+        return user_entry
+
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
@@ -546,12 +703,19 @@ def normalize_usage(
 
 
 def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
-    return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
+    return CostResult(
+        amount_usd=None,
+        status="unknown",
+        source=source,
+        label="unpriced",
+        notes=notes or ("Pricing snapshot not available",),
+    )
 
 
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
+    config: Optional[dict] = None,
 ) -> CostResult:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
@@ -560,7 +724,7 @@ def estimate_usage_cost(
             pricing_version="included-route", notes=(_INCLUDED_NOTE,),
         )
 
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key, config=config)
     if not entry:
         return _unknown_cost("none")
 
@@ -605,10 +769,10 @@ def estimate_usage_cost(
 
 def has_known_pricing(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, config: Optional[dict] = None,
 ) -> bool:
     """True if pricing data exists for this model+route (direct lookup, no dummy usage)."""
-    return get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key) is not None
+    return get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key, config=config) is not None
 
 
 def format_duration_compact(seconds: float) -> str:

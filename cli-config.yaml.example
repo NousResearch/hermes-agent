@@ -251,6 +251,33 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Custom Model Pricing Overrides
+# =============================================================================
+# Override or provide rates for models that are unpriced, relayed, or under custom
+# enterprise contracts. Rates are USD per million tokens ($/1M).
+#
+# Supported fields:
+#   input: USD per million input/prompt tokens
+#   output: USD per million output/completion tokens
+#   cache_read: USD per million cached prompt tokens read (optional)
+#   cache_write: USD per million cache creation tokens written (optional)
+#   request: USD fixed cost per API request (optional)
+#   source: "user_override" (default) or "custom_contract"
+#   version: Custom contract or version identifier label (optional)
+#
+# Keys can match "provider/model", full model name, or bare model name:
+# model_pricing:
+#   "openai/custom-gpt-5":
+#     input: 2.00
+#     output: 8.00
+#     cache_read: 0.50
+#   "my-relay-model":
+#     input: 1.50
+#     output: 6.00
+#     source: "custom_contract"
+#     version: "contract-q3-2026"
+
+# =============================================================================
 # Unified Timeouts (operation deadlines)
 # =============================================================================
 # One place to override Hermes's internal operation deadlines (seconds).

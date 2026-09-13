@@ -53,6 +53,14 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // Every mounted desktop window can observe the same gateway event. A
+      // scoped mismatch belongs to another window, so answering here would
+      // race the owning window with THIS window's unrelated terminal buffer
+      // and could make it win before the real result does.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const start = typeof payload?.start === 'number' ? payload.start : undefined
       const count = typeof payload?.count === 'number' ? payload.count : undefined
       const result = readActiveTerminal({ start, count })
@@ -72,6 +80,14 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // Every mounted desktop window can observe the same gateway event. A
+      // scoped mismatch belongs to another window, so answering here would
+      // race the owning window with THIS window's unrelated preview pane
+      // and could make it win before the real result does.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const start = typeof payload?.start === 'number' ? payload.start : undefined
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
@@ -144,6 +160,15 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // Every mounted desktop window can observe the same gateway event. A
+      // scoped mismatch belongs to another window, so answering here would
+      // race the owning window with whatever THIS window (not the one the
+      // user is looking at) happens to sit behind, and could make it win
+      // before the real result does.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const read = window.hermesDesktop?.readWindowBelow
 
       const answer = (result: unknown) =>

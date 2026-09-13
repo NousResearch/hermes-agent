@@ -612,14 +612,14 @@ class GatewayStatusCommandsMixin:
         return t("gateway.usage.no_data")
 
     async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / dominant route when no agent is resident."""
+        """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
             persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_dominant_session_model_route(entry.session_id)
+            route = await self._session_db.get_recent_session_model_route(entry.session_id)
             return persisted, route if isinstance(route, dict) else {}
-        persisted, dominant = await _quiet(_rows, ({}, {}))
-        row = dominant if dominant.get("billing_provider") else persisted
+        persisted, recent = await _quiet(_rows, ({}, {}))
+        row = recent if recent.get("billing_provider") else persisted
         return row.get("billing_provider"), row.get("billing_base_url")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

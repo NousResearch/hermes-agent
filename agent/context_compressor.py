@@ -966,9 +966,6 @@ _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
 _ACTIVE_TASK_MAX_CHARS = 1400
-# Hard floor of verbatim recent messages when the budget is exhausted; using the
-# full protect_last_n would recreate the nothing-compactable large-tool-output case.
-_MAX_TAIL_MESSAGE_FLOOR = 8
 # Default cap for the compaction tail message floor.  ``protect_last_n`` is
 # honored up to this cap; the cap avoids preserving a whole run of bulky
 # tool outputs on every compaction.  Overridable via
@@ -2627,7 +2624,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if protect_tail_tokens is None or protect_tail_tokens <= 0:
             return len(result) - protect_tail_count
         # Token-budget walk; cap the message-count floor like tail-cut so a bulky recent run stays prunable.
-        min_protect = min(protect_tail_count, len(result), _MAX_TAIL_MESSAGE_FLOOR)
+        min_protect = min(protect_tail_count, len(result), _DEFAULT_MAX_TAIL_MESSAGE_FLOOR)
         boundary, _ = self._walk_tail_budget(result, 0, protect_tail_tokens, min_protect, cut_at_break=True)
         # Apply the floor in count-space: `max` in index-space would invert (smaller index = MORE protected).
         return min(boundary, len(result) - min_protect)

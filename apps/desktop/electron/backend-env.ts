@@ -131,6 +131,11 @@ function buildDesktopBackendEnv({
   const key = pathEnvKey(currentEnv, platform)
 
   return {
+    // A Desktop-spawned backend is a distinct loopback control plane, not the
+    // profile's browser-facing dashboard. Override inherited/configured remote
+    // public URLs so this child keeps its session-token WebSocket; separately
+    // launched dashboards still use the profile's gated public URL.
+    HERMES_DASHBOARD_PUBLIC_URL: 'http://127.0.0.1',
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
     // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and
     // subprocess defaults are UTF-8 even on non-UTF-8 Windows locales (GBK,

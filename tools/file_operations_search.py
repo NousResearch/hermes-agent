@@ -371,7 +371,15 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except PermissionError as exc:
+                # macOS can reject a group signal while a short-lived rg exits.
+                # Accept only a confirmed exit; a child we cannot stop is still an error.
+                try:
+                    proc.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    raise exc
         proc.wait()
         drainer.join()
         proc.stdout.close()

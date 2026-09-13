@@ -112,3 +112,39 @@ def test_kill_switch_routes_search_back_to_the_shell(tree, ops_factory, monkeypa
     assert result.total_count == 4
     assert any(c.startswith("test -e") for c in calls)
     assert any("pipefail" in c and "rg" in c for c in calls)
+
+
+@pytest.mark.parametrize("child_exits", [True, False])
+def test_native_search_cleanup_permission_race(tree, ops_factory, monkeypatch, child_exits):
+    """An exited rg must not lose its results; a live child must not be reported stopped."""
+    import shlex
+    from tools.environments import local
+
+    real_cleanup = local._kill_process_group_posix
+    children = []
+
+    def denied_cleanup(proc):
+        children.append(proc)
+        if child_exits:
+            proc.wait(timeout=3)
+        raise PermissionError("process group disappeared during cleanup")
+
+    monkeypatch.setattr(local, "_kill_process_group_posix", denied_cleanup)
+    delay = 0.2 if child_exits else 30
+    command = "import time; print('needle', flush=True); time.sleep(%s)" % delay
+    ops = ops_factory(tree, [])
+    try:
+        if child_exits:
+            result = ops._run_rg_native([shlex.quote(sys.executable), "-c", shlex.quote(command)], 1, timeout=3)
+            assert result.exit_code == 0
+            assert result.stdout == "needle\n"
+        else:
+            with pytest.raises(PermissionError):
+                ops._run_rg_native([shlex.quote(sys.executable), "-c", shlex.quote(command)], 1, timeout=3)
+        assert children
+    finally:
+        for proc in children:
+            if proc.poll() is None:
+                real_cleanup(proc)
+            if proc.stdout is not None:
+                proc.stdout.close()

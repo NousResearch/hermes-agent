@@ -1,0 +1,5 @@
+name: kyma-provider
+kind: model-provider
+version: 1.0.0
+description: Kyma API: open and frontier models behind one endpoint
+author: Kyma

@@ -1705,10 +1705,28 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = medium. Options: none, minimal, low, medium, high, xhigh, max, ultra
+  reasoning_effort: ""   # empty = medium. Options: auto, none, minimal, low, medium, high, xhigh, max, ultra
 ```
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
+
+#### Adaptive effort (`auto`)
+
+```yaml
+agent:
+  reasoning_effort: "auto"
+```
+
+`auto` lets Hermes pick the level **per user turn** from deterministic request-shape signals — no extra model call, no LLM judgment:
+
+| Signal | Meaning |
+|---|---|
+| Triggering user message length | Short ask → cheaper turn |
+| Estimated whole-request context tokens | Long-horizon session → deeper thinking |
+| Tool results already in the turn | Multi-step work in flight → deeper thinking |
+| Requests already sent in the turn | Deep tool loop → deeper thinking |
+
+Trivial turns (short prompt, near-empty context, no tool loop) resolve to `low`; heavy turns (large context, dense tool loop, or a very long ask) resolve to `high`; everything else stays `medium`. The level is **pinned for the whole turn** — resolving mid-tool-loop would change the reasoning config between requests and cost a cold prompt-cache prefix write on cache-sensitive providers (Anthropic, OpenAI). A concrete ladder level always goes on the wire — `auto` itself is never sent to a provider. `/reasoning auto` (session or `--global`) and `--reasoning_effort auto` (batch runner) are accepted everywhere an explicit level is.
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`

@@ -38,6 +38,7 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
+from agent.reasoning_escalation import effective_reasoning_config
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -1184,7 +1185,9 @@ def _reasoning_config_for_wire(agent):
     session: the request goes out without a reasoning config and the route
     applies its own default.
     """
-    cfg = agent.reasoning_config
+    # Per-turn escalation (medium -> high) is pinned to the exact provider/model tuple,
+    # so a fallback route never inherits a stronger effort than it was configured for.
+    cfg = effective_reasoning_config(agent)
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has

@@ -55,9 +55,9 @@ class ReasoningParamsMixin:
             return True
         if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                from hermes_cli.models import get_copilot_reasoning_efforts
 
-                return bool(github_model_reasoning_efforts(self.model))
+                return bool(get_copilot_reasoning_efforts(self.model, self.api_key))
             except Exception:
                 return False
         if (self.provider or "").strip().lower() == "lmstudio":
@@ -106,11 +106,11 @@ class ReasoningParamsMixin:
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
-            from hermes_cli.models import github_model_reasoning_efforts
+            from hermes_cli.models import get_copilot_reasoning_efforts
         except Exception:
             return None
 
-        supported = github_model_reasoning_efforts(self.model)
+        supported = get_copilot_reasoning_efforts(self.model, self.api_key)
         if not supported:
             return None
 

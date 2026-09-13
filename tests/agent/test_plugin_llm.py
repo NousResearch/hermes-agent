@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -20,6 +21,7 @@ from agent.plugin_llm import (
     PluginLlm,
     PluginLlmCompleteResult,
     PluginLlmImageInput,
+    PluginLlmInvocationError,
     PluginLlmStructuredResult,
     PluginLlmTextInput,
     PluginLlmTrustError,
@@ -271,6 +273,102 @@ class TestJsonParsing:
 
 
 class TestPluginLlmFacade:
+    @pytest.mark.parametrize("async_call", [False, True])
+    @pytest.mark.parametrize("stream_only", [False, True])
+    def test_inherit_turn_uses_scoped_client_once_and_clears_route(
+        self, monkeypatch, async_call, stream_only,
+    ):
+        import agent.auxiliary_client as auxiliary_client
+        import agent.plugin_llm_turn as plugin_llm_turn
+
+        create = MagicMock(return_value=_fake_response("same route"))
+        live_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        agent = SimpleNamespace(
+            provider="turn-provider",
+            model="turn-model",
+            base_url=(
+                "https://copilot.tencent.com/v1"
+                if stream_only else "https://turn.example/v1"
+            ),
+            api_key="turn-key",
+            api_mode="chat_completions",
+            client=live_client,
+        )
+        ambient_call = MagicMock(side_effect=AssertionError("ambient routing used"))
+        monkeypatch.setattr(auxiliary_client, "call_llm", ambient_call)
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_TrustPolicy(plugin_id="my-plugin"),
+        )
+        messages = [{"role": "user", "content": "use this turn"}]
+
+        def invoke():
+            if async_call:
+                return asyncio.run(llm.acomplete(messages, inherit_turn=True))
+            return llm.complete(messages, inherit_turn=True)
+
+        from agent.turn_context import _publish_runtime_main
+
+        # Match the production handoff: turn_facade opens an empty scope, then
+        # turn_context publishes the live agent after primary restoration.
+        with auxiliary_client.scoped_runtime_main({}), plugin_llm_turn.scoped_turn_invocation():
+            pre_publish_context = contextvars.copy_context()
+            _publish_runtime_main(agent)
+            copied_context = contextvars.copy_context()
+            with pytest.raises(PluginLlmInvocationError):
+                pre_publish_context.run(invoke)
+            result = invoke()
+
+        assert (result.provider, result.model, result.text) == (
+            "turn-provider", "turn-model", "same route",
+        )
+        create.assert_called_once()
+        assert create.call_args.kwargs["model"] == "turn-model"
+        assert create.call_args.kwargs["messages"] == messages
+        assert bool(create.call_args.kwargs.get("stream")) is stream_only
+        ambient_call.assert_not_called()
+
+        with pytest.raises(PluginLlmInvocationError):
+            invoke()
+        with pytest.raises(PluginLlmInvocationError):
+            copied_context.run(invoke)
+        create.assert_called_once()
+
+    def test_inherit_turn_rejects_every_route_override(self):
+        import agent.plugin_llm_turn as plugin_llm_turn
+
+        create = MagicMock(return_value=_fake_response("unused"))
+        agent = SimpleNamespace(
+            provider="turn-provider",
+            model="turn-model",
+            base_url="https://turn.example/v1",
+            api_key="turn-key",
+            api_mode="chat_completions",
+            client=SimpleNamespace(
+                chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+            ),
+        )
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin",
+            policy=_trusted_policy("my-plugin", allow_task_override=True),
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        route_overrides = (
+            {"provider": "other-provider"},
+            {"model": "other-model"},
+            {"agent_id": "other-agent"},
+            {"profile": "other-profile"},
+            {"task": "other-task"},
+        )
+
+        with plugin_llm_turn.scoped_turn_invocation(agent):
+            for override in route_overrides:
+                with pytest.raises(PluginLlmTrustError):
+                    llm.complete(messages, inherit_turn=True, **override)
+        create.assert_not_called()
+
     def test_complete_uses_active_model_by_default(self):
         captured: dict = {}
 

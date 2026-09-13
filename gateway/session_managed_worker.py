@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import asdict, replace
 import json
+import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -213,9 +214,10 @@ def _worker_env(authority):
         return None
     from agent.secret_scope import build_profile_secret_scope
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
-    # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
-    # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
-    env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True), home)
+    # Remove launch residue before the constructor injects current owned context;
+    # a launch .env key must not erase a freshly derived session/bridge value.
+    base = strip_launch_profile_env(os.environ.copy(), target_home=home)
+    env = build_subprocess_env(base=base, scrub_secrets=True)
     env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
     env['HERMES_HOME'] = str(home)
     from hermes_constants import apply_subprocess_home_env

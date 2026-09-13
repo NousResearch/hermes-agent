@@ -2079,7 +2079,7 @@ export const ar = defineLocale({
     queueSend: 'إرسالها الآن',
     queueDelete: 'حذف من الطابور',
     queueLostNote: 'فُقد الدور أثناء إعادة التشغيل',
-    restoreImageDraft: 'استعادة مسودة الصورة',
+    restoreImageDraft: 'استعادة المسودة',
     queueLostDiscard: 'تجاهل',
     queueLostDiscardTip: 'أعادت البوابة التشغيل أثناء هذا الدور ولا يمكن إكماله. تجاهله لتستمر الأدوار المنتظرة خلفه.',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',

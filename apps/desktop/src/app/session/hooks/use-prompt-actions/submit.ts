@@ -42,7 +42,7 @@ import { resolveSessionProfile } from '../use-session-actions/utils'
 import {
   preparedSubmissionKey,
   readPreparedSubmission,
-  removePreparedSubmission,
+  settlePreparedSubmission,
   writePreparedSubmission
 } from './prepared-submissions'
 import { finalizeInterruptedMessages } from './rewind'
@@ -321,6 +321,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       try {
         retained = await readPreparedSubmission(retryKeyForTarget())
+        if (retained?.acknowledged) {return true}
 
         // A legacy send has no deduplication identity. After an ambiguous ACK
         // even an upgraded server cannot safely admit it under the saved ID.
@@ -853,7 +854,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         const retryKey = retryKeyForTarget()
-        await writePreparedSubmission(retryKey, prepared)
+        await writePreparedSubmission(retryKey, prepared, !retained && options?.submission_id === undefined)
 
         if (sessionDriftReason()) {return abortForSessionSwitch(liveSessionId)}
 
@@ -988,7 +989,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
-        await removePreparedSubmission(retryKey)
+        await settlePreparedSubmission(retryKey, prepared)
 
         if (usingComposerAttachments) {
           // A submit owns only the occurrences that actually reached the

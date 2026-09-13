@@ -29,6 +29,7 @@ Suppress an intentional use (e.g. tests or platform-gated code) with:
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -551,6 +552,69 @@ def _is_likely_subprocess_call(line: str) -> bool:
     return any(token in line for token in _SUBPROCESS_METHODS)
 
 
+def _wrapped_encoding_calls(text: str) -> list[tuple[int, str]]:
+    """Find read_text/write_text/open calls that wrap across lines without
+    ``encoding=``.
+
+    The line-based scanner deliberately skips any call whose closing paren is
+    not on the matched line, because ``encoding=`` may sit on a continuation
+    line and flagging it would be a false positive. That safety valve also
+    hides genuinely-bare wrapped calls, e.g.::
+
+        path.write_text(json.dumps({
+            "k": "v",
+        }))
+
+    Parsing the module gives an exact answer for those, with no heuristic: the
+    keywords of the outer call are right there on the AST node. Returns
+    ``(lineno, func_name)`` for each offender. A file that does not parse
+    returns nothing — the line scanner still covers it.
+    """
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        end_lineno = getattr(node, "end_lineno", None)
+        if end_lineno is None or end_lineno == node.lineno:
+            continue  # single-line: already covered by the line scanner
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            name = func.attr
+        elif isinstance(func, ast.Name):
+            name = func.id
+        else:
+            continue
+        if name not in ("read_text", "write_text", "open"):
+            continue
+        if name == "open" and isinstance(func, ast.Attribute):
+            # A bare ``x.open(...)`` receiver could be anything — Path (takes
+            # encoding=), os (rejects it), urllib openers, zipfile, tarfile,
+            # a mock. Only the unqualified builtin is unambiguous from the
+            # AST alone, so attribute-style .open() is left to the
+            # single-line rule, which matches builtins.open specifically.
+            continue
+        if any(kw.arg == "encoding" for kw in node.keywords):
+            continue
+        if any(kw.arg is None for kw in node.keywords):
+            continue  # **kwargs may carry encoding — same trust as the regex
+        if name == "open":
+            mode = None
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                mode = node.args[1].value
+            for kw in node.keywords:
+                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                    mode = kw.value.value
+            if isinstance(mode, str) and "b" in mode:
+                continue  # binary mode takes no encoding
+        out.append((node.lineno, name))
+    return out
+
+
 def _call_closes_on_line(line: str, open_paren_end: int) -> bool:
     """True when the call whose ``(`` sits at ``open_paren_end - 1`` closes
     on this same line (paren-balance walk). Multi-line calls return False —
@@ -665,6 +729,29 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
                     # Post-filter assumed a named group that isn't there — skip.
                     continue
             matches.append((i, line.rstrip(), fg))
+
+    # Second pass: calls that wrap across lines. The line scanner skips those
+    # by design (encoding= may be on a continuation line), so an exact AST
+    # answer covers the blind spot without loosening the line heuristic.
+    wrapped_fg = next(
+        (f for f in footguns if "read_text" in f.name and "write_text" in f.name),
+        None,
+    )
+    if wrapped_fg is not None and not (
+        wrapped_fg.path_allowlist
+        and any(s in str(path) for s in wrapped_fg.path_allowlist)
+    ):
+        lines = text.splitlines()
+        seen = {lineno for lineno, _, _ in matches}
+        for lineno, _name in _wrapped_encoding_calls(text):
+            if lineno in seen or lineno > len(lines):
+                continue
+            line = lines[lineno - 1]
+            if SUPPRESS_MARKER.search(line):
+                continue
+            matches.append((lineno, line.rstrip(), wrapped_fg))
+
+    matches.sort(key=lambda m: m[0])
     return matches
 
 

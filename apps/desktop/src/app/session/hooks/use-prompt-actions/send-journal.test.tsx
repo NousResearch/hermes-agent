@@ -55,7 +55,7 @@ async function storeFor(owner: string) {
     owner: async () => owner,
     read: async () => JSON.stringify(store.read()),
     update: async (key: string, entry: string | null) => store.update(key, entry === null ? null : JSON.parse(entry)),
-    compareAndSet: vi.fn(async (key: string, expected: string | null, entry: string | null) =>
+    compareSend: vi.fn(async (key: string, expected: string | null, entry: string | null) =>
       store.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry)))
   }
 
@@ -149,8 +149,8 @@ it('atomically transfers an explicitly chosen draft without retargeting or letti
 it.each(['queued', 'started', 'terminal'])('keeps a valid %s ACK successful when removal fails and never resubmits its explicit retry', async status => {
   const a = await storeFor('window-a')
   a.bind()
-  const compare = a.bridge.compareAndSet.getMockImplementation()!
-  a.bridge.compareAndSet.mockImplementation(async (key, expected, entry) => {
+  const compare = a.bridge.compareSend.getMockImplementation()!
+  a.bridge.compareSend.mockImplementation(async (key, expected, entry) => {
     if (entry === null) {throw new Error('fixture remove EACCES')}
 
     return compare(key, expected, entry)
@@ -173,8 +173,8 @@ it.each(['queued', 'started', 'terminal'])('keeps a valid %s ACK successful when
 it('keeps accepted identity in memory even when both ACK marking and removal fail', async () => {
   const a = await storeFor('window-a')
   a.bind()
-  const compare = a.bridge.compareAndSet.getMockImplementation()!
-  a.bridge.compareAndSet.mockImplementation(async (key, expected, entry) => {
+  const compare = a.bridge.compareSend.getMockImplementation()!
+  a.bridge.compareSend.mockImplementation(async (key, expected, entry) => {
     if (expected !== null) {throw new Error('fixture disk unavailable after ACK')}
 
     return compare(key, expected, entry)
@@ -192,8 +192,8 @@ it('keeps accepted identity in memory even when both ACK marking and removal fai
 it('gives a later independent Send a new ID even when the preceding accepted journal could not be removed', async () => {
   const a = await storeFor('window-a')
   a.bind()
-  const compare = a.bridge.compareAndSet.getMockImplementation()!
-  a.bridge.compareAndSet.mockImplementation(async (key, expected, entry) => {
+  const compare = a.bridge.compareSend.getMockImplementation()!
+  a.bridge.compareSend.mockImplementation(async (key, expected, entry) => {
     if (entry === null) {throw new Error('fixture remove EACCES')}
 
     return compare(key, expected, entry)

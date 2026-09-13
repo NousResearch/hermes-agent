@@ -30,18 +30,19 @@ export async function readJournal<T>(): Promise<Record<string, T>> {
   return parsed as Record<string, T>
 }
 
-export async function compareJournal(key: string, expected: string | null, entry: string | null, transfer = false): Promise<boolean> {
+export async function compareJournal(key: string, expected: string | null, entry: string | null, transfer = false, freshGenerated = false): Promise<boolean> {
   const native = window.hermesDesktop?.preparedSubmissions
 
-  if (native?.compareAndSet) {return native.compareAndSet(key, expected, entry)}
+  if (native?.compareSend) {return native.compareSend(key, expected, entry)}
 
   if (native) {
-    // Compatibility only for immutable, window-owned UUID slots. Cross-window
-    // recovery needs the atomic bridge and cannot degrade to read/update.
-    if (transfer) {throw new Error('Atomic draft recovery unavailable; update Desktop')}
+    // Only a first write under a freshly renderer-generated UUID is compatible
+    // with the old bridge. Never emulate CAS for caller IDs, recovery, updates
+    // or deletion; never fall back after a real CAS refusal or I/O failure.
+    if (!freshGenerated || transfer || expected !== null || entry === null) {throw new Error('Atomic draft storage unavailable; update Desktop')}
     const current = (await readJournal<unknown>())[key]
 
-    if ((current === undefined ? null : JSON.stringify(current)) !== expected) {return false}
+    if (current !== undefined) {return false}
     await native.update(key, entry)
 
     return true

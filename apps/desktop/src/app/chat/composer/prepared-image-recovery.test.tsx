@@ -60,7 +60,7 @@ test.each([
   let reject!: (error: Error) => void
   const compareAndSet = vi.fn(() => new Promise<boolean>((resolve, fail) => {release = resolve; reject = fail}))
   vi.stubGlobal('hermesDesktop', { preparedSubmissions: {
-    owner: async () => 'new-window', read: async () => serialized, update: vi.fn(), compareAndSet
+    owner: async () => 'new-window', read: async () => serialized, update: vi.fn(), compareSend: compareAndSet
   } })
   const restore = vi.fn()
   const view = render(<PreparedImageRecovery occupied={false} onRestore={restore} request={request} sessionKey="original" />)

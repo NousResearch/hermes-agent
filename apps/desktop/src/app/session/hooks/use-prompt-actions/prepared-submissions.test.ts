@@ -31,26 +31,31 @@ test('native preparation waits for acknowledgement and never downgrades a write 
   const key = preparedSubmissionKey('stored', { scopeKey: 'local' } as SubmissionDestination, entry.text, [])
   const records: Record<string, unknown> = {}
 
-  const native = { read: vi.fn(async () => JSON.stringify(records)), update: vi.fn(async (key: string, value: string | null) => {
+  const native = { read: vi.fn(async () => JSON.stringify(records)), update: vi.fn(), compareSend: vi.fn(async (key: string, expected: string | null, value: string | null) => {
     await gate
+
+    if ((Object.hasOwn(records, key) ? JSON.stringify(records[key]) : null) !== expected) {return false}
 
     if (value === null) {delete records[key]}
     else {records[key] = JSON.parse(value)}
+
+    return true
   }) }
 
   vi.stubGlobal('hermesDesktop', { preparedSubmissions: native })
   let finished = false
   const writing = writePreparedSubmission(key, entry).then(() => { finished = true })
-  await waitFor(() => expect(native.update).toHaveBeenCalledOnce())
+  await waitFor(() => expect(native.compareSend).toHaveBeenCalledOnce())
   expect(finished).toBe(false)
-  expect(native.update).toHaveBeenCalledWith(entry.journal!.storageKey, JSON.stringify(entry))
+  expect(native.compareSend).toHaveBeenCalledWith(entry.journal!.storageKey, null, JSON.stringify(entry))
   ack(); await writing
   expect(await readPreparedSubmission(key)).toEqual(entry)
-  native.update.mockRejectedValueOnce(new Error('disk full'))
+  native.compareSend.mockRejectedValueOnce(new Error('disk full'))
   await expect(writePreparedSubmission(key, entry)).rejects.toThrow('disk full')
   expect(localStorage.length).toBe(0)
   await removePreparedSubmission(key, entry)
-  expect(native.update).toHaveBeenLastCalledWith(entry.journal!.storageKey, null)
+  expect(native.compareSend).toHaveBeenLastCalledWith(entry.journal!.storageKey, JSON.stringify(entry), null)
+  expect(native.update).not.toHaveBeenCalled()
   vi.stubGlobal('hermesDesktop', undefined)
   const browserEntry = { ...entry, journal: undefined }
   await writePreparedSubmission(key, browserEntry)

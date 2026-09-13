@@ -79,6 +79,15 @@ export function registerPreparedSubmissions() {
     store(event).update(key, entry === null ? null : JSON.parse(entry))
   })
   ipcMain.handle('hermes:prepared-submissions:compare-and-set', (event, key: string, expected: string | null, entry: string | null) => {
+    if (typeof key !== 'string' || key.length > 2048 || [expected, entry].some(value => value !== null && (typeof value !== 'string' || value.length > 1024 * 1024))) {
+      throw new Error('Invalid prepared submission comparison')
+    }
+
+    return store(event).compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
+  })
+  // Ordinary Sends retain the previous update API's large frozen payload and
+  // legacy-key support without weakening Group creation's bounded CAS API.
+  ipcMain.handle('hermes:prepared-submissions:compare-send', (event, key: string, expected: string | null, entry: string | null) => {
     if (typeof key !== 'string' || [expected, entry].some(value => value !== null && typeof value !== 'string')) {
       throw new Error('Invalid prepared submission comparison')
     }

@@ -95,15 +95,18 @@ export async function readPreparedSubmission(key: string): Promise<PreparedSubmi
   return entry
 }
 
-export async function writePreparedSubmission(key: string, entry: PreparedSubmission): Promise<void> {
+export async function writePreparedSubmission(key: string, entry: PreparedSubmission, freshGenerated = false): Promise<void> {
   const owner = await journalOwner()
+  const [scope, session] = JSON.parse(key)
 
   if (entry.journal && (entry.journal.owner !== owner || entry.journal.lookup !== key)) {throw new Error('Prepared draft ownership changed')}
-  entry.journal ??= { lookup: key, storageKey: JSON.stringify(['intent', entry.id]), owner }
+  // Caller IDs belong to a destination/session deduplication domain. Keep
+  // existing records at their recorded address; only new records use v2 keys.
+  entry.journal ??= { lookup: key, storageKey: JSON.stringify(['intent-v2', scope, session, entry.id]), owner }
   const expected = snapshots.get(entry) ?? null
   const next = JSON.stringify(entry)
 
-  if (!await compareJournal(entry.journal.storageKey, expected, next)) {throw new Error('Prepared draft changed before write')}
+  if (!await compareJournal(entry.journal.storageKey, expected, next, false, freshGenerated)) {throw new Error('Prepared draft changed before write')}
   snapshots.set(entry, next)
 }
 

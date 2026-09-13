@@ -854,7 +854,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         const retryKey = retryKeyForTarget()
-        await writePreparedSubmission(retryKey, prepared)
+        await writePreparedSubmission(retryKey, prepared, !retained && options?.submission_id === undefined)
 
         if (sessionDriftReason()) {return abortForSessionSwitch(liveSessionId)}
 

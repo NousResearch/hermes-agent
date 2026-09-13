@@ -35,3 +35,23 @@ test('real shared store IPC separates window owners and conditionally claims/ret
     expect(preparedJournal(native.home, 'http://other-origin').read()).toEqual({})
   } finally {fs.rmSync(native.home, { recursive: true, force: true })}
 })
+
+test('Group CAS keeps its caps while ordinary CAS preserves large legacy records and exact comparisons', () => {
+  native.home = fs.mkdtempSync(path.join(os.tmpdir(), 'prepared-purpose-'))
+  registerPreparedSubmissions()
+  const event = { sender: {}, senderFrame: { url: 'http://same-origin/chat' } }
+  const call = (name: string, ...args: unknown[]) => native.handlers.get(`hermes:prepared-submissions:${name}`)!(event, ...args)
+  const large = JSON.stringify({ id: 'legacy-id', text: 'x'.repeat(1024 * 1024), params: { session_id: 'original' } })
+  const longKey = JSON.stringify(['original-owner', 'original-session', 'legacy text '.repeat(512)])
+
+  try {
+    expect(() => call('compare-and-set', 'group', null, large)).toThrow('Invalid prepared submission comparison')
+    expect(() => call('compare-and-set', longKey, null, '{}')).toThrow('Invalid prepared submission comparison')
+    expect(call('compare-and-set', 'group', null, '{}')).toBe(true)
+    expect(call('compare-send', longKey, null, large)).toBe(true)
+    expect(call('compare-send', longKey, '{}', null)).toBe(false)
+    expect(JSON.stringify(preparedJournal(native.home, 'http://same-origin').read()[longKey])).toBe(large)
+    expect(call('compare-send', longKey, large, null)).toBe(true)
+    expect(preparedJournal(native.home, 'http://same-origin').read()).toEqual({ group: {} })
+  } finally {fs.rmSync(native.home, { recursive: true, force: true })}
+})

@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import UnscopedSecretError, get_secret
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 
 try:
     from mautrix.types import (
@@ -2902,14 +2902,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
         # homeserver too, so the scoped token is never sent to the default profile's server.
         homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
-            return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
+            return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         from urllib.parse import quote
         url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
@@ -2928,16 +2928,16 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             async def _do_send():
                 async with session.put(url, headers=headers, json=payload) as resp:
                     if resp.status not in {200, 201}:
-                        return {"error": f"Matrix API error ({resp.status}): {await resp.text()}"}
+                        return send_error(f"Matrix API error ({resp.status}): {await resp.text()}")
                     data = await resp.json()
                     return {"success": True, "platform": "matrix", "chat_id": chat_id,
                             "message_id": data.get("event_id")}
             try:
                 return await asyncio.wait_for(_do_send(), timeout=30)
             except asyncio.TimeoutError:
-                return {"error": "Matrix API timeout (30s)"}
+                return send_error("Matrix API timeout (30s)")
     except Exception as e:
-        return {"error": f"Matrix send failed: {e}"}
+        return send_error(f"Matrix send failed: {e}")
 
 
 def interactive_setup() -> None:

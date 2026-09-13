@@ -92,7 +92,7 @@ from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 
 
 logger = logging.getLogger(__name__)
@@ -4125,7 +4125,7 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
-        return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
+        return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
     try:
         adapter = FeishuAdapter(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
@@ -4134,10 +4134,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         if message.strip():
             last_result = await adapter.send(chat_id, message, metadata=metadata)
             if not last_result.success:
-                return {"error": f"Feishu send failed: {last_result.error}"}
+                return send_error(f"Feishu send failed: {last_result.error}")
         for media_path, _is_voice in media_files or []:
             if not os.path.exists(media_path):
-                return {"error": f"Media file not found: {media_path}"}
+                return send_error(f"Media file not found: {media_path}")
             ext = os.path.splitext(media_path)[1].lower()
             if ext in _MIGRATION_IMAGE_EXTS:
                 sender = adapter.send_image_file
@@ -4149,12 +4149,12 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 sender = adapter.send_document
             last_result = await sender(chat_id, media_path, metadata=metadata)
             if not last_result.success:
-                return {"error": f"Feishu media send failed: {last_result.error}"}
+                return send_error(f"Feishu media send failed: {last_result.error}")
         if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+            return send_error("No deliverable text or media remained after processing MEDIA tags")
         return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
-        return {"error": f"Feishu send failed: {e}"}
+        return send_error(f"Feishu send failed: {e}")
 
 
 def interactive_setup() -> None:

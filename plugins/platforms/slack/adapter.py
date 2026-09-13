@@ -35,7 +35,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -6213,7 +6213,7 @@ async def _standalone_upload_file(
     result = await client.files_upload_v2(**kwargs)
     payload = _slack_response_payload(result)
     if payload.get("ok") is False:
-        return {"error": f"Slack API error: {payload.get('error', 'unknown')}"}
+        return send_error(f"Slack API error: {payload.get('error', 'unknown')}")
     # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
     message_id = None
     if payload:
@@ -6256,10 +6256,10 @@ async def _standalone_send_media(
             post_payload = await _standalone_post_text(
                 client, chat_id, text_to_send, unfurl_kwargs, thread_id)
             if not post_payload.get("ok", True):
-                return {"error": f"Slack API error: {post_payload.get('error', 'unknown')}"}
+                return send_error(f"Slack API error: {post_payload.get('error', 'unknown')}")
             last_message_id = post_payload.get("ts")
         except Exception as e:
-            return {"error": f"Slack send failed: {e}"}
+            return send_error(f"Slack send failed: {e}")
     caption_pending = caption_as_upload_comment
     uploaded_any = False
     for media_path, _is_voice in media_files:
@@ -6327,7 +6327,7 @@ async def _standalone_send(
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.
     tokens = _load_slack_bot_tokens(str(raw_token or ""), quiet=True)
     if not tokens:
-        return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
+        return send_error("Slack send failed: SLACK_BOT_TOKEN not configured")
     token = tokens[0]
     # Slack rejects bare user IDs (U.../W...) with channel_not_found; open the DM first.
     # User-targeted delivery: chat.postMessage / files_upload_v2 reject bare user IDs (U.../W...) — resolve
@@ -6360,7 +6360,7 @@ async def _standalone_send(
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         _sess_kw, _req_kw = _standalone_proxy_kwargs()
         last_error = "unknown"
@@ -6376,9 +6376,9 @@ async def _standalone_send(
                 last_error = data.get("error", "unknown")
                 if last_error not in _WRONG_WORKSPACE_TOKEN_ERRORS:
                     break
-        return {"error": f"Slack API error: {last_error}"}
+        return send_error(f"Slack API error: {last_error}")
     except Exception as e:
-        return {"error": f"Slack send failed: {e}"}
+        return send_error(f"Slack send failed: {e}")
 
 
 _SETUP_STEPS = (

@@ -67,6 +67,14 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     return set_env
 
 
+def send_error(message: Any) -> dict:
+    """Standalone-sender failure envelope with vendor exception text redacted (the same helper
+    ``send_message`` uses), so a token or signed URL in an httpx/aiohttp error never reaches the
+    model transcript."""
+    from tools.send_message_senders import _error
+    return _error(str(message))
+
+
 def coerce_port(value: Any, default: int) -> int:
     """``int(value)`` or ``default`` when unparseable."""
     try:

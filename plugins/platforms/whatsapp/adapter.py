@@ -14,7 +14,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from gateway.platforms._shared import get_scoped_secret, yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret, send_error, yaml_env_setter
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -872,7 +872,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
         bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
         normalized_chat_id = to_whatsapp_jid(chat_id)
@@ -887,7 +887,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status == 200:
                         return (await resp.json()).get("messageId"), None
-                    return None, {} if error_label is None else {"error": f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}"}
+                    return None, {} if error_label is None else send_error(f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}")
             # 1) Text first (skipped when media-only or when the text rides as the caption).
             if (message or "").strip() and not media_caption:
                 last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
@@ -902,7 +902,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                             await _post("send", {"chatId": normalized_chat_id, "message": media_caption}, 30)
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
-                    return {"error": f"WhatsApp media file not found: {media_path}"}
+                    return send_error(f"WhatsApp media file not found: {media_path}")
                 media_type = _bridge_media_type(media_path, is_voice, force_document)
                 payload: Dict[str, Any] = {"chatId": normalized_chat_id, "filePath": media_path, "mediaType": media_type}
                 payload.update({k: v for k, v in (("fileName", os.path.basename(media_path) if media_type == "document" else None), ("caption", media_caption)) if v})
@@ -912,7 +912,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 last_message_id = mid or last_message_id
         return {"success": True, "platform": "whatsapp", "chat_id": normalized_chat_id, "message_id": last_message_id}
     except Exception as e:
-        return {"error": f"WhatsApp send failed: {e}"}
+        return send_error(f"WhatsApp send failed: {e}")
 
 
 def interactive_setup() -> None:

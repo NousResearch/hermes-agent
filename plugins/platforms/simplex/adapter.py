@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from urllib.parse import unquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
 from gateway.platforms.event import MessageEvent, MessageType
@@ -619,11 +619,11 @@ async def _standalone_send(
     try:
         import websockets as _wsclient
     except ImportError:
-        return {"error": "websockets not installed. Run: pip install websockets"}
+        return send_error("websockets not installed. Run: pip install websockets")
     extra = getattr(pconfig, "extra", {}) or {}
     ws_url = _get_scoped_secret("SIMPLEX_WS_URL") or extra.get("ws_url", "ws://127.0.0.1:5225")
     if not ws_url:
-        return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
+        return send_error("SimpleX standalone send: SIMPLEX_WS_URL is required")
     try:
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",
@@ -633,7 +633,7 @@ async def _standalone_send(
             await asyncio.sleep(0.5)  # let the daemon process the command before closing
         return {"success": True, "platform": "simplex", "chat_id": chat_id}
     except Exception as e:
-        return {"error": f"SimpleX send failed: {e}"}
+        return send_error(f"SimpleX send failed: {e}")
 
 
 _SETUP_PROMPTS = (

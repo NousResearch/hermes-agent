@@ -37,7 +37,7 @@ else:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
@@ -1496,7 +1496,7 @@ def _standalone_error(resp: Any) -> Dict[str, Any]:
         error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
     else:
         error = str(data.get("error") or "sidecar reported failure")
-    return {"error": error, "error_class": error_class, "retryable": retryable}
+    return {**send_error(error), "error_class": error_class, "retryable": retryable}
 
 
 def _standalone_token_from_record(port: int) -> Tuple[Optional[str], int, str]:
@@ -1523,14 +1523,14 @@ async def _standalone_send(
     force_document: bool = False,  # noqa: ARG001 — iMessage auto-detects file kind
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
-        return {"error": "httpx not installed"}
+        return send_error("httpx not installed")
     port = _coerce_port(
         (pconfig.extra or {}).get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
     token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN")
     if not token:
         token, port, error = _standalone_token_from_record(port)
         if not token:
-            return {"error": error}
+            return send_error(error)
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
@@ -1571,7 +1571,7 @@ async def _standalone_send(
                 last_message_id = data.get("messageId") or last_message_id
         return {"success": True, "message_id": last_message_id}
     except Exception as e:
-        return {"error": f"Photon standalone send failed: {e}"}
+        return send_error(f"Photon standalone send failed: {e}")
 
 
 # -- Plugin entry point ----------------------------------------------------------

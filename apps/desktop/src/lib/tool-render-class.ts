@@ -10,11 +10,37 @@
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 
+/** Map Cursor / ACP tool names onto Hermes equivalents for product chrome. */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  shell: 'terminal',
+  read: 'read_file',
+  write: 'write_file',
+  edit: 'edit_file',
+  strreplace: 'edit_file',
+  search_replace: 'edit_file',
+  grep: 'search_files',
+  glob: 'list_files',
+  listdir: 'list_files',
+  list_dir: 'list_files'
+}
+
+export function canonicalToolName(toolName: string): string {
+  const raw = String(toolName || '').trim()
+
+  if (!raw) {
+    return raw
+  }
+
+  const underscored = raw.replace(/-/g, '_')
+
+  return TOOL_NAME_ALIASES[raw] ?? TOOL_NAME_ALIASES[underscored] ?? underscored
+}
+
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
 /** Renders a diff — the deliverable of the turn, and the one card whose cost scales. */
 export function isFileEditTool(toolName: string): boolean {
-  return FILE_EDIT_TOOL_NAMES.has(toolName)
+  return FILE_EDIT_TOOL_NAMES.has(canonicalToolName(toolName))
 }
 
 // Tools that draw their own surface and must never be folded into a run's
@@ -34,10 +60,12 @@ export function isFileEditTool(toolName: string): boolean {
 const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
 
 export function isCardTool(toolName: string): boolean {
+  const canonical = canonicalToolName(toolName)
+
   return (
-    CARD_TOOL_NAMES.has(toolName) ||
-    isFileEditTool(toolName) ||
-    (toolName === 'manage_connections' && isOnboardingEnabled())
+    CARD_TOOL_NAMES.has(canonical) ||
+    isFileEditTool(canonical) ||
+    (canonical === 'manage_connections' && isOnboardingEnabled())
   )
 }
 
@@ -48,5 +76,5 @@ export function isCardTool(toolName: string): boolean {
 const SILENT_TOOL_NAMES = new Set(['react_to_message', 'todo', 'todo_list'])
 
 export function isSilentTool(toolName: string): boolean {
-  return SILENT_TOOL_NAMES.has(toolName)
+  return SILENT_TOOL_NAMES.has(canonicalToolName(toolName))
 }

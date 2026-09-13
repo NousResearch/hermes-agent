@@ -193,11 +193,166 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
+/**
+ * Pair valid `**…**` spans and strip leftover unpaired `**` markers so LLM
+ * glitches like `Vol. **2947` or `**AS-IS / no warranty` don't leave stray
+ * asterisks in the rendered transcript.
+ */
+export function scrubUnbalancedBold(text: string): string {
+  const markers: number[] = []
+
+  for (let i = 0; i < text.length - 1; i += 1) {
+    if (text[i] !== '*' || text[i + 1] !== '*' || isEscapedAt(text, i)) {
+      continue
+    }
+
+    markers.push(i)
+    i += 1
+  }
+
+  if (markers.length === 0) {
+    return text
+  }
+
+  const keep = new Set<number>()
+
+  for (let i = 0; i < markers.length; ) {
+    if (i + 1 < markers.length) {
+      const open = markers[i]!
+      const close = markers[i + 1]!
+      const inner = text.slice(open + 2, close)
+
+      // OCR / LLM glitches like `Vol. **2947 / page **0769` — both markers
+      // hug digits, so strip them instead of inventing a bold span.
+      const openHugsDigits = /^\*\*\s*\d/.test(text.slice(open))
+      const closeHugsDigits = /^\*\*\s*\d/.test(text.slice(close))
+      const ocrGlitch = inner.length > 0 && openHugsDigits && closeHugsDigits
+
+      if (inner.length > 0 && !ocrGlitch) {
+        keep.add(open)
+        keep.add(close)
+        i += 2
+
+        continue
+      }
+
+      // Skip both markers of an OCR glitch pair (strip them).
+      if (inner.length > 0 && ocrGlitch) {
+        i += 2
+
+        continue
+      }
+    }
+
+    i += 1
+  }
+
+  if (keep.size === markers.length) {
+    return text
+  }
+
+  let out = ''
+  let cursor = 0
+
+  for (const marker of markers) {
+    out += text.slice(cursor, marker)
+
+    if (keep.has(marker)) {
+      out += '**'
+    }
+
+    cursor = marker + 2
+  }
+
+  out += text.slice(cursor)
+
+  return out
+}
+
+/**
+ * Strip unpaired single `*` emphasis markers (after bold scrub). Keeps
+ * `*italic*` pairs and leaves list markers like `* item` alone.
+ */
+export function scrubUnbalancedItalic(text: string): string {
+  const markers: number[] = []
+
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '*' || isEscapedAt(text, i)) {
+      continue
+    }
+
+    // Skip `**` (owned by the bold scrubber) and `***`.
+    if (text[i + 1] === '*') {
+      while (i < text.length && text[i] === '*') {
+        i += 1
+      }
+      i -= 1
+      continue
+    }
+
+    // Common markdown list / thematic marker — leave alone.
+    if ((i === 0 || text[i - 1] === '\n') && (text[i + 1] === ' ' || text[i + 1] === '\t')) {
+      continue
+    }
+
+    markers.push(i)
+  }
+
+  if (markers.length === 0) {
+    return text
+  }
+
+  const keep = new Set<number>()
+
+  for (let i = 0; i < markers.length; ) {
+    if (i + 1 < markers.length) {
+      const open = markers[i]!
+      const close = markers[i + 1]!
+      const inner = text.slice(open + 1, close)
+
+      if (inner.length > 0 && !inner.includes('\n')) {
+        keep.add(open)
+        keep.add(close)
+        i += 2
+
+        continue
+      }
+    }
+
+    i += 1
+  }
+
+  if (keep.size === markers.length) {
+    return text
+  }
+
+  let out = ''
+  let cursor = 0
+
+  for (const marker of markers) {
+    out += text.slice(cursor, marker)
+
+    if (keep.has(marker)) {
+      out += '*'
+    }
+
+    cursor = marker + 1
+  }
+
+  out += text.slice(cursor)
+
+  return out
+}
+
 function rewriteProseSegment(segment: string): string {
-  return linkifySessionRefs(
-    autoLinkRawUrls(
-      routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+  return scrubUnbalancedItalic(
+    scrubUnbalancedBold(
+      linkifySessionRefs(
+        autoLinkRawUrls(
+          routeFileLinksToPreview(
+            segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+          )
+        )
       )
     )
   )

@@ -390,4 +390,28 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('\\sqrt[3]{8}')
   })
+
+  it('strips unpaired bold markers from LLM prose', () => {
+    expect(preprocessMarkdown('Vol. **2947')).toBe('Vol. 2947')
+    expect(preprocessMarkdown('filename page **0769)')).toBe('filename page 0769)')
+    expect(preprocessMarkdown('**AS-IS / no warranty')).toBe('AS-IS / no warranty')
+    expect(preprocessMarkdown('Keep **balanced** emphasis')).toBe('Keep **balanced** emphasis')
+    // OCR-style digit spans should not become bold; strip both markers.
+    expect(preprocessMarkdown('Vol. **2947 / filename page **0769).')).toBe(
+      'Vol. 2947 / filename page 0769).'
+    )
+    // Two markers pair into a valid bold span (no stray asterisks left unpaired).
+    expect(preprocessMarkdown('**Subject Leases (Exhibit A), **only as to acreage')).toBe(
+      '**Subject Leases (Exhibit A), **only as to acreage'
+    )
+  })
+
+  it('strips unpaired single italic markers from LLM prose', () => {
+    expect(preprocessMarkdown('Taken *subject to lease terms')).toBe('Taken subject to lease terms')
+    expect(preprocessMarkdown('Keep *italic* emphasis')).toBe('Keep *italic* emphasis')
+  })
+
+  it('does not scrub bold markers inside inline code', () => {
+    expect(preprocessMarkdown('Use `**literal**` asterisks')).toBe('Use `**literal**` asterisks')
+  })
 })

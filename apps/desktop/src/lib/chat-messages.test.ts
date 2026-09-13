@@ -6,12 +6,15 @@ import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
+  assistantTextPart,
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
+  extractCopilotToolActivity,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
+  rebalanceCopilotToolText,
   renderMediaTags,
   sealOpenToolParts,
   stripPendingClarifyProjectionForCache,
@@ -1176,6 +1179,126 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+describe('extractCopilotToolActivity', () => {
+  it('lifts Cursor tool chrome into tool-call parts and keeps narration', () => {
+    const parts = extractCopilotToolActivity(
+      [
+        "I'll check the file.",
+        '',
+        '⚙ read — /tmp/demo.txt',
+        '✓ read — {"content":"hello"}',
+        '',
+        'Done.'
+      ].join('\n')
+    )
+
+    expect(parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+    expect((parts[0] as { text: string }).text).toContain("I'll check the file.")
+    expect(parts[1]).toMatchObject({
+      type: 'tool-call',
+      toolName: 'read',
+      result: { content: 'hello' }
+    })
+    expect((parts[2] as { text: string }).text).toBe('Done.')
+  })
+
+  it('splits multiple tool marks on one line', () => {
+    const parts = extractCopilotToolActivity(
+      '⚙ shell — ls -la ✗ read — {"errorMessage":"File not found"} ✓ shell — {"stdout":"ok"}'
+    )
+
+    const tools = parts.filter(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>[]
+    expect(tools).toHaveLength(2)
+    expect(tools[0]).toMatchObject({ toolName: 'shell', result: { stdout: 'ok' }, isError: false })
+    expect(tools[1]).toMatchObject({ toolName: 'read', result: { errorMessage: 'File not found' }, isError: true })
+  })
+
+  it('lifts chrome without an em-dash payload (proxy start/complete)', () => {
+    const parts = extractCopilotToolActivity('⚙ shell\n✓ shell\n')
+    const tools = parts.filter(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>[]
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({ toolName: 'shell', result: '' })
+    expect(parts.every(p => p.type !== 'text' || !/[⚙✓]/.test((p as { text: string }).text))).toBe(true)
+  })
+
+  it('lifts MCP chrome with a · server suffix', () => {
+    const parts = extractCopilotToolActivity(
+      '⚙ CallMcpTool · user-git — {"toolName":"git_status"}\n✓ CallMcpTool · user-git — ok\n'
+    )
+    const tools = parts.filter(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>[]
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({ toolName: 'CallMcpTool', result: 'ok' })
+  })
+
+  it('promotes a finished tool line without a trailing newline while streaming', () => {
+    const parts = appendAssistantTextPart([], '⚙ shell — echo hi')
+    expect(parts.some(p => p.type === 'tool-call')).toBe(true)
+    expect(parts.some(p => p.type === 'text' && /⚙/.test((p as { text: string }).text))).toBe(false)
+  })
+
+  it('still holds an incomplete JSON payload line while streaming', () => {
+    const parts = appendAssistantTextPart([], '⚙ shell — {"command":')
+    expect(parts.some(p => p.type === 'tool-call')).toBe(false)
+    expect(parts.some(p => p.type === 'text' && /⚙/.test((p as { text: string }).text))).toBe(true)
+  })
+
+  it('promotes completed tool lines while streaming', () => {
+    let parts = appendAssistantTextPart([], "I'll look.\n⚙ shell — echo hi\n")
+    expect(parts.some(p => p.type === 'tool-call')).toBe(true)
+
+    parts = appendAssistantTextPart(parts, '✓ shell — done\nAll set.')
+    const tools = parts.filter(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>[]
+    expect(tools).toHaveLength(1)
+    expect(tools[0]?.result).toBe('done')
+    expect(chatMessageText({ id: 'a', role: 'assistant', parts })).toContain('All set.')
+  })
+
+  it('keeps unique toolCallIds when Cursor chrome is split by a native tool part', () => {
+    const seeded: ChatMessagePart[] = [
+      assistantTextPart('⚙ shell — echo one\n✓ shell — one\n'),
+      {
+        type: 'tool-call',
+        toolCallId: 'gateway-terminal-1',
+        toolName: 'terminal',
+        args: { command: 'pwd' } as never,
+        argsText: '{"command":"pwd"}',
+        result: { stdout: '/tmp' }
+      },
+      assistantTextPart('⚙ shell — echo two\n✓ shell — two\n')
+    ]
+
+    const parts = rebalanceCopilotToolText(seeded)
+    const tools = parts.filter(p => p.type === 'tool-call') as Extract<ChatMessagePart, { type: 'tool-call' }>[]
+    const ids = tools.map(t => t.toolCallId)
+    expect(ids).toHaveLength(3)
+    expect(new Set(ids).size).toBe(3)
+    expect(ids.filter(id => String(id).startsWith('copilot-tool:shell:'))).toEqual([
+      'copilot-tool:shell:0',
+      'copilot-tool:shell:1'
+    ])
+  })
+
+  it('rehydrates Cursor tool chrome from stored assistant content', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Working.\n\n⚙ get-mcp-tools — {"server":"Dropbox MCP"}\n✓ get-mcp-tools — {"serverStatus":"ready"}\n\nDone.',
+        timestamp: 1
+      }
+    ])
+
+    const tools = message.parts.filter(p => p.type === 'tool-call') as Extract<
+      ChatMessagePart,
+      { type: 'tool-call' }
+    >[]
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({ toolName: 'get_mcp_tools' })
+    expect(chatMessageText(message)).toContain('Working.')
+    expect(chatMessageText(message)).toContain('Done.')
+    expect(chatMessageText(message)).not.toContain('⚙')
   })
 })
 

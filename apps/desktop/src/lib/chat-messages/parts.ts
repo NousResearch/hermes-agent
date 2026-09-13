@@ -1,5 +1,6 @@
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 
+import { isCopilotToolPart, rebalanceCopilotToolText } from './copilot-tools'
 import type { ChatMessage, ChatMessagePart } from './types'
 
 export function textPart(text: string, timestamp?: number): ChatMessagePart {
@@ -201,6 +202,12 @@ export function mergeFinalAssistantText(
       return false
     }
 
+    // Cursor chrome tool rows were promoted from streamed text — drop them so
+    // the authoritative final text can be re-extracted cleanly.
+    if (isCopilotToolPart(part)) {
+      return false
+    }
+
     if (part.type !== 'reasoning' || !dedupeReference) {
       return true
     }
@@ -223,7 +230,9 @@ export function mergeFinalAssistantText(
     finalPart.completedAt = previousText.completedAt
   }
 
-  return [...kept, finalPart]
+  // Pass final text through rebalance once (shared toolSeq) — do not pre-extract
+  // or we can mint duplicate `copilot-tool:…:0` ids across segments.
+  return rebalanceCopilotToolText([...kept, finalPart])
 }
 
 /** Seal every still-open visible activity when the assistant turn stops. */
@@ -298,6 +307,14 @@ export function appendAssistantTextPart(
     if (rendered !== part.text) {
       next[index] = { ...part, text: rendered }
     }
+  }
+
+  // Promote completed Cursor tool-chrome lines into collapsible tool-call rows
+  // while the turn is still streaming. Hold the incomplete trailing line.
+  const current = next[index]
+
+  if (/[⚙✓✗✕❌]/.test(current?.type === 'text' ? current.text : delta)) {
+    return rebalanceCopilotToolText(next, { holdIncompleteLastLine: true })
   }
 
   return next

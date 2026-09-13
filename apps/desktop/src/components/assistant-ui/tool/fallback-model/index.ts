@@ -4,7 +4,7 @@ import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
-import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
+import { canonicalToolName, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
@@ -38,7 +38,7 @@ export * from './types'
 // The transcript's render budget prices a turn by the same classification, so
 // it lives in `@/lib/tool-render-class` where both sides can reach it without
 // pulling this module's formatting/i18n weight into the cost path.
-export { isCardTool, isFileEditTool, isSilentTool }
+export { canonicalToolName, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 
 export interface DiffLineStats {
   added: number
@@ -238,21 +238,47 @@ const PREFIX_META: { icon?: string; labelKey: string; prefix: string; tone: Tool
   { prefix: 'web_', labelKey: 'web', icon: 'globe', tone: 'web' }
 ]
 
+function isMcpToolName(name: string): boolean {
+  return name === 'get_mcp_tools' || name === 'call_mcp_tool' || name.startsWith('mcp_')
+}
+
 function toolMeta(name: string): ToolMeta {
-  if (isToolTitleKey(name)) {
-    const meta = TOOL_META[name]
+  const canonical = canonicalToolName(name)
+
+  if (isToolTitleKey(canonical)) {
+    const meta = TOOL_META[canonical]
 
     return {
-      done: translateNow(`assistant.tool.titles.${name}.done`),
-      pending: translateNow(`assistant.tool.titles.${name}.pending`),
-      pendingAction: translateNow(`assistant.tool.titles.${name}.pendingAction`),
+      done: translateNow(`assistant.tool.titles.${canonical}.done`),
+      pending: translateNow(`assistant.tool.titles.${canonical}.pending`),
+      pendingAction: translateNow(`assistant.tool.titles.${canonical}.pendingAction`),
       icon: meta.icon,
       tone: meta.tone
     }
   }
 
-  const action = titleForTool(name)
-  const prefix = PREFIX_META.find(p => name.startsWith(p.prefix))
+  if (canonical === 'get_mcp_tools') {
+    return {
+      done: 'Listed MCP tools',
+      pending: 'Listing MCP tools',
+      pendingAction: translateNow('assistant.tool.actions.running'),
+      icon: 'tools',
+      tone: 'agent'
+    }
+  }
+
+  if (canonical === 'call_mcp_tool') {
+    return {
+      done: 'Called MCP tool',
+      pending: 'Calling MCP tool',
+      pendingAction: translateNow('assistant.tool.actions.running'),
+      icon: 'tools',
+      tone: 'agent'
+    }
+  }
+
+  const action = titleForTool(canonical)
+  const prefix = PREFIX_META.find(p => canonical.startsWith(p.prefix))
 
   if (prefix) {
     const prefixLabel = translateNow(`assistant.tool.prefixes.${prefix.labelKey}`)
@@ -270,7 +296,8 @@ function toolMeta(name: string): ToolMeta {
     done: action,
     pending: translateNow('assistant.tool.titleTemplates.runningTool', action),
     pendingAction: translateNow('assistant.tool.actions.running'),
-    tone: 'default'
+    icon: isMcpToolName(canonical) ? 'tools' : undefined,
+    tone: isMcpToolName(canonical) ? 'agent' : 'default'
   }
 }
 
@@ -937,7 +964,22 @@ function toolSubtitle(
   argsRecord: Record<string, unknown>,
   resultRecord: Record<string, unknown>
 ): string {
-  const toolName = part.toolName
+  const toolName = canonicalToolName(part.toolName)
+
+  if (toolName === 'get_mcp_tools') {
+    const server = firstStringField(argsRecord, ['server', 'name'])
+    const message = firstStringField(resultRecord, ['message', 'error', 'serverError'])
+
+    return compactPreview(message || server || 'MCP servers', 120)
+  }
+
+  if (toolName === 'call_mcp_tool') {
+    const server = firstStringField(argsRecord, ['server'])
+    const tool = firstStringField(argsRecord, ['toolName', 'tool_name', 'name'])
+    const label = [server, tool].filter(Boolean).join(' · ')
+
+    return compactPreview(label || 'MCP tool', 120)
+  }
 
   if (toolName === 'browser_navigate') {
     const url =

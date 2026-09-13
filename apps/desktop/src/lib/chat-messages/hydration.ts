@@ -4,6 +4,7 @@ import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
+import { extractCopilotToolActivity } from './copilot-tools'
 import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
 import {
   applyStoredToolResult,
@@ -346,11 +347,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (displayContent) {
-      parts.push(
-        displayRole === 'assistant'
-          ? assistantTextPart(displayContent, message.timestamp)
-          : textPart(displayContent, message.timestamp)
-      )
+      if (displayRole === 'assistant') {
+        for (const part of extractCopilotToolActivity(displayContent)) {
+          if (part.type === 'text') {
+            parts.push(assistantTextPart(part.text, message.timestamp))
+          } else {
+            parts.push(message.timestamp !== undefined ? { ...part, timestamp: message.timestamp } : part)
+          }
+        }
+      } else {
+        parts.push(textPart(displayContent, message.timestamp))
+      }
     }
 
     // Reply text can live only in the sidecar alongside reasoning or tool parts.

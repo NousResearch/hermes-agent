@@ -1,3 +1,4 @@
+export { extractCopilotToolActivity, rebalanceCopilotToolText } from './copilot-tools'
 export { toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,

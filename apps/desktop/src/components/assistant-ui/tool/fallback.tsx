@@ -57,6 +57,7 @@ import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisc
 import { APPROVAL_TOOLS, PendingToolApproval } from './approval'
 import {
   buildToolView,
+  canonicalToolName,
   clampForDisplay,
   cleanVisibleText,
   countDiffLineStats,
@@ -457,12 +458,13 @@ function ToolEntry({ part }: ToolEntryProps) {
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
       (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
+  const canonicalName = canonicalToolName(part.toolName)
   const renderDetailAsCode =
     view.status !== 'error' &&
-    (part.toolName === 'terminal' || part.toolName === 'execute_code' || part.toolName === 'read_file')
+    (canonicalName === 'terminal' || canonicalName === 'execute_code' || canonicalName === 'read_file')
 
   const hasSearchHits = Boolean(view.searchHits?.length)
-  const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
+  const searchResultsLabel = canonicalName === 'web_search' ? 'Search results' : view.detailLabel
 
   const hasExpandableContent = Boolean(
     view.imageUrl ||
@@ -615,7 +617,7 @@ function ToolEntry({ part }: ToolEntryProps) {
               text={copyAction.text}
             />
           )}
-          {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
+          {canonicalName === 'terminal' && toolViewMode !== 'technical' && (
             <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
           )}
           {view.imageUrl && (

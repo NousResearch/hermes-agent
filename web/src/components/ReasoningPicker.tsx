@@ -109,7 +109,7 @@ export function ReasoningPicker({
         <span className="text-display tracking-wider">reasoning</span>
       </div>
       <Select
-        className="ml-auto min-w-0"
+        className="ms-auto min-w-0"
         disabled={!loaded || saving}
         onValueChange={onSelect}
         value={effort}

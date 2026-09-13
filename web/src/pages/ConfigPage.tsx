@@ -132,9 +132,9 @@ export default function ConfigPage() {
     }
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 pl-8 pr-7 text-xs"
+          className="h-8 ps-8 pe-7 text-xs"
           placeholder={t.common.search}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -143,7 +143,7 @@ export default function ConfigPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearchQuery("")}
             aria-label={t.common.clear}
           >

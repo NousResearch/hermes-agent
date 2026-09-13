@@ -250,7 +250,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   )}
                   {p.status.logged_in && p.flow === "external" && (
                     <span className="text-xs text-text-tertiary italic px-2">
-                      <Terminal className="h-3 w-3 inline mr-0.5" />
+                      <Terminal className="h-3 w-3 inline me-0.5" />
                       {t.oauth.managedExternally}
                     </span>
                   )}

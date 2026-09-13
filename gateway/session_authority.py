@@ -190,7 +190,11 @@ class SessionAuthority:
     def _schedule(self, ref):
         live = self.sessions[ref.session_id]
         if live.task is None or live.task.done():
+            from gateway.session_task_diagnostics import drain_task_reporter
+            report = drain_task_reporter(profile_id=self.profile_id,
+                                         session_id=ref.session_id, epoch=self.epoch)
             live.task = asyncio.create_task(self._drain(ref))
+            live.task.add_done_callback(report)
 
     async def admit_automation(self, adapter, event, identity):
         from gateway.session_automation import admit_automation

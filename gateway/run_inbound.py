@@ -1154,6 +1154,7 @@ class GatewayInboundMixin:
             _handled = _result is not None
         return _handled, _result
 
+
     def _hm_rescue_orphaned_fifo(
         self, event: "MessageEvent", source: SessionSource, is_internal: bool, _quick_key: str
     ) -> Tuple["MessageEvent", SessionSource, bool]:
@@ -1195,14 +1196,15 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
-        # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
-        # not on the adapter's raw inbound: profile routing, the ignored-channel
-        # guard, plugin hooks and user authorization all reject events above,
-        # and a rejected event must not be able to clear a refusal belonging to
-        # an active turn. This is also the single entry point every lane shares
-        # — Discord interaction passthrough builds its own MessageEvent and
-        # calls handle_message directly, so a teardown on the relay's inbound
-        # handler left those turns muted.
+
+        if self._is_stale_restart_redelivery(event):
+            logger.info(
+                "Suppressing stale restart redelivery message on platform=%s chat=%s msg=%s",
+                source.platform.value if source.platform else "unknown",
+                getattr(source, "chat_id", None),
+                getattr(event, "message_id", None),
+            )
+            return ""
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:

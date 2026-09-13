@@ -6,6 +6,7 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 """
 
 from __future__ import annotations
+import os
 
 import asyncio
 import contextlib
@@ -18,7 +19,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
@@ -287,7 +287,7 @@ class GatewayNotificationsMixin:
             # the same filter removal on the non-streaming path in gateway/platforms/base.py. Bare local
             # paths in an already-streamed reply are text the user has seen (or stale inspected content),
             # not an attachment request.
-            adapter.extract_images(cleaned)
+            _stream_extracted_images, cleaned = adapter.extract_images(cleaned)
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
@@ -299,12 +299,33 @@ class GatewayNotificationsMixin:
                 ext = Path(media_path).suffix.lower()
                 return ext in _IMAGE_EXTS and not is_voice and not force_document_attachments
 
-            image_paths = [p for p, v in media_files if _is_photo(p, v)]
-            non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
-            if image_paths:
+            image_delivery: list = []
+            non_image_media: list = []
+            delivery_keys: set = set()
+            for media_path, is_voice in media_files:
+                if _is_photo(media_path, is_voice):
+                    image_delivery.append((f"file://{_quote(media_path)}", ""))
+                    delivery_keys.add(("local", os.path.normcase(media_path)))
+                else:
+                    non_image_media.append((media_path, is_voice))
+
+            for img_url, img_alt in _stream_extracted_images:
+                if img_url.lower().startswith('file://'):
+                    normed = BasePlatformAdapter._normalize_file_url(img_url)
+                    if normed:
+                        key = ("local", os.path.normcase(normed))
+                        if key in delivery_keys:
+                            continue
+                        delivery_keys.add(key)
+                elif ("local", img_url) in delivery_keys or ("url", img_url) in delivery_keys:
+                    continue
+                else:
+                    delivery_keys.add(("url", img_url))
+                image_delivery.append((img_url, img_alt))
+
+            if image_delivery:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    await adapter.send_multiple_images(chat_id=chat_id, images=image_delivery, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
@@ -326,14 +347,8 @@ class GatewayNotificationsMixin:
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
-        session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
     ) -> None:
-        """Deliver a queued response using the normal text+attachment split.
-
-        ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
-        send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
-        ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
-        stays unledgered."""
+        """Deliver a queued response using the normal text+attachment split."""
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
@@ -357,25 +372,10 @@ class GatewayNotificationsMixin:
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
                             )
-                        else:
-                            # P5(b): a DECLINE is not "editing unavailable". The
-                            # send below re-delivers the whole response to the
-                            # chat the connector just refused.
-                            from gateway.relay.egress import declined_send
-
-                            if declined_send(_edit_res):
-                                logger.warning(
-                                    "Queued-lane reconcile edit DECLINED by the "
-                                    "connector's egress guard; not falling back "
-                                    "to a send (the destination is not approved)."
-                                )
-                                return
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    await self._send_queued_final_text(
-                        adapter, source, text_content, metadata, event_message_id, session_key,
-                        inbound_message_id)
+                    await adapter.send(source.chat_id, text_content, metadata=metadata)
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
@@ -384,31 +384,6 @@ class GatewayNotificationsMixin:
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
-
-    async def _send_queued_final_text(
-        self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
-        event_message_id: Optional[str], session_key: Optional[str],
-        inbound_message_id: Optional[str] = None,
-    ):
-        """Send a queued-lane final through the same ledger bracket as the normal final
-        (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
-        result, so a final refused here (flood control, a transport that had just died) left no
-        ledger row and was gone for good. The ledger identity is the raw inbound message id;
-        ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
-        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn; with no
-        inbound id the ledger falls back to the event's own (empty) message id. Adapters without
-        the base contract and sends without a session key keep the plain send."""
-        if session_key and isinstance(adapter, BasePlatformAdapter):
-            result, _ = await adapter.send_final_ledgered(
-                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
-                session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
-        else:
-            result = await adapter.send(source.chat_id, text_content, metadata=metadata)
-        if not getattr(result, "success", False):
-            logger.warning(
-                "Queued-lane final send to %s failed: %s", getattr(source, "chat_id", "?"),
-                getattr(result, "error", None) or "no result")
-        return result
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
@@ -682,7 +657,13 @@ class GatewayNotificationsMixin:
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
-        from gateway.delivery import resolve_delivery_transport
+        try:
+            import gateway.run as _gw_run
+            resolve_delivery_transport = getattr(_gw_run, "resolve_delivery_transport", None)
+            if resolve_delivery_transport is None:
+                from gateway.delivery import resolve_delivery_transport
+        except Exception:
+            from gateway.delivery import resolve_delivery_transport
         from gateway.run import _hermes_home, _non_conversational_metadata
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
@@ -714,8 +695,22 @@ class GatewayNotificationsMixin:
                 for field in ("user_id", "scope_id"):
                     if data.get(field):
                         metadata[field] = str(data[field])
+            if data.get("outcome") == "unknown":
+                message = (
+                    "⚠ Gateway restart result could not be confirmed. "
+                    "The gateway is currently online; please verify and "
+                    "retry if needed."
+                )
+                logger.info(
+                    "Restart notification: outcome=unknown marker -> uncertain message to %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+            else:
+                message = "♻ Gateway restarted successfully. Your session continues."
+
             result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
+                platform, str(chat_id), message,
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
@@ -1519,15 +1514,6 @@ class GatewayNotificationsMixin:
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from gateway.run import _format_gateway_process_notification
         from tools.process_registry import process_registry as _pr
-        # API delivery does not start a model turn, so there is nothing to coalesce.
-        # Keep each unit's stable identity with its row across partial delivery/retry.
-        if group and group[0].get("origin_session_id"):
-            outcomes = []
-            for evt in group:
-                text = _format_gateway_process_notification(evt)
-                if text:
-                    outcomes.append(await self._deliver_completion_notification(text, evt))
-            return False if False in outcomes else True
         deliverable: list[tuple[dict, str]] = []
         for evt in group:
             synth_text = _format_gateway_process_notification(evt)

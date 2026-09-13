@@ -275,6 +275,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
+  saveFileBuffer: (data, filename) => ipcRenderer.invoke('hermes:saveFileBuffer', { data, filename }),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
   contextMenuEdit: command => ipcRenderer.invoke('hermes:context-menu:edit', command),
   contextMenuCopyImage: () => ipcRenderer.invoke('hermes:context-menu:copy-image'),

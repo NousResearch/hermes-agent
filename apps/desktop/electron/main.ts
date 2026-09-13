@@ -5480,6 +5480,18 @@ function fetchJson(url, token, options: any = {}) {
                 return
               }
 
+              // Binary responses (file downloads) skip JSON parsing entirely —
+              // the caller wants the raw bytes, and a FileResponse body would
+              // otherwise throw an opaque `Unexpected token` parse error.
+              if (options.binary) {
+                const buffer = Buffer.concat(chunks)
+                const copy = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+
+                resolve(copy)
+
+                return
+              }
+
               // A 2xx response whose body is HTML means the request fell through
               // to the SPA index.html (e.g. an unregistered /api path). JSON.parse
               // would throw an opaque `Unexpected token '<'` here, so surface a
@@ -15996,7 +16008,7 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
+  opts: { binary?: boolean; method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
 
@@ -16022,6 +16034,7 @@ async function fetchJsonForBackend(
   }
 
   return fetchJson(url, descriptor.token, {
+    binary: opts.binary,
     method: opts.method,
     body: opts.body,
     upload: opts.upload,
@@ -16618,13 +16631,14 @@ async function dispatchRegistryApiRequest(
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
   const response = await fetchJsonForBackend(connection, requestPath, {
+    binary: request?.binary,
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
     timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   })
 
-  return (request?.method || 'GET').toUpperCase() === 'GET'
+  return (request?.method || 'GET').toUpperCase() === 'GET' && !request?.binary
     ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
     : response
 }
@@ -16702,6 +16716,7 @@ async function handleHermesApiRequest(request) {
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
+      binary: request?.binary,
       method: request?.method,
       body: request?.body,
       upload: request?.upload,
@@ -16945,6 +16960,29 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
+
+// Save a renderer-supplied buffer (e.g. a plugin's REST binary download) to a
+// user-picked path. The bytes travel over IPC structured-clone; the dialog and
+// the failure-atomic write (temp + rename) run in main so an interrupted save
+// never truncates an existing destination.
+ipcMain.handle('hermes:saveFileBuffer', async (_event, payload: any = {}) => {
+  const data = payload?.data
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data ?? new ArrayBuffer(0))
+  const filename = String(payload?.filename || '').trim() || 'download'
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: filename,
+    title: 'Save File'
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true, saved: false }
+  }
+
+  await writeBufferToFile(buffer, result.filePath, fsPumpDeps())
+
+  return { path: result.filePath, saved: true }
+})
 
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 

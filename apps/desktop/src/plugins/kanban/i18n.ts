@@ -153,6 +153,8 @@ type KanbanMessages = {
   attachments: (n: number) => string
   noAttachments: string
   uploadAttachment: string
+  downloadAttachment: string
+  downloadError: string
   taskActions: string
   copyTaskId: string
   copyTitle: string
@@ -369,6 +371,8 @@ export const en: KanbanMessages = {
   attachments: n => `Attachments · ${n}`,
   noAttachments: 'No attachments yet.',
   uploadAttachment: 'Upload attachment',
+  downloadAttachment: 'Download attachment',
+  downloadError: 'Could not download the attachment.',
   taskActions: 'Task actions',
   copyTaskId: 'Copy task id',
   copyTitle: 'Copy title',
@@ -580,6 +584,8 @@ const ja: KanbanMessages = {
   attachments: n => `添付・${n}`,
   noAttachments: 'まだ添付はありません。',
   uploadAttachment: '添付をアップロード',
+  downloadAttachment: '添付をダウンロード',
+  downloadError: '添付のダウンロードに失敗しました。',
   taskActions: 'タスクの操作',
   copyTaskId: 'タスク ID をコピー',
   copyTitle: 'タイトルをコピー',
@@ -789,6 +795,8 @@ const zh: KanbanMessages = {
   attachments: n => `附件・${n}`,
   noAttachments: '暂无附件。',
   uploadAttachment: '上传附件',
+  downloadAttachment: '下载附件',
+  downloadError: '附件下载失败。',
   taskActions: '任务操作',
   copyTaskId: '复制任务 ID',
   copyTitle: '复制标题',
@@ -997,6 +1005,8 @@ const zhHant: KanbanMessages = {
   attachments: n => `附件・${n}`,
   noAttachments: '尚無附件。',
   uploadAttachment: '上傳附件',
+  downloadAttachment: '下載附件',
+  downloadError: '附件下載失敗。',
   taskActions: '任務操作',
   copyTaskId: '複製任務 ID',
   copyTitle: '複製標題',

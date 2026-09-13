@@ -33,12 +33,14 @@ import {
   $boardSlug,
   addComment,
   deleteTask,
+  downloadAttachment,
   estimateTask,
   fetchLog,
   fetchProfiles,
   fetchTask,
   logKey,
   patchTask,
+  pluginOs,
   PROFILES_KEY,
   reassignTask,
   reclaimTask,
@@ -412,11 +414,15 @@ const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\
 function AttachmentsSection({
   attachments,
   onUpload,
-  pending
+  onDownload,
+  pending,
+  downloadingId
 }: {
   attachments: KanbanAttachment[]
   onUpload: (file: File) => void
+  onDownload: (attachment: KanbanAttachment) => void
   pending: boolean
+  downloadingId: null | number | string
 }) {
   const k = useKanban()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -457,7 +463,16 @@ function AttachmentsSection({
           {attachments.map(attachment => (
             <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
               <Codicon name="file" size="0.75rem" />
-              {attachment.filename}
+              <button
+                aria-label={`${k.downloadAttachment}: ${attachment.filename}`}
+                className="min-w-0 truncate transition-colors hover:text-foreground disabled:cursor-default disabled:opacity-60"
+                disabled={downloadingId != null}
+                onClick={() => onDownload(attachment)}
+                type="button"
+              >
+                {attachment.filename}
+              </button>
+              {downloadingId === attachment.id && <Codicon name="sync" size="0.75rem" spinning />}
             </li>
           ))}
         </ul>
@@ -651,6 +666,26 @@ export function TaskDrawer({
       }),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: invalidate
+  })
+
+  // Binary download through the plugin REST door (`binary: true`), then hand
+  // the bytes to the shell's native save dialog. The OS door degrades to a
+  // false result on older shells — surface that as an error toast instead of
+  // silently swallowing the fetch.
+  const [downloadingId, setDownloadingId] = useState<null | number | string>(null)
+
+  const downloadMut = useMutation({
+    mutationFn: async (attachment: KanbanAttachment) => {
+      const bytes = await downloadAttachment(attachment.id)
+      const saved = await pluginOs()?.saveFileBuffer(bytes, attachment.filename) ?? false
+
+      if (!saved) {
+        throw new Error(k.downloadError)
+      }
+    },
+    onMutate: attachment => setDownloadingId(attachment.id),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSettled: () => setDownloadingId(null)
   })
 
   if (!id) {
@@ -948,6 +983,8 @@ export function TaskDrawer({
             {Array.isArray(detail.attachments) && (
               <AttachmentsSection
                 attachments={detail.attachments}
+                downloadingId={downloadMut.isPending ? downloadMut.variables?.id ?? null : null}
+                onDownload={attachment => downloadMut.mutate(attachment)}
                 onUpload={file => uploadMut.mutate(file)}
                 pending={uploadMut.isPending}
               />

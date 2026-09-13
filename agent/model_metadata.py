@@ -355,6 +355,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot)
     "qwen3.8-max": 1_000_000, "qwen3.8-flash": 1_000_000, "qwen3.6-plus": 1048576, "qwen3.7-plus": 1048576,
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
+    # mittwald AI Hosting (vLLM) — offline fallbacks only: /v1/models reports
+    # ``max_input_tokens`` per model, which the catalog path already reads. Without these the
+    # 131072 "qwen" catch-all above would win for the 245,760/256,000 Qwen builds, and
+    # gpt-oss-120b would take the silent 256K default. Verified live 2026-09-10.
+    "qwen3.5-122b": 245760, "qwen3.6-35b": 256000, "qwen3.8-27b": 256000, "qwen3.5-0.8b": 262144,
+    "ministral-3-14b": 262144, "gpt-oss": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
     # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);

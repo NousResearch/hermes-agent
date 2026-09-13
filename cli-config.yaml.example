@@ -64,6 +64,7 @@ model:
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "deepinfra"    - DeepInfra (requires: DEEPINFRA_API_KEY)
+  #   "mittwald"     - mittwald AI Hosting, EU/Germany (requires: MITTWALD_LLM_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
@@ -1500,11 +1501,12 @@ platform_toolsets:
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
 # Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
+#            | xai | elevenlabs | deepinfra | mittwald (EU-hosted whisper-large-v3-turbo)
+# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or MITTWALD_LLM_API_KEY.
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
-  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
+  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra/mittwald) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
   # silence inflates upload time, per-audio-minute billing, and hallucination risk.
   # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
@@ -1522,7 +1524,7 @@ stt:
   # that provider.
   #
   # Length / truncation contract: Whisper-family backends (local, openai,
-  # groq, deepinfra) only use the final ~224 prompt tokens, so Hermes
+  # groq, deepinfra, mittwald) only use the final ~224 prompt tokens, so Hermes
   # truncates longer prompts client-side (keeping the tail) with a WARNING
   # log — never an error. Other backends own their own validation.
   #
@@ -1530,7 +1532,7 @@ stt:
   #   local (faster-whisper)  -> `initial_prompt`, forwarded unchanged
   #   openai / groq          -> `prompt`, forwarded unchanged
   #   mistral                -> `prompt`, forwarded unchanged
-  #   deepinfra              -> OpenAI-compatible `prompt`, unchanged
+  #   deepinfra / mittwald   -> OpenAI-compatible `prompt`, unchanged
   #   local_command/xai/
   #   elevenlabs             -> unsupported; DEBUG log, then continue
   #   plugin providers       -> `prompt` in `**extra`; plugin owns limits
@@ -1560,9 +1562,14 @@ stt:
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # mittwald:
+  #   # EU-hosted whisper-large-v3-turbo. Uploads cap at 10 minutes of audio.
+  #   model: "whisper-large-v3-turbo"
+  #   language: ""            # blank = stt.language > auto-detect; ISO-639-1 to force
+  #   base_url: ""            # wins over MITTWALD_STT_BASE_URL and MITTWALD_BASE_URL
 
-# Text-to-speech. Only the deepinfra block is documented here — the
-# remaining providers (edge, openai, xai, minimax, mistral, gemini,
+# Text-to-speech. Only the deepinfra and mittwald blocks are documented here —
+# the remaining providers (edge, openai, xai, minimax, mistral, gemini,
 # elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
 # DEFAULT_CONFIG in hermes_cli/config.py.
 # tts:
@@ -1573,6 +1580,15 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+#   mittwald:
+#     # Qwen3-TTS on mittwald AI Hosting. `voice` is mandatory server-side,
+#     # and `language` takes a word form, not an ISO code — Hermes maps the
+#     # common codes ("de" -> "German") and passes word forms through.
+#     model: "Qwen3-TTS-12Hz-1.7B-CustomVoice"
+#     voice: "ryan"           # aiden | dylan | eric | ono_anna | ryan | serena | sohee | uncle_fu | vivian
+#     language: ""            # Auto | Chinese | English | French | German | Italian | Japanese |
+#                             # Korean | Portuguese | Russian | Spanish | Beijing_Dialect | Sichuan_Dialect
+#     base_url: ""            # overrides MITTWALD_BASE_URL for TTS only
 
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
 # Full engine/provider options inherit from DEFAULT_CONFIG in

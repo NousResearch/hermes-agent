@@ -337,6 +337,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# mittwald AI Hosting (EU, Germany)
+hermes chat --provider mittwald --model Qwen3.6-35B-A3B-FP8
+# Requires: MITTWALD_LLM_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -348,7 +352,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, `MITTWALD_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Meta contributor tier
 `muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.
@@ -357,6 +361,39 @@ Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_U
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
 :::
+
+### mittwald AI Hosting
+
+[mittwald AI Hosting](https://developer.mittwald.de/docs/v2/platform/aihosting/introduction/) serves open-weight models from German data centres over an OpenAI-compatible API (vLLM). Model IDs are case-sensitive and are passed through verbatim.
+
+```bash
+hermes chat --provider mittwald --model Qwen3.6-35B-A3B-FP8
+# Requires: MITTWALD_LLM_API_KEY in ~/.hermes/.env
+```
+
+Or permanently in `config.yaml`:
+```yaml
+model:
+  provider: "mittwald"
+  default: "Qwen3.6-35B-A3B-FP8"
+```
+
+| Model | Context | Notes |
+|-------|---------|-------|
+| `Qwen3.6-35B-A3B-FP8` | 256,000 | Default pick — tools + vision |
+| `Qwen3.8-27B-NVFP4` | 256,000 | Tools + vision |
+| `Qwen3.5-122B-A10B-FP8` | 245,760 | Largest model, tools + vision |
+| `Ministral-3-14B-Instruct-2512` | 262,144 | Tools + vision |
+| `gpt-oss-120b` | 131,072 | Tools + reasoning |
+| `Qwen3.5-0.8B` | 262,144 | Small/cheap; also the auxiliary-task default |
+
+Context windows come from the live `/v1/models` catalog (`max_input_tokens`), so each model gets its own window — the values above are the offline fallbacks.
+
+The API key is created per project in mStudio under **AI-Hosting**; it is not one of the profile API tokens. Set `MITTWALD_LLM_API_KEY` (`MITTWALD_AI_API_KEY` also works) in `~/.hermes/.env`, and `MITTWALD_BASE_URL` to point at a different endpoint.
+
+`reasoning_effort` is supported, including `none` — which actually switches Qwen's thinking off rather than just hiding it.
+
+The same key also serves the voice and embedding endpoints: `whisper-large-v3-turbo` for [speech-to-text](../user-guide/features/tts.md#speech-to-text), `Qwen3-TTS-12Hz-1.7B-CustomVoice` for [text-to-speech](../user-guide/features/tts.md#text-to-speech), and `Qwen3-Embedding-8B` (4096 dimensions) as a [mem0 memory embedder](../user-guide/features/memory-providers.md). The hosted OCR (`GLM-OCR`) and reranker (`Qwen3-VL-Reranker-2B`) models are reachable with the same key but have no Hermes consumer — documents go through the vision models instead.
 
 ### xAI (Grok) — Responses API + Prompt Caching
 

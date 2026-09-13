@@ -2,7 +2,7 @@
 """Speech-to-text transcription used by the gateway for voice messages.
 
 Built-in providers: local (faster-whisper, default/free), local_command, groq, openai
-(also serves the managed ``nous`` selection), mistral, xai, elevenlabs, deepinfra; plus
+(also serves the managed ``nous`` selection), mistral, xai, elevenlabs, deepinfra, mittwald; plus
 user-declared command providers and plugin providers. ``transcribe_audio(path)`` returns
 ``{"success", "transcript", "error"?, "provider"?}``. This module owns provider resolution,
 the dispatcher and the cached local model + idle-unload state; backends live in
@@ -21,7 +21,8 @@ from typing import Optional, Dict, Any
 from utils import is_truthy_value
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL,
+    DEFAULT_MITTWALD_STT_MODEL, DEFAULT_PROVIDER,
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
     _get_stt_section, _ok_result)
 from tools.transcription_audio import (
@@ -34,7 +35,8 @@ from tools.transcription_local import (
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
-    _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
+    _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_mittwald,
+    _transcribe_openai,
     _transcribe_xai)
 from tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
@@ -197,6 +199,11 @@ _has_groq_key = _has_key("GROQ_API_KEY", "groq", needs_openai=True)
 _has_mistral_key = _has_key("MISTRAL_API_KEY", "mistral", needs_mistral=True)
 _has_elevenlabs_key = _has_key("ELEVENLABS_API_KEY", "elevenlabs")
 _has_deepinfra_key = _has_key("DEEPINFRA_API_KEY", "deepinfra", needs_openai=True)
+# Not _has_key: mittwald accepts a documented second key name, and the availability probe
+# has to agree with the handler or the alias would gate the provider off.
+def _has_mittwald_key() -> bool:
+    from tools.tool_backend_helpers import resolve_mittwald_api_key
+    return _HAS_OPENAI and bool(resolve_mittwald_api_key(env_getter=get_env_value))
 
 # Cloud providers in AUTO-DETECT priority order:
 #   name -> (explicit-selection probe, auto-detect probe, explicit warning, auto-detect log)
@@ -223,7 +230,11 @@ _CLOUD_PROVIDER_SPECS = {
                    "No local STT available, using ElevenLabs Scribe STT API"),
     "deepinfra": (_has_deepinfra_key, _has_deepinfra_key,
                   "STT provider 'deepinfra' configured but DEEPINFRA_API_KEY not set (or openai package missing)",
-                  "No local STT available, using DeepInfra Whisper API")}
+                  "No local STT available, using DeepInfra Whisper API"),
+    "mittwald": (_has_mittwald_key, _has_mittwald_key,
+                 "STT provider 'mittwald' configured but MITTWALD_LLM_API_KEY/MITTWALD_AI_API_KEY not set "
+                 "(or openai package missing)",
+                 "No local STT available, using mittwald AI Hosting Whisper API")}
 
 # Explicit selections whose resolution is more than a probe + warning.
 _EXPLICIT_RESOLVERS = {
@@ -247,7 +258,8 @@ def _resolve_explicit_provider(provider: str) -> str:
 
 def _get_provider(stt_config: dict) -> str:
     """Which STT provider to use: an explicit ``stt.provider`` is honoured (no silent cloud
-    fallback); otherwise auto-detect local > groq > openai > mistral > xai > elevenlabs > deepinfra."""
+    fallback); otherwise auto-detect local > groq > openai > mistral > xai > elevenlabs > deepinfra >
+    mittwald."""
     if not is_stt_enabled(stt_config):
         return "none"
     explicit = "provider" in stt_config
@@ -447,7 +459,8 @@ _BUILTIN_MODEL_KEYS = {
     "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
     "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
-    "deepinfra": ("deepinfra", "model", "", True)}
+    "deepinfra": ("deepinfra", "model", "", True),
+    "mittwald": ("mittwald", "model", DEFAULT_MITTWALD_STT_MODEL, True)}
 
 
 def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Optional[str]) -> str:

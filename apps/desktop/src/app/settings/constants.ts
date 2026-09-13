@@ -249,8 +249,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs/mittwald).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'mittwald'],
+  'stt.mittwald.model': ['whisper-large-v3-turbo'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
@@ -356,7 +357,34 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'gemini',
     'neutts',
     'kittentts',
-    'piper'
+    'piper',
+    'mittwald'
+  ],
+  'tts.mittwald.voice': [
+    'aiden',
+    'dylan',
+    'eric',
+    'ono_anna',
+    'ryan',
+    'serena',
+    'sohee',
+    'uncle_fu',
+    'vivian'
+  ],
+  'tts.mittwald.language': [
+    'Auto',
+    'Chinese',
+    'English',
+    'French',
+    'German',
+    'Italian',
+    'Japanese',
+    'Korean',
+    'Portuguese',
+    'Russian',
+    'Spanish',
+    'Beijing_Dialect',
+    'Sichuan_Dialect'
   ],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
@@ -390,7 +418,9 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.voice',
   'tts.piper.voice',
   'tts.deepinfra.model',
-  'tts.deepinfra.voice'
+  'tts.deepinfra.voice',
+  'tts.mittwald.model',
+  'stt.mittwald.model'
 ])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
@@ -486,6 +516,10 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
       languageCode: 'ElevenLabs Language',
       tagAudioEvents: 'Tag Audio Events',
       diarize: 'Speaker Diarization'
+    },
+    mittwald: {
+      model: 'mittwald STT Model',
+      language: 'mittwald STT Language'
     }
   },
   tts: {
@@ -536,6 +570,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     deepinfra: {
       model: 'DeepInfra TTS Model',
       voice: 'DeepInfra Voice'
+    },
+    mittwald: {
+      model: 'mittwald TTS Model',
+      voice: 'mittwald Voice',
+      language: 'mittwald TTS Language'
     }
   },
   memory: {
@@ -651,6 +690,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
+    },
+    mittwald: {
+      language: 'Optional ISO-639-1 language code. Blank lets Whisper auto-detect.'
     }
   },
   updates: {
@@ -769,6 +811,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.piper.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
+      'tts.mittwald.model',
+      'tts.mittwald.voice',
+      'tts.mittwald.language',
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',
@@ -778,6 +823,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
+      'stt.mittwald.model',
+      'stt.mittwald.language',
       'voice.record_key',
       'voice.max_recording_seconds',
       'voice.client_direct'

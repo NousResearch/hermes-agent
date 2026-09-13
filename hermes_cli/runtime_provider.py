@@ -410,6 +410,30 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     return get_secret_str("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
 
 
+def _heal_collapsed_custom(requested_provider: str) -> str:
+    """Recover a named ``custom:<name>`` identity from a bare ``custom`` request.
+
+    Every named custom endpoint resolves to the literal ``"custom"`` in a runtime dict — the entry
+    name is lost, and the api_key is deliberately never persisted. A caller that re-resolves that
+    collapsed value (the api_server session/provider-refresh paths, the gateway's per-provider
+    resolver) therefore asks for bare ``custom``, which is not a routable identity: resolution falls
+    through to the OpenRouter/bare-custom fallback and OVERWRITES a working local base_url with
+    ``https://openrouter.ai/api/v1`` and no key. The turn then dies with "No LLM provider
+    configured".
+
+    Heal it back to the configured entry before the ladder runs. ``canonical_custom_identity()``
+    returns None when no configured entry is reachable — a genuine legacy ``provider: custom`` +
+    ``model.base_url`` config keeps its bare name and the legacy trust path, untouched.
+    """
+    if requested_provider != "custom":
+        return requested_provider
+    try:
+        return canonical_custom_identity() or requested_provider
+    except Exception:
+        logger.debug("bare custom identity recovery failed", exc_info=True)
+        return requested_provider
+
+
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
 
 from hermes_cli.runtime_provider_custom import (  # noqa: E402,F401
@@ -848,6 +872,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    requested_provider = _heal_collapsed_custom(requested_provider)
     _raise_if_provider_disabled(requested_provider)
     return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
 

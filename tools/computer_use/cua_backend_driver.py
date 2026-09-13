@@ -116,12 +116,33 @@ def _mcp_args_with_overlay_flag(args: List[str], driver_cmd: str = _CUA_DRIVER_D
 @functools.lru_cache(maxsize=1)
 def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
     """True if ``<driver> --help`` mentions ``--no-overlay`` (probed once); older drivers reject unknown flags, which
-    would crash the MCP spawn."""
+    would crash the MCP spawn.
+
+    A bare command name is resolved before probing (#104076): the daemon and session
+    paths pass a resolved path, but this helper's default is the literal
+    ``cua-driver``, and a subprocess spawned under a thin GUI PATH raises
+    FileNotFoundError for it — silently dropping the overlay policy. Probing the
+    resolved path keeps the flag on headless X11 workers where a full-screen
+    broken overlay otherwise freezes every capture on a stale frame. The two
+    failure modes are logged distinctly so a dropped flag is diagnosable in
+    minutes instead of looking like a working agent.
+    """
+    cmd = driver_cmd
+    if not _has_path_separator(cmd):
+        cmd = resolve_cua_driver_cmd() or cmd
     try:
-        proc = _cb()._run_driver(driver_cmd, "--help", timeout=3.0)
-        return "--no-overlay" in (proc.stdout or "") + (proc.stderr or "")
-    except Exception:
+        proc = _cb()._run_driver(cmd, "--help", timeout=3.0)
+    except FileNotFoundError:
+        logger.warning(
+            "cua-driver %r not found while probing --no-overlay support; "
+            "the overlay policy will NOT be applied", cmd)
         return False
+    except Exception as exc:
+        logger.warning(
+            "cua-driver --help probe failed (%s); cannot confirm --no-overlay, "
+            "the overlay policy will NOT be applied", exc)
+        return False
+    return "--no-overlay" in (proc.stdout or "") + (proc.stderr or "")
 
 def _resolve_mcp_invocation(driver_cmd: str, *, timeout: float = 6.0) -> Tuple[str, List[str]]:
     """``(command, args)`` that spawn cua-driver's stdio MCP server, asked of the driver itself via ``cua-driver

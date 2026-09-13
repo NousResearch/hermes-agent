@@ -107,11 +107,11 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()
     cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
+    from agent.agent_init import _parse_config_int
     for key, fallback, min_value in _COMPRESSION_INT_KEYS:
         default = int(_compressor_ctor_default(key, fallback))
         raw = compression.get(key, default)
-        with contextlib.suppress(TypeError, ValueError):
-            setattr(cc, key, max(min_value, default if raw is None else int(raw)))
+        setattr(cc, key, max(min_value, _parse_config_int(raw, default)))
     with contextlib.suppress(TypeError, ValueError):
         ratio_raw = compression.get("target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20))
         cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))

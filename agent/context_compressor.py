@@ -1263,6 +1263,9 @@ def evict_stale_outbound_tool_images(
     return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
 
 
+_TOOL_ARG_TRUNCATION_MARKER = "...[truncated]..."
+
+
 def _truncate_tool_call_args_json(
     args: str, head_chars: int = 1000, tail_chars: int = 1000,
 ) -> str:
@@ -1274,9 +1277,9 @@ def _truncate_tool_call_args_json(
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            if len(obj) <= head_chars + tail_chars:
+            if len(obj) <= head_chars + tail_chars + len(_TOOL_ARG_TRUNCATION_MARKER):
                 return obj
-            return obj[:head_chars] + "...[truncated]..." + (obj[-tail_chars:] if tail_chars else "")
+            return obj[:head_chars] + _TOOL_ARG_TRUNCATION_MARKER + (obj[-tail_chars:] if tail_chars else "")
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):

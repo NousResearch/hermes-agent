@@ -219,6 +219,21 @@ def test_removing_proactive_prune_keys_restores_defaults(monkeypatch):
     assert compressor.tool_arg_truncate_threshold == 4000
 
 
+def test_invalid_tool_arg_window_values_restore_defaults(monkeypatch):
+    session, compressor = _neutral_session(
+        tool_arg_head_chars=1200,
+        tool_arg_tail_chars=800,
+        tool_arg_truncate_threshold=10_000,
+    )
+    _sync_with_cfg(monkeypatch, session, {"compression": {
+        "tool_arg_head_chars": True,
+        "tool_arg_tail_chars": "invalid",
+        "tool_arg_truncate_threshold": 10.5,
+    }})
+    assert (compressor.tool_arg_head_chars, compressor.tool_arg_tail_chars) == (1000, 1000)
+    assert compressor.tool_arg_truncate_threshold == 4000
+
+
 def test_removing_min_tail_user_messages_restores_default(monkeypatch):
     session, compressor = _neutral_session(min_tail_user_messages=4)
     _sync_with_cfg(monkeypatch, session, {"compression": {}})

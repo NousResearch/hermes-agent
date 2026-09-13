@@ -2345,6 +2345,13 @@ class TestTruncateToolCallArgsJson:
 
 
 
+    def test_windowing_never_expands_argument_json(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"left": "a" * 2001, "right": "b" * 2001})
+        assert len(payload) > 4000
+        assert shrink(payload) == payload
+
     def test_pass3_emits_valid_json_for_downstream_provider(self):
         """End-to-end: Pass 3 must never produce the exact failure payload
         that caused the 400 loop (unterminated string, missing brace)."""

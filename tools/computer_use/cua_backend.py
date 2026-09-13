@@ -354,10 +354,15 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
-        # 'stale' error. Gated on the per-tool capability: older drivers (`additionalProperties: false`) must never see it.
+        # 'stale' error. Gated on the per-tool capability, falling back to the live input schema when the driver
+        # omits the capability declaration: older drivers (`additionalProperties: false`) list no such property
+        # and must never see it.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
-        if token and self._session.supports_capability("accessibility.element_tokens", tool=name):
+        if token and (
+            self._session.supports_capability("accessibility.element_tokens", tool=name)
+            or self._session.supports_input_property(name, "element_token")
+        ):
             args["element_token"] = token
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)

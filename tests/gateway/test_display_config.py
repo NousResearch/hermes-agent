@@ -132,6 +132,29 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
 
+    def test_matrix_defaults_quiet_progress_without_disabling_streaming(self):
+        """Quiet Matrix progress must still inherit top-level StreamingConfig."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "off"
+        assert resolve_display_setting({}, "matrix", "streaming") is None
+
+    def test_matrix_tool_progress_override_new(self):
+        from gateway.display_config import resolve_display_setting
+
+        import yaml
+
+        cfg = yaml.safe_load("display:\n  tool_progress: off\n  platforms:\n    matrix:\n      tool_progress: new\n      streaming: false\n")
+        assert resolve_display_setting(cfg, "matrix", "tool_progress") == "new"
+        assert resolve_display_setting(cfg, "matrix", "streaming") is False
+        # Clearing a local override restores global policy, not a hard-off streaming default.
+        cfg["display"]["platforms"]["matrix"] = {"tool_progress": None, "streaming": None}
+        cfg["display"]["tool_progress"] = "all"
+        assert resolve_display_setting(cfg, "matrix", "tool_progress") == "all"
+        assert resolve_display_setting(cfg, "matrix", "streaming") is None
+        cfg["display"]["tool_progress_overrides"] = {"matrix": "verbose"}
+        assert resolve_display_setting(cfg, "matrix", "tool_progress") == "verbose"
+
     def test_low_tier_platforms(self):
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting

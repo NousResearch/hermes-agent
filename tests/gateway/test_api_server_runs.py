@@ -390,6 +390,92 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("receipt", [False, True])
+    async def test_gated_run_buffers_model_and_tool_events_until_receipt(self, adapter, receipt):
+        """Gated /v1/runs releases buffered output only after the canonical receipt."""
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, _ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "passed"}
+                return result
+
+        adapter.gateway_runner = None
+        app = _create_runs_app(adapter)
+        app["gateway_runner"] = _Runner()
+
+        def _run_conversation(**kwargs):
+            callbacks["delta"]("SECRET-DELTA")
+            callbacks["tool"]({
+                "event": "tool.started", "tool": "SECRET-TOOL", "preview": "SECRET-PREVIEW"})
+            return {
+                "final_response": "SECRET-FINAL", "messages": [], "completed": True,
+                "failed": False, "interrupted": False, "partial": False,
+                "persistence_confirmed": receipt,
+            }
+
+        callbacks = {}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                agent = MagicMock()
+                agent.run_conversation.side_effect = _run_conversation
+                agent.session_prompt_tokens = 0
+                agent.session_completion_tokens = 0
+                agent.session_total_tokens = 0
+                def _create(**kwargs):
+                    callbacks["delta"] = kwargs["stream_delta_callback"]
+                    callbacks["tool"] = kwargs["tool_progress_callback"]
+                    return agent
+                mock_create.side_effect = _create
+
+                response = await cli.post("/v1/runs", json={"input": "hello"})
+                assert response.status == 202
+                run_id = (await response.json())["run_id"]
+                events_response = await cli.get(f"/v1/runs/{run_id}/events")
+                body = await events_response.text()
+
+        if receipt:
+            assert "SECRET-DELTA" in body
+            assert "SECRET-TOOL" in body
+            assert "SECRET-FINAL" in body
+            assert "run.completed" in body
+        else:
+            assert "SECRET-DELTA" not in body
+            assert "SECRET-TOOL" not in body
+            assert "SECRET-PREVIEW" not in body
+            assert "SECRET-FINAL" not in body
+            assert "run.failed" in body
+
+    @pytest.mark.asyncio
+    async def test_approval_notify_allowlists_and_redacts_control_payload(self, adapter):
+        from gateway.platforms import api_server as api_mod, api_server_runs
+
+        run = MagicMock()
+        run.run_id = "run_approval_redaction"
+        run.queue = asyncio.Queue()
+        callback = api_server_runs._make_approval_notify(adapter, run, _api_server=api_mod)
+        callback({
+            "command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+            "description": "MCP secret-description=TOP_SECRET",
+            "pattern_key": "mcp_elicitation",
+            "pattern_keys": ["mcp_elicitation"],
+            "smart_denied": False,
+            "allow_session": True,
+            "allow_permanent": False,
+            "unknown_sensitive": "TOP_SECRET_UNKNOWN",
+        })
+        await asyncio.sleep(0)
+        event = await run.queue.get()
+        status = adapter._run_statuses[run.run_id]
+        assert event["event"] == "approval.request"
+        assert "unknown_sensitive" not in event
+        assert "unknown_sensitive" not in status["approval"]
+        assert "TOP_SECRET" not in event["description"]
+        assert "TOP_SECRET" not in status["approval"]["description"]
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890" not in event["command"]
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890" not in status["approval"]["command"]
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

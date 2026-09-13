@@ -73,6 +73,7 @@ class _StubAgent:
     def _persist_session(self, *a, **k):
         if "persist_session" in self._raise_in:
             raise RuntimeError("sqlite database is locked")
+        return True
 
     # --- harmless no-ops ------------------------------------------------
     def _emit_status(self, *a, **k):
@@ -143,8 +144,16 @@ def _run(
 def test_single_cleanup_step_raises_does_not_skip_others(step):
     agent = _StubAgent(raise_in=(step,))
     result = _run(agent)
-    # Response survives.
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    if step == "persist_session":
+        # Canonical persistence is a release prerequisite: an exception must
+        # not preserve a response that external delivery could expose.
+        assert result["final_response"] == ""
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["persistence_confirmed"] is False
+    else:
+        # Non-persistence cleanup remains best-effort and preserves the response.
+        assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     # Exactly the failing step is recorded; the others ran without error.
     assert result["cleanup_errors"] == [
         next(
@@ -161,6 +170,7 @@ def test_clean_turn_has_no_cleanup_errors_key():
     result = _run(agent)
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
     assert result["completed"] is False
+    assert result["persistence_confirmed"] is True
     assert "cleanup_errors" not in result
 
 

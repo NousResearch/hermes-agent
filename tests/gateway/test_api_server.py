@@ -20,6 +20,7 @@ import sys
 import time
 import types
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -76,6 +77,70 @@ class TestRedactApiErrorText:
 
     def test_limit_truncates_after_redaction(self):
         assert len(_redact_api_error_text("x" * 500, limit=50)) == 50
+
+
+
+
+# ---------------------------------------------------------------------------
+# API pre-delivery persistence receipt
+# ---------------------------------------------------------------------------
+
+
+class TestAPIPersistenceReceiptGate:
+    @pytest.mark.parametrize("endpoint", ["chat_completions", "responses"])
+    @pytest.mark.asyncio
+    async def test_missing_or_false_receipt_fails_closed(self, endpoint):
+        """ResponseStore persistence must not substitute for canonical SessionDB proof."""
+        adapter = APIServerAdapter.__new__(APIServerAdapter)
+
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, _ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "passed"}
+                return result
+
+        adapter.gateway_runner = _Runner()
+        request = SimpleNamespace(app={})
+        result = {
+            "final_response": f"secret {endpoint}",
+            "messages": [{"role": "assistant", "content": f"secret {endpoint}"}],
+            "completed": True,
+            "failed": False,
+            "interrupted": False,
+        }
+        gated = await adapter._apply_api_gate_to_result(request, "session", result)
+        assert gated["failed"] is True
+        assert gated["completed"] is False
+        assert gated["final_response"] == ""
+        assert gated["messages"] == []
+
+    @pytest.mark.asyncio
+    async def test_true_receipt_is_preserved_for_both_api_formats(self):
+        """A canonical receipt is the only persistence signal accepted by the gate."""
+        adapter = APIServerAdapter.__new__(APIServerAdapter)
+
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, _ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "passed"}
+                return result
+
+        adapter.gateway_runner = _Runner()
+        request = SimpleNamespace(app={})
+        result = {
+            "final_response": "durable answer",
+            "messages": [{"role": "assistant", "content": "durable answer"}],
+            "completed": True,
+            "failed": False,
+            "interrupted": False,
+            "persistence_confirmed": True,
+        }
+        gated = await adapter._apply_api_gate_to_result(request, "session", result)
+        assert gated["final_response"] == "durable answer"
+        assert gated["messages"]
+        assert gated["persistence_confirmed"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1041,6 +1106,68 @@ class TestChatCompletionsEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_session_chat_nonstream_fails_closed_without_persistence_receipt(self, adapter):
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, _ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "passed"}
+                return result
+
+        adapter.gateway_runner = _Runner()
+        ctx = {
+            "gateway_session_key": None, "session_id": "s1", "user_message": "hi",
+            "runtime_request": {}, "lock_active": False,
+            "run_kwargs": {"user_message": "hi", "session_id": "s1"},
+            "body": {},
+        }
+        with (
+            patch.object(adapter, "_prepare_session_chat", new=AsyncMock(return_value=(ctx, None))),
+            patch.object(adapter, "_conversation_history_for_session", new=AsyncMock(return_value=[])),
+            patch.object(adapter, "_run_agent", new=AsyncMock(return_value=(
+                {"final_response": "unsafe", "messages": [], "completed": True,
+                 "failed": False, "interrupted": False},
+                {},
+            ))),
+        ):
+            request = SimpleNamespace(app={}, path="/api/sessions/s1/chat")
+            response = await adapter._handle_session_chat(request)
+        payload = json.loads(response.text)
+        assert payload["message"]["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_session_chat_sse_buffers_until_persistence_receipt(self, adapter):
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, _ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "passed"}
+                return result
+
+        adapter.gateway_runner = _Runner()
+        ctx = {
+            "gateway_session_key": None, "session_id": "s1", "user_message": "hi",
+            "runtime_request": {}, "lock_active": False,
+            "run_kwargs": {"user_message": "hi", "session_id": "s1"},
+            "body": {},
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_prepare_session_chat", new=AsyncMock(return_value=(ctx, None))),
+                patch.object(adapter, "_conversation_history_for_session", new=AsyncMock(return_value=[])),
+                patch.object(adapter, "_run_agent", new=AsyncMock(side_effect=lambda **kwargs: (
+                    kwargs["stream_delta_callback"]("unsafe"),
+                    ({"final_response": "unsafe", "messages": [], "completed": True,
+                      "failed": False, "interrupted": False}, {}),
+                )[1])),
+            ):
+                response = await cli.post(
+                    "/api/sessions/s1/chat/stream", json={"message": "hi"})
+                body = await response.text()
+        assert "unsafe" not in body
+
+    @pytest.mark.asyncio
     async def test_session_chat_stream_passes_request_model_provider_options(self, adapter):
         app = _create_app(adapter)
         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}
@@ -1664,6 +1791,59 @@ class TestResponsesStreaming:
             assert stream_q.empty()
             fake_task.callbacks[0](fake_task)
             assert stream_q.get_nowait() is None
+
+
+    @pytest.mark.asyncio
+    async def test_stream_gate_rejection_scrubs_terminal_payload_and_snapshot(self, adapter):
+        """A rejected gated response must not reappear in failure output or storage."""
+        import gateway.platforms.api_server as api_mod
+
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, _ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "inconclusive"}
+                return result
+
+        adapter.gateway_runner = _Runner()
+        fake_request = MagicMock()
+        fake_request.headers = {}
+        written_payloads = []
+
+        class _Response:
+            async def prepare(self, request):
+                pass
+
+            async def write(self, payload):
+                written_payloads.append(payload)
+
+        stream_q = api_mod.ThreadSafeAsyncQueue()
+        stream_q.put_nowait("SECRET-DELTA")
+        stream_q.put_nowait(None)
+
+        async def _agent():
+            return ({
+                "final_response": "SECRET-FINAL", "messages": [], "completed": True,
+                "failed": False, "interrupted": False, "partial": False,
+                "persistence_confirmed": False,
+            }, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+        response_id = f"resp_{uuid.uuid4().hex[:28]}"
+        with patch.object(api_mod.web, "StreamResponse", return_value=_Response()):
+            await adapter._write_sse_responses(
+                request=fake_request, response_id=response_id, model="hermes-agent",
+                created_at=int(time.time()), stream_q=stream_q,
+                agent_task=asyncio.ensure_future(_agent()), agent_ref=[None],
+                conversation_history=[], user_message="hello", instructions=None,
+                conversation=None, store=True, session_id=None)
+
+        wire = b"".join(written_payloads).decode()
+        assert "SECRET-DELTA" not in wire
+        assert "SECRET-FINAL" not in wire
+        assert "response.failed" in wire
+        stored = adapter._response_store.get(response_id)
+        assert stored is not None
+        assert "SECRET-FINAL" not in json.dumps(stored)
 
 
     @pytest.mark.asyncio

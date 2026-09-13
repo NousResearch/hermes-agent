@@ -202,6 +202,11 @@ def _run_test(coro_factory, timeout=10.0):
             asyncio.wait_for(coro_factory(loop), timeout=timeout)
         )
     finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
 
 

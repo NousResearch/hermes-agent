@@ -524,13 +524,30 @@ def finalize_turn(
         if _persisted is not True:
             _mark_persistence_failed()
             return
-        persistence_confirmed = True
         if final_response and not interrupted:
             final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
                 agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
                 turn_id=turn_id, original_user_message=original_user_message, messages=messages,
                 emit_post_hook=False,
             )
+            if _response_transformed:
+                _tail = messages[-1] if messages else None
+                if isinstance(_tail, dict) and _tail.get("role") == "assistant":
+                    _tail["content"] = final_response
+                    _tail.pop(_DB_PERSISTED_MARKER, None)
+                    agent._db_flush_scan_prefix = None
+                try:
+                    _persisted = agent._persist_session(messages, conversation_history)
+                except Exception:
+                    _mark_persistence_failed()
+                    raise
+                if _persisted is None:
+                    # The transformed payload was not durably confirmed.
+                    return
+                if _persisted is not True:
+                    _mark_persistence_failed()
+                    return
+        persistence_confirmed = True
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
@@ -540,7 +557,6 @@ def finalize_turn(
         lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
         _cleanup_errors, logger,
     )
-
     if persistence_confirmed and final_response and not interrupted:
         _emit_post_llm_call(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,

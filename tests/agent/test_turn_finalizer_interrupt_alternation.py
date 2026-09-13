@@ -79,6 +79,7 @@ class _StubAgent:
     def _persist_session(self, messages, conversation_history):
         # Snapshot the role sequence at the moment of persistence.
         self.persisted_messages = [dict(m) for m in messages]
+        return True
 
     # --- harmless no-ops ------------------------------------------------
     def _emit_status(self, *a, **k):

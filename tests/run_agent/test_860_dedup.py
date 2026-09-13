@@ -149,8 +149,30 @@ class TestAppendToTranscriptSkipDb:
 
 
 # ---------------------------------------------------------------------------
-# Test: _last_flushed_db_idx initialization
+# Test: canonical persistence receipt requires a real SessionDB
 # ---------------------------------------------------------------------------
+
+class TestPersistenceReceiptTruth:
+    """A missing canonical writer must never mint a durable receipt."""
+
+    def test_persist_session_returns_false_without_session_db(self):
+        """SessionDB absence is a persistence failure, not a successful no-op."""
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        assert agent._session_db is None
+        assert agent._persist_session(
+            [{"role": "user", "content": "must be durable"}], []
+        ) is False
+
+
 
 class TestFlushIdxInit:
     """Verify _last_flushed_db_idx is properly initialized."""

@@ -1457,29 +1457,9 @@ class TurnRunner:
                 result["final_response"], result.get("messages", []), history_offset=len(agent_history),
             )
         ctx.result_holder[0] = result
-        if stream_consumer is None:
-            return
-        # Pass final_response as the authoritative finalize payload: it includes post-stream
-        # augmentation (verifier footer, explainer) the accumulator never saw. Adopt ONLY a genuinely
-        # completed final: interrupt paths return {interrupted: True, completed: False} with a
-        # DIAGNOSTIC final_response — adopting it would seal the partial answer over with the
-        # diagnostic AND suppress the gateway's own error delivery.
-        _final_for_stream = None
-        if (
-            isinstance(result, dict) and not result.get("failed") and not result.get("interrupted")
-            and result.get("completed") is not False
-        ):
-            fr = result.get("final_response")
-            if isinstance(fr, str) and fr.strip() and fr != "(empty)":
-                _final_for_stream = fr
-        if _final_for_stream is None:
-            stream_consumer.finish()
-            return
-        # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
-        try:
-            stream_consumer.finish(_final_for_stream)
-        except TypeError:
-            stream_consumer.finish()
+        # The outer event-loop coordinator finalizes and releases the consumer
+        # after the optional pre-delivery policy gate. Keeping this executor
+        # method side-effect free prevents a policy bypass before evaluation.
 
     def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
         """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered

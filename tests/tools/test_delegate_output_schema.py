@@ -16,6 +16,7 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
+from agent.delegation_context import is_delegated_child_context
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
@@ -163,6 +164,7 @@ class _StubChild:
     session_completion_tokens = 0
     session_estimated_cost_usd = 0.0
     session_reasoning_tokens = 0
+    session_id = "child-schema-session"
 
     def __init__(self, responses):
         self.responses = list(responses)
@@ -218,6 +220,21 @@ class TestRunSingleChildSchemaValidation:
         assert "rejected" in child.calls[1] or "JSON" in child.calls[1]
         # final summary is the retried (valid) answer
         assert json.loads(entry["summary"])["city"] == "Oslo"
+
+    def test_schema_retry_remains_inside_delegated_child_context(self):
+        child = _StubChild(["not json at all", '{"city": "Oslo"}'])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        original = child.run_conversation
+        context_flags = []
+
+        def observing(user_message, task_id=None, **kwargs):
+            context_flags.append(is_delegated_child_context())
+            return original(user_message, task_id=task_id, **kwargs)
+
+        child.run_conversation = observing
+        entry = _run(child)
+        assert entry["schema_valid"] is True
+        assert context_flags == [True, True]
 
     def test_invalid_twice_surfaces_errors_and_stops(self):
         child = _StubChild(["nope", "still nope"])

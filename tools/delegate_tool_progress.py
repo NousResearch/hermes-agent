@@ -122,7 +122,11 @@ _COMPLETION_INSTRUCTIONS = (
     "issuing git/workdir-specific commands.\n\n"
     "Keep your final summary tight: lead with outcomes, prefer bullet points over paragraphs, and don't replay your "
     "whole process. Your response is returned to the parent agent as a summary, and overlong summaries crowd out the "
-    "parent's context window."
+    "parent's context window.\n\n"
+    "RUNTIME EVIDENCE: after each durably recorded tool result Hermes adds a marker like "
+    "`[Runtime receipt: dr_...]`. Cite the relevant receipt ID next to every claim that depends on tool-observed "
+    "files, commands, tests, or external state. Never invent or alter a receipt ID. If you used no tools, say that "
+    "your conclusion is reasoning-only rather than fabricating evidence."
 )
 _ORCHESTRATOR_BLOCK = (
     "\n## Subagent Spawning (Orchestrator Role)\n"

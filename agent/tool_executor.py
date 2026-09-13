@@ -1030,10 +1030,42 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
+    receipt = None
+    try:
+        from agent.delegation_receipts import append_receipt_marker, prepare_runtime_receipt
+
+        if blocked:
+            receipt_status = "blocked"
+        elif isinstance(function_result, _ToolTimeoutResult):
+            receipt_status = "timeout"
+        elif isinstance(function_result, _ToolCancelledResult):
+            receipt_status = "cancelled"
+        else:
+            receipt_status = "error" if is_error else "ok"
+        receipt = prepare_runtime_receipt(
+            agent,
+            tool_name=function_name,
+            tool_call_id=tool_call_id,
+            arguments=function_args,
+            result=function_result,
+            status=receipt_status,
+            effect_disposition=effect_disposition,
+        )
+        if receipt is not None:
+            _tool_content = append_receipt_marker(_tool_content, receipt["receipt_id"])
+    except Exception:
+        logger.debug("delegation runtime receipt preparation failed", exc_info=True)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
+    if receipt is not None:
+        try:
+            from agent.delegation_receipts import commit_runtime_receipt
+
+            commit_runtime_receipt(agent, receipt)
+        except Exception:
+            logger.debug("delegation runtime receipt commit failed", exc_info=True)
 
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can

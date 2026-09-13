@@ -424,9 +424,13 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        _retry_result = child.run_conversation(
-            user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
-        )
+        from agent.delegation_context import delegated_child_context
+
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            _retry_result = child.run_conversation(
+                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
+                stream_callback=relay_child_text,
+            )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
@@ -527,6 +531,18 @@ def _build_result_entry(
     # Model-visible per-delegation spend (unlike _child_cost_usd above).
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
+    try:
+        from agent.delegation_receipts import parent_visible_receipts
+
+        entry.update(parent_visible_receipts(child, summary))
+    except Exception:
+        entry.update({
+            "runtime_receipts": [],
+            "cited_receipt_ids": [],
+            "fabricated_receipt_ids": [],
+            "provenance_status": "receipt_processing_error",
+        })
+
     if status == "failed":
         if schema.valid is False and usable_summary:
             # The child DID respond; name the contract violation instead of the generic "no response" error.

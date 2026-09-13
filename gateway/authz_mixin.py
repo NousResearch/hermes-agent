@@ -47,30 +47,8 @@ _ALLOW_BOTS_ENV = {
 }
 
 
-def _platform_gate_env(name: str, default: str = "") -> str:
-    """Read an allow/deny gate env var with per-profile isolation.
-
-    With a profile secret scope installed AND multiplexing active, a scoped miss returns ``default``
-    instead of falling through to ``os.environ``, which may hold ANOTHER profile's first-writer
-    bridged value (allowlist leak). Single-profile deployments behave exactly like ``os.getenv``.
-
-    Under multiplex the process env may hold ANOTHER profile's first-writer-bridged value (the YAML→env
-    bridges in the Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins), so falling
-    through would leak profile A's allowlist into profile B (issue #72348).
-    """
-    if not name:
-        return default
-    with contextlib.suppress(Exception):
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        scope = current_secret_scope()
-        if scope is not None and is_multiplex_active():
-            val = scope.get(name)
-            return default if val is None else str(val).strip()
-    return (os.getenv(name) or default).strip()
-
-
-_auth_env = _platform_gate_env
+# Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
+from gateway.platforms._shared import platform_gate_env as _auth_env  # noqa: E402
 
 
 def _env_truthy(name: str) -> bool:
@@ -492,7 +470,7 @@ class GatewayAuthorizationMixin:
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
             chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
-            if chat_allowlist_env and _allows(_coerce_allow_set(_platform_gate_env(chat_allowlist_env)), source.chat_id):
+            if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
             # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
             # strips user_id, so the env-only check above misses it.
@@ -504,7 +482,7 @@ class GatewayAuthorizationMixin:
         # posts arrive with user=None).
         if getattr(source, "is_bot", False):
             allow_bots_var = _ALLOW_BOTS_ENV.get(source.platform)
-            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            if allow_bots_var and _auth_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
         return False
 
@@ -675,6 +653,6 @@ class GatewayAuthorizationMixin:
             # Historical: Yuanbao is absent from this allowlist-aware default.
             env_key = "" if platform == Platform.YUANBAO else _ALLOWED_USERS_ENV.get(platform, "")
             allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _GROUP_CHAT_ENV.get(platform), *allowlist_keys]
-        if any(key and _platform_gate_env(key).strip() for key in allowlist_keys):
+        if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

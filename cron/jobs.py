@@ -1131,7 +1131,7 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
     tick."""
     try:
         ensure_dirs()
-        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix)
+        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix, mode=0o600)
     except Exception:
         pass
 
@@ -1497,16 +1497,12 @@ def _resolve_default_model_snapshot() -> Optional[str]:
     """Default model resolved as the ticker's ``run_job`` does, so unpinned jobs can snapshot it and
     keep running on it after a later swap. ``None`` on missing config or failure ("no snapshot")."""
     try:
-        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+        from hermes_cli.config_effective import load_user_config_effective
 
         cfg_path = get_hermes_home() / "config.yaml"
         if not cfg_path.exists():
             return None
-        cfg = read_user_config_raw(cfg_path)
-        with contextlib.suppress(Exception):
-            from hermes_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
-        cfg = _expand_env_vars(cfg)
+        cfg = load_user_config_effective(cfg_path)
         cron_cfg = cfg.get("cron") or {}
         if isinstance(cron_cfg, dict):
             cron_model = cron_cfg.get("model")
@@ -3251,7 +3247,7 @@ def save_job_output(job_id: str, output: str):
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
     output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
-    atomic_write_text(output_file, output, tmp_prefix=".output_")
+    atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())

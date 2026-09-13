@@ -6,31 +6,32 @@
  * decision so both can be unit-tested without a fake WebSocket.
  */
 
-export const EVENTS_RECONNECT_BASE_MS = 1_000;
-export const EVENTS_RECONNECT_MAX_MS = 30_000;
-export const EVENTS_MAX_RECONNECT_ATTEMPTS = 15;
+import { reconnectBackoffDelayMs } from '@hermes/shared'
+
+export const EVENTS_RECONNECT_BASE_MS = 1_000
+export const EVENTS_RECONNECT_MAX_MS = 30_000
+export const EVENTS_MAX_RECONNECT_ATTEMPTS = 15
 /** Bound ticket minting plus the WebSocket opening handshake. */
-export const EVENTS_CONNECT_TIMEOUT_MS = 15_000;
+export const EVENTS_CONNECT_TIMEOUT_MS = 15_000
 
 /** Normal closure — the server said goodbye, don't chase it. */
-const WS_CLOSE_NORMAL = 1000;
+const WS_CLOSE_NORMAL = 1000
 /** Ticket rejected / forbidden: retrying just burns tickets, user must reload. */
-const WS_CLOSE_AUTH_CODES = new Set([4401, 4403]);
+const WS_CLOSE_AUTH_CODES = new Set([4401, 4403])
 
 /**
- * Exponential backoff, 1s → 2s → 4s → … → 30s cap.
+ * Exponential backoff, 1s → 2s → 4s → … → 30s cap. Deterministic (no jitter)
+ * because the banner prints the exact delay.
  *
  * `attempt` is 0-based: attempt 0 is the first retry after the initial
  * connection dropped.
  */
 export function eventsReconnectDelayMs(attempt: number): number {
-  const exponent = Math.max(0, Math.trunc(attempt));
-
-  // 2 ** exponent overflows to Infinity long before it matters; Math.min
-  // still clamps correctly, but guard anyway so the delay stays a number.
-  const raw = EVENTS_RECONNECT_BASE_MS * 2 ** Math.min(exponent, 32);
-
-  return Math.min(raw, EVENTS_RECONNECT_MAX_MS);
+  return reconnectBackoffDelayMs(attempt, {
+    baseDelayMs: EVENTS_RECONNECT_BASE_MS,
+    capMs: EVENTS_RECONNECT_MAX_MS,
+    jitter: false
+  })
 }
 
 /**
@@ -42,32 +43,31 @@ export function eventsReconnectDelayMs(attempt: number): number {
  */
 export function shouldRetryEventsClose(code: number | undefined): boolean {
   if (code === undefined) {
-    return true;
+    return true
   }
 
-  return code !== WS_CLOSE_NORMAL && !WS_CLOSE_AUTH_CODES.has(code);
+  return code !== WS_CLOSE_NORMAL && !WS_CLOSE_AUTH_CODES.has(code)
 }
 
 export function isEventsAuthRejection(code: number | undefined): boolean {
-  return code !== undefined && WS_CLOSE_AUTH_CODES.has(code);
+  return code !== undefined && WS_CLOSE_AUTH_CODES.has(code)
 }
 
 // The sidebar's banner is shared with `info.credential_warning` and with the
 // JSON-RPC sidecar's errors, so the events socket may only clear a message it
 // wrote itself. Everything this module can put in the banner is listed here.
-export const EVENTS_DISCONNECTED_MESSAGE =
-  "events feed disconnected — the chat title may not update";
+export const EVENTS_DISCONNECTED_MESSAGE = 'events feed disconnected — the chat title may not update'
 
 export function eventsReconnectingMessage(delayMs: number): string {
-  return `events feed disconnected — reconnecting in ${Math.round(delayMs / 1000)}s…`;
+  return `events feed disconnected — reconnecting in ${Math.round(delayMs / 1000)}s…`
 }
 
 export function eventsRejectedMessage(code: number): string {
-  return `events feed rejected (${code}) — reload the page`;
+  return `events feed rejected (${code}) — reload the page`
 }
 
 export function eventsGaveUpMessage(): string {
-  return `events feed disconnected — gave up after ${EVENTS_MAX_RECONNECT_ATTEMPTS} attempts, reload the page`;
+  return `events feed disconnected — gave up after ${EVENTS_MAX_RECONNECT_ATTEMPTS} attempts, reload the page`
 }
 
 /**
@@ -77,8 +77,8 @@ export function eventsGaveUpMessage(): string {
  */
 export function isEventsFeedMessage(message: string | null): boolean {
   if (!message) {
-    return false;
+    return false
   }
 
-  return message.startsWith("events feed ");
+  return message.startsWith('events feed ')
 }

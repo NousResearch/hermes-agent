@@ -20,6 +20,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
+from agent.retry_utils import parse_retry_after_seconds
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
@@ -608,10 +609,7 @@ def gemini_http_error(response: httpx.Response, *, body_text: Optional[str] = No
     err_obj = _error_object(body_text)
     err_status, err_message = (str(err_obj.get(k) or "").strip() for k in ("status", "message"))
     reason, metadata = _error_info(err_obj)
-    try:
-        retry_after: Optional[float] = float(response.headers.get("Retry-After") or response.headers.get("retry-after"))
-    except (TypeError, ValueError):
-        retry_after = None
+    retry_after = parse_retry_after_seconds(response.headers)
     message = (
         f"Gemini HTTP {status} ({err_status or 'error'}): {err_message}" if err_message
         else f"Gemini returned HTTP {status}: {body_text[:500]}"

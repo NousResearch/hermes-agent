@@ -22,6 +22,7 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
+    default_new_file_mode,
 )
 
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -759,21 +760,6 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     return ""
 
 
-def _default_new_file_mode() -> Optional[int]:
-    """The mode ``open(path, "wb")`` gives a file it has to create.
-
-    ``mkstemp`` always creates at 0600, so staging an import through a temp file would tighten
-    every *newly created* file to owner-only — the Docker/NAS volume-mount hazard
-    ``utils._restore_file_mode`` documents.
-    """
-    try:
-        current = os.umask(0o077)
-        os.umask(current)
-    except OSError:
-        return None
-    return 0o666 & ~current
-
-
 def _extract_member_atomically(
     zf: zipfile.ZipFile, member: str, target: Path, new_file_mode: Optional[int] = None) -> None:
     """Restore one zip member onto *target* with no truncation window.
@@ -912,7 +898,7 @@ def _import_members(
     db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
     restored = restored_external = 0
     home_dir = Path.home().resolve()
-    new_file_mode = _default_new_file_mode()  # once: every member is published via mkstemp (0600)
+    new_file_mode = default_new_file_mode()  # once: every member is published via mkstemp (0600)
     for member in members:
         # ``_external/`` members restore to their home-relative location (~/.honcho/config.json),
         # NOT under HERMES_HOME; provider configs commonly hold credentials, so tighten to 0600.

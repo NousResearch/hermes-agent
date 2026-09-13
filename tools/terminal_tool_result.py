@@ -145,16 +145,9 @@ def _apply_output_transform_hook(command, output, returncode, task_id, env_type)
 
 
 def _truncate_head_tail(output: str) -> str:
-    """Truncate keeping head (errors often appear early) and tail (most recent)."""
     from tools.tool_output_limits import get_max_bytes
-    max_chars = get_max_bytes()
-    if len(output) <= max_chars:
-        return output
-    head_chars = int(max_chars * 0.4)
-    tail_chars = max_chars - head_chars
-    notice = (f"\n\n... [OUTPUT TRUNCATED - {len(output) - head_chars - tail_chars} "
-              f"chars omitted out of {len(output)} total] ...\n\n")
-    return output[:head_chars] + notice + output[-tail_chars:]
+    from tools.tool_output_truncate import truncate_head_tail
+    return truncate_head_tail(output, get_max_bytes())
 
 
 def _failure_hint(command: str, returncode: int, output: str, exit_note) -> Optional[str]:

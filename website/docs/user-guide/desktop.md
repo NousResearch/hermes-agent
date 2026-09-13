@@ -86,6 +86,17 @@ desktop:
 
 Changing any of these values invalidates only that profile's disk-discovery cache and starts a policy-compliant refresh. **Hide from sidebar** remains a separate per-item curation action.
 
+#### GitHub #issue links in chat
+
+When a session runs inside a Git repository whose `origin` is on github.com, bare references like `#46` in the assistant's replies render as links to that repository's issue or pull request. Resolution runs where the backend runs, so remote-gateway sessions resolve against the remote host's repos. Disable it per profile in **Settings → Workspace**, or in `config.yaml`:
+
+```yaml
+desktop:
+  autolink_issue_refs: false
+```
+
+Repos without a github.com `origin` (or with no remote at all) leave references as plain text — a ref is never guessed against the wrong repository.
+
 #### Choosing a model
 
 The model picker lives in the **composer**, just left of the microphone. Click it to switch the model, reasoning effort, and fast mode from one dropdown.

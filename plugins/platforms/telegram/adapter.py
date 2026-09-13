@@ -456,8 +456,6 @@ class TelegramAdapter(BasePlatformAdapter):
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", 0.3, min_value=0.08, max_value=2.0)
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", 1.0, min_value=self._text_batch_delay_seconds, max_value=4.0)
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
         # Held across disconnect: PTB advances the offset before our drop-guard runs, so Telegram won't
         # redeliver — dropping is permanent loss (see _hold_inbound_event).
@@ -5809,6 +5807,11 @@ class TelegramAdapter(BasePlatformAdapter):
         event = None
         try:
             await asyncio.sleep(delay)
+            # Superseded flush (a newer chunk re-armed the timer while our sleep was already done):
+            # CancelledError only lands at the next await, so check synchronously before the pop.
+            owner = tasks.get(key)
+            if owner is not None and owner is not current_task:
+                return
             event = pending.pop(key, None)
             if not event:
                 return
@@ -5828,23 +5831,26 @@ class TelegramAdapter(BasePlatformAdapter):
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        # Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
-        # short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap).
-        pending = self._pending_text_batches.get(key)
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        """Adaptive delay: near-split-point last chunk → long delay (continuation almost certain);
+        short/medium totals → capped fast delays; else configured cap (all min()'d with the operator cap)."""
         last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
         total_len = len(getattr(pending, "text", "") or "") if pending else 0
         if last_len >= self._SPLIT_THRESHOLD:
-            delay = self._text_batch_split_delay_seconds
-        elif total_len <= self._TEXT_BATCH_FAST_LEN:
-            delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
-        elif total_len <= self._TEXT_BATCH_SHORT_LEN:
-            delay = min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
-        else:
-            delay = self._text_batch_delay_seconds
+            return self._text_batch_split_delay_seconds
+        if total_len <= self._TEXT_BATCH_FAST_LEN:
+            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_FAST_DELAY_S)
+        if total_len <= self._TEXT_BATCH_SHORT_LEN:
+            return min(self._text_batch_delay_seconds, self._TEXT_BATCH_SHORT_DELAY_S)
+        return self._text_batch_delay_seconds
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
+        (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
+        the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
         await self._flush_buffered(
-            self._pending_text_batches, self._pending_text_batch_tasks, key, delay, "text",
+            self._pending_text_batches, self._pending_text_batch_tasks, key,
+            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
 
     # -- Photo batching --

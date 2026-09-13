@@ -2866,21 +2866,11 @@ class FeishuAdapter(BasePlatformAdapter):
             prior_task.cancel()
         task_map[key] = asyncio.create_task(flush_fn(key))
 
-    async def _flush_text_batch(self, key: str) -> None:
-        """Flush after the quiet period; wait longer when the last chunk sits near Feishu's ~4096-char split."""
-        pending = self._pending_text_batches.get(key)
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-        near_split = last_len >= self._SPLIT_THRESHOLD  # a continuation chunk is almost certain
-        delay = self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds
-        await self._delayed_flush(self._pending_text_batch_tasks, key, delay, self._flush_text_batch_now)
-
-    async def _flush_text_batch_now(self, key: str) -> None:
-        """Dispatch the current text batch immediately."""
-        event = self._pending_text_batches.pop(key, None)
+    def _pop_text_batch(self, key: str) -> Optional[MessageEvent]:
         self._pending_text_batch_counts.pop(key, None)
-        if not event:
-            return
-        logger.info("[Feishu] Flushing text batch %s (%d chars)", key, len(event.text or ""))
+        return self._pending_text_batches.pop(key, None)
+
+    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
         await self._handle_message_with_guards(event)
 
     # --- Message content extraction and resource download ---

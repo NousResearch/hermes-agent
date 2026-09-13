@@ -799,7 +799,7 @@ class MatrixAdapter(BasePlatformAdapter):
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
-    _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -816,7 +816,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
-        self._split_threshold = max(100, self.max_message_length - 100)
+        self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
         # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
         # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
         # secondary's credential sends that credential to the wrong homeserver (or reuses the
@@ -875,8 +875,6 @@ class MatrixAdapter(BasePlatformAdapter):
         # Text batching merges client-side splits (~4000 chars) of one long message.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._approval_reaction_map = {
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
@@ -2480,23 +2478,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: redacted model picker reaction %s (%s)", emoji, evt_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
-
-    async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
-        current_task = asyncio.current_task()
-        try:
-            pending = self._pending_text_batches.get(key)
-            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-            near_split = last_len >= self._split_threshold
-            await asyncio.sleep(self._text_batch_split_delay_seconds if near_split else self._text_batch_delay_seconds)
-            event = self._pending_text_batches.pop(key, None)
-            if not event:
-                return
-            logger.info("[Matrix] Flushing text batch %s (%d chars)", key, len(event.text or ""))
-            await self.handle_message(event)
-        finally:
-            if self._pending_text_batch_tasks.get(key) is current_task:
-                self._pending_text_batch_tasks.pop(key, None)
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 

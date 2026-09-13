@@ -29,6 +29,7 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "session.save": "run-concurrent", "session.compress": "idle-gated",
     "prompt.submit.truncate": "idle-gated", "slash.model": "idle-gated",
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
+    "slash.refine": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",
     "slash.retry": "idle-gated"}
 

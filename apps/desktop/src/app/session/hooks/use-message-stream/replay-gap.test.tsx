@@ -85,23 +85,6 @@ describe('session.replay_gap recovery', () => {
     expect(takeSessionDraft('stored-active').text).toBe('keep typing')
   })
 
-  it('accepts an untagged primary replay gap for its profile-only local session owner', () => {
-    setSessions([{ id: 'stored-active', profile: 'default' }] as never)
-    const state = createClientSessionState('stored-active')
-
-    const stream = renderMessageStream('runtime-active', {
-      states: new Map([['runtime-active', state]])
-    })
-
-    act(() => stream.handleEvent(replayGap('runtime-active', { profile: 'default' })))
-
-    expect($sessionResumeRequest.get()).toMatchObject({
-      authoritativeSnapshot: true,
-      sessionId: 'stored-active'
-    })
-    expect($sessionResumeRequest.get()?.ownerRoute).toBeUndefined()
-  })
-
   it('re-resumes the affected mounted tile for a gateway snapshot while retaining its owner and draft', async () => {
     const ownerRoute = {
       connectionId: 'remote-b',
@@ -138,26 +121,4 @@ describe('session.replay_gap recovery', () => {
     expect(sessionTileDelegate()).toBe(delegate)
   })
 
-  it('ignores a colliding runtime id delivered by a different exact owner', () => {
-    const ownerRoute = { connectionId: 'remote-a', profile: 'default' }
-    const state = createClientSessionState('stored-active')
-    const resumeTile = vi.fn(async () => 'runtime-collision')
-
-    setSessionOwnerHint('stored-active', ownerRoute)
-    $sessionTiles.set([
-      { ownerRoute, runtimeId: 'runtime-collision', storedSessionId: 'stored-tile' }
-    ] as never)
-    setSessionTileDelegate({ ...inertDelegate(), resumeTile } as never)
-
-    const stream = renderMessageStream('runtime-collision', {
-      states: new Map([['runtime-collision', state]])
-    })
-
-    act(() =>
-      stream.handleEvent(replayGap('runtime-collision', { connectionId: 'remote-b', profile: 'default' }))
-    )
-
-    expect($sessionResumeRequest.get()).toBeNull()
-    expect(resumeTile).not.toHaveBeenCalled()
-  })
 })

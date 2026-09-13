@@ -52,7 +52,7 @@ export const GLASS_SCOPES = ['window', 'sidebar'] as const
 
 export type GlassScope = (typeof GLASS_SCOPES)[number]
 
-export const DEFAULT_GLASS_SCOPE: GlassScope = 'window'
+export const DEFAULT_GLASS_SCOPE: GlassScope = 'sidebar'
 
 /**
  * Electron `setBackgroundMaterial` values. `'auto'` is deliberately absent —
@@ -125,41 +125,19 @@ export type TranslucencyValues = Omit<TranslucencyState, 'mode'>
 export type Appearance = 'light' | 'dark'
 
 /**
- * Per-appearance defaults, per platform family. Glass ships ON: it is the
- * better-looking half of the feature, and a lever that starts at zero is a
- * feature nobody finds.
- *
- * The two platforms need different numbers because the lever means different
- * things behind them. `intensity` is how much of the theme tint the renderer
- * REMOVES (see `glassSurfaceKeep`), and what shows through underneath is a
- * native material with its own weight:
- *
- * - macOS vibrancy is genuinely sheer, so the tint has to come most of the way
- *   off before the desktop reads at all. Light leans heavy — a bright desktop
- *   behind a bright window needs real thinning before the field separates —
- *   with a single point of fade so the window edge reads as glass rather than
- *   as paint. Dark takes far less: a dark field already separates, and the
- *   tint that flatters light would smother it.
- * - Windows acrylic composites its OWN tint in DWM before the page is drawn,
- *   so the renderer's tint stacks on top of a backdrop that is already doing
- *   the work. The same numbers that read as frost on a Mac read as a washed
- *   sheet here; these stay low and let DWM carry it. Fade stays at zero —
- *   `setOpacity` over a system backdrop dims the composited result rather than
- *   deepening it.
- *
- * Both sit on the frost each platform renders best: 'header' and 'titlebar'
- * are macOS-only rungs (on Windows they collapse onto mica — see
- * `glassMaterialsFor`), while 'under-window' is the acrylic rung, the live
- * blur closest to what macOS calls under-window.
+ * Glass starts at 29% tint, confined to the sidebar in both appearances.
+ * Fade stays off so the content column and text remain fully opaque.
+ * Frost keeps its platform/appearance tuning: macOS uses header/titlebar,
+ * while Windows uses under-window, the live acrylic backdrop.
  */
 const DEFAULT_VALUES: Record<'mac' | 'windows', Record<Appearance, TranslucencyValues>> = {
   mac: {
-    light: { intensity: 66, fade: 1, material: 'header', scope: 'window' },
-    dark: { intensity: 22, fade: 0, material: 'titlebar', scope: 'window' }
+    light: { intensity: 29, fade: 0, material: 'header', scope: DEFAULT_GLASS_SCOPE },
+    dark: { intensity: 29, fade: 0, material: 'titlebar', scope: DEFAULT_GLASS_SCOPE }
   },
   windows: {
-    light: { intensity: 20, fade: 0, material: 'under-window', scope: 'window' },
-    dark: { intensity: 5, fade: 0, material: 'under-window', scope: 'window' }
+    light: { intensity: 29, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE },
+    dark: { intensity: 29, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE }
   }
 }
 
@@ -274,7 +252,7 @@ export function normalizeMaterial(value: unknown): GlassMaterial {
   return GLASS_MATERIALS.includes(value as GlassMaterial) ? (value as GlassMaterial) : DEFAULT_GLASS_MATERIAL
 }
 
-/** Unknown or unsupported values fall back to whole-window glass. */
+/** Unknown or unsupported values fall back to sidebar glass. */
 export function normalizeScope(value: unknown): GlassScope {
   return GLASS_SCOPES.includes(value as GlassScope) ? (value as GlassScope) : DEFAULT_GLASS_SCOPE
 }

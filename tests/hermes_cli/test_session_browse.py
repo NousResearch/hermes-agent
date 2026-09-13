@@ -10,7 +10,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from hermes_cli.main import _session_browse_picker
+from hermes_cli.sessions_cmd_browse import _session_browse_picker
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ class TestSessionBrowseArgparse:
         # by checking that argparse doesn't error on "sessions browse"
         # Re-create the parser portion
         # Instead, let's just verify the import works and the function exists
-        from hermes_cli.main import _session_browse_picker
+        from hermes_cli.sessions_cmd_browse import _session_browse_picker
         assert callable(_session_browse_picker)
 
     def test_browse_default_limit_is_500(self):

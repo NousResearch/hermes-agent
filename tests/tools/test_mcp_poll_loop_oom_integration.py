@@ -25,11 +25,11 @@ import pytest
 
 @pytest.fixture
 def mcp_loop():
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool_loop as _mcp_loop
 
-    mcp_tool._ensure_mcp_loop()
-    yield mcp_tool
-    mcp_tool._stop_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
+    yield _mcp_loop
+    _mcp_loop._stop_mcp_loop()
 
 
 def test_inner_wait_for_timeout_surfaces_promptly_without_spinning(mcp_loop):

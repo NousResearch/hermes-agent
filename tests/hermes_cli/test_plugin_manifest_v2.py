@@ -409,3 +409,26 @@ class TestCtxHasPlugin:
         finally:
             if hasattr(sys, "_m2_probe"):
                 del sys._m2_probe
+
+
+class TestRequiresHermes:
+    def test_unsatisfied_requires_hermes_skips_without_importing(self, hermes_home, monkeypatch):
+        """A too-new ``requires_hermes`` records an error and never runs register(); a satisfied one loads."""
+        import sys
+        from hermes_cli import plugins_manifest
+        monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.2.3")
+        _write_plugin(hermes_home / "plugins", "future", manifest_extra={"requires_hermes": ">=99.0"},
+                      register_body="import sys; sys._rh_future = True")
+        _write_plugin(hermes_home / "plugins", "current", manifest_extra={"requires_hermes": ">=1.2,<2"},
+                      register_body="import sys; sys._rh_current = True")
+        _enable(hermes_home, ["future", "current"])
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert not hasattr(sys, "_rh_future")
+            assert "requires hermes >=99.0" in (mgr._plugins["future"].error or "")
+            assert getattr(sys, "_rh_current", False) is True
+        finally:
+            for attr in ("_rh_future", "_rh_current"):
+                if hasattr(sys, attr):
+                    delattr(sys, attr)

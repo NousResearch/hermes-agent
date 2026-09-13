@@ -177,7 +177,7 @@ def _(rid, params: dict) -> dict:
 
     def _run() -> None:
         try:
-            code = _bd_install.install_packages(ask_password=_ask_password, on_line=_line)
+            code = _bd_install.install_packages(ask_password=_ask_password, on_line=_line, claimed=True)
         except Exception as e:
             _line(f"install failed: {e}")
             code = 1
@@ -185,7 +185,7 @@ def _(rid, params: dict) -> dict:
                                                          "status": _display_snapshot()})
 
     try:
-        _bd_install.assert_not_running()
+        _bd_install.claim()  # atomic: two fast clicks cannot both start a package manager
     except _bd_install.InstallBusy as e:
         return _err(rid, _DISPLAY_ERR, str(e))
     threading.Thread(target=ctx.run, args=(_run,), name=f"bot-desktop-install:{profile_key}", daemon=True).start()
@@ -200,7 +200,7 @@ def _(rid, params: dict) -> dict:
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
-    return _ok(rid, {"lease": lease.as_dict()})
+    return _ok(rid, {"lease": _lease_view(lease)})
 
 
 @method("display.lease.release")
@@ -214,7 +214,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
     lease = _bd_lease.release(viewer_id)
-    return _ok(rid, {"lease": lease.as_dict()})
+    return _ok(rid, {"lease": _lease_view(lease)})
 
 
 def register(server) -> None:

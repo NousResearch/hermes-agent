@@ -104,6 +104,24 @@ class TestRefreshTools:
             assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
             assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
+    @pytest.mark.asyncio
+    async def test_refresh_skips_when_session_is_none(self, mock_registry):
+        """#109824: a queued refresh can fire while the server is parked / mid-reconnect,
+        before the replacement ClientSession is assigned. The refresh must skip cleanly
+        (pre-fix: AttributeError 'NoneType' has no attribute 'list_tools' once per profile
+        on every gateway restart with a slow-to-connect MCP server) and leave the owned
+        tool names untouched so the next refresh cycle still knows what it owns."""
+        server = MCPServerTask("parked_srv")
+        server._refresh_lock = asyncio.Lock()
+        server._config = {}
+        server._registered_tool_names = ["mcp__parked_srv__old_tool"]
+        server.session = None  # parked before the cycle: snapshot must observe None
+
+        with patch("tools.registry.registry", mock_registry):
+            await server._refresh_tools()  # must not raise, must not call list_tools
+
+        assert server._registered_tool_names == ["mcp__parked_srv__old_tool"]
+
 
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""

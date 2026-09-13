@@ -30,6 +30,7 @@ host ``_IS_WINDOWS`` is already False, so no patching is needed at all.
 """
 
 import os
+import shlex
 from unittest.mock import patch
 
 import pytest
@@ -332,3 +333,162 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+
+# ---------------------------------------------------------------------------
+# PowerShell re-quoting for the outer Bash wrapper
+# ---------------------------------------------------------------------------
+# BaseEnvironment.execute() feeds _prepare_command()'s output to
+# _wrap_command(), which evaluates it through Bash. Without re-quoting, Bash
+# expands PowerShell's own `$_.Path` / `$env:TEMP` before PowerShell ever sees
+# them. _quote_windows_powershell_command() rebuilds a *standalone* pwsh
+# invocation with Bash-safe quoting, and deliberately declines (returns None)
+# on anything it can't prove is simple, leaving the pre-existing Bash path
+# untouched.
+
+
+class TestWindowsPowerShellQuoting:
+    """_quote_windows_powershell_command: round-trip, switches, refusals."""
+
+    @staticmethod
+    def _roundtrip(quoted: str) -> list[str]:
+        """Re-parse the rebuilt string the way the outer Bash would."""
+        return shlex.split(quoted, posix=True)
+
+    @pytest.mark.parametrize("payload", [
+        "Get-ChildItem | ForEach-Object { $_.Path }",
+        "echo $env:TEMP",
+        "$_.Name",
+        # `$(...)` *inside the payload* is PowerShell subexpression syntax and
+        # must be protected, not refused — it only disqualifies the command
+        # when it appears before the -Command marker (see the refusal tests).
+        "echo $(Get-Date)",
+    ])
+    def test_dollar_payloads_survive_the_bash_layer_literally(self, payload):
+        """$_ / $env: must reach PowerShell unexpanded — the whole point."""
+        quoted = local_mod._quote_windows_powershell_command(
+            f'pwsh -Command "{payload}"'
+        )
+        assert quoted is not None
+        # The payload token comes back byte-identical after Bash re-parses it.
+        assert self._roundtrip(quoted)[-1] == payload
+
+    @pytest.mark.parametrize("switch", [
+        "-c", "-co", "-com", "-comm", "-comma", "-comman", "-command",
+        "/c", "/command", "-Command", "-COMMAND",
+    ])
+    def test_command_switch_abbreviations_are_recognized(self, switch):
+        """PowerShell accepts any unambiguous prefix of -Command, and the
+        Windows-style `/c` form; all must be treated as the payload marker."""
+        quoted = local_mod._quote_windows_powershell_command(
+            f'powershell {switch} "echo $env:TEMP"'
+        )
+        assert quoted is not None, switch
+        assert self._roundtrip(quoted)[-1] == "echo $env:TEMP"
+
+    @pytest.mark.parametrize("mode_flag", ["-File", "-EncodedCommand"])
+    def test_non_command_modes_are_declined(self, mode_flag):
+        """-File and -EncodedCommand are not -Command payloads; the quoter
+        must not claim them (an encoded payload is already Bash-inert, and a
+        script path is handled by the normal path logic)."""
+        assert local_mod._quote_windows_powershell_command(
+            rf'pwsh {mode_flag} C:\tmp\script.ps1'
+        ) is None
+
+    @pytest.mark.parametrize("command", [
+        "ls -la",
+        "python -c 'print(1)'",
+        "git status",
+        "notpwsh -Command \"echo $env:TEMP\"",
+    ])
+    def test_non_powershell_commands_pass_through_untouched(self, command):
+        """Anything that isn't a pwsh/powershell executable is None so the
+        caller leaves the command exactly as-is."""
+        assert local_mod._quote_windows_powershell_command(command) is None
+
+    @pytest.mark.parametrize("command", [
+        'pwsh -Command "echo hi" | grep hi',      # pipeline
+        'pwsh -Command "echo hi" && echo done',   # operator
+        'pwsh $(echo -Command) "echo hi"',        # expansion BEFORE the payload
+        'pwsh -Command "echo hi"; rm -rf /tmp/x', # statement separator
+        'pwsh -Command "unterminated',            # unbalanced quote
+        'pwsh -Command "a" > out.txt',            # redirection
+    ])
+    def test_ambiguous_shell_syntax_is_refused(self, command):
+        """Conservative by design: real Bash syntax around the invocation
+        means the existing Bash path must keep handling it."""
+        assert local_mod._quote_windows_powershell_command(command) is None
+
+    def test_multiline_input_is_refused(self):
+        assert local_mod._quote_windows_powershell_command(
+            'pwsh -Command "echo a"\necho b'
+        ) is None
+
+    def test_empty_input_is_refused(self):
+        assert local_mod._quote_windows_powershell_command("   ") is None
+
+    def test_quoted_executable_path_with_spaces_is_preserved(self):
+        """A quoted pwsh path must stay a single token after re-quoting."""
+        quoted = local_mod._quote_windows_powershell_command(
+            r'"C:\Program Files\PowerShell\7\pwsh.exe" -Command "echo $env:TEMP"'
+        )
+        assert quoted is not None
+        tokens = self._roundtrip(quoted)
+        assert tokens[0] == r"C:\Program Files\PowerShell\7\pwsh.exe"
+        assert tokens[-1] == "echo $env:TEMP"
+
+
+class TestPrepareCommandWindowsGate:
+    """LocalEnvironment._prepare_command applies the rewrite only on Windows."""
+
+    def _prepare(self, monkeypatch, *, is_windows):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", is_windows)
+        monkeypatch.setattr(
+            BaseEnvironment, "_prepare_command",
+            lambda self, command: (command, None),
+        )
+        env = LocalEnvironment.__new__(LocalEnvironment)
+        return env._prepare_command('pwsh -Command "echo $env:TEMP"')
+
+    def test_rewrites_on_windows(self, monkeypatch):
+        exec_command, sudo_stdin = self._prepare(monkeypatch, is_windows=True)
+        assert sudo_stdin is None
+        assert exec_command != 'pwsh -Command "echo $env:TEMP"'
+        assert shlex.split(exec_command, posix=True)[-1] == "echo $env:TEMP"
+
+    def test_leaves_command_untouched_on_posix(self, monkeypatch):
+        """The quoter is a Windows/Git-Bash workaround; on POSIX the command
+        must reach the shell exactly as the caller wrote it."""
+        exec_command, _ = self._prepare(monkeypatch, is_windows=False)
+        assert exec_command == 'pwsh -Command "echo $env:TEMP"'
+
+
+class TestMsysControlsNotLeakedToPosix:
+    """MSYS_NO_PATHCONV / MSYS2_ARG_CONV_EXCL are Windows-only controls."""
+
+    def test_apply_defaults_strips_controls_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        env = {"MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*", "PATH": "/usr/bin"}
+        local_mod._apply_windows_msys_bash_env_defaults(env)
+        assert "MSYS_NO_PATHCONV" not in env
+        assert "MSYS2_ARG_CONV_EXCL" not in env
+        assert env["PATH"] == "/usr/bin", "unrelated vars must be left alone"
+
+    def test_apply_defaults_sets_controls_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env: dict = {}
+        local_mod._apply_windows_msys_bash_env_defaults(env)
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+        assert env.get("MSYS2_ARG_CONV_EXCL") == "*"
+
+    def test_make_run_env_does_not_leak_inherited_controls_on_posix(self, monkeypatch):
+        """Even when the parent process has them set, a POSIX subprocess env
+        must come out clean."""
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(
+            local_mod.os, "environ",
+            {"MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*", "HOME": "/home/x"},
+        )
+        result = local_mod._make_run_env({})
+        assert "MSYS_NO_PATHCONV" not in result
+        assert "MSYS2_ARG_CONV_EXCL" not in result

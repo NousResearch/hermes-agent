@@ -132,6 +132,15 @@ def _wrap_command_script(
     succeeding so a failed dump never replaces a good snapshot. ``umask 077`` is applied after
     the user's command so snapshot files (which may carry secrets) are private without
     changing the command's umask.
+
+    The re-dump is funneled through ``awk`` to collapse consecutive duplicate PATH
+    entries (case-sensitive, per-line): every command was previously re-emitted
+    whatever the parent inherited, and over many commands a polluted parent (e.g.
+    1 trailing-backslash PATH entry on Windows) would compound into 70+ duplicates
+    that MSYS bash would then mis-translate (verified 2026-09-11). See issue
+    #108508. Adjacent dedup is the right scope: non-adjacent dupes are still
+    meaningful (PATH can validly contain the same dir twice for shadowing), and
+    awk is in coreutils so it works on macOS and Windows-bash alike.
     """
     escaped = command.replace("'", "'\\''")
     save, restore = _passthrough_save_restore(passthrough_names)
@@ -148,9 +157,30 @@ def _wrap_command_script(
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready:
+        # The awk script: collapse adjacent duplicate entries inside the PATH
+        # value (case-sensitive, per-line). This breaks the persistence loop
+        # where a polluted parent PATH (e.g. Windows trailing-backslash variants)
+        # would compound across many commands into 70+ duplicates. See issue
+        # #108508. Adjacent dedup is the right scope: non-adjacent dupes are
+        # still meaningful (PATH can validly contain the same dir twice for
+        # shadowing), and awk is in coreutils so it works on macOS and
+        # Windows-bash alike.
+        _path_dedupe_awk = (
+            "awk 'BEGIN{prev=\"\"} /^declare -x PATH=/{"
+            "  sub(/^declare -x PATH=\"/, \"\", $0);"
+            "  sub(/\"$/, \"\", $0);"
+            "  n=split($0, parts, \":\");"
+            "  out=\"\"; last=\"\";"
+            "  for(i=1;i<=n;i++) if(parts[i] != last) { out = (out == \"\" ? parts[i] : out \":\" parts[i]); last = parts[i] }"
+            "  print \"declare -x PATH=\\\"\" out \"\\\"\";"
+            "  prev=$0; next"
+            "} { if(prev ~ /^declare -x PATH=/) next; print; prev=$0 }'"
+        )
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
+            f"| {_path_dedupe_awk} "
+            f"> {_SNAP_TMP} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]

@@ -751,3 +751,78 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestDuplicateDrivePrefixGuard:
+    """Fail-closed guard on a path that already contains a duplicated drive
+    prefix (e.g., ``C:\\Foo\\C:\\Foo`` from a cwd+path prepending bug somewhere
+    upstream). Better to refuse the write than to silently land a file in the
+    wrong place. See path-pollution issue #108508 follow-up.
+
+    The check lives in ``write_file_tool`` before any state-mutating call; the
+    purpose here is to lock in the rule and fail loudly if it ever regresses.
+    """
+
+    def test_clean_absolute_path_passes(self):
+        # Bypass any stale .pyc that may have been written before the guard
+        # landed. Future-proof: the guard lives in write_file_tool itself, so
+        # reimporting is the only thing that gets the patched code.
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # Single, well-formed absolute path: must not be flagged.
+        result = write_file_tool(
+            path=r"C:\Users\bbask\hermes-acceptance\test-clean.py",
+            content="x",
+            cross_profile=True,
+        )
+        # The guard short-circuits BEFORE any tool error/success; it must NOT
+        # mention the duplicated drive prefix.
+        assert "duplicated drive prefix" not in (result or ""), (
+            f"Clean absolute path was incorrectly flagged: {result!r}"
+        )
+
+    def test_mangled_path_is_rejected(self):
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # This is the exact pattern observed in the 2026-09-11 path-pollution
+        # bug: the agent sent an absolute path and the kernel/cwd logic
+        # prepended the cwd, producing a duplicated-drive prefix.
+        mangled = (
+            r"C:\Users\bbask\Hermes-Workspace"
+            r"\C:\Users\bbask\hermes-acceptance\test-mangled.py"
+        )
+        result = write_file_tool(
+            path=mangled,
+            content="x",
+            cross_profile=True,
+        )
+        assert result is not None
+        assert "duplicated drive prefix" in result, (
+            f"Mangled path was NOT rejected by the guard: {result!r}"
+        )
+        # The actual destination must NOT have been created on disk.
+        import os
+        assert not os.path.exists(mangled), (
+            f"File was created at the wrong path: {mangled!r}"
+        )
+
+    def test_relative_path_passes(self):
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # Relative paths still resolve against cwd; they don't look duplicated.
+        result = write_file_tool(
+            path="test-relative.py",
+            content="x",
+            cross_profile=True,
+        )
+        assert "duplicated drive prefix" not in (result or "")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

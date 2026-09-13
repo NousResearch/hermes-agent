@@ -163,12 +163,10 @@ export function BootFailureOverlay() {
     setBusy(null)
   }
 
-  // Clear the OAuth partition first, then open the gateway's login window
-  // (username/password form or OAuth redirect — the desktop drives both). A
-  // partition-wide sign-out drops stale gateway AND identity-provider cookies so
-  // an expired session can't silently bounce us back into the same state. On a
-  // successful sign-in the cookie is re-established; reload so boot mints a fresh
-  // ticket against a live session.
+  // Clear this gateway's stale auth first, then re-establish it through the
+  // connection's owning login flow. Hermes Cloud must reuse its portal session
+  // and per-agent cascade; generic remote gateways use native/embedded OAuth.
+  // Reload after success so boot mints a fresh ticket against the new session.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -177,10 +175,39 @@ export function BootFailureOverlay() {
     setBusy('signin')
 
     try {
-      await window.hermesDesktop?.oauthLogoutConnectionConfig?.()
-      const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
+      const desktop = window.hermesDesktop
+
+      await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
+
+      let result: { connected?: boolean } | undefined
+
+      if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
+        const status = await desktop.cloud.status()
+
+        if (!status.signedIn) {
+          const login = await desktop.cloud.login()
+
+          if (!login.signedIn) {
+            notify({
+              kind: 'warning',
+              title: t.boot.failure.signInIncompleteTitle,
+              message: t.boot.failure.signInIncompleteMessage
+            })
+
+            return
+          }
+        }
+
+        result = await desktop.cloud.agentSignIn(remoteReauth.url)
+      } else {
+        result = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+      }
 
       if (result?.connected) {
+        if (connectionConfig?.mode === 'cloud') {
+          await desktop?.resetBootstrap().catch(() => undefined)
+        }
+
         notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
         window.location.reload()
 

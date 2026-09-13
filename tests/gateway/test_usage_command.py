@@ -140,11 +140,11 @@ class TestUsageAccountSection:
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.slash_commands.fetch_account_usage",
+            "gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands.render_account_usage_lines",
+            "gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: [
                 "📈 **Account limits**",
                 "Provider: openai-codex (Pro)",
@@ -186,11 +186,11 @@ class TestUsageAccountSection:
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.slash_commands.fetch_account_usage",
+            "gateway.slash_commands_status.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.slash_commands.render_account_usage_lines",
+            "gateway.slash_commands_status.render_account_usage_lines",
             lambda snapshot, markdown=False: ["account limits"],
         )
         monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])

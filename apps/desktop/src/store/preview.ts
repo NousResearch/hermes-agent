@@ -1,9 +1,11 @@
 import { atom, computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
+import { readKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
@@ -205,6 +207,124 @@ export function forgetBrowserPage(tabId: string) {
     $browserPages.set(rest)
   }
 }
+
+/** Write the page a Browser is showing back onto its persisted tab. The
+ *  webview is built from `target.url`, so this is for hand-off (pop-out /
+ *  dock-back), not for every in-page hop — that would tear the guest down. */
+export function commitBrowserTabLocation(tabId: string, url: string, title?: string) {
+  const nextUrl = url.trim()
+
+  if (!tabId || !nextUrl) {
+    return
+  }
+
+  const tabs = $previewTabs.get()
+  const index = tabs.findIndex(tab => tab.id === tabId)
+
+  if (index === -1) {
+    return
+  }
+
+  const tab = tabs[index]
+  const nextTitle = title?.trim()
+
+  if (tab.target.kind !== 'url' || (tab.target.url === nextUrl && (!nextTitle || tab.target.label === nextTitle))) {
+    return
+  }
+
+  $previewTabs.set(
+    tabs.map((item, i) =>
+      i === index
+        ? {
+            ...item,
+            target: {
+              ...item.target,
+              ...(nextTitle ? { label: nextTitle } : {}),
+              url: nextUrl
+            }
+          }
+        : item
+    )
+  )
+}
+
+/** Pull one tab from storage into this renderer's atom. A sibling window
+ *  (the pop-out) may have committed a newer URL that we never saw. */
+export function adoptPersistedBrowserTab(tabId: string) {
+  if (!tabId) {
+    return
+  }
+
+  try {
+    const raw = readKey(TABS_STORAGE_KEY)
+
+    if (!raw) {
+      return
+    }
+
+    const persisted = decodePreviewTabs(raw).find(tab => tab.id === tabId)
+
+    if (!persisted || persisted.target.kind !== 'url') {
+      return
+    }
+
+    commitBrowserTabLocation(tabId, persisted.target.url, persisted.target.label)
+  } catch {
+    // Storage can throw; the in-memory tab stays as it was.
+  }
+}
+
+/** Pop the in-app Browser into its own OS window. Shared by the address-bar
+ *  glyph and the tab context menu so they cannot drift. */
+export function popOutBrowserTab(tabId: string) {
+  if (!tabId || !canOpenBrowserWindow()) {
+    return
+  }
+
+  const tab = $previewTabs.get().find(item => item.id === tabId)
+
+  if (!tab || tab.target.kind !== 'url') {
+    return
+  }
+
+  const page = $browserPages.get()[tabId]
+
+  markBrowserTabPopped(tabId, true)
+  commitBrowserTabLocation(tabId, page?.url || tab.target.url, page?.title)
+  void openBrowserInNewWindow(tabId).then(ok => {
+    if (!ok) {
+      markBrowserTabPopped(tabId, false)
+    }
+  })
+}
+
+/** Tabs currently shown in a popped-out Browser window. The docked tree
+ *  hides them so the page isn't in two places; closing the window docks
+ *  them again. Memory-only — a relaunch with no pop-out window restores. */
+export const $poppedBrowserTabIds = atom<ReadonlySet<string>>(new Set())
+
+export function markBrowserTabPopped(tabId: string, popped: boolean) {
+  const current = $poppedBrowserTabIds.get()
+
+  if (current.has(tabId) === popped) {
+    return
+  }
+
+  const next = new Set(current)
+
+  if (popped) {
+    next.add(tabId)
+  } else {
+    next.delete(tabId)
+  }
+
+  $poppedBrowserTabIds.set(next)
+}
+
+/** Preview tabs that still belong in the layout tree (not popped out). */
+export const $dockedPreviewTabs = computed([$previewTabs, $poppedBrowserTabIds], (tabs, popped) =>
+  popped.size === 0 ? tabs : tabs.filter(tab => !popped.has(tab.id))
+)
 
 export const $previewReloadRequest = atom(0)
 export const $previewServerRestart = atom<PreviewServerRestart | null>(null)

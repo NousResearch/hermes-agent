@@ -1,4 +1,6 @@
+import { httpStatusError, readStatusCode } from './api-transport'
 import { pathWithProfileScope, translateSelfProfileQuery } from './connection-config'
+import { requestWithOauthFallback } from './oauth-rest-request'
 
 const STREAMABLE_MEDIA_EXTENSIONS = [
   '.avi',
@@ -304,15 +306,26 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
       )
 
       if (connection.authMode === 'oauth') {
-        const bearer = await dependencies.ensureRemoteBearer(connection.baseUrl)
+        return await requestWithOauthFallback(connection.baseUrl, {
+          ensureNativeAccessToken: dependencies.ensureRemoteBearer,
+          requestWithBearer: async bearer => {
+            headers.set('authorization', `Bearer ${bearer}`)
 
-        if (bearer) {
-          headers.set('authorization', `Bearer ${bearer}`)
+            return validatePluginMediaResponse(target, await dependencies.fetchRemote(endpoint, headers, method))
+          },
+          requestWithCookie: async () => {
+            const response = await dependencies.fetchRemoteWithCookies(endpoint, headers, method)
 
-          return validatePluginMediaResponse(target, await dependencies.fetchRemote(endpoint, headers, method))
-        }
+            // Fetch resolves HTTP errors; translate only the auth verdict so
+            // the shared fallback can preserve a failed native refresh.
+            if (response.status === 401 || response.status === 403) {
+              await response.body?.cancel()
+              throw httpStatusError(response.status, 'Remote media authentication unavailable')
+            }
 
-        return validatePluginMediaResponse(target, await dependencies.fetchRemoteWithCookies(endpoint, headers, method))
+            return validatePluginMediaResponse(target, response)
+          }
+        })
       }
 
       if (!connection.token) {
@@ -322,8 +335,10 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
       headers.set('x-hermes-session-token', connection.token)
 
       return validatePluginMediaResponse(target, await dependencies.fetchRemote(endpoint, headers, method))
-    } catch {
-      return new Response('Remote media unavailable', { status: 502 })
+    } catch (error) {
+      const status = readStatusCode(error)
+
+      return new Response('Remote media unavailable', { status: status === 401 || status === 403 ? status : 502 })
     }
   }
 }

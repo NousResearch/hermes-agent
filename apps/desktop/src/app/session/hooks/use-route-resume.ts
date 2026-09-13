@@ -156,7 +156,8 @@ export function useRouteResume({
       // we're stranded on a routed session that never loaded. The first two
       // guard against a transient /:sid re-resume during "new chat" state clears
       // before the pathname updates from /:sid -> /.
-      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession || explicitlyRequested
+      const shouldResume =
+        pathnameChanged || (gatewayBecameOpen && !freshDraftReady) || stuckOnRoutedSession || explicitlyRequested
 
       // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
       // `alreadyActive`: the cached runtime id can be stale once the gateway

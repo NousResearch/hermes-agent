@@ -619,12 +619,12 @@ test('no-mux: an unrelated listener cannot mask a delayed bind failure', async (
   srv.close()
 })
 
-test('no-mux: tunnel death after readiness makes the connection unhealthy', async () => {
+test('no-mux: tunnel death after readiness triggers a bounded restart, then unhealthy', async () => {
   const net = await import('node:net')
   const srv = net.createServer()
   await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
   const localPort = (srv.address() as any).port
-  let tunnel
+  const tunnels: any[] = []
 
   const spawnFn: any = (_cmd, args) => {
     const child: any = new EventEmitter()
@@ -632,10 +632,15 @@ test('no-mux: tunnel death after readiness makes the connection unhealthy', asyn
     child.stderr = new EventEmitter()
     child.exitCode = null
 
-    child.kill = () => {}
+    child.kill = () => {
+      child.exitCode = 0
+      process.nextTick(() => child.emit('exit', 0))
+
+      return true
+    }
 
     if (args.includes('-N')) {
-      tunnel = child
+      tunnels.push(child)
       process.nextTick(() =>
         child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
       )
@@ -646,11 +651,129 @@ test('no-mux: tunnel death after readiness makes the connection unhealthy', asyn
     return child
   }
 
-  const conn = new SshConnection({ host: 'box' }, { spawnFn, mux: false })
+  const conn = new SshConnection(
+    { host: 'box' },
+    { spawnFn, mux: false, tunnelRestartLimit: 1, tunnelRestartDelayMs: 5 }
+  )
+
   await conn.open()
   await conn.forward(localPort, 9119)
-  tunnel.emit('exit', 255)
-  assert.equal(await conn.isAlive(), false)
+  assert.equal(tunnels.length, 1)
+
+  // First death after readiness: a restart is pending, so the connection is
+  // NOT reported dead — the exact flap that used to cascade into a SIGTERM of
+  // a healthy backend (#96266).
+  tunnels[0].exitCode = 255
+  tunnels[0].emit('exit', 255)
+  assert.equal(await conn.isAlive(), true, 'flap within the restart budget must not poison isAlive')
+
+  // The restart spawns a replacement -N child.
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(tunnels.length, 2, 'a replacement tunnel child is spawned')
+  assert.equal(await conn.isAlive(), true)
+
+  // Second death exhausts the budget (limit 1): now the connection is dead.
+  tunnels[1].exitCode = 255
+  tunnels[1].emit('exit', 255)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(tunnels.length, 2, 'no restart past the budget')
+  assert.equal(await conn.isAlive(), false, 'exhausted budget reports the connection dead')
+  srv.close()
+})
+
+test('no-mux: cancelForward during a pending tunnel restart cancels the restart', async () => {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
+  const localPort = (srv.address() as any).port
+  const tunnels: any[] = []
+
+  const spawnFn: any = (_cmd, args) => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => {
+      child.exitCode = 0
+      process.nextTick(() => child.emit('exit', 0))
+
+      return true
+    }
+
+    if (args.includes('-N')) {
+      tunnels.push(child)
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection(
+    { host: 'box' },
+    { spawnFn, mux: false, tunnelRestartLimit: 5, tunnelRestartDelayMs: 20 }
+  )
+
+  await conn.forward(localPort, 9119)
+  tunnels[0].exitCode = 255
+  tunnels[0].emit('exit', 255)
+
+  // Deliberate teardown while the restart timer is pending.
+  await conn.cancelForward(localPort, 9119)
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(tunnels.length, 1, 'cancelled forward must not restart its tunnel')
+  srv.close()
+})
+
+test('no-mux: close() during a pending tunnel restart cancels the restart', async () => {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
+  const localPort = (srv.address() as any).port
+  const tunnels: any[] = []
+
+  const spawnFn: any = (_cmd, args) => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => {
+      child.exitCode = 0
+      process.nextTick(() => child.emit('exit', 0))
+
+      return true
+    }
+
+    if (args.includes('-N')) {
+      tunnels.push(child)
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection(
+    { host: 'box' },
+    { spawnFn, mux: false, tunnelRestartLimit: 5, tunnelRestartDelayMs: 20 }
+  )
+
+  await conn.open()
+  await conn.forward(localPort, 9119)
+  tunnels[0].exitCode = 255
+  tunnels[0].emit('exit', 255)
+
+  await conn.close()
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(tunnels.length, 1, 'closed connection must not restart its tunnels')
   srv.close()
 })
 

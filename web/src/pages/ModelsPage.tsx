@@ -28,7 +28,7 @@ import {
   DASHBOARD_MODAL_PANEL,
   shouldCloseOuterModalOnEscape,
 } from "@/lib/dashboard-modal-shell";
-import { formatTokenCount } from "@/lib/format";
+import { compactNumber } from "@hermes/shared";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -52,7 +52,6 @@ const PERIODS = [
 // Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
 const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "vision", label: "Vision", hint: "Image analysis" },
-  { key: "web_extract", label: "Web Extract", hint: "Page summarization" },
   { key: "compression", label: "Compression", hint: "Context compaction" },
   { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
   { key: "approval", label: "Approval", hint: "Smart auto-approve" },
@@ -431,12 +430,12 @@ function ModelCard({
               )}
               {caps.context_window && caps.context_window > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {formatTokenCount(caps.context_window)} ctx
+                  {compactNumber(caps.context_window)} ctx
                 </span>
               )}
               {caps.max_output_tokens && caps.max_output_tokens > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {formatTokenCount(caps.max_output_tokens)} out
+                  {compactNumber(caps.max_output_tokens)} out
                 </span>
               )}
             </div>
@@ -768,7 +767,7 @@ function MoaModelsModal({
       aggregator_temperature: draft.aggregator_temperature,
       reference_timeout: draft.reference_timeout,
       degraded_reference_policy: draft.degraded_reference_policy,
-      max_tokens: draft.max_tokens,
+
       enabled: draft.enabled,
     };
     setDraft((prev) => ({

@@ -567,3 +567,147 @@ class TestGemini3ToolCallIds:
         result = translate_gemini_response(resp, model="gemini-2.5-flash")
         tool_calls = result.choices[0].message.tool_calls
         assert tool_calls[0].id.startswith("call_")
+
+
+# ---------------------------------------------------------------------------
+# Multimodal tool results: image embedding in functionResponse.parts
+# ---------------------------------------------------------------------------
+
+_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _vision_tool_messages():
+    """Assistant tool_call + tool result carrying a text part and an image part."""
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "vision_analyze", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "vision_analyze",
+            "content": [
+                {"type": "text", "text": "a red pixel"},
+                {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+    ],
+)
+def test_gemini_3x_embeds_image_in_function_response_parts(model):
+    """Gemini 3.x multimodal tool results embed inlineData inside functionResponse.parts."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=_vision_tool_messages(),
+        model=model,
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" in fr, "Gemini 3.x must embed image inlineData in functionResponse.parts"
+    assert fr["parts"][0]["inlineData"]["mimeType"] == "image/png"
+    assert fr["parts"][0]["inlineData"]["data"]
+
+
+def test_gemini_2x_does_not_embed_image_parts():
+    """Gemini 2.x rejects functionResponse.parts — tool result stays text-only."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=_vision_tool_messages(),
+        model="gemini-2.5-flash",
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
+def test_text_only_tool_result_has_no_parts():
+    """Text-only Gemini 3.x tool result does not add empty parts."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "read_file",
+            "content": "file contents here",
+        },
+    ]
+    request = build_gemini_request(
+        messages=messages,
+        model="gemini-3.6-flash",
+        tools=[],
+        tool_choice=None,
+    )
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
+class _FakeStreamResponse:
+    """Minimal httpx.Response stand-in for _iter_sse_events: text chunks only."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_text(self):
+        yield from self._chunks
+
+
+def test_iter_sse_events_flushes_residual_buffer_after_eof():
+    """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\n',
+        'data: {"candidates": [2]}',  # no newline, then EOF
+    ])
+    events = list(_iter_sse_events(resp))
+    assert events == [{"candidates": [1]}, {"candidates": [2]}]
+
+
+def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
+    """[DONE] terminates iteration even when more frames follow; a residual
+    [DONE] in the leftover buffer is not yielded as data."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
+    ])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+    resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]

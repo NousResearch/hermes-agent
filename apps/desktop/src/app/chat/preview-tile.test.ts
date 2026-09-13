@@ -8,11 +8,10 @@ vi.mock('./right-rail/preview-console-store', () => ({
   forgetPreviewConsole: () => undefined
 }))
 
-import { contributesToWorkspace } from '@/components/pane-shell/workspace-scope'
 import { registry } from '@/contrib/registry'
-import { closeRightRail, openPreview } from '@/store/preview'
+import { $previewTabs, closeRightRail, noteBrowserPage, openPreview } from '@/store/preview'
 
-import { browserTabLabel, watchPreviewTiles } from './preview-tile'
+import { browserTabExternalUrl, browserTabLabel, watchPreviewTiles } from './preview-tile'
 
 beforeAll(() => {
   watchPreviewTiles()
@@ -20,28 +19,6 @@ beforeAll(() => {
 
 afterEach(() => {
   closeRightRail()
-})
-
-// By prefix, not by a literal id: a Browser tab's id is minted per tab now
-// that there can be more than one of them.
-function browserPane() {
-  return registry.getArea('panes').find(entry => entry.id.startsWith('preview-tile:url:'))
-}
-
-describe('preview tiles in Bot Mode', () => {
-  it('registers the in-app Browser as a global pane so Bot Mode can show it', () => {
-    openPreview(
-      { kind: 'url', label: 'example.com', source: 'https://example.com', url: 'https://example.com' },
-      'explicit-link'
-    )
-
-    const pane = browserPane()
-
-    expect(pane).toBeTruthy()
-    expect(pane?.workspaceMode).toBeUndefined()
-    expect(contributesToWorkspace(pane, 'sessions')).toBe(true)
-    expect(contributesToWorkspace(pane, 'bots', 'bot:connection-a::default')).toBe(true)
-  })
 })
 
 describe('browserTabLabel', () => {
@@ -69,6 +46,36 @@ describe('browserTabLabel', () => {
   // there is to name it by.
   it('names an unreported tab from its target', () => {
     expect(browserTabLabel({ ...target, url: 'https://github.com/nous' })).toBe('github.com')
+  })
+})
+
+describe('browserTabExternalUrl', () => {
+  const openBrowser = (url: string) => {
+    openPreview({ kind: 'url', label: 'Browser', source: url, url }, 'explicit-link')
+
+    return $previewTabs.get().find(tab => tab.target.kind === 'url')!.id
+  }
+
+  it('hands the live page to the OS browser, not the address the tab was opened with', () => {
+    const tabId = openBrowser('https://example.com')
+
+    noteBrowserPage(tabId, { title: 'Hacker News', url: 'https://news.ycombinator.com/' })
+
+    expect(browserTabExternalUrl(tabId)).toBe('https://news.ycombinator.com/')
+  })
+
+  it('falls back to the target when the tab has not reported a page yet', () => {
+    expect(browserTabExternalUrl(openBrowser('https://github.com/nous'))).toBe('https://github.com/nous')
+  })
+
+  it('refuses about:blank and other non-pages', () => {
+    expect(browserTabExternalUrl(openBrowser('about:blank'))).toBeNull()
+  })
+
+  it('is null for a file peek', () => {
+    openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
+
+    expect(browserTabExternalUrl('file:/tmp/a.ts')).toBeNull()
   })
 })
 

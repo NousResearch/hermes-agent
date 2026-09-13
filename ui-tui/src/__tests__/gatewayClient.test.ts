@@ -402,6 +402,34 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
+  it('surfaces JSON-RPC error code and data to callers (shared error mapping)', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    gw.start()
+    const socket = FakeWebSocket.instances[0]!
+
+    socket.open()
+    const req = gw.request('projects.create', {})
+    await vi.waitFor(() => expect(socket.sent.length).toBeGreaterThan(0))
+
+    const frame = JSON.parse(socket.sent[0] ?? '{}') as { id: string }
+    socket.message(
+      JSON.stringify({
+        error: { code: -32601, data: { method: 'projects.create' }, message: 'unknown method: projects.create' },
+        id: frame.id,
+        jsonrpc: '2.0'
+      })
+    )
+
+    await expect(req).rejects.toMatchObject({
+      code: -32601,
+      data: { method: 'projects.create' },
+      message: 'unknown method: projects.create'
+    })
+    gw.kill()
+  })
+
   it('uses the undici WebSocket fallback when global WebSocket is unavailable', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
     delete (globalThis as { WebSocket?: unknown }).WebSocket
@@ -517,14 +545,31 @@ describe('GatewayClient websocket attach mode', () => {
           params: { type: 'gateway.ready', payload: { heartbeat: true } }
         })
       )
+      // A live gateway answers every ping (tui_gateway/ws.py replies inline);
+      // the shared channel counts any inbound frame as liveness, so a socket
+      // whose pings keep getting acked must never trip the deadline.
+      const acked: string[] = []
+
+      const ackPings = () => {
+        for (const raw of socket.sent) {
+          const frame = JSON.parse(raw) as { id: string; method: string }
+
+          if (frame.method === 'gateway.ping' && !acked.includes(frame.id)) {
+            acked.push(frame.id)
+            socket.message(JSON.stringify({ id: frame.id, jsonrpc: '2.0', result: { ok: true } }))
+          }
+        }
+      }
+
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(socket.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
 
-      const heartbeat = JSON.parse(socket.sent.at(-1) ?? '{}') as { id: string; method: string }
+      for (let elapsed = 0; elapsed < WS_HEARTBEAT_DEAD_MS * 2; elapsed += WS_HEARTBEAT_INTERVAL_MS) {
+        ackPings()
+        await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      }
 
-      expect(heartbeat.method).toBe('gateway.ping')
-      socket.message(JSON.stringify({ id: heartbeat.id, jsonrpc: '2.0', result: { ok: true } }))
-
-      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      expect(acked.length).toBeGreaterThan(2)
       expect(socket.readyState).toBe(FakeWebSocket.OPEN)
       expect(FakeWebSocket.instances).toHaveLength(1)
     } finally {

@@ -1,5 +1,6 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -54,6 +55,30 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
 export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
   return Object.keys(patch).length > 0
+}
+
+/** Keep the runtime-state object when a heartbeat only restates cached fields.
+ *  `$sessionStates` feeds every mounted session surface, so an equivalent spread
+ *  re-renders them all at the heartbeat cadence. */
+export function applySessionInfoStatePatch(
+  state: ClientSessionState,
+  patch: SessionRuntimeStatePatch
+): ClientSessionState {
+  if (
+    (patch.branch === undefined || patch.branch === state.branch) &&
+    (patch.cwd === undefined || patch.cwd === state.cwd) &&
+    (patch.fast === undefined || patch.fast === state.fast) &&
+    (patch.model === undefined || patch.model === state.model) &&
+    (patch.personality === undefined || patch.personality === state.personality) &&
+    (patch.provider === undefined || patch.provider === state.provider) &&
+    (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
+    (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
+    (patch.yolo === undefined || patch.yolo === state.yolo)
+  ) {
+    return state
+  }
+
+  return { ...state, ...patch }
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
@@ -118,9 +143,9 @@ export function toTodoPayload(payload: GatewayEventPayload | undefined): Gateway
     return undefined
   }
 
-  const isTodo = payload.name === 'todo' || (!payload.name && Object.hasOwn(payload, 'todos'))
+  const isTodo = isTodoToolName(payload.name) || (!payload.name && Object.hasOwn(payload, 'todos'))
 
-  return isTodo ? { ...payload, name: 'todo', tool_id: payload.tool_id || 'todo-live' } : undefined
+  return isTodo ? { ...payload, name: 'todo_list', tool_id: payload.tool_id || 'todo-live' } : undefined
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

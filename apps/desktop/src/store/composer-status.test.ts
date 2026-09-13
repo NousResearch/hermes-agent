@@ -1,6 +1,20 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $backgroundStatusBySession, dismissBackgroundProcess, reconcileBackgroundProcesses } from './composer-status'
+import {
+  $backgroundStatusBySession,
+  dismissBackgroundProcess,
+  isSessionGoneForBackgroundPolling,
+  reconcileBackgroundProcesses,
+  refreshBackgroundProcesses,
+  resetBackgroundPollingGuard,
+  stopBackgroundProcess
+} from './composer-status'
+import { $gateway } from './gateway'
+import { markSessionGone } from './runtime-gone'
+
+vi.mock('./notifications', () => ({ notifyError: vi.fn() }))
+import { notifyError } from './notifications'
 
 const SID = 'sess-1'
 
@@ -149,5 +163,207 @@ describe('reconcileBackgroundProcesses', () => {
     vi.advanceTimersByTime(5_000)
 
     expect(itemsOf('sess-arm')).toEqual([])
+  })
+})
+
+// ── Dead-session polling guard (#94219 fallout) ──────────────────────────────
+// The status stack polls `process.list` every 5s while a background row is on
+// screen. `process.list` is session-scoped: against a runtime id the gateway no
+// longer holds it returns 4001 "session not found". That failure was swallowed
+// as "transient socket loss", so the poll re-sent the SAME dead id every 5s for
+// the life of the window — 18,614 rejections against a single runtime id in one
+// day on a real machine, and the log line the user reads as "session not found".
+//
+// A gone session is terminal, not transient: stop polling it.
+describe('refreshBackgroundProcesses dead-session guard', () => {
+  beforeEach(() => {
+    $backgroundStatusBySession.set({})
+    resetBackgroundPollingGuard()
+  })
+
+  afterEach(() => {
+    $gateway.set(null as never)
+    resetBackgroundPollingGuard()
+  })
+
+  it('classifies a 4001 session-not-found as gone, and a timeout as transient', () => {
+    expect(isSessionGoneForBackgroundPolling(new Error('session not found'))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new Error('4001 session not found'))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new Error('Session Not Found'))).toBe(true)
+
+    // Transient failures must NOT latch the guard — the session may still be alive.
+    expect(isSessionGoneForBackgroundPolling(new Error('request timed out after 30s: process.list'))).toBe(false)
+    expect(isSessionGoneForBackgroundPolling(new Error('not connected'))).toBe(false)
+  })
+
+  it('stops re-polling a session after the gateway reports it gone', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    $gateway.set({ request } as never)
+
+    // First poll discovers the session is gone.
+    await refreshBackgroundProcesses(SID)
+    expect(request).toHaveBeenCalledTimes(1)
+
+    // Every subsequent tick must be suppressed. Before the fix these all went
+    // to the wire and each produced another gateway-side 4001.
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps polling after a transient failure', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('request timed out after 30s: process.list')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+
+    // A timeout is not proof of death — the poll must retry.
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not suppress a different, healthy session', async () => {
+    const request = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
+      if (params?.session_id === SID) {
+        throw new Error('session not found')
+      }
+
+      return { processes: [] }
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-healthy')
+    await refreshBackgroundProcesses('sess-healthy')
+
+    const targets = request.mock.calls.map(c => (c[1] as { session_id?: string } | undefined)?.session_id)
+    expect(targets.filter(t => t === SID)).toHaveLength(1)
+    expect(targets.filter(t => t === 'sess-healthy')).toHaveLength(2)
+  })
+
+  it('resumes polling a session that comes back (guard cleared on rebind)', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses(SID)
+    expect(request).toHaveBeenCalledTimes(1)
+
+    // A fresh runtime bound to this session id clears the guard.
+    resetBackgroundPollingGuard(SID)
+    await refreshBackgroundProcesses(SID)
+
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  it('dismisses a stale process row when Stop is clicked after the runtime is gone', async () => {
+    reconcileBackgroundProcesses(SID, [running('stale')])
+    markSessionGone(SID)
+    $gateway.set({ request: vi.fn() } as never)
+
+    await stopBackgroundProcess(SID, 'stale')
+
+    expect(items()).toEqual([])
+  })
+
+  it('dismisses a stale process row while the gateway is disconnected', async () => {
+    reconcileBackgroundProcesses(SID, [running('disconnected')])
+    markSessionGone(SID)
+    $gateway.set(null as never)
+
+    await stopBackgroundProcess(SID, 'disconnected')
+
+    expect(items()).toEqual([])
+  })
+
+  it('keeps the row and reports failure when the gateway is disconnected', async () => {
+    reconcileBackgroundProcesses(SID, [running('unreachable')])
+    $gateway.set(null as never)
+    vi.mocked(notifyError).mockClear()
+
+    await stopBackgroundProcess(SID, 'unreachable')
+
+    expect(items()).toEqual([expect.objectContaining({ id: 'unreachable', state: 'running' })])
+    expect(notifyError).toHaveBeenCalledWith(expect.any(Error), 'Could not stop the process')
+  })
+
+  it('dismisses and latches when Stop discovers the runtime is gone', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    reconcileBackgroundProcesses(SID, [running('rejected')])
+    $gateway.set({ request } as never)
+
+    await stopBackgroundProcess(SID, 'rejected')
+    await stopBackgroundProcess(SID, 'rejected')
+
+    expect(items()).toEqual([])
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── Review-thread hardenings on the guard (#94950) ───────────────────────────
+describe('refreshBackgroundProcesses dead-session guard hardenings', () => {
+  beforeEach(() => {
+    $backgroundStatusBySession.set({})
+    resetBackgroundPollingGuard()
+  })
+
+  afterEach(() => {
+    $gateway.set(null as never)
+    resetBackgroundPollingGuard()
+  })
+
+  it('matches the structured 4001 code, not a message substring, when a code is present', () => {
+    // Structured gateway rejection: the code decides, both directions.
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found', { code: 4001 }))).toBe(true)
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('gone', { code: 4001 }))).toBe(true)
+
+    // An unrelated coded error whose text merely MENTIONS the phrase must not
+    // latch — that would freeze the status stack on a healthy session.
+    expect(
+      isSessionGoneForBackgroundPolling(
+        new JsonRpcGatewayError('tool failed: upstream said session not found', { code: 5007 })
+      )
+    ).toBe(false)
+
+    // Codeless errors keep the message fallback (legacy frames).
+    expect(isSessionGoneForBackgroundPolling(new JsonRpcGatewayError('session not found'))).toBe(true)
+  })
+
+  it('a full guard reset (runtime re-mint) resumes polling every latched session', async () => {
+    const request = vi.fn(async () => {
+      throw new JsonRpcGatewayError('session not found', { code: 4001 })
+    })
+
+    $gateway.set({ request } as never)
+
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-2')
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-2')
+    expect(request).toHaveBeenCalledTimes(2)
+
+    // Gateway reconnect re-mints runtimes: the no-arg reset (wired at the
+    // reconnect seams) must clear every latched id, not just one.
+    resetBackgroundPollingGuard()
+    await refreshBackgroundProcesses(SID)
+    await refreshBackgroundProcesses('sess-2')
+
+    expect(request).toHaveBeenCalledTimes(4)
   })
 })

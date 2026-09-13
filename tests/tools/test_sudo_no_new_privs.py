@@ -9,6 +9,7 @@ unit outside that tree.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 
@@ -19,16 +20,24 @@ import tools.terminal_tool_sudo as terminal_tool
 
 def test_wraps_sudo_in_systemd_run_pipe_when_no_new_privs(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
 
-    wrapped = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true")
+    wrapped = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true", cwd="/tmp")
 
-    assert wrapped != "sudo -n true"
-    assert "systemd-run" in wrapped
-    assert "--user" in wrapped
+    assert wrapped.startswith("/usr/bin/systemd-run")
+    assert " --user " in f" {wrapped} " or "--user" in wrapped
     assert "--pipe" in wrapped
     assert "--wait" in wrapped
+    assert "--unit=hermes-nnp-sudo-" in wrapped
+    assert "--working-directory=/tmp" in wrapped
     assert "sudo -n true" in wrapped
+    assert shutil.which("systemd-run") is not None or wrapped.startswith("/usr/bin/systemd-run")
+
+
+def test_wrap_units_are_unique(monkeypatch):
+    monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    a = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true")
+    b = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true")
+    assert terminal_tool._nnp_sudo_unit_from_command(a) != terminal_tool._nnp_sudo_unit_from_command(b)
 
 
 def test_does_not_wrap_when_no_new_privs_is_clear(monkeypatch):
@@ -39,17 +48,27 @@ def test_does_not_wrap_when_no_new_privs_is_clear(monkeypatch):
 
 def test_does_not_wrap_commands_without_sudo(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
 
     assert terminal_tool._wrap_local_command_for_no_new_privs("id -un") == "id -un"
 
 
+def test_does_not_use_untrusted_systemd_run_on_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_trusted_systemd_run_binary", lambda: None)
+    fake = tmp_path / "systemd-run"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+
+    assert terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true") == "sudo -n true"
+
+
 @pytest.mark.skipif(
-    not shutil.which("setpriv") or not shutil.which("systemd-run"),
-    reason="setpriv + systemd-run required for the kernel-latch harness",
+    not shutil.which("setpriv") or not os.path.isfile("/usr/bin/systemd-run"),
+    reason="setpriv + /usr/bin/systemd-run required for the kernel-latch harness",
 )
 def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
-    """setpriv reproduces Electron's latch; the wrap must change the error."""
+    """setpriv reproduces Electron's latch; wrap must actually reach sudo."""
     raw = subprocess.run(
         ["setpriv", "--no-new-privs", "sudo", "-n", "true"],
         capture_output=True,
@@ -60,7 +79,7 @@ def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
     assert "no new privileges" in (raw.stderr or "").lower()
 
     monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
-    wrapped = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true")
+    wrapped = terminal_tool._wrap_local_command_for_no_new_privs("sudo -n true", cwd="/tmp")
     escaped = subprocess.run(
         ["setpriv", "--no-new-privs", "bash", "-lc", wrapped],
         capture_output=True,
@@ -69,3 +88,13 @@ def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
     )
     combined = f"{escaped.stdout}\n{escaped.stderr}".lower()
     assert "no new privileges" not in combined
+    assert "failed to connect" not in combined
+    sudo_ran = escaped.returncode == 0 or "password is required" in combined
+    assert sudo_ran, combined
+    unit = terminal_tool._nnp_sudo_unit_from_command(wrapped)
+    assert unit
+    subprocess.run(
+        ["/usr/bin/systemctl", "--user", "stop", unit],
+        capture_output=True,
+        timeout=5,
+    )

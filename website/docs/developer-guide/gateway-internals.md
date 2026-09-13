@@ -183,6 +183,16 @@ Adapters implement a common interface:
 - `send()` — outbound message delivery
 - inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
 
+Internal push wakes use `gateway.wake.admit_internal_event`: the public
+`handle_message()` still returns `None`, but the event's process-local
+`_gateway_accepted` receipt is set only after scheduling or queue insertion.
+A missing handler, mismatched explicit session key, or queue-cap drop is not
+acceptance. Custom adapters overriding ingress should delegate internal events to
+`BasePlatformAdapter.handle_message()` (or explicitly record actual admission),
+not equate a consumed/dropped callback with acceptance. This receipt is separate
+from heartbeat execution accounting and does not bypass authorization, emergency
+stop, or later turn-preparation gates.
+
 ### Token Locks
 
 Adapters that connect with unique credentials call `acquire_scoped_lock()` in `connect()` and `release_scoped_lock()` in `disconnect()`. This prevents two profiles from using the same bot token simultaneously.
@@ -237,19 +247,17 @@ AIAgent._invoke_tool()
 
 ### Memory Flush Lifecycle
 
-When a session is reset, resumed, or expires:
-1. Built-in memories are flushed to disk
-2. Memory provider's `on_session_end()` hook fires
-3. A temporary `AIAgent` runs a memory-only conversation turn
-4. Context is then discarded or archived
+Explicit conversation boundaries (such as `/new`, `/reset`, or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
+
+Resource-only TTL, LRU, and memory-pressure eviction commits the cached transcript to configured memory providers before releasing the agent's clients. It does not close the durable conversation: the next turn reloads the same transcript and identity.
 
 ## Background Maintenance
 
 The gateway runs periodic maintenance alongside message handling:
 
 - **Cron ticking** — checks job schedules and fires due jobs
-- **Session expiry** — cleans up abandoned sessions after timeout
-- **Memory flush** — proactively flushes memory before session expiry
+- **Session housekeeping** — reclaims cached resources without ending transcripts
+- **Memory flush** — commits memory before soft cache eviction
 - **Cache refresh** — refreshes model lists and provider status
 
 ## Process Management

@@ -79,21 +79,8 @@ def _patch_managed_uv(request):
 
 
 @pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
-    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
-
-    The restart phase used to swallow every exception at debug level, so these
-    end-to-end tests never noticed it touching real gateway discovery. Since
-    the phase is surfaced (#78574: an aborted restart now fails the update),
-    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
-    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
-    Discovery returning nothing makes the phase a clean no-op for every test
-    in this module (none of them assert on gateway restarts).
-    """
-    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
-         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
-         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
-        yield
+def _patch_gateway_discovery(isolated_update_runtime):
+    pass
 
 
 class TestCmdUpdateNpmLockfileCache:
@@ -1133,7 +1120,7 @@ def test_install_checkout_deps_treats_termux_failed_extras_as_uv_failure(
     assert install_calls[1][0] == [hm.sys.executable, "-m", "pip"]
 
 
-def test_optional_extra_failure_can_be_promoted_to_retry_signal(monkeypatch):
+def test_optional_extra_failure_can_be_promoted_to_retry_signal(monkeypatch, capsys):
     from hermes_cli import main as hm
 
     run_calls = []
@@ -1149,6 +1136,11 @@ def test_optional_extra_failure_can_be_promoted_to_retry_signal(monkeypatch):
     monkeypatch.setattr(
         hm, "_load_installable_optional_extras", lambda group="all": ["google"]
     )
+    monkeypatch.setattr(
+        main_install_repair,
+        "_configured_features_missing_deps",
+        lambda *a, **k: [("Google", "install the google extra")],
+    )
 
     with pytest.raises(subprocess.CalledProcessError):
         hm._install_python_dependencies_with_optional_fallback(
@@ -1157,6 +1149,9 @@ def test_optional_extra_failure_can_be_promoted_to_retry_signal(monkeypatch):
             raise_on_failed_extras=True,
         )
 
+    output = capsys.readouterr().out
+    assert "fail to load them on restart" in output
+    assert "Google: install the google extra" in output
     assert run_calls == [
         ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
         ["/usr/bin/uv", "pip", "install", "-e", "."],
@@ -1303,6 +1298,7 @@ class TestNodeRuntimeNpmResolution:
         from hermes_cli import update_cmd
 
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
         packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
         build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 

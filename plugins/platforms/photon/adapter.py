@@ -38,7 +38,8 @@ else:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import coerce_port as _coerce_port
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 
 from .auth import load_project_credentials
@@ -758,7 +759,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
             source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
-                                       user_id=sender_id, user_name=sender_id or None)
+                                       user_id=sender_id, user_name=sender_id or None, message_id=message_id)
             return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
                                 raw_message=event, timestamp=timestamp, **kwargs)
         if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)
@@ -1623,7 +1624,7 @@ def register(ctx) -> None:
 
 
 _PLUGIN_COMPAT_LAZY = {
-    'ProcessingOutcome': ('gateway.platforms.base', 'ProcessingOutcome'),
+    'ProcessingOutcome': ('gateway.platforms.event', 'ProcessingOutcome'),
     'resolve_sidecar_dir': ('plugins.platforms.photon.sidecar_paths', 'resolve_sidecar_dir'),
 }
 

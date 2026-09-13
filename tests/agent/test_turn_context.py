@@ -288,8 +288,61 @@ def test_prefetch_runs_for_substantive_user_message():
     agent, mm = _agent_with_memory_manager()
     query = "what did we decide about the deploy pipeline?"
     ctx = _build(agent, user_message=query)
-    mm.prefetch_all.assert_called_once_with(query)
+    mm.prefetch_all.assert_called_once_with(query, session_id=agent.session_id)
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
+
+
+# ── Per-turn author ──────────────────────────────────────────────────────────
+
+
+def test_turn_author_is_normalized_then_reaches_on_turn_start_and_the_agent_stash():
+    agent, mm = _agent_with_memory_manager()
+
+    _build(agent, user_message="what did we decide about the deploy pipeline?",
+           turn_author={"id": " bot:al\x00pha ", "name": "Alpha", "is_bot": 1, "x": 1})
+
+    kwargs = mm.on_turn_start.call_args.kwargs
+    assert (kwargs["author_id"], kwargs["author_name"], kwargs["author_is_bot"]) == ("bot:alpha", "Alpha", True)
+    # The end-of-turn sync reads this back off the agent.
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+
+
+def test_turn_without_author_clears_previous_bot_author():
+    agent, mm = _agent_with_memory_manager()
+    _build(agent, user_message="first turn", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author["id"] == "bot:alpha"
+
+    _build(agent, user_message="second turn")
+
+    assert agent._turn_author is None
+    kwargs = mm.on_turn_start.call_args.kwargs
+    assert kwargs["author_id"] is None
+    assert kwargs["author_is_bot"] is False
+
+
+def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
+    """``AIAgent.run_conversation(turn_author=...)`` crosses the facade and the loop entry point, not only
+    ``build_turn_context``; a kwarg dropped at either hop raised TypeError on every real turn."""
+    from types import SimpleNamespace
+    from run_agent import AIAgent
+
+    class _Completions:
+        def create(self, **_kw):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=None, reasoning=None, reasoning_content=None),
+                finish_reason="stop")], usage=None, model="test-model")
+
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI",
+                        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
+                    max_iterations=2, quiet_mode=True, skip_memory=True)
+    agent._disable_streaming = True
+
+    agent.run_conversation("hi", turn_author={"id": "bot:alpha", "name": "Alpha", "is_bot": True})
+    assert agent._turn_author == {"id": "bot:alpha", "name": "Alpha", "is_bot": True}
+    agent.run_conversation("hi again")
+    assert agent._turn_author is None
 
 
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
@@ -341,14 +394,6 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
-
-
-
-
-
-
-
-
 def test_pending_cli_message_uses_clean_override_for_api_local_note():
     """A noted API message reuses the clean staged dict and its DB marker."""
     agent = _FakeAgent()
@@ -366,12 +411,6 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert ctx.messages[-1]["_db_persisted"] is True
     assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert agent._pending_cli_user_message is None
-
-
-
-
-
-
 
 
 def test_recall_indicator_emitted_when_memory_injected():

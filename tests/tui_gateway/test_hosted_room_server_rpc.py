@@ -63,6 +63,7 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         task=task,
         execution_generation=2,
         on_terminal=callback,
+        member_id="ops-member",
     )
 
     create = next(params for method, params in calls if method == "session.create")
@@ -77,6 +78,7 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         "thread_id": "thread",
         "turn_id": "turn",
         "execution_generation": 2,
+        "member_id": "ops-member",
     }
     assert submit["_hosted_terminal_callback"] is callback
 
@@ -171,6 +173,7 @@ def test_prompt_rejection_is_proven_not_admitted():
             task=TaskIdentity("room", "task", "thread", "turn"),
             execution_generation=1,
             on_terminal=lambda _receipt: None,
+            member_id="ops",
         )
 
     assert exc.value.code == 4121

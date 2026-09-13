@@ -23,7 +23,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_transcript import TranscriptReadError
 
@@ -69,6 +69,8 @@ def _bootstrap(monkeypatch, tmp_path):
     # Mock has_platform_message_id to return False so the dedupe guard
     # (#47237) in gateway/run.py does not skip the append_to_transcript call.
     runner.session_store.has_platform_message_id.return_value = False
+    # The durable tail after the user row landed (gateway write or agent flush) is that user row.
+    runner.session_store.transcript_tail_role.return_value = "user"
     runner.session_store.update_session = MagicMock()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -137,7 +139,7 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     runner._run_agent = AsyncMock(
         return_value={
             "failed": True,
-            "final_response": None,
+            "final_response": "API call failed after 3 retries: 429 Too Many Requests",
             "error": "429 Too Many Requests — rate limit exceeded",
             "messages": [],
             "history_offset": 0,
@@ -145,13 +147,112 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
         }
     )
 
-    await runner._handle_message_with_agent(
+    response = await runner._handle_message_with_agent(
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
+    assert runner._FAILED_TURN_NOTICE in response
+
+    transcript_rows = [
+        call.args[1]
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
+    ]
+    assert [row["role"] for row in transcript_rows] == ["user", "assistant"]
+    assert transcript_rows[-1]["content"] == runner._FAILED_TURN_NOTICE
+
+    # The next unrelated input remains its own turn instead of alternation repair
+    # merging the failed mutating request into it.
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    replay = [*transcript_rows, {"role": "user", "content": "unrelated question"}]
+    assert repair_message_sequence(None, replay) == 0
+    assert replay[-1]["content"] == "unrelated question"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tail_role, expected_roles",
+    [("user", ["assistant"]), ("assistant", [])],
+    ids=["agent-flushed-user-row-still-closed", "redelivery-of-closed-turn-adds-nothing"],
+)
+async def test_boundary_keyed_on_durable_tail_when_user_row_is_deduped(
+    monkeypatch, tmp_path, tail_role, expected_roles
+):
+    """The platform-id dedupe skips the gateway's user write in two production shapes: the agent's
+    own turn-start flush already persisted THIS turn's row (tail = user → boundary must still land),
+    and a platform redelivery of an already-closed turn (tail = boundary → nothing may stack)."""
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner.session_store.has_platform_message_id.return_value = True
+    runner.session_store.transcript_tail_role.return_value = tail_role
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "API call failed after 3 retries: 429 Too Many Requests",
+            "error": "429 Too Many Requests — rate limit exceeded",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(_event(), _source(), "agent:main:telegram:group:-1001:12345", 1)
+
+    rows = [
+        call.args[1] for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2 and call.args[1].get("role") in {"user", "assistant"}
+    ]
+    assert [row["role"] for row in rows] == expected_roles
+    assert all(row["content"] == runner._FAILED_TURN_NOTICE for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_with_tool_activity_does_not_recommend_blind_retry(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": "API call failed after 3 retries: 500 Internal Server Error",
+            "error": "500 Internal Server Error",
+            "messages": [
+                {"role": "user", "content": "reset the password"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "function": {"name": "reset_password", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "Password reset"},
+            ],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assistant_rows = [
+        call.args[1]
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2 and call.args[1].get("role") == "assistant"
+    ]
+    assert len(assistant_rows) == 1
+    assert assistant_rows[0]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
+    assert runner._PARTIAL_FAILED_TURN_NOTICE in response
+    assert "not processed" not in response
+    assert "Send it again" not in response
 
 
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─

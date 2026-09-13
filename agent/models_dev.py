@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_json_write, atomic_write_text
 
+from hermes_constants import openrouter_variant_base
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -107,7 +109,7 @@ class ModelCapabilities:
 # Hermes provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
-    "openai": "openai", "openai-codex": "openai", "zai": "zai",
+    "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
     "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
     "moonshot": "kimi-for-coding", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
@@ -462,12 +464,46 @@ def _get_provider_models(provider: str, *, allow_network: bool = False) -> Optio
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
 
 
-def _iter_model_entries(models: Dict[str, Any], model: str, *, suffix_fallback: bool = True):
+_OPENROUTER_CATALOG_PROVIDERS = frozenset({"openrouter"})
+
+
+def _openrouter_catalog_lookup_base(provider: str, model: str) -> Optional[str]:
+    """Return the base id to retry a catalog lookup with, or ``None``.
+
+    OpenRouter's ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are
+    request-time routing modifiers: they change which endpoint serves the
+    request, never which model runs. ``/models`` and models.dev list only the
+    base id, so a routed id must resolve to the base model's metadata.
+
+    Scoped to OpenRouter so a genuine ``model:tag`` on another provider (an
+    Ollama tag, a ``:cloud`` catalog key) is never rewritten.
+
+    Deliberately excludes ``:free``, ``:batch``, ``:extended``, and
+    ``:thinking``: those are REAL catalog SKUs with their own entries and
+    their own — sometimes different — context windows. Stripping them would
+    report a window LARGER than the model actually has. Their real entries
+    are found by the exact/case-insensitive passes above, and a genuinely
+    absent SKU must miss so ``model_overrides`` ``_default`` fill-gap
+    semantics still apply.
+    """
+    if provider not in _OPENROUTER_CATALOG_PROVIDERS:
+        return None
+    return openrouter_variant_base(model)
+
+
+def _iter_model_entries(
+    models: Dict[str, Any], model: str, *, suffix_fallback: bool = True, provider: str = ""
+):
     """Yield ``(model_id, entry)`` candidates: exact, case-insensitive, then (optionally)
     ``:cloud``/``-cloud`` suffixed forms. Suffix fallback: some providers (ollama-cloud) store
     ``kimi-k2.6:cloud`` while the live API returns the bare name; without it context lookup falls to
     stale OpenRouter metadata and trips the 64k minimum-context guard. Every consumer shares this
-    order so a suffix-keyed catalog model counts as KNOWN for ``model_overrides`` fill-gap ``_default``."""
+    order so a suffix-keyed catalog model counts as KNOWN for ``model_overrides`` fill-gap ``_default``.
+
+    ``provider`` enables the OpenRouter routing-variant fallback as a LAST
+    resort — after exact, case-insensitive, and ``:cloud`` matching — so a
+    real catalog SKU always wins over its base.
+    """
     for name in ([model] + [model + suffix for suffix in (":cloud", "-cloud")] if suffix_fallback else [model]):
         entry = models.get(name)
         if isinstance(entry, dict):
@@ -476,11 +512,20 @@ def _iter_model_entries(models: Dict[str, Any], model: str, *, suffix_fallback: 
         for mid, mdata in models.items():
             if mid.lower() == name_lower and isinstance(mdata, dict):
                 yield mid, mdata
+    routed_base = _openrouter_catalog_lookup_base(provider, model)
+    if routed_base is not None:
+        # Recursion is bounded: the base never carries a recognized variant suffix,
+        # and provider is cleared so the retry cannot loop.
+        yield from _iter_model_entries(
+            models, routed_base, suffix_fallback=suffix_fallback, provider=""
+        )
 
 
-def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
+def _find_model_entry(
+    models: Dict[str, Any], model: str, provider: str = ""
+) -> Optional[Dict[str, Any]]:
     """First catalog entry for *model* (exact, case-insensitive, suffix), or None."""
-    return next((entry for _mid, entry in _iter_model_entries(models, model)), None)
+    return next((entry for _mid, entry in _iter_model_entries(models, model, provider=provider)), None)
 
 
 def _extract_limit(entry: Any, key: str) -> Optional[int]:
@@ -506,12 +551,12 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
     if override_ctx is not None:
         return override_ctx
     models = _get_provider_models(provider, allow_network=allow_network)
-    catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model) if (ctx := _extract_context(entry))), None) if models is not None else None
+    catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model, provider=provider) if (ctx := _extract_context(entry))), None) if models is not None else None
     return catalog_ctx if catalog_ctx is not None else _default_override_context(provider)
 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
-# accept): context_window, max_output_tokens, supports_tools, supports_vision, supports_reasoning,
+# accept): context_window, supports_tools, supports_vision, supports_reasoning,
 # model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
 # models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
@@ -521,6 +566,35 @@ _OVERRIDE_WARNED_KEYS: set = set()
 # Safe defaults for models absent from the catalog (tools on, vision/reasoning off, 200K context);
 # shared by get_model_capabilities and get_model_info so the two unknown-model paths agree.
 _UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000, "output": 8192}, "tool_call": True}
+
+# Account-gated models may be usable before models.dev has indexed them.  Keep
+# their capabilities available for an explicitly selected/discovered model
+# without adding them to any picker catalog.
+_DEEPSEEK_FLASH_VISION: Dict[str, Any] = {
+    "limit": {"context": 1_000_000, "output": 384_000},
+    "modalities": {"input": ["text", "image"], "output": ["text"]},
+    "tool_call": True,
+    "reasoning": True,
+    "family": "deepseek-flash",
+}
+
+_BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("openai", "gpt-6-astra"): {
+        "limit": {"context": 1_050_000, "output": 128_000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": True,
+        "reasoning": True,
+        "family": "gpt-6",
+    },
+    # Native DeepSeek V4.1-Flash is multimodal (https://api-docs.deepseek.com/guides/vision).
+    # models.dev lagged the 2026-09-10 rename; without this, a cold/empty cache treats
+    # ``deepseek-flash`` as unknown → image_input_mode falls through to lossy text.
+    # ``deepseek-v4-pro`` stays catalog-only: vendor docs still mark it text-only.
+    ("deepseek", "deepseek-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4.1-flash"): _DEEPSEEK_FLASH_VISION,
+    ("deepseek", "deepseek-v4-flash-vision-exp"): _DEEPSEEK_FLASH_VISION,
+}
 
 
 def _load_model_overrides() -> Dict[str, Any]:
@@ -605,7 +679,7 @@ def _override_to_catalog_shape(override: Dict[str, Any]) -> Tuple[Dict[str, Any]
     vision is out-of-band because it maps onto the ``modalities.input`` list rather than a scalar field."""
     patch: Dict[str, Any] = {}
     limit = {
-        catalog_key: value for catalog_key, override_key in (("context", "context_window"), ("output", "max_output_tokens"))
+        catalog_key: value for catalog_key, override_key in (("context", "context_window"),)
         if (value := _override_int(override, override_key)) is not None
     }
     if limit:
@@ -646,8 +720,11 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
     catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
-    override = _override_for(provider, model, catalog_hit=entry is not None)
-    return entry if override is None else _merge_catalog_entry_with_override(entry if entry is not None else _UNKNOWN_MODEL_BASE, override)
+    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
+    builtin = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+    base = entry if entry is not None else builtin
+    override = _override_for(provider, model, catalog_hit=base is not None)
+    return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
 
 
 def _entry_supports_vision(entry: Dict[str, Any]) -> bool:
@@ -668,7 +745,7 @@ def get_model_capabilities(provider: str, model: str, *, allow_network: bool = F
     (#84482).
     """
     models = _get_provider_models(provider, allow_network=allow_network)
-    entry = _find_model_entry(models, model) if models is not None else None
+    entry = _find_model_entry(models, model, provider) if models is not None else None
     raw = _apply_overrides(provider, model, entry)
     if raw is None:
         return None
@@ -765,13 +842,13 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     only for unknown ones. ``allow_network`` defaults to False — cost guard and inventory are hot paths.
 
     ``model_overrides`` entries use the SAME canonical schema as every other consumer (``context_window``,
-    ``max_output_tokens``, ``supports_*``, ``model_family``) — they are translated into the catalog shape at
+    ``supports_*``, ``model_family``) — they are translated into the catalog shape at
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
     models = _registry_models(mdev_id, allow_network=allow_network)
-    mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False), (model_id, None)) if models is not None else (model_id, None)
+    mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.
     raw = _apply_overrides(provider_id, model_id, entry)
     return _parse_model_info(mid, raw, mdev_id) if raw is not None else None

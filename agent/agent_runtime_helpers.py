@@ -895,6 +895,7 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+    agent.service_tier = rt.get("service_tier", getattr(agent, "service_tier", None))
     agent.request_overrides = dict(rt.get("request_overrides") or {})
     agent._client_kwargs = dict(rt["client_kwargs"])
 
@@ -2078,6 +2079,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
+        "service_tier": getattr(agent, "service_tier", None),
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
         # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
         # PRE-switch overrides from the stale init snapshot.
@@ -2189,6 +2191,12 @@ def switch_model(
         )
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+    try:
+        from agent.chat_completion_helpers import _reresolve_service_tier_config
+        from hermes_cli.config import load_config as _st_load_config
+        _reresolve_service_tier_config(agent, config=_st_load_config() or {})
+    except Exception as _tier_err:
+        logger.debug("switch_model: could not re-resolve service_tier: %s", _tier_err)
     # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
     # Publish the destination capability map only after every runtime setup above has succeeded.

@@ -195,8 +195,10 @@ class GatewayConfigLoadersMixin:
             None if reasoning_config is None else dict(reasoning_config)
         )
 
-    def _resolve_session_service_tier(self, source=None, session_key: Optional[str] = None) -> Optional[str]:
-        """Effective service tier: a session-scoped /fast override beats the config default.
+    def _resolve_session_service_tier(
+        self, source=None, session_key: Optional[str] = None, model: str = "",
+    ) -> Optional[str]:
+        """Effective service tier: session /fast, then per-model override, then global.
 
         The override stores "priority" or None (explicit normal), so presence — not truthiness — decides.
         """
@@ -205,7 +207,7 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
-        return self._load_service_tier()
+        return self._load_service_tier(model)
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
         """Set ("priority" / None = explicit normal) or ``clear`` the session-scoped /fast override."""
@@ -217,19 +219,19 @@ class GatewayConfigLoadersMixin:
             _SERVICE_TIER_UNSET if clear else service_tier
         )
 
+    def _has_session_service_tier_override(self, session_key: str) -> bool:
+        state = self._peek_session_state(session_key) if session_key else None
+        return bool(
+            state is not None
+            and state.conversation.service_tier_override is not _SERVICE_TIER_UNSET
+        )
+
     @classmethod
-    def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
-        raw = cls._cfg_str("agent", "service_tier")
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
+    def _load_service_tier(cls, model: str = "") -> str | None:
+        """Resolve per-model ``agent.service_tier_overrides`` before the global tier."""
+        from gateway.run import _load_gateway_runtime_config
+        from hermes_constants import resolve_service_tier_config
+        return resolve_service_tier_config(_load_gateway_runtime_config(), model)
 
     @staticmethod
     def _load_show_reasoning() -> bool:

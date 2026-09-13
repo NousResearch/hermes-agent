@@ -2193,7 +2193,7 @@ class GatewayTurnMixin:
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
             self._reasoning_config = reasoning_config
-            self._service_tier = self._resolve_session_service_tier(source=source)
+            self._service_tier = self._resolve_session_service_tier(source=source, model=model)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions (same as the main flow).
@@ -2236,6 +2236,10 @@ class GatewayTurnMixin:
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
+                )
+                background_session_key = self._resolve_session_key_or_none(source, None)
+                agent._service_tier_session_override = self._has_session_service_tier_override(
+                    background_session_key or ""
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)

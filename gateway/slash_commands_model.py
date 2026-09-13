@@ -733,8 +733,14 @@ class GatewayModelCommandsMixin:
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
         session_key = self._session_key_for_source(event.source)
-        self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        if not model_supports_fast_mode(_resolve_gateway_model(_load_gateway_config())):
+        session_model = str(
+            ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
+        )
+        effective_model = session_model or _resolve_gateway_model(_load_gateway_config())
+        self._service_tier = self._resolve_session_service_tier(
+            session_key=session_key, model=effective_model,
+        )
+        if not model_supports_fast_mode(effective_model):
             return t("gateway.fast.not_supported")
         if args and args != "status":
             return self._apply_fast_selection(session_key, args, persist=persist_global)

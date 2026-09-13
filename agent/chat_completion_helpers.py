@@ -1790,6 +1790,41 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
         logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
 
 
+def _reresolve_service_tier_config(agent, *, config=None) -> None:
+    """Resolve the active model's tier and rebuild only fast-mode-owned request keys.
+
+    A session ``/fast`` pin remains authoritative. Config and capability failures keep the
+    current tier but never keep a stale ``priority``/``speed=fast`` parameter on a new route.
+    """
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    if overrides.get("service_tier") == "priority":
+        overrides.pop("service_tier", None)
+    if overrides.get("speed") == "fast":
+        overrides.pop("speed", None)
+
+    model = str(getattr(agent, "model", "") or "")
+    try:
+        if not getattr(agent, "_service_tier_session_override", False):
+            if config is None:
+                from hermes_cli.config import load_config
+                config = load_config() or {}
+            from hermes_constants import resolve_service_tier_config
+            agent.service_tier = resolve_service_tier_config(config, model)
+        if getattr(agent, "service_tier", None) == "priority":
+            from hermes_cli.models import resolve_fast_mode_overrides
+            overrides.update(resolve_fast_mode_overrides(
+                model,
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            ) or {})
+    except Exception as tier_err:
+        logger.debug(
+            "Failed to resolve service_tier for %s; keeping tier without stale route params: %s",
+            model, tier_err,
+        )
+    agent.request_overrides = overrides
+
+
 def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
     """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
     provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
@@ -1905,6 +1940,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             _update_fallback_context_compressor(agent)
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
+            _reresolve_service_tier_config(agent)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (

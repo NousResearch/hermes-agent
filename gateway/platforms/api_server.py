@@ -2128,8 +2128,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session ``/model`` override, disables the fallback chain and fails closed."""
         from run_agent import AIAgent
         from gateway.run import (
-            _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
-            _resolve_gateway_model, _load_gateway_config, GatewayRunner)
+            _checkpoint_agent_kwargs, _current_max_iterations, _deep_merge_request_overrides,
+            _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
         # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
         # run_conversation() errors distinct.
@@ -2159,6 +2159,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # after the precedence chain settles; an explicit request wins.
         if request_reasoning_config is None:
             request_reasoning_config = GatewayRunner._load_reasoning_config(model)
+        if request_service_tier is _REQUEST_OPTION_MISSING:
+            request_service_tier = GatewayRunner._load_service_tier(model)
+        fast_overrides = None
+        if request_service_tier == "priority":
+            from hermes_cli.models import resolve_fast_mode_overrides
+            fast_overrides = resolve_fast_mode_overrides(
+                model,
+                provider=runtime_kwargs.get("provider"),
+                base_url=runtime_kwargs.get("base_url"),
+            )
+        request_overrides = _deep_merge_request_overrides(
+            runtime_kwargs.get("request_overrides"), fast_overrides,
+        )
         agent_kwargs = {
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
@@ -2173,9 +2186,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
+            "request_overrides": request_overrides,
             "gateway_session_key": gateway_session_key}
-        if request_service_tier is not _REQUEST_OPTION_MISSING:
-            agent_kwargs["service_tier"] = request_service_tier
+        agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock

@@ -175,3 +175,37 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
 
+def test_per_model_service_tier_tracks_effective_model_and_session_precedence(monkeypatch):
+    """The active model selects its tier, while explicit session normal remains authoritative."""
+    runner = _make_runner()
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {
+            "model": {"default": "cheap/model-mini"},
+            "agent": {
+                "service_tier": "cold",
+                "service_tier_overrides": {
+                    "premium/model-max": "fast",
+                    "anthropic/claude-opus-4.8": "normal",
+                },
+            },
+        },
+    )
+
+    session_key = runner._session_key_for_source(_make_source())
+    assert runner._resolve_session_service_tier(
+        session_key=session_key, model="premium/model-max"
+    ) == "priority"
+    assert runner._resolve_session_service_tier(
+        session_key=session_key, model="claude-opus-4-8"
+    ) is None
+    assert runner._resolve_session_service_tier(
+        session_key=session_key, model="unconfigured/model"
+    ) == "cold"
+
+    runner._set_session_service_tier_override(session_key, None)
+    assert runner._resolve_session_service_tier(
+        session_key=session_key, model="premium/model-max"
+    ) is None
+

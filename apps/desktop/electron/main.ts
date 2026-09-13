@@ -336,7 +336,8 @@ import {
   tagRegistrySessionResponse
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
-import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { createQuitConfirmation } from './quit-confirmation'
+import { type ActiveWork, mergeActiveWork, normalizeActiveWork } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -3441,12 +3442,6 @@ let updateInFlight = false
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
-
-// Quit-guard latches: one while the confirmation is on screen (a second
-// Cmd-Q must not stack dialogs), one after the user has said "quit anyway"
-// (the app.quit() that follows re-enters before-quit and must pass through).
-let quitPromptOpen = false
-let quitConfirmedWithActiveWork = false
 
 // Resolve the staged updater binary the desktop may hand an update to. On
 // Windows that binary owns ALL repo mutation — running `hermes update` +
@@ -18193,55 +18188,16 @@ function configureSpellChecker() {
   }
 }
 
-// Ask before a quit kills a turn in flight. True when the quit was intercepted
-// and the confirmation is on screen; "Quit Anyway" re-enters before-quit with
-// the latch set and falls straight through to the teardown below.
-function heldQuitForActiveWork(event: Electron.Event): boolean {
-  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || quitPromptOpen) {
-    return false
-  }
-
-  const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
-  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-
-  if (!prompt || !parent || parent.isDestroyed()) {
-    return false
-  }
-
-  event.preventDefault()
-  quitPromptOpen = true
-
-  void dialog
-    .showMessageBox(parent, {
-      buttons: ['Keep Running', 'Quit Anyway'],
-      cancelId: 0,
-      defaultId: 0,
-      detail: prompt.detail,
-      message: prompt.message,
-      type: 'question'
-    })
-    .then(({ response }) => {
-      quitPromptOpen = false
-
-      if (response === 1) {
-        quitConfirmedWithActiveWork = true
-        app.quit()
-      }
-    })
-    .catch(() => {
-      // A dialog we can't show must not become a quit we can't perform.
-      quitPromptOpen = false
-      quitConfirmedWithActiveWork = true
-      app.quit()
-    })
-
-  return true
-}
+const quitConfirmation = createQuitConfirmation({
+  getWork: () => mergeActiveWork(activeWorkByWebContents.values()),
+  isQuittingForHandoff: () => isQuittingForHandoff,
+  skipConfirmation: SKIP_QUIT_CONFIRM
+})
 
 app.on('before-quit', event => {
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was.
-  if (heldQuitForActiveWork(event)) {
+  if (quitConfirmation.holdQuit(event)) {
     return
   }
 

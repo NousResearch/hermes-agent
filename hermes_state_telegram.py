@@ -226,11 +226,22 @@ class SessionTelegramTopicsMixin:
     def list_telegram_topic_bindings_for_chat(
         self, *, chat_id: str, profile_name: str = "default"
     ) -> List[Dict[str, Any]]:
-        """All bindings for one chat, newest first ([] when the table is absent)."""
+        """All bindings for one chat, newest first ([] when the table is absent).
+
+        "Newest first" has to be a *total* order. ``updated_at`` is a ``time.time()``
+        float written by :meth:`bind_telegram_topic`, so two topics bound in the same
+        tick tie and SQLite is then free to return them in either order. The sole
+        caller (``GatewayRunner._recover_telegram_topic_thread_id``) takes the *first*
+        row for a user as their most-recent topic, so a tie there routes a lobby-shaped
+        DM reply into an arbitrary lane. ``rowid`` breaks the tie deterministically:
+        the table is upserted via ``ON CONFLICT(profile_name, chat_id, thread_id) DO
+        UPDATE``, so a row's rowid is stable and ascends with insertion order.
+        """
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
         try:
             rows = self._read_all(
-                "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
+                "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? "
+                "ORDER BY updated_at DESC, rowid DESC",
                 (profile_name, str(chat_id)),
             )
         except sqlite3.OperationalError:

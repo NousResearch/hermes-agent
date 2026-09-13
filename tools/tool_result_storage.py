@@ -6,6 +6,7 @@ ran a terminal), remote backends get the translated in-sandbox path (probed for 
 else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -22,6 +23,7 @@ STORAGE_DIR = "/tmp/hermes-results"
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+_MCP_TOOL_NAME_PREFIX = "mcp__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -154,6 +156,46 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+def _content_for_persistence(content: str, tool_name: str) -> str:
+    """Extract model-facing text from an MCP result envelope.
+
+    MCP handlers return a JSON string so structured metadata remains available
+    inline.  Persisting that string verbatim turns newlines in a large text
+    result into escapes on one giant line.  Only unwrap registered MCP tools;
+    JSON returned by every other tool remains opaque.
+    """
+    if not tool_name.startswith(_MCP_TOOL_NAME_PREFIX):
+        return content
+
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return content
+    if not isinstance(payload, dict):
+        return content
+
+    result = payload.get("result")
+    if isinstance(result, str) and result:
+        return result
+
+    content_blocks = payload.get("content")
+    if content_blocks is None and isinstance(result, dict):
+        content_blocks = result.get("content")
+    if isinstance(content_blocks, list):
+        text_parts = [
+            block["text"]
+            for block in content_blocks
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and block["text"]
+        ]
+        if text_parts:
+            return "\n".join(text_parts)
+
+    return content
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
@@ -202,16 +244,18 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         threshold = config.resolve_threshold(tool_name)
     if threshold == float("inf") or len(content) <= threshold:
         return content
+
+    persisted_content = _content_for_persistence(content, tool_name)
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
-                    tool_name, tool_use_id, len(content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(content), path)
+                    tool_name, tool_use_id, len(persisted_content), path, host_suffix)
+        return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
     # Always persist host-side first: cache/spillover is the single canonical home.
-    host_path = _write_to_spillover(content, filename)
+    host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
         return _persisted(host_path)
@@ -223,7 +267,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             return _persisted(visible, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(persisted_content, remote_path, env):
                 return _persisted(remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
@@ -249,8 +293,13 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
         content = tool_messages[idx]["content"]
         tool_use_id = tool_messages[idx].get("tool_call_id", f"budget_{idx}")
         replacement = maybe_persist_tool_result(
-            content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
-            env=env, config=config, threshold=0)
+            content=content,
+            tool_name=tool_messages[idx].get("name") or _BUDGET_TOOL_NAME,
+            tool_use_id=tool_use_id,
+            env=env,
+            config=config,
+            threshold=0,
+        )
         if replacement != content:
             total_size += len(replacement) - size
             tool_messages[idx]["content"] = replacement

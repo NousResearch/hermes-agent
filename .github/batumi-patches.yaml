@@ -1397,3 +1397,38 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_routing_save_fast_path.py tests/state/test_session_db_write_admission.py tests/state/test_session_git_metadata_generation.py
       - scripts/run_tests.sh tests/gateway/test_signal.py tests/gateway/test_send_multiple_images.py tests/gateway/test_media_extraction.py tests/gateway/test_media_tag_cleanup.py tests/gateway/test_multiplex_session_db_profile_scope.py
     retirement: Remove when upstream contains the equivalent SessionDB-owned durable post-response schema, transaction boundary, bounded worker handoff, and behavioral regression coverage.
+
+  - id: pr-merge-authorization-gate-20260910
+    kind: core
+    rationale: >-
+      Require exact, once-only authorization for protected pull-request merge
+      commands: bind authorization to repository, pull request, exact head SHA,
+      merge method, session, turn, tool call, and approval request identity;
+      propagate exact approval request IDs through the gateway and every
+      platform adapter; harden protected-operation detection across GitHub
+      CLI/API forms, shell quoting and continuations, script interpreters,
+      curl path normalization and globbing, Windows executable variants, and
+      force/YOLO/retry paths; and reject protected merges executed in
+      background or PTTY mode to prevent duplicate-spawn approval bypass.
+    paths:
+      - gateway/platforms/api_server.py
+      - gateway/platforms/qqbot/adapter.py
+      - gateway/platforms/whatsapp_cloud.py
+      - gateway/relay/adapter.py
+      - gateway/run.py
+      - plugins/platforms/discord/adapter.py
+      - plugins/platforms/feishu/adapter.py
+      - plugins/platforms/matrix/adapter.py
+      - plugins/platforms/slack/adapter.py
+      - plugins/platforms/teams/adapter.py
+      - plugins/platforms/telegram/adapter.py
+      - tests/gateway/test_approval_request_id_routing.py
+      - tests/gateway/test_discord_component_auth.py
+      - tests/gateway/test_telegram_approval_buttons.py
+      - tests/tools/test_pr_merge_authorization_gate.py
+      - tools/approval.py
+      - tools/terminal_tool.py
+    tests:
+      - scripts/run_tests.sh tests/tools/test_pr_merge_authorization_gate.py tests/gateway/test_approval_request_id_routing.py
+      - scripts/run_tests.sh tests/gateway/test_telegram_approval_buttons.py tests/gateway/test_discord_component_auth.py
+    retirement: Remove when upstream ships an equivalent exact-identity PR merge authorization gate with per-request approval correlation across all platform adapters.

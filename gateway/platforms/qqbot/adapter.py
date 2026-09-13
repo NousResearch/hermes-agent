@@ -288,6 +288,9 @@ class QQAdapter(BasePlatformAdapter):
         # box; callers can override with set_interaction_callback(None) or
         # register a custom handler.
         self._interaction_callback = self._default_interaction_dispatch
+        # Opaque keyboard token -> exact approval target.  Using a token avoids
+        # exposing or ambiguously parsing colon-delimited session/request IDs.
+        self._exec_approval_state: Dict[str, tuple[str, Optional[str]]] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -1166,7 +1169,13 @@ class QQAdapter(BasePlatformAdapter):
 
         approval = parse_approval_button_data(button_data)
         if approval is not None:
-            session_key, decision = approval
+            approval_token, decision = approval
+            approval_ref = self._exec_approval_state.get(approval_token)
+            if approval_ref is None:
+                # Compatibility for legacy/non-correlated approval buttons.
+                session_key, request_id = approval_token, None
+            else:
+                session_key, request_id = approval_ref
             choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
             if choice is None:
                 logger.warning(
@@ -1185,7 +1194,14 @@ class QQAdapter(BasePlatformAdapter):
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(session_key, choice)
+                self._exec_approval_state.pop(approval_token, None)
+                if request_id is None:
+                    legacy_resolver = resolve_gateway_approval
+                    count = legacy_resolver(session_key, choice)
+                else:
+                    count = resolve_gateway_approval(
+                        session_key, choice, request_id=request_id
+                    )
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s "
                     "(choice=%s, operator=%s)",
@@ -2708,6 +2724,7 @@ class QQAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        request_id: Optional[str] = None,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 
@@ -2726,17 +2743,27 @@ class QQAdapter(BasePlatformAdapter):
         # seen; the last inbound msg_id is the natural choice.
         msg_id = self._last_msg_id.get(chat_id)
 
+        approval_token = session_key
+        if request_id is not None:
+            approval_token = uuid.uuid4().hex
+            self._exec_approval_state[approval_token] = (session_key, request_id)
+            while len(self._exec_approval_state) > 512:
+                self._exec_approval_state.pop(next(iter(self._exec_approval_state)))
+
         req = ApprovalRequest(
-            session_key=session_key,
+            session_key=approval_token,
             title="Execute this command?",
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
             allow_permanent=allow_permanent and not smart_denied,
         )
-        return await self.send_approval_request(
+        result = await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
         )
+        if not result.success:
+            self._exec_approval_state.pop(approval_token, None)
+        return result
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
 

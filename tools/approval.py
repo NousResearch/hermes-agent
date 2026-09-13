@@ -10,19 +10,24 @@ This module is the single source of truth for the dangerous command system:
 
 import contextlib
 import contextvars
+import codecs
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
+import posixpath
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unicodedata
 import uuid
+from urllib.parse import unquote, urlsplit, urlunsplit
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2848,9 +2853,26 @@ def resolve_gateway_approval(session_key: str, choice: str,
                 return 0
             queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            # A bulk approval is not exact consent for protected one-operation
+            # gates (currently GitHub PR merges). Keep those requests pending;
+            # an explicit deny-all may still safely cancel them.
+            if choice == "deny":
+                targets = list(queue)
+                queue.clear()
+            else:
+                targets = [
+                    entry for entry in queue
+                    if not entry.data.get("protected_once")
+                ]
+                queue[:] = [
+                    entry for entry in queue
+                    if entry.data.get("protected_once")
+                ]
         else:
+            # Protected once-only approvals must name the exact request. A
+            # FIFO /approve can otherwise consume a stale or concurrent prompt.
+            if queue[0].data.get("protected_once") and choice != "deny":
+                return 0
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
@@ -4544,9 +4566,497 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 
+_PR_MERGE_DESCRIPTION = "GitHub pull-request merge requires exact, once-only user approval"
+_PR_MERGE_API_RE = re.compile(
+    r"^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pulls/([1-9][0-9]*)/merge$"
+)
+_PR_MERGE_HTTP_PATH_RE = re.compile(
+    r"/repos/[^/\s]+/[^/\s]+/pulls/[^/\s]+/merge(?:[/?#]|$)",
+    re.IGNORECASE,
+)
+_PR_MERGE_HTTP_GLOB_RE = re.compile(
+    r"/repos/[^/\s]+/[^/\s]+/pulls/[^/\s]+/[^/?#\s]*[\{\[][^/?#\s]*",
+    re.IGNORECASE,
+)
+_GRAPHQL_HTTP_PATH_RE = re.compile(r"/graphql(?:[?#]|$)", re.IGNORECASE)
+_SCRIPT_INTERPRETERS = {
+    "node", "nodejs", "osascript", "perl", "php", "pwsh", "python",
+    "python2", "python3", "ruby",
+}
+
+
+def _is_script_interpreter(executable: str) -> bool:
+    normalized = executable.lower()
+    if normalized.endswith(".exe"):
+        normalized = normalized[:-4]
+    return normalized in _SCRIPT_INTERPRETERS or re.fullmatch(
+        r"(?:node|nodejs|perl|php|pypy|python|ruby)\d+(?:\.\d+)*",
+        normalized,
+    ) is not None
+
+
+def _script_argument_mentions_pr_merge(argument: str) -> bool:
+    """Detect a literal merge invocation embedded in interpreter source."""
+    words = re.findall(r"[A-Za-z0-9_./:-]+", argument)
+    lowered = [word.lower() for word in words]
+    return any(
+        lowered[index:index + 3] == ["gh", "pr", "merge"]
+        for index in range(max(0, len(lowered) - 2))
+    ) or any(
+        _PR_MERGE_HTTP_PATH_RE.search(word)
+        or _PR_MERGE_HTTP_GLOB_RE.search(word)
+        or "mergepullrequest" in word.lower()
+        for word in words
+    )
+
+
+def _shell_command_argvs(command: str):
+    """Yield simple command argv vectors from shell command positions.
+
+    Detection remains intentionally narrower than shell execution. If a merge
+    shaped command cannot be parsed and frozen exactly, the caller blocks it
+    rather than trying to infer expanded variables.
+    """
+    command = re.sub(r"\\\r?\n", "", command or "")
+
+    def _decode_dollar_single_quote(match: re.Match) -> str:
+        try:
+            return codecs.decode(match.group(1), "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return match.group(1)
+
+    seen = set()
+    normalized = re.sub(r"\$'((?:\\.|[^'])*)'", _decode_dollar_single_quote, command)
+    normalized = normalized.replace('$"', '"')
+    for variant in (command, normalized):
+        for start, _end, _word in _iter_shell_command_word_spans(variant):
+            key = (variant, start)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                argv = shlex.split(variant[start:], comments=True, posix=True)
+            except ValueError:
+                continue
+            if argv:
+                yield argv
+
+
+def _normalized_http_forms(argument: str) -> tuple[str, str]:
+    decoded = unquote(argument)
+    parsed = urlsplit(decoded)
+    normalized_path = posixpath.normpath(parsed.path)
+    normalized = urlunsplit((
+        parsed.scheme,
+        parsed.netloc,
+        normalized_path,
+        parsed.query,
+        parsed.fragment,
+    ))
+    return decoded, normalized
+
+
+def _contains_pr_merge_operation(command: str) -> bool:
+    for raw_argv in _shell_command_argvs(command):
+        # Detection deliberately scans behind generic process wrappers. Exact
+        # parsing below still requires a direct canonical command before any
+        # approval can be issued.
+        for index, token in enumerate(raw_argv):
+            executable = os.path.basename(token).lower()
+            if executable.endswith(".exe"):
+                executable = executable[:-4]
+            tail = raw_argv[index + 1 :]
+            if executable in {"sh", "bash", "dash", "ksh", "zsh"}:
+                try:
+                    nested_command = tail[tail.index("-c") + 1]
+                except (ValueError, IndexError):
+                    nested_command = ""
+                if nested_command and _contains_pr_merge_operation(nested_command):
+                    return True
+            if executable == "eval" and _contains_pr_merge_operation(" ".join(tail)):
+                return True
+            if _is_script_interpreter(executable) and any(
+                _script_argument_mentions_pr_merge(arg)
+                for arg in tail
+            ):
+                return True
+            if executable == "gh":
+                if "pr" in tail and "merge" in tail[tail.index("pr") + 1:]:
+                    return True
+                if "api" in tail and any(
+                    form == "graphql"
+                    or _GRAPHQL_HTTP_PATH_RE.search(form)
+                    or _PR_MERGE_HTTP_PATH_RE.search("/" + form.lstrip("/"))
+                    or _PR_MERGE_HTTP_GLOB_RE.search("/" + form.lstrip("/"))
+                    or "mergePullRequest" in form
+                    for arg in tail[tail.index("api") + 1:]
+                    for form in _normalized_http_forms(arg)
+                ):
+                    return True
+            if executable in {"curl", "wget", "http", "https"} and any(
+                _PR_MERGE_HTTP_PATH_RE.search(form)
+                or _PR_MERGE_HTTP_GLOB_RE.search(form)
+                or _GRAPHQL_HTTP_PATH_RE.search(form)
+                for arg in tail
+                for form in _normalized_http_forms(arg)
+            ):
+                return True
+    return False
+
+
+def is_protected_pr_merge_command(command: str) -> bool:
+    """Public terminal-edge predicate for the non-bypassable merge gate."""
+    return _contains_pr_merge_operation(command)
+
+
+def _option_values(argv: list[str], *names: str) -> list[str]:
+    """Return all separated and long-equals values for named options."""
+    values = []
+    for index, arg in enumerate(argv):
+        for name in names:
+            if arg == name and index + 1 < len(argv):
+                values.append(argv[index + 1])
+            elif name.startswith("--") and arg.startswith(name + "="):
+                values.append(arg.split("=", 1)[1])
+    return values
+
+
+def detect_pr_merge_target(command: str, cwd: str | None = None) -> dict | None:
+    """Parse one canonical literal GitHub PR merge target."""
+    del cwd
+    # Shell rewrites are detectable but intentionally not approval-canonical.
+    if (
+        re.search(r"\\\r?\n", command or "")
+        or "#" in (command or "")
+        or "$'" in (command or "")
+        or '$"' in (command or "")
+    ):
+        return None
+    command_argvs = list(_shell_command_argvs(command))
+    if len(command_argvs) != 1:
+        return None
+    raw_argv = command_argvs[0]
+    if any(arg in {";", "&&", "||", "|", "&"} for arg in raw_argv):
+        return None
+    argv = raw_argv
+    if len(argv) < 3 or os.path.basename(argv[0]) != "gh":
+        return None
+
+    if argv[1:3] == ["pr", "merge"]:
+        if len(argv) < 4 or re.fullmatch(r"[1-9][0-9]*", argv[3]) is None:
+            return None
+        if "--auto" in argv[4:] or "--delete-branch" in argv[4:]:
+            return None
+        if any(arg.startswith("-R") and arg != "-R" for arg in argv[4:]):
+            return None
+        repositories = _option_values(argv[4:], "--repo", "-R")
+        if len(repositories) != 1 or re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repositories[0]
+        ) is None:
+            return None
+        methods = [
+            method
+            for method, flag in (
+                ("merge", "--merge"),
+                ("rebase", "--rebase"),
+                ("squash", "--squash"),
+            )
+            for _occurrence in range(argv[4:].count(flag))
+        ]
+        head_values = _option_values(argv[4:], "--match-head-commit")
+        if (
+            len(methods) != 1
+            or len(head_values) != 1
+            or re.fullmatch(r"[0-9a-f]{40}", head_values[0]) is None
+        ):
+            return None
+        return {
+            "repository": repositories[0],
+            "pull_request": int(argv[3]),
+            "merge_method": methods[0],
+            "source": "gh-pr-merge",
+            "expected_head_sha": head_values[0],
+        }
+
+    if argv[1] == "api":
+        if any(
+            arg == "--hostname" or arg.startswith("--hostname=")
+            for arg in argv[2:]
+        ):
+            return None
+        method_values = _option_values(argv[2:], "--method", "-X")
+        if len(method_values) != 1 or method_values[0].upper() != "PUT":
+            return None
+        if any(arg == "--input" or arg.startswith("--input=") for arg in argv[2:]):
+            return None
+        endpoints = [
+            arg.lstrip("/")
+            for arg in argv[2:]
+            if _PR_MERGE_API_RE.fullmatch(arg.lstrip("/"))
+        ]
+        if len(endpoints) != 1:
+            return None
+        match = _PR_MERGE_API_RE.fullmatch(endpoints[0])
+        assert match is not None
+        field_values = []
+        for index, arg in enumerate(argv[2:]):
+            value = None
+            if arg in {"-f", "-F", "--field", "--raw-field"} and index + 1 < len(argv[2:]):
+                value = argv[2:][index + 1]
+            elif arg.startswith(("-f=", "-F=", "--field=", "--raw-field=")):
+                value = arg.split("=", 1)[1]
+            elif len(arg) > 2 and arg[:2] in {"-f", "-F"}:
+                value = arg[2:]
+            if value:
+                field_values.append(value)
+        merge_methods = [
+            value.split("=", 1)[1]
+            for value in field_values
+            if value.startswith("merge_method=")
+        ]
+        head_values = [
+            value.split("=", 1)[1]
+            for value in field_values
+            if value.startswith("sha=")
+        ]
+        if (
+            len(merge_methods) != 1
+            or merge_methods[0] not in {"merge", "rebase", "squash"}
+            or len(head_values) != 1
+            or re.fullmatch(r"[0-9a-f]{40}", head_values[0]) is None
+        ):
+            return None
+        return {
+            "repository": f"{match.group(1)}/{match.group(2)}",
+            "pull_request": int(match.group(3)),
+            "merge_method": merge_methods[0],
+            "source": "gh-api-merge",
+            "expected_head_sha": head_values[0],
+        }
+    return None
+
+
+def _repository_from_cwd(cwd: str | None) -> str | None:
+    if not cwd:
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", cwd, "remote", "get-url", "origin"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    url = completed.stdout.strip()
+    match = re.search(r"(?:github\.com[:/])([^/\s]+)/([^/\s]+?)(?:\.git)?$", url)
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def _resolve_pr_merge_target(parsed: dict, cwd: str | None) -> dict | None:
+    target = dict(parsed)
+    repository = target.get("repository") or _repository_from_cwd(cwd)
+    if not repository:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "gh", "pr", "view", str(target["pull_request"]),
+                "--repo", repository, "--json", "headRefOid,state,number",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env={**os.environ, "GH_PROMPT_DISABLED": "1"},
+        )
+        payload = json.loads(completed.stdout) if completed.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError):
+        return None
+    head_sha = payload.get("headRefOid")
+    if (
+        payload.get("state") != "OPEN"
+        or payload.get("number") != target["pull_request"]
+        or not isinstance(head_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None
+        or head_sha != target.get("expected_head_sha")
+    ):
+        return None
+    target.pop("expected_head_sha", None)
+    target.update(repository=repository, head_sha=head_sha)
+    return target
+
+
+def _write_pr_merge_receipt(target: dict, request_id: str) -> str | None:
+    try:
+        from datetime import datetime, timezone
+        from hermes_constants import get_hermes_home
+
+        receipt_id = uuid.uuid4().hex
+        receipt_dir = os.path.join(get_hermes_home(), "approval-receipts", "pr-merges")
+        os.makedirs(receipt_dir, mode=0o700, exist_ok=True)
+        payload = {
+            "schema_version": 1,
+            "receipt_id": receipt_id,
+            "state": "consumed_before_execution",
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "approval_request_id": request_id,
+            "session_key": get_current_session_key(default=""),
+            "session_id": _approval_session_id.get(),
+            "turn_id": _approval_turn_id.get(),
+            "tool_call_id": _approval_tool_call_id.get(),
+            **target,
+        }
+        fd, temp_path = tempfile.mkstemp(prefix=".pr-merge-", dir=receipt_dir, text=True)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            final_path = os.path.join(receipt_dir, receipt_id + ".json")
+            os.replace(temp_path, final_path)
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_fd = os.open(receipt_dir, directory_flags)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
+        return receipt_id
+    except Exception:
+        logger.exception("Failed to persist PR merge authorization receipt")
+        return None
+
+
+def _pr_merge_block(outcome: str, message: str, target: dict | None = None) -> dict:
+    return {
+        "approved": False,
+        "message": "BLOCKED: " + message,
+        "description": _PR_MERGE_DESCRIPTION,
+        "outcome": outcome,
+        "pr_merge_target": target,
+    }
+
+
+def _check_pr_merge_authorization(
+    command: str,
+    *,
+    cwd: str | None,
+    approval_callback=None,
+) -> dict | None:
+    if not _contains_pr_merge_operation(command):
+        return None
+    parsed = detect_pr_merge_target(command, cwd=cwd)
+    if parsed is None:
+        return _pr_merge_block(
+            "target_unresolved",
+            "PR merge target or merge method is not a fully literal, supported form.",
+        )
+    if _is_cron_approval_context() or _is_single_query_approval_context():
+        return _pr_merge_block(
+            "interactive_user_required",
+            "PR merges require a fresh interactive user approval; cron and single-query sessions cannot approve them.",
+            parsed,
+        )
+    session_key = get_current_session_key(default="")
+    session_id = _approval_session_id.get()
+    turn_id = _approval_turn_id.get()
+    tool_call_id = _approval_tool_call_id.get()
+    if not all((session_key, session_id, turn_id, tool_call_id)):
+        return _pr_merge_block(
+            "correlation_unavailable",
+            "PR merges require non-empty session, turn, and tool-call correlation identities.",
+            parsed,
+        )
+    target = _resolve_pr_merge_target(parsed, cwd)
+    if target is None:
+        return _pr_merge_block(
+            "target_unresolved",
+            "Could not resolve an OPEN PR to an exact repository, number, and 40-character head SHA.",
+            parsed,
+        )
+
+    description = (
+        f"Merge {target['repository']} PR #{target['pull_request']} at exact head "
+        f"{target['head_sha']} using {target['merge_method']}"
+    )
+    request_id = uuid.uuid4().hex
+    callback = _resolve_cli_approval_callback(approval_callback)
+    if _is_gateway_approval_context():
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+        if notify_cb is None:
+            return _pr_merge_block("interactive_user_required", "No interactive approval surface is attached.", target)
+        decision = _await_gateway_decision(
+            session_key,
+            notify_cb,
+            {
+                "command": command,
+                "description": description,
+                "pattern_key": "protected:github-pr-merge",
+                "pattern_keys": ["protected:github-pr-merge"],
+                "allow_session": False,
+                "allow_permanent": False,
+                "protected_once": True,
+                "pr_merge_target": target,
+                "request_id": request_id,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "tool_call_id": tool_call_id,
+            },
+            surface="pr-merge",
+        )
+        choice = decision.get("choice") if decision.get("resolved") else None
+    elif callback is not None:
+        choice = prompt_dangerous_approval(
+            command,
+            description,
+            allow_permanent=False,
+            allow_session=False,
+            approval_callback=callback,
+        )
+    else:
+        return _pr_merge_block("interactive_user_required", "No interactive approval surface is attached.", target)
+
+    if choice in {"session", "always"}:
+        return _pr_merge_block("invalid_approval_scope", "PR merges accept only one-operation approval.", target)
+    if choice != "once":
+        return _pr_merge_block("denied", "The exact PR merge was not approved.", target)
+
+    refreshed = _resolve_pr_merge_target(parsed, cwd)
+    if refreshed != target:
+        return _pr_merge_block(
+            "target_changed",
+            "The PR target changed after approval; a fresh exact-target approval is required.",
+            refreshed,
+        )
+    receipt_id = _write_pr_merge_receipt(target, request_id)
+    if receipt_id is None:
+        return _pr_merge_block("receipt_failed", "Authorization receipt persistence failed.", target)
+    return {
+        "approved": True,
+        "message": None,
+        "user_approved": True,
+        "pr_merge_authorized": True,
+        "authorization_receipt_id": receipt_id,
+        "description": description,
+    }
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             cwd: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -4558,6 +5068,17 @@ def check_all_command_guards(command: str, env_type: str,
     such a session is no longer isolated, so it goes through the normal flow
     instead of the container fast-path.
     """
+    # Protected governance gate: unlike ordinary dangerous-command approval,
+    # PR merges cannot be bypassed by force, YOLO, smart approval, persistent
+    # allowlists, cron approve-mode, or an isolated-container fast path.
+    pr_merge_decision = _check_pr_merge_authorization(
+        command,
+        cwd=cwd,
+        approval_callback=approval_callback,
+    )
+    if pr_merge_decision is not None:
+        return pr_merge_decision
+
     # Skip isolated container backends for both checks. Docker stops skipping
     # once host paths are bind-mounted into the sandbox.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):

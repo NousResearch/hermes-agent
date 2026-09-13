@@ -334,3 +334,33 @@ def test_bypass_marker_disables_guard():
     # so we get the real os.kill. Calling os.kill(os.getpid(), 0) just
     # checks that the PID exists — harmless.
     os.kill(os.getpid(), 0)  # No exception — guard is OFF.
+
+
+# ──────────────── hermes update interception canary ───────────────
+# The guard must block the SELF-UPDATER (`update` as the subcommand right
+# after the hermes entrypoint) while letting kanban verbs like
+# `hermes kanban update` through — the matcher is entrypoint-adjacency,
+# never argv substrings (AGENTS.md cmdline-matching rule).
+
+
+def test_subprocess_run_hermes_update_blocked():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["hermes", "update"])
+
+
+def test_subprocess_run_hermes_cli_main_update_blocked():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["/some/venv/bin/python", "-m", "hermes_cli.main", "update"])
+
+
+def test_subprocess_run_venv_hermes_update_blocked():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run([".venv/bin/hermes", "update"])
+
+
+def test_subprocess_run_kanban_update_not_blocked():
+    """`<x>/bin/hermes kanban update` is a kanban verb, not the updater —
+    the guard must NOT raise (the nonexistent path then fails with
+    FileNotFoundError from the real exec, proving the guard stayed out)."""
+    with pytest.raises(FileNotFoundError):
+        subprocess.run(["./nonexistent/bin/hermes", "kanban", "update", "t1"])

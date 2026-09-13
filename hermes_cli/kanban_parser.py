@@ -174,6 +174,11 @@ _SPECS = [
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
                   "translation --skill github-code-review"),
+        _arg("--resources",
+             help="Comma-separated exclusive resource keys the card must hold "
+                  "while running, e.g. 'harmony-device:x1,lab:bench-2'. "
+                  "kind:identifier — lowercase kind, case-sensitive identifier; "
+                  "the dispatcher runs at most one card per key at a time."),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "
@@ -241,6 +246,15 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+    _cmd("update", [
+        _TASK_ID,
+        _arg("--resources", required=True,
+             help="Comma-separated exclusive resource keys (kind:identifier — "
+                  "lowercase kind, case-sensitive identifier, e.g. "
+                  "'harmony-device:6HQ0226318000078'); an empty string "
+                  "clears them. The dispatcher runs at most one card per key at "
+                  "a time; changes apply on the next dispatch."),
+    ], help="Update task properties (--resources only)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

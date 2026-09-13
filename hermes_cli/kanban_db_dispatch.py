@@ -110,6 +110,10 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_resource_held: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, resource)`` deferred because a running card holds ``resource``.
+    Picked up on a later tick when the holder leaves running; separate bucket so
+    health telemetry tells "waiting on a physical resource" from "stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1228,17 +1232,26 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT DISTINCT assignee, resources FROM tasks "
         "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
         (status,),
     ).fetchall()
     if not rows:
         return False
+    # A row whose resources are (even partly) held by a running card can't
+    # spawn this tick, so it must not count as spawnable work.
+    held = _kb.running_task_resources(conn)
+
+    def _resource_clear(row: sqlite3.Row) -> bool:
+        res = _kb.parse_task_resources(row["resources"])
+        return not (res and set(res) & held)
+
     profile_exists = _profile_exists_fn()
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+        # The resource filter still applies: a held key blocks regardless.
+        return any(_resource_clear(row) for row in rows)
+    return any(profile_exists(row["assignee"]) and _resource_clear(row) for row in rows)
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -1501,11 +1514,13 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    held_resources: set[str],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
-    skip is recorded on ``result``.
-    """
+    skip is recorded on ``result``. ``held_resources`` is the tick's live
+    resource-hold set (running cards + this tick's spawns); it is mutated as
+    spawns land so later rows in the same tick see the new holds."""
     task_id = row["id"]
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
@@ -1521,6 +1536,15 @@ def _dispatch_lane_task(
         current = per_profile_running.get(assignee, 0)
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
+            return False
+    # Resource gate: ``running`` status IS the lock (no lease table, no
+    # fencing). A ready card whose key a running card holds stays ready —
+    # "waiting on a physical resource", never a failure, never a block.
+    task_res = _kb.parse_task_resources(row["resources"])
+    if task_res:
+        conflict = sorted(set(task_res) & held_resources)
+        if conflict:
+            result.skipped_resource_held.append((task_id, conflict[0]))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
@@ -1543,9 +1567,15 @@ def _dispatch_lane_task(
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
+    def _hold_resources(res: tuple[str, ...]) -> None:
+        # Rolling update of the tick's held set: later rows this tick must see
+        # the resources this spawn now holds (the 09-10 same-tick fan-out).
+        held_resources.update(res)
+
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
+        _hold_resources(task_res)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
@@ -1583,6 +1613,7 @@ def _dispatch_lane_task(
         # only on successful completion (complete_task).
         result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
         _count_spawn(claimed.assignee)
+        _hold_resources(task_res)
         return True
     except Exception as exc:
         if _record_task_failure(
@@ -1709,9 +1740,10 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order (``resources`` feeds the
+    resource gate)."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, resources FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -1807,10 +1839,14 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Resource gate: one query at tick start for what running cards hold; the
+    # set is rolled forward in-memory as this tick's spawns land.
+    held_resources = set(_kb.running_task_resources(conn))
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        held_resources=held_resources,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

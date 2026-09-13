@@ -220,7 +220,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_resource_held",
 )
 
 
@@ -715,12 +715,16 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Exclusive physical resource keys (parsed from the JSON column); see SCHEMA_SQL.
+    resources: Optional[list[str]] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        parsed_res = _json_or(g("resources"))
+        resources_value = [str(r) for r in parsed_res if r] if isinstance(parsed_res, list) else None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -730,6 +734,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            resources=resources_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -941,7 +946,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Exclusive physical resource keys (JSON array of ``kind:identifier``
+    -- tokens, e.g. ``["harmony-device:x1"]``) the task must hold while
+    -- running. The dispatcher treats ``running`` as the lock: a ready card
+    -- whose key is held by any running card is deferred (stays ``ready``).
+    -- NULL or empty array = no exclusive resources.
+    resources            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1218,6 +1229,85 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+# Exclusive resource keys: ``kind:identifier``. The kind namespace is lowercase
+# (``harmony-device``, ``usb``); the identifier is case-sensitive so a real
+# device serial (``6HQ0226318000078``) round-trips exactly — rewriting its case
+# would gate a different physical unit than the operator asked for. Anything
+# else is refused (NOT rewritten).
+_RESOURCE_KIND_RE = re.compile(r"[a-z0-9._/-]+")
+_RESOURCE_ID_RE = re.compile(r"[A-Za-z0-9._:/-]+")
+
+
+def parse_task_resources(raw: Any) -> tuple[str, ...]:
+    """Read-path parse of a ``tasks.resources`` value (JSON column text, or an
+    already-parsed list from ``Task``). Fail-open: None / empty / corrupt JSON /
+    non-list all yield ``()`` so bad DB data never blocks dispatch."""
+    if not raw:
+        return ()
+    parsed = raw if isinstance(raw, list) else _json_or(raw)
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(t for t in (str(item).strip() for item in parsed) if t)
+
+
+def normalize_resources(resources: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Write-path normalizer for a resource-key list: strip each token, drop
+    empties, dedupe preserving order, and validate each against
+    ``kind:identifier`` — lowercase kind (``[a-z0-9._/-]+``), case-sensitive
+    identifier (``[A-Za-z0-9._:/-]+``, may itself contain ``:``). ``None``
+    passes through; an all-empty result collapses to ``None`` (nothing to
+    hold). Violations raise ``ValueError``."""
+    if resources is None:
+        return None
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for token in resources:
+        if not isinstance(token, str):
+            raise ValueError(
+                f"invalid resources token {token!r}: each resource must be a string "
+                "'kind:identifier' — lowercase kind [a-z0-9._/-]+, case-sensitive "
+                "identifier, e.g. 'harmony-device:DEV1'"
+            )
+        name = token.strip()
+        if not name:
+            continue
+        kind, sep, identifier = name.partition(":")
+        if not sep:
+            raise ValueError(
+                f"invalid resources token {name!r}: resources must be 'kind:identifier' "
+                "with a ':' separator — lowercase kind [a-z0-9._/-]+, case-sensitive "
+                "identifier, e.g. 'harmony-device:DEV1'"
+            )
+        if not kind or not _RESOURCE_KIND_RE.fullmatch(kind):
+            raise ValueError(
+                f"invalid resources token {name!r}: the kind before ':' must be lowercase "
+                f"[a-z0-9._/-]+, got {kind!r}"
+            )
+        if not identifier or not _RESOURCE_ID_RE.fullmatch(identifier):
+            raise ValueError(
+                f"invalid resources token {name!r}: the identifier after ':' must match "
+                f"[A-Za-z0-9._:/-]+ (case-sensitive, e.g. a device serial), got {identifier!r}"
+            )
+        if name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    return cleaned or None
+
+
+def running_task_resources(conn: sqlite3.Connection) -> frozenset[str]:
+    """Union of the resource keys held by ``running`` tasks.
+
+    The derived lock behind the dispatcher's resource gate: ``running`` status
+    IS the lock — no lease table, no fencing. Only ``running`` holds; a card in
+    any other state owns nothing.
+    """
+    held: set[str] = set()
+    for row in conn.execute("SELECT resources FROM tasks WHERE status = 'running'"):
+        held.update(parse_task_resources(row["resources"]))
+    return frozenset(held)
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1232,6 +1322,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    resources: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1285,6 +1376,7 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    resources_list = normalize_resources(resources)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1331,8 +1423,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        resources
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1435,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        json.dumps(resources_list) if resources_list is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -1361,6 +1455,7 @@ def create_task(
                         "branch_name": branch_name,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "resources": list(resources_list) if resources_list else None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
@@ -1567,6 +1662,21 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
         conn, task_id, "UPDATE tasks SET reasoning_effort = ? WHERE id = ?", (effort,),
         "reasoning_effort_set", {"reasoning_effort": effort},
         ("reasoning_effort",), archived_msg="cannot set reasoning effort",
+    )
+
+
+def set_task_resources(
+    conn: sqlite3.Connection, task_id: str, resources: Optional[Iterable[str]],
+) -> bool:
+    """Set (empty list/None clears) the task's exclusive resource keys.
+    Applies on the NEXT dispatch — the currently running holder keeps the
+    resource until it leaves ``running`` — so settable while running."""
+    normalized = normalize_resources(resources)
+    return _set_task_override(
+        conn, task_id, "UPDATE tasks SET resources = ? WHERE id = ?",
+        (json.dumps(normalized) if normalized else None,),
+        "resources_set", {"resources": list(normalized) if normalized else None},
+        ("resources",), archived_msg="cannot set resources",
     )
 
 

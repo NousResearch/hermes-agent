@@ -543,7 +543,14 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
     for p in alive:
         with contextlib.suppress(*gone_errs):
             p.kill()
-    psutil.wait_procs(alive, timeout=3.0)
+    still_alive = psutil.wait_procs(alive, timeout=3.0)[1]
+    if still_alive:
+        # _profile_is_locked() never trips on POSIX (see its docstring), so without this
+        # check a process that survived terminate()+kill() (e.g. AccessDenied swallowed
+        # above) would fall through to the lock poll below and be reported as closed.
+        return False, (
+            "could not terminate the browser process(es) holding the profile "
+            "— quit it manually and retry.")
     # The lock releases slightly after the process exits on Windows; poll.
     source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
     deadline = time.monotonic() + timeout

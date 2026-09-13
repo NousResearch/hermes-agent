@@ -20,17 +20,19 @@ from tools.skills_guard import (
 
 PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
 
-# Never scanned: VCS internals, caches, vendored envs. Test trees hold adversarial
-# fixtures on purpose — a test asserting the trust boundary holds round-trips the
-# injection string verbatim, it is not an attack payload. Any single critical makes
-# the verdict `dangerous`, which --force explicitly cannot override, so scanning
-# tests made security-conscious plugins unconditionally uninstallable and taught
-# authors to obfuscate the very strings their tests need (#89610).
+# Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
-    "tests", "test", "testing", "spec", "specs", "fixtures",
-}
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox"}
+
+# Top-level test trees ARE scanned (``plugins_loader`` sets ``submodule_search_locations``
+# to the plugin root, so ``from .tests import evil`` runs whatever lives there), but a
+# critical found under one is capped at ``high``: fixtures deliberately hold hostile
+# strings to prove the plugin rejects them, and an un-overridable ``dangerous`` made
+# such plugins uninstallable and taught authors to obfuscate their own tests (#89610).
+# The cap keeps the verdict at ``caution`` — blocked by default, ``--force`` overridable.
+# Root-level names only: ``src/spec/handler.py`` is runtime code and gets no cap.
+TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
 
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}
@@ -76,11 +78,14 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
 def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
+    in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
         f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        if in_test_tree and f.severity == "critical":
+            f.severity = "high"
         out.append(f)
     return out
 

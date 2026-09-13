@@ -647,9 +647,13 @@ dangerous block names the critical findings that caused it (e.g.
 `1 critical of 42 findings (destructive_root_rm)`), so a single blocking
 line is not hidden behind the total.
 
-Test trees (`tests/`, `test/`, `testing/`, `spec/`, `specs/`, `fixtures/`)
-are not scanned: their fixtures deliberately hold hostile strings to prove
-the plugin rejects them, and test code never runs inside the agent.
+Top-level test trees (`tests/`, `test/`, `testing/`, `spec/`, `specs/`,
+`fixtures/` at the plugin root) are still scanned — a plugin's `__init__.py`
+can import from them, so they are runtime code — but a critical finding
+there is capped at **caution**: their fixtures deliberately hold hostile
+strings to prove the plugin rejects them, so it asks for confirmation and
+`--force` overrides it instead of blocking the install outright. The same
+finding in any other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
 
 Scanning is on by default; disable it in `config.yaml`:
 

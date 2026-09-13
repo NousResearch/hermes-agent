@@ -331,6 +331,12 @@ def _run_job_script(
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
+
+    # Windows: normalize path for subprocess execution to avoid separator issues
+    # on non-default profiles where HERMES_HOME override may produce mixed separators.
+    if sys.platform == "win32":
+        path = Path(os.path.normpath(str(path)))
+
     script_timeout = _get_script_timeout()
     argv, env_overlay, err = _script_argv(path)
     if argv is None:

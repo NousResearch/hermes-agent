@@ -581,7 +581,7 @@ async def _send_bluebubbles(extra, chat_id, message):
     try:
         from gateway.config import PlatformConfig
         adapter = bb.BlueBubblesAdapter(PlatformConfig(extra=extra))
-        if not await adapter.connect():
+        if not await adapter.connect(outbound_only=True):
             return _error("BlueBubbles: failed to connect to server")
         try:
             result = await adapter.send(chat_id, message)

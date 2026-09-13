@@ -1,6 +1,7 @@
 """PLUGIN-COMPAT stub (revert-scheduled; see COMPAT_MANIFEST.md).
 
-``gateway.startup_watchdog`` was folded into ``gateway.shutdown_watchdog`` in the Sep 2026 decomposition. This stub keeps the
-old import path alive for external plugins only; internal code must import ``gateway.shutdown_watchdog``.
+``gateway.startup_watchdog`` keeps the historical startup-watchdog import path alive for
+external plugins. The implementation lives in the stdlib-only ``hermes_startup_watchdog``
+module; do not alias this path to the shutdown watchdog.
 """
-from gateway.shutdown_watchdog import *  # noqa: F401,F403
+from hermes_startup_watchdog import *  # noqa: F401,F403

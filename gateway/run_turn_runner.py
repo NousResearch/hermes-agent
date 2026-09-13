@@ -276,7 +276,9 @@ class TurnRunner:
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)
         if not verb:
-            return f"{emoji} {tool_name}: \"{preview}\""
+            if adapter is None:
+                return f"{emoji} {tool_name}: \"{preview}\""
+            return f"{emoji} {tool_name}: {adapter.quote_tool_preview(preview)}"
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
     def _progress_emit(self, msg: str) -> None:

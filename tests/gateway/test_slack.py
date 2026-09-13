@@ -2623,6 +2623,33 @@ class TestFormatMessage:
         assert rendered == "`ˋ*test*ˋ.py`"
         assert preview.text == "`*test*`.py"
 
+    def test_generic_tool_preview_drops_outer_quotes(self, adapter):
+        from gateway.run_turn_runner import TurnRunner
+
+        # browser_exec has no friendly verb, so its compact line renders through the
+        # platform's quote hook; Slack's inline code replaces the outer quotes (#110038).
+        ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
+        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        message = TurnRunner(runner, ctx)._progress_build_message(
+            "browser_exec", "click('#go')", {"code": "click('#go')"})
+        assert message == "⚙️ browser_exec: `click('#go')`"
+
+    def test_generic_tool_preview_keeps_quotes_without_adapter(self):
+        from gateway.run_turn_runner import TurnRunner
+
+        # Without an adapter the plain-text fallback keeps the historical quotes.
+        ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
+        runner = SimpleNamespace(_adapter_for_source=lambda source: None)
+        message = TurnRunner(runner, ctx)._progress_build_message(
+            "browser_exec", "click('#go')", {"code": "click('#go')"})
+        assert message == "⚙️ browser_exec: \"click('#go')\""
+
+    def test_tool_event_generic_preview_drops_outer_quotes(self, adapter):
+        from gateway.stream_events import ToolCallChunk
+
+        event = ToolCallChunk("browser_exec", preview="click('#go')", args={"code": "click('#go')"})
+        assert adapter.format_tool_event(event, mode="all") == "⚙️ browser_exec: `click('#go')`"
+
     def test_italic_asterisk_conversion(self, adapter):
         assert adapter.format_message("*hello*") == "_hello_"
 

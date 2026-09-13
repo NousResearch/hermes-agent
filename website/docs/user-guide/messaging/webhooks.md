@@ -497,6 +497,7 @@ The webhook adapter includes multiple layers of security:
 The adapter validates incoming webhook signatures using the appropriate method for each source:
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
+- **Redmine 7**: `X-Redmine-Signature-256` header — `sha256=<HMAC-SHA256(raw request body)>`. Like V1, it has no replay protection (a captured request replays indefinitely) — prefer `X-Webhook-Signature-V2` where possible.
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
@@ -571,6 +572,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
+- For Redmine 7, the secret is HMAC-based — check `X-Redmine-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
 - Check gateway logs for `Invalid signature` warnings
 

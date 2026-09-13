@@ -1104,6 +1104,7 @@ def _(rid, params: dict) -> dict:
             manager, _owned_db, owns_db = _conversation_worktree_manager(
                 profile_home=profile_home,
                 db=db,
+                session_cwd=(db.get_session(root_session_id) or {}).get("cwd"),
             )
             if owns_db:
                 return _err(rid, 5036, "conversation worktree database ownership mismatch")

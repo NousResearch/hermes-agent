@@ -496,7 +496,9 @@ def _remove_failed_conversation_worktree(session: dict, binding, db) -> None:
             session.pop("conversation_root_lease", None)
     try:
         manager, _, owns_db = _conversation_worktree_manager(
-            profile_home=session.get("profile_home"), db=db
+            profile_home=session.get("profile_home"),
+            db=db,
+            session_cwd=session.get("cwd"),
         )
         remover = getattr(manager, "remove_after_explicit_request", None)
         if callable(remover):
@@ -553,8 +555,18 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
     if policy.worktree_root is None:
         return policy
 
-    suffix = hashlib.sha256(str(Path(selected_common).resolve()).encode()).hexdigest()[:12]
-    worktree_root = policy.worktree_root / f"{source_path.name}-{suffix}"
+    selected_common_path = Path(selected_common).resolve()
+    suffix = hashlib.sha256(str(selected_common_path).encode()).hexdigest()[:12]
+    namespace = f"{selected_common_path.name}-{suffix}"
+    try:
+        policy.worktree_root.resolve().relative_to(configured_path)
+    except ValueError:
+        worktree_root = policy.worktree_root / namespace
+    else:
+        # A conventional ``<repo>/.worktrees`` root is valid for its own
+        # repository, but cannot host a different repository's checkout. Keep
+        # alternate-project roots in the Hermes home, outside either repo.
+        worktree_root = get_hermes_home() / "conversation-worktrees" / namespace
     logger.warning(
         "conversation_worktree.project_source_override session_cwd=%s "
         "configured_source=%s selected_source=%s worktree_root=%s",

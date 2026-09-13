@@ -78,6 +78,63 @@ def test_session_project_repo_gets_its_own_worktree_policy(monkeypatch, tmp_path
     assert routed.source_worktree == selected
     assert routed.worktree_root.parent == policy.worktree_root
     assert routed.worktree_root != policy.worktree_root
+    assert routed.worktree_root.name.startswith("hermes-common-")
+
+
+def test_alternate_project_root_stays_outside_both_repositories(monkeypatch, tmp_path):
+    from agent.conversation_worktree_policy import ConversationWorktreePolicy
+
+    configured = tmp_path / "lunabot"
+    selected = tmp_path / "hermes-agent"
+    configured.mkdir()
+    selected.mkdir()
+    policy = ConversationWorktreePolicy(
+        enabled=True,
+        source_worktree=configured,
+        worktree_root=configured / ".worktrees",
+    )
+
+    monkeypatch.setattr(server.git_probe, "repo_root", lambda _cwd: str(selected))
+    monkeypatch.setattr(
+        server.git_probe,
+        "common_repo_root",
+        lambda cwd: str(configured if str(cwd) == str(configured) else selected),
+    )
+    monkeypatch.setattr(server, "get_hermes_home", lambda: tmp_path / ".hermes")
+
+    routed = server._conversation_worktree_policy_for_session(policy, str(selected))
+
+    assert routed.worktree_root is not None
+    assert routed.worktree_root.is_relative_to(tmp_path / ".hermes")
+    assert not routed.worktree_root.is_relative_to(configured)
+    assert not routed.worktree_root.is_relative_to(selected)
+
+
+def test_alternate_project_namespace_uses_common_repository_identity(monkeypatch, tmp_path):
+    from agent.conversation_worktree_policy import ConversationWorktreePolicy
+
+    configured = tmp_path / "lunabot"
+    selected_common = tmp_path / "hermes-agent"
+    selected_checkout = selected_common / ".worktrees" / "conversation-old"
+    configured.mkdir()
+    selected_checkout.mkdir(parents=True)
+    policy = ConversationWorktreePolicy(
+        enabled=True,
+        source_worktree=configured,
+        worktree_root=tmp_path / "conversations",
+    )
+
+    monkeypatch.setattr(server.git_probe, "repo_root", lambda _cwd: str(selected_checkout))
+    monkeypatch.setattr(
+        server.git_probe,
+        "common_repo_root",
+        lambda cwd: str(configured if str(cwd) == str(configured) else selected_common),
+    )
+
+    routed = server._conversation_worktree_policy_for_session(policy, str(selected_checkout))
+
+    assert routed.worktree_root is not None
+    assert routed.worktree_root.parent.name == "conversations"
     assert routed.worktree_root.name.startswith("hermes-agent-")
 
 

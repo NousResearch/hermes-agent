@@ -281,9 +281,28 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         return peer
 
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Write unsynced messages to Honcho synchronously."""
-        new_messages = [m for m in session.messages if not m.get("_synced")]
+        """Write unsynced messages to Honcho synchronously.
+
+        Assistant entries are skipped (see ``sync_turn``): the deriver reads
+        assistant output as facts about the ``hermes`` peer. The exception is an
+        a2a reply, tagged ``_a2a_reply`` when ``sync_turn`` wrote it — that half
+        belongs to a bot-to-bot exchange and is sent like any other message.
+        Skipped entries are filtered out of the batch rather than pre-marked
+        ``_synced``, so a failed sync still leaves every message unsynced and the
+        caller's retry/auth bookkeeping stays intact.
+        """
+        new_messages = [
+            m for m in session.messages
+            if not m.get("_synced") and (m.get("role") != "assistant" or m.get("_a2a_reply"))
+        ]
         if not new_messages:
+            # Nothing sendable is pending. Only never-sent assistant entries can
+            # still be pending; mark them handled so repeated flushes do not
+            # rescan them. (A previously failed user batch keeps _synced falsy,
+            # so it is never marked here — it goes back through the sync path.)
+            for m in session.messages:
+                if not m.get("_synced") and m.get("role") == "assistant" and not m.get("_a2a_reply"):
+                    m["_synced"] = True
             return True
 
         # Resolved inside the operation so a retry after a client rebuild gets fresh objects.
@@ -313,6 +332,13 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             ok = False
         for msg in new_messages:
             msg["_synced"] = ok
+        if ok:
+            # A successful flush means the session is fully accounted for, so
+            # the never-sent assistant entries are marked handled too. On a
+            # failure they deliberately stay unsynced (nothing was written).
+            for msg in session.messages:
+                if msg.get("role") == "assistant":
+                    msg["_synced"] = True
         with self._cache_lock:
             self._cache[session.key] = session
         return ok

@@ -1226,9 +1226,10 @@ Step 4  Seed AI identity files → Honcho AI peer
   these are injected via file search at prompt-build time.
 
   In Hermes, they are seeded once into Honcho's AI peer through the
-  observation pipeline. Honcho builds a representation from them and
-  from every subsequent assistant message (observe_me=True). Over time
-  the representation reflects actual behavior, not just declaration.
+  observation pipeline. Honcho builds the AI representation from these
+  seeded files. Assistant replies are not ingested back into it, so the
+  representation stays a statement of character rather than an echo of
+  the agent's own recent output.
 """)
     if agent_files:
         print(f"  Found: {', '.join(f.name for f in agent_files)}")

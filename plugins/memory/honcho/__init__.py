@@ -28,6 +28,43 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+# Strip only explicit quotes/transcripts of prior Hermes output. Bare user
+# statements such as "Hermes is useful" or "Hermes has memory" are legitimate
+# assertions and must remain available to the deriver.
+_AGENT_SELF_QUOTE_VERBS = (
+    r"said|reported|confirmed|identified|provided|outlined|created|saved|"
+    r"noted|asked|required|received|believes|described|added|changed|"
+    r"verifies|verified|wanted|completed|commits|requires|continues|sent|started"
+)
+_AGENT_SELF_QUOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Markdown blockquote containing a third-person Hermes report.
+    re.compile(
+        rf"^\s*>\s*hermes\s+(?:{_AGENT_SELF_QUOTE_VERBS})\b[^\n]{{0,400}}$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # Quoted third-person report, including straight or curly quote marks.
+    re.compile(
+        rf"(?:[\"']|\u201c|\u2018)hermes\s+(?:{_AGENT_SELF_QUOTE_VERBS})\b"
+        r"[^\"'\u201c\u201d\u2018\u2019\n]{0,400}(?:[\"']|\u201d|\u2019)",
+        re.IGNORECASE,
+    ),
+    # Explicit transcript labels are always copied assistant output.
+    re.compile(
+        r"^\s*(?:assistant|hermes)\s*:\s*[^\n]{0,400}$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+)
+
+
+def _strip_agent_self_quotes(text: str) -> str:
+    """Remove explicit copies of prior Hermes output from user content."""
+    if not text:
+        return text
+    for pattern in _AGENT_SELF_QUOTE_PATTERNS:
+        text = pattern.sub("[quoted Hermes output omitted]", text)
+    return text
+
+
 # Gateway-internal notifications arrive through the same user-role channel as genuine
 # user messages; they are execution metadata and must never become durable memory.
 # Deliberately anchored: a human discussing one of these strings mid-message is valid input.
@@ -645,7 +682,20 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         """Record the conversation turn in Honcho (non-blocking), chunking messages that
         exceed the Honcho API limit. Honors saveMessages: false. ``turn_author`` names who wrote
         the user side. The ``on_turn_start`` stash is the fallback for callers that never pass it.
-        A bot author's turn is written into that bot's own a2a session, never the human's."""
+        A bot author's turn is written into that bot's own a2a session, never the human's.
+
+        **Skips assistant messages by default.** Assistant output is dominated by
+        self-narration, status reports, and tool-call traces. The Honcho deriver's extraction
+        prompt reads assistant output as facts about the ``hermes`` peer, which inflates the AI
+        Self-Representation with debug breadcrumbs and re-asserting "hermes said X" lines on
+        every turn. The user message stream still goes in (legitimate); the assistant stream
+        does not, with exactly one exception — a **bot-authored (a2a) turn keeps both
+        halves**, because that session records an exchange with another agent (the bot's
+        message is its user side, this agent's reply is the assistant side) rather than this
+        agent narrating itself. Those replies are tagged ``_a2a_reply`` so the flush keeps
+        them. AI identity / config / system-prompt seeds go through the separate
+        ``HonchoSessionManager.seed_ai_identity`` path in ``session.py`` and are unaffected.
+        """
         if not self._writes_enabled():
             return
         if _is_internal_gateway_turn(user_content):
@@ -656,6 +706,15 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
+        # Strip third-person agent-self-quote phrases that the Honcho deriver
+        # would otherwise extract as Explicit Observations on the `hermes`
+        # observer peer. When the user message quotes prior tool output
+        # (e.g. "hermes verified that..." or "hermes reported that..."), the
+        # deriver reads those quotes and turns them into re-asserting
+        # "hermes said X" observations - feeding the self-trust loop.
+        # Replace each match with a placeholder so positional context isn't
+        # lost.
+        clean_user_content = _strip_agent_self_quotes(clean_user_content)
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
         # Skip only when the whole turn is empty: an interrupted or tool-only turn can have
         # an empty assistant side, and the user's message must still be persisted.
@@ -663,8 +722,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             return
 
         author = turn_author if isinstance(turn_author, dict) else self._turn_author
+        is_bot_turn = bool(author.get("is_bot"))
         session_kwargs: dict[str, str] = {}
-        if author.get("is_bot"):
+        if is_bot_turn:
             # A bot's turn never lands in the human's session: its own a2a session or nothing.
             if not getattr(self._config, "a2a_sessions", True):
                 logger.debug("Honcho sync skipped a bot-authored turn because a2aSessions is off")
@@ -691,8 +751,14 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             session = self._manager.get_or_create(session_key, **session_kwargs)
             for chunk in self._chunk_message(clean_user_content, msg_limit) if clean_user_content else ():
                 session.add_message("user", chunk, author_peer_id=author_peer_id)
-            for chunk in self._chunk_message(clean_assistant_content, msg_limit) if clean_assistant_content else ():
-                session.add_message("assistant", chunk)
+            if is_bot_turn and clean_assistant_content:
+                # a2a is the one path that keeps the assistant side: the session
+                # records an exchange with another agent, so the bot's message is
+                # its user side and this agent's reply is the assistant side.
+                # Tagged so _flush_session keeps it — untagged assistant output is
+                # never ingested (see the docstring).
+                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
+                    session.add_message("assistant", chunk, _a2a_reply=True)
             # save() (not _flush_session) so writeFrequency batching is honored.
             self._manager.save(session)
 

@@ -5770,6 +5770,33 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Legacy follow-up tasks predate the ``classification`` column and therefore
+# arrive with NULL metadata. Only these explicit lanes may bypass duplicate
+# work guards; arbitrary titles/body text must remain guarded.
+_FOLLOWUP_CLASSIFICATIONS = frozenset({"review", "remediation", "successor"})
+_LEGACY_FOLLOWUP_TITLE_RE = re.compile(
+    r"^\s*(?:review\b|remediar\b|certify\b|recovery\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_followup_task(row: sqlite3.Row) -> bool:
+    """Return whether a task is an explicit or legacy follow-up.
+
+    New tasks use ``classification``. Older board rows have no classification
+    but the reviewer lane and documented title prefixes are unambiguous
+    follow-up signals. Keep this predicate deliberately narrow so ordinary
+    implementation tasks cannot bypass duplicate-work guards.
+    """
+    classification = str(row["classification"] or "").strip().lower()
+    if classification in _FOLLOWUP_CLASSIFICATIONS:
+        return True
+    if str(row["created_by"] or "").strip().lower() == "recovery-queue":
+        return True
+    if str(row["assignee"] or "").strip().lower() == "reviewer":
+        return True
+    return _LEGACY_FOLLOWUP_TITLE_RE.match(str(row["title"] or "")) is not None
+
 
 @dataclass
 class DispatchResult:
@@ -6889,7 +6916,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error, classification, created_by, title, body "
+        "SELECT last_failure_error, classification, created_by, assignee, title, body "
         "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
@@ -6944,12 +6971,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     # implementation attempts: they are review/remediation/recovery work.
     # Keep this opt-in and fail-closed; arbitrary task text never disables the
     # duplicate-work guards.
-    followup = (
-        str(row["classification"] or "").strip().lower()
-        in {"review", "remediation", "successor"}
-        or str(row["created_by"] or "").strip().lower() == "recovery-queue"
-        or str(row["title"] or "").strip().lower().startswith("recovery:")
-    )
+    followup = _is_followup_task(row)
 
     # 3. Completed run within guard window — proof of recent success.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW

@@ -1938,6 +1938,49 @@ def test_respawn_guard_allows_recovery_successor_with_recent_success(kanban_home
         assert kb.check_respawn_guard(conn, t) is None
 
 
+@pytest.mark.parametrize("title", [
+    "Review PR331",
+    "REMEDIAR PR337",
+    "CERTIFY PR335",
+    "Recovery: retry worker",
+])
+def test_respawn_guard_allows_legacy_followup_title_with_active_pr(
+    kanban_home, title,
+):
+    """Legacy unclassified follow-up prefixes bypass duplicate PR guards."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title=title, assignee="implementer")
+        kb.add_comment(
+            conn, t, "worker",
+            "Continue https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_allows_legacy_reviewer_with_recent_success(kanban_home):
+    """Legacy reviewer cards without classification remain dispatchable."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="PR331 review", assignee="reviewer")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_keeps_unrelated_legacy_task_guarded(kanban_home):
+    """Missing classification alone must not open the duplicate-work bypass."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="Implement unrelated fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:

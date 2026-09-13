@@ -5,6 +5,7 @@ import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
+import { OverflowTip } from '@/components/ui/tooltip'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
@@ -347,7 +348,6 @@ function ProjectTreeRow({
         ...style,
         paddingLeft: withTreeInset(style.paddingLeft)
       }}
-      title={node.data.id}
     >
       {/* No chevron column — the folder icon (open/closed) already carries the
           expand state, so the extra glyph was pure noise. */}
@@ -367,7 +367,12 @@ function ProjectTreeRow({
       ) : (
         // Git decoration (VS Code-style): tint changed files; the explicit color
         // wins over the row's hover/selected text color, so it persists.
-        <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
+        // OverflowTip shows the full name on hover only when it actually
+        // overflows — the row's native `title` is removed so the two tooltips
+        // don't compete (#93781).
+        <OverflowTip label={node.data.name}>
+          <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
+        </OverflowTip>
       )}
     </div>
   )

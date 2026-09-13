@@ -1,6 +1,7 @@
 """Tests for gateway /yolo session scoping."""
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,10 +30,10 @@ def _make_runner():
     return runner
 
 
-def _make_event(chat_id: str) -> MessageEvent:
+def _make_event(chat_id: str, *, user_id: str | None = None) -> MessageEvent:
     source = SessionSource(
         platform=Platform.TELEGRAM,
-        user_id=f"user-{chat_id}",
+        user_id=user_id or f"user-{chat_id}",
         chat_id=chat_id,
         user_name="tester",
         chat_type="dm",
@@ -60,3 +61,34 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
     assert "OFF" in result_off
     assert is_session_yolo_enabled(session_a) is False
     assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+@pytest.mark.asyncio
+async def test_yolo_command_rechecks_admin_at_side_effect_boundary():
+    runner = _make_runner()
+    runner.config = SimpleNamespace(
+        platforms={
+            Platform.TELEGRAM: SimpleNamespace(
+                extra={
+                    "allow_admin_from": ["admin-1"],
+                    "user_allowed_commands": ["yolo"],
+                }
+            )
+        }
+    )
+
+    user_event = _make_event("chat-a", user_id="user-1")
+    user_session = runner._session_key_for_source(user_event.source)
+    assert runner._check_slash_access(user_event.source, "yolo") is None
+
+    denied = await runner._handle_yolo_command(user_event)
+
+    assert "admin" in denied.lower()
+    assert is_session_yolo_enabled(user_session) is False
+
+    admin_event = _make_event("chat-b", user_id="admin-1")
+    admin_session = runner._session_key_for_source(admin_event.source)
+    enabled = await runner._handle_yolo_command(admin_event)
+
+    assert "ON" in enabled
+    assert is_session_yolo_enabled(admin_session) is True

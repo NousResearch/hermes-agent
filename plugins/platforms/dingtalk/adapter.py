@@ -635,7 +635,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error("DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config.")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
+            resp = await client.post(webhook_url, json={"msgtype": "markdown", "markdown": {"title": "Hermes", "text": message}})
             resp.raise_for_status()
             data = resp.json()
         if data.get("errcode", 0) != 0:

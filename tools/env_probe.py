@@ -89,7 +89,7 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
                         if "live-system guard" not in str(exc):
                             raise
                         with contextlib.suppress(OSError):
-                            _REAL_OS_KILL(process.pid, signal.SIGKILL)
+                            _REAL_OS_KILL(process.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                     with contextlib.suppress(Exception):
                         process.wait(timeout=0.5)
                     return -1, "", "timeout"

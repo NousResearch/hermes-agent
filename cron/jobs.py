@@ -2141,14 +2141,11 @@ def _fire_claim_owner_is_dead(claim: Any) -> bool:
     if not pid_text.isdigit() or int(pid_text) <= 0:
         return False
     try:
-        os.kill(int(pid_text), 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
+        from gateway.status import _pid_exists
+
+        return not _pid_exists(int(pid_text))
+    except (ImportError, ValueError, TypeError):
         return False
-    except OSError:
-        return False
-    return False
 
 
 _REARM_RECURRING_ERROR = (

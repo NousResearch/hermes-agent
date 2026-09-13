@@ -1025,6 +1025,24 @@ class TestRetiredMultiplexAllowlist:
         assert "multiplex_profile_allowlist" not in DEFAULT_CONFIG["gateway"]
 
 
+class TestCuratorFasterPrune:
+    def test_v44_rewrites_old_curator_defaults_but_keeps_user_values(self, tmp_path, monkeypatch):
+        """Old 30/90 defaults move to 14/30; an explicitly customized window is untouched."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.config_migrations import run_migrations
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "_config_version": 43,
+            "curator": {"stale_after_days": 30, "archive_after_days": 180},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        run_migrations(43, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["curator"]["stale_after_days"] == DEFAULT_CONFIG["curator"]["stale_after_days"]
+        assert raw["curator"]["archive_after_days"] == 180
+
+
 class TestCustomProviderCompatibility:
     """Custom provider compatibility across legacy and v12+ config schemas.
 
@@ -1892,3 +1910,13 @@ class TestConfigCommandFailClosedSurface:
         assert excinfo.value.code == 1
         assert "not valid YAML" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_gateway_multiplex_keys_are_recognized_config_keys():
+    """``hermes config set gateway.multiplex_profiles true`` used to warn 'not a recognized config
+    key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
+    assert _validate_config_key("gateway.profile_routes") == (True, None)

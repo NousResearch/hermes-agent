@@ -2140,7 +2140,7 @@ from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
-from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
+from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_startup import GatewayStartupMixin
@@ -2149,6 +2149,7 @@ from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
@@ -3329,7 +3330,7 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin):
+    GatewayAgentCacheMixin, GatewayProfileReconcileMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -5115,8 +5116,24 @@ async def _start_gateway_start_control_socket(runner):
                 "pausing": accepted, "already_stopping": not accepted,
                 "pid": os.getpid(), "drain_timeout": _drain}
 
+        def _rescan_profiles_handler() -> dict:
+            """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
+            (the watcher also rescans periodically). Runs on the socket executor: marshal onto the loop
+            and wait briefly so the caller learns whether the profile is served."""
+            if not getattr(runner.config, "multiplex_profiles", False):
+                return {"multiplex": False, "served_profiles": runner.served_profile_names()}
+            future = asyncio.run_coroutine_threadsafe(
+                runner.reconcile_served_profiles(reason="control-socket"), _main_loop)
+            try:
+                # Bounded: a token-less create reconciles in milliseconds; a credential-add whose adapter
+                # connect outlasts this keeps running and the caller sees ``pending`` (not an error).
+                return {"multiplex": True, **future.result(timeout=5.0)}
+            except concurrent.futures.TimeoutError:
+                return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
+
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler})
+            verb_handlers={"pause-for-update": _pause_for_update_handler,
+                           "rescan-profiles": _rescan_profiles_handler})
         if not await _control_server.start():
             _control_server = None
         else:
@@ -5145,7 +5162,9 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         try:
             profile_homes = _cron_tick_profile_homes(runner.config)
             if profile_homes:
-                cron_start_kwargs["profile_homes"] = profile_homes
+                # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
+                # the multiplexer runs gets its jobs fired without a restart (hot-serve).
+                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
                 # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
@@ -5214,8 +5233,6 @@ async def _start_gateway_shutdown_tail(
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
-    if _exit_with_failure_verdict(runner):
-        return False
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
@@ -5238,6 +5255,8 @@ async def _start_gateway_shutdown_tail(
     with suppress(Exception):
         await _shutdown_mcp_servers_nonblocking()
 
+    # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
+    # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 

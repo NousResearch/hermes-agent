@@ -259,7 +259,8 @@ class SmsAdapter(BasePlatformAdapter):
             return _twiml_response()
         logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
         source = self.build_source(
-            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number)
+            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
+            message_id=message_sid)
         event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, raw_message=form, message_id=message_sid)
         # Non-blocking: Twilio expects a fast response

@@ -491,7 +491,14 @@ def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key,
     """OpenRouter pool only for a plain openrouter/auto request with no custom endpoint or override."""
     cfg_base_url = str(model_cfg.get("base_url") or "").strip()
     env_base_urls = _getenv("OPENAI_BASE_URL", "").strip() or _getenv("OPENROUTER_BASE_URL", "").strip()
-    has_custom_endpoint = bool(explicit_base_url or env_base_urls or (cfg_base_url and _cfg_provider(model_cfg) in {"auto", "custom"}))
+    # A config base_url under provider: openrouter is a mirror only when it is NOT the canonical
+    # OpenRouter host — `hermes setup` persists https://openrouter.ai/api/v1 for plain installs,
+    # and treating that as custom would drop the auth.json pool (empty key).
+    cfg_is_mirror = bool(cfg_base_url) and (
+        _cfg_provider(model_cfg) in {"auto", "custom"}
+        or (_cfg_provider(model_cfg) == "openrouter" and not base_url_host_matches(cfg_base_url, "openrouter.ai"))
+    )
+    has_custom_endpoint = bool(explicit_base_url or env_base_urls or cfg_is_mirror)
     return requested_provider in {"openrouter", "auto"} and not has_custom_endpoint and not bool(explicit_api_key or explicit_base_url)
 
 

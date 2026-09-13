@@ -425,15 +425,31 @@ def _spawn_hermes_action(
     return proc
 
 
+def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
+    """The profile a lifecycle verb addresses: the explicit selector, else the process's own named
+    profile (a pooled Desktop ``hermes --profile X serve`` answers ``/api/gateway/*`` without
+    ``?profile=``; an unscoped verb there is about X, not about the default home)."""
+    requested = (profile or "").strip()
+    if requested:
+        return requested
+    from hermes_constants import get_process_hermes_home, profile_name_for_home
+    own = profile_name_for_home(get_process_hermes_home())
+    return own if own and own != "default" else None
+
+
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     """``hermes [-p X] gateway <verb>`` argv for a dashboard lifecycle action. A profile served by the
     live default multiplexer has no gateway of its own: ``restart`` targets the multiplexer (the process
     that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
-    UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``)."""
+    UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``).
+    The multiplexer is addressed as ``-p default`` explicitly: a bare ``gateway restart`` spawned from a
+    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal."""
     from hermes_cli.web_server_profiles import _profile_cli_args
+    profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
-    if args and verb == "restart" and multiplexed_profile_refusal(args[-1], verb) is not None:
-        args = []
+    if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
+        from hermes_constants import get_process_hermes_home, profile_name_for_home
+        args = [] if profile_name_for_home(get_process_hermes_home()) == "default" else ["-p", "default"]
     return args + ["gateway", verb]
 
 
@@ -447,7 +463,7 @@ def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[s
     that has no gateway of its own (a ``--force``-started separate one is managed normally), else None.
     The spawned ``hermes -p X gateway <verb>`` would only print exit-78 / "no gateway running for this
     profile" into an action log nobody reads while the UI shows the verb as done."""
-    requested = (profile or "").strip()
+    requested = _own_profile_selector(profile) or ""
     if not requested or requested.lower() in {"current", "default"} or not _profile_is_multiplexed(requested):
         return None
     from hermes_cli.profiles import _check_gateway_running

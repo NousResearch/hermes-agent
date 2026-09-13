@@ -407,6 +407,9 @@ class ProfileCreate(BaseModel):
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
+    # Opt-in: also copy the source's messaging channels (bot tokens, allowlists, platform sections).
+    # Default False — a copied bot credential makes two profiles collide over one bot.
+    clone_channels: bool = False
     no_skills: bool = False
     description: Optional[str] = None
     provider: Optional[str] = None

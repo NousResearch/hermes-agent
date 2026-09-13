@@ -1120,8 +1120,13 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
-    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any."""
+    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
+
+    A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
+    bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
     error_lower = error_msg.lower()
+    if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
+        return None
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
@@ -1163,6 +1168,8 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
+        # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
+        r'output limit (?:of|is)\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1206,6 +1213,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1220,6 +1228,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",),
 )
 
 

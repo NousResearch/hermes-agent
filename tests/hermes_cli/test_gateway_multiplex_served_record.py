@@ -108,7 +108,10 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
     coder = served_root / "profiles" / "coder"
     live = resolve_gateway_liveness(profile_dir=coder, health_probe=None, use_cache=False)
     assert live.running is True and live.pid == os.getpid() and live.source == "multiplexer"
-    assert profile_platforms_from_multiplexer(live.runtime, "coder") == {"telegram": {"state": "connected"}}
+    plats = profile_platforms_from_multiplexer(live.runtime, "coder")
+    assert plats["telegram"] == {"state": "connected"}
+    # The default's api_server is coder's too (served at /p/coder/), not a missing adapter.
+    assert plats["api_server"]["state"] == "connected"
     # An unserved profile keeps the historical "stopped" answer.
     other = resolve_gateway_liveness(profile_dir=served_root / "profiles" / "other", health_probe=None, use_cache=False)
     assert other.running is False
@@ -118,9 +121,13 @@ def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypat
     """`gateway restart` for a served profile restarts the multiplexer (a `-p X` child only exits 78 into
     the action log); `start`/`stop` refuse; a profile with its own gateway is managed normally."""
     from hermes_cli import profiles as profiles_mod
-    from hermes_cli.web_server_gateway import _gateway_subcommand, multiplexed_profile_refusal
+    from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
     monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
-    assert _gateway_subcommand("coder", "restart") == ["gateway", "restart"]
+    # This process's own HERMES_HOME is coder's; the restart child must still run under the DEFAULT
+    # home (the multiplexer's) — a bare `gateway restart` here would inherit coder's home and exit 78.
+    restart = _gateway_subcommand("coder", "restart")
+    assert restart[-2:] == ["gateway", "restart"] and "coder" not in restart
+    assert _profile_action_environment(restart)["HERMES_HOME"] == str(served_root)
     assert multiplexed_profile_refusal("coder", "stop") and multiplexed_profile_refusal("coder", "start")
     assert _gateway_subcommand("other", "restart") == ["-p", "other", "gateway", "restart"]
     assert multiplexed_profile_refusal("other", "stop") is None

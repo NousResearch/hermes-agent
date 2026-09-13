@@ -171,3 +171,31 @@ def test_update_hook_never_touches_single_profile_or_already_multiplexed(fleet, 
     fleet.services.clear(); fleet.pids.clear()  # secondaries exist but run no gateway of their own
     gm.maybe_auto_migrate_after_update()
     assert capsys.readouterr().out == "" and _config_flag(fleet.root) is None
+
+
+def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):
+    """The user typed --multiplex: 'nothing to migrate' + flag left off was a no-op the user did not ask
+    for. The update hook keeps its no-op (previous test); the explicit command proceeds."""
+    fleet.services.clear(); fleet.pids.clear()
+
+    def _detached(home):  # no service manager anywhere -> detached start writes the served record
+        fleet.services["default-detached"] = True
+        (fleet.root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(fleet.root)}))
+        (fleet.root / "gateway_state.json").write_text(json.dumps({
+            "pid": os.getpid(), "hermes_home": str(fleet.root), "gateway_state": "running",
+            "served_profiles": ["default", "coder", "ops"]}))
+        return True
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", _detached)
+    assert not gm.build_migration_plan().standalone_secondaries
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=False, yes=True))
+    assert exc.value.code == 0
+    assert fleet.services.pop("default-detached") is True
+    assert _config_flag(fleet.root) is True
+    manifest = json.loads((fleet.root / gm.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["secondaries"] == [] and manifest["flag_was"] is False
+    assert ("default", "install") not in fleet.ops
+    out = capsys.readouterr().out
+    assert "serves 3 profiles" in out
+    # The same manifest rolls it back: flag restored, nothing to reinstall.
+    assert gm.rollback_migration(fleet.root) is True and _config_flag(fleet.root) is False

@@ -4360,6 +4360,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
+            message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))

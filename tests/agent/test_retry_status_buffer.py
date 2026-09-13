@@ -129,7 +129,7 @@ def test_pending_fallback_notice_emitted_once_on_success():
     though the noisy retry buffer is dropped."""
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent._emit_status_kind = lambda kind, msg, *, origin: emitted.append((kind, msg, origin))
 
     # Simulate try_activate_fallback: buffer the noisy switch line AND record
     # the durable one-shot notice.
@@ -142,25 +142,31 @@ def test_pending_fallback_notice_emitted_once_on_success():
 
     # The durable notice was shown exactly once; the buffered retry noise was
     # silently dropped.
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    assert emitted == [(
+        "fallback_switch", "🔄 Switched to fallback model: m1 via p1 → m2 via p2",
+        "_emit_pending_fallback_notice",
+    )]
     assert agent._retry_status_buffer == []
     # Notice is cleared so it cannot re-emit on a later turn.
     assert agent._pending_fallback_notice is None
 
     # A second success path with no new fallback emits nothing.
     agent._emit_pending_fallback_notice()
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    assert len(emitted) == 1
 
 
 def test_pending_fallback_notice_emits_all_switches_in_order():
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = emitted.append
+    agent._emit_status_kind = lambda kind, msg, *, origin: emitted.append((kind, msg))
     agent._pending_fallback_notice = ["primary → fallback-1", "fallback-1 → fallback-2"]
 
     agent._emit_pending_fallback_notice()
 
-    assert emitted == ["primary → fallback-1", "fallback-1 → fallback-2"]
+    assert emitted == [
+        ("fallback_switch", "primary → fallback-1"),
+        ("fallback_switch", "fallback-1 → fallback-2"),
+    ]
     assert agent._pending_fallback_notice is None
 
 
@@ -169,12 +175,12 @@ def test_pending_fallback_notice_continues_after_callback_error():
     attempted = []
     agent._pending_fallback_notice = ["first", "second"]
 
-    def emit(message):
+    def emit(kind, message, *, origin):
         attempted.append(message)
         if message == "first":
             raise RuntimeError("surface unavailable")
 
-    agent._emit_status = emit
+    agent._emit_status_kind = emit
     agent._emit_pending_fallback_notice()
 
     assert attempted == ["first", "second"]
@@ -197,14 +203,16 @@ def test_flush_discards_pending_fallback_notice():
     so the one-shot notice is discarded to avoid a stale duplicate later."""
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent._emit_status_kind = lambda kind, msg, *, origin: emitted.append((kind, msg))
 
-    agent._buffer_status("🔄 Primary model failed — switching to fallback: m2 via p2")
+    agent._buffer_fallback_status("🔄 Primary model failed — switching to fallback: m2 via p2")
     agent._pending_fallback_notice = "🔄 Switched to fallback model: m1 via p1 → m2 via p2"
 
     # Terminal failure flushes the buffered trace...
     agent._flush_status_buffer()
-    assert emitted == ["🔄 Primary model failed — switching to fallback: m2 via p2"]
+    assert emitted == [(
+        "fallback_switch", "🔄 Primary model failed — switching to fallback: m2 via p2",
+    )]
     # ...and discards the pending notice so it won't re-emit on a later turn.
     assert agent._pending_fallback_notice is None
 

@@ -879,6 +879,7 @@ class TurnRunner:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.operator_notices import deliver_operator_notice, resolve_operator_notice_mode
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
@@ -891,9 +892,30 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        fallback_mode = (
+            resolve_operator_notice_mode(ctx.user_config, "fallback_switch")
+            if event_type == "fallback_switch" else "chat"
+        )
+        if event_type == "fallback_switch" and fallback_mode != "chat":
+            # Routed off the chat channel entirely (admin_dm/log) — the chat-channel diagnostic
+            # suppression preference (render_notification below) does not apply here.
+            fut = self._schedule(
+                deliver_operator_notice(
+                    adapter=ctx._status_adapter, source=ctx.source, kind="fallback_switch",
+                    content=prepared, user_config=ctx.user_config,
+                    chat_metadata=ctx._status_thread_metadata,
+                ),
+                f"status_callback ({event_type}) scheduling error",
+            )
+            if fut is not None and ctx._cleanup_progress:
+                fut.add_done_callback(self._track_future_cleanup_id)
+            return
+
+        status_key = "lifecycle" if event_type == "fallback_switch" else event_type
+
         def present():
             fut = self._schedule(
-                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, status_key, prepared, ctx._status_thread_metadata),
                 f"status_callback ({event_type}) scheduling error",
             )
             if fut is not None and ctx._cleanup_progress:

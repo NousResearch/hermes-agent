@@ -1,0 +1,85 @@
+{
+  "skill": "social-strategy",
+  "version": "1.0.0",
+  "description": "Scenario tests for social-strategy. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-strategy",
+      "input": "Help me build a social media strategy.",
+      "expect": [
+        "reads brand-profile, audience.md, and content-pillars first (or runs them where missing)",
+        "sets one primary objective tied to the business, with a meaningful metric",
+        "selects 1-3 channels using the fit framework and names what it drops",
+        "defines a strategic wedge from the brand's POV",
+        "sets a sustainable, phased operating model",
+        "writes a social-strategy.md"
+      ]
+    },
+    {
+      "name": "focus-not-everywhere",
+      "input": "I want to be active on every platform — Instagram, TikTok, LinkedIn, X, YouTube, Pinterest, Facebook.",
+      "expect": [
+        "pushes back on spreading thin",
+        "selects the few channels where the audience is and the brand can win",
+        "explicitly names which platforms to drop or run as maintenance",
+        "recommends starting focused (often one primary channel)"
+      ]
+    },
+    {
+      "name": "channel-fit-framework",
+      "input": "Should I be on TikTok?",
+      "expect": [
+        "answers using audience presence, format fit, goal fit, and capacity — not gut feel",
+        "considers whether the brand can sustain video content",
+        "gives a clear recommendation with the reasoning"
+      ]
+    },
+    {
+      "name": "business-goal-not-vanity",
+      "input": "My goal is to get to 100k followers.",
+      "expect": [
+        "reframes toward a business-tied objective and a meaningful metric",
+        "explains why follower count alone is often a vanity metric",
+        "ties the strategy to what the business actually needs (leads, sales, authority, awareness)"
+      ]
+    },
+    {
+      "name": "honest-measurement",
+      "input": "Set up the strategy and tell me how we'll track performance.",
+      "expect": [
+        "sets meaningful metrics and a review cadence",
+        "is honest that WoopSocial has no analytics — measurement is the platforms' native analytics, read manually",
+        "does NOT promise dashboards or automated reporting the product can't deliver",
+        "routes detailed target-setting (SMART targets, North Stars, thresholds) to goals-and-kpis"
+      ]
+    },
+    {
+      "name": "strategic-wedge-required",
+      "input": "What's our angle to stand out?",
+      "expect": [
+        "defines a differentiated wedge from the brand's POV/positioning",
+        "does NOT settle for 'post good/consistent content' as the strategy",
+        "if positioning is too weak to yield a wedge, says so and points back to brand-profile"
+      ]
+    },
+    {
+      "name": "realistic-phasing",
+      "input": "We're a 2-person team launching on social next month.",
+      "expect": [
+        "recommends starting focused (one primary channel) rather than launching everywhere",
+        "matches cadence to the team's real capacity",
+        "uses repurposing to extend reach without doubling the workload",
+        "lays out a phased expansion"
+      ]
+    },
+    {
+      "name": "subtraction-strategy",
+      "input": "We're posting on 6 platforms and nothing is really working.",
+      "expect": [
+        "recommends consolidating to the 1-2 channels that fit best",
+        "treats dropping/demoting channels as a valid strategic move",
+        "redirects freed-up effort to winning where it counts"
+      ]
+    }
+  ]
+}

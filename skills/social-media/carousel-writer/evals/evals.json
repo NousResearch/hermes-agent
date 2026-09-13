@@ -1,0 +1,87 @@
+{
+  "skill": "carousel-writer",
+  "version": "1.0.0",
+  "description": "Scenario tests for carousel-writer. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-carousel",
+      "input": "Write an Instagram carousel teaching 5 lessons from deleting a feature nobody used.",
+      "expect": [
+        "reads brand-profile and voice first",
+        "cover slide hooks AND promises the swipe, legible at a glance",
+        "one idea per slide with minimal legible text (not paragraphs)",
+        "each slide maintains swipe momentum toward a payoff",
+        "ends on a payoff + one save-leaning CTA",
+        "provides a consistent design direction and an image prompt pack (or template spec)",
+        "hands the caption to caption-writer and scheduling to scheduling-and-queue"
+      ]
+    },
+    {
+      "name": "cover-hooks-and-promises",
+      "input": "Give me the cover slide for a carousel about hook writing.",
+      "expect": [
+        "the cover uses a real hook mechanism (via hook-writer)",
+        "it promises what the swipe delivers and includes a swipe cue",
+        "it's specified to be legible at thumbnail size with minimal words",
+        "no slow-build or tiny-text cover"
+      ]
+    },
+    {
+      "name": "one-idea-per-slide-not-textdump",
+      "input": "Turn these 6 paragraphs into a carousel.",
+      "expect": [
+        "atomizes into one idea per slide (headline + at most one supporting line)",
+        "does NOT paste paragraphs onto slides",
+        "splits any slide that needs more than a headline + line into two"
+      ]
+    },
+    {
+      "name": "dont-pad-pushback",
+      "input": "Make it exactly 10 slides.",
+      "context": "The idea only supports about 5 strong slides.",
+      "expect": [
+        "resists padding to hit the number",
+        "explains that a tight carousel beats a bloated one",
+        "delivers the strongest N slides rather than filler to reach 10"
+      ]
+    },
+    {
+      "name": "image-pack-and-disclosure",
+      "input": "Also generate the slide visuals.",
+      "expect": [
+        "provides ready-to-paste image prompts (Ideogram/Nano Banana) with the exact slide text",
+        "specifies a consistent style/template across slides",
+        "notes AI-disclosure for generated images and offers a Canva/template fallback for exact text",
+        "does not put fabricated stats on slides"
+      ]
+    },
+    {
+      "name": "platform-adaptation",
+      "input": "Make this a LinkedIn document carousel instead of Instagram.",
+      "expect": [
+        "adapts to LinkedIn PDF document specs (high dwell/saves, professional template)",
+        "hands the post copy to linkedin-post-writer and routes any link to comments",
+        "does not just relabel the Instagram version"
+      ]
+    },
+    {
+      "name": "reads-voice",
+      "input": "Write a carousel about our pricing change.",
+      "context": "voice.md bans exclamation marks and hype words.",
+      "expect": [
+        "every slide is on-voice with no exclamation marks or banned words",
+        "the cover doesn't open with 'We're excited to announce'",
+        "text stays concise and legible"
+      ]
+    },
+    {
+      "name": "better-as-something-else",
+      "input": "Make a 10-slide carousel out of this one-line tip.",
+      "expect": [
+        "recognizes a single point doesn't need a carousel",
+        "recommends a single image or a different format instead",
+        "does not manufacture filler slides to force a carousel"
+      ]
+    }
+  ]
+}

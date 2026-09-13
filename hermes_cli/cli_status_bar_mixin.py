@@ -97,39 +97,6 @@ class CLIStatusBarMixin:
         except Exception:
             return ""
 
-    def _handle_vim_command(self, cmd_original: str) -> None:
-        """``/vim`` toggles vi keybindings in the composer, ``/vim on|off`` sets, ``/vim status``
-        reports. Persisted to ``display.vim_mode``; applied to the live prompt_toolkit
-        Application immediately, no restart needed."""
-        from cli import save_config_value
-        from prompt_toolkit.enums import EditingMode
-        parts = (cmd_original or "").split()
-        arg = parts[1].strip().lower() if len(parts) > 1 else ""
-
-        if arg in ("status", "show"):
-            self._console_print(f"  Vim mode {'on' if self._vim_mode else 'off'}")
-            return
-
-        if arg in ("on", "true", "yes"):
-            target = True
-        elif arg in ("off", "false", "no"):
-            target = False
-        elif arg in ("", "toggle"):
-            target = not self._vim_mode
-        else:
-            self._console_print("  Usage: /vim [on|off|status]")
-            return
-
-        self._vim_mode = target
-        save_config_value("display.vim_mode", target)
-        app = getattr(self, "_app", None)
-        if app is not None:
-            app.editing_mode = EditingMode.VI if target else EditingMode.EMACS
-        if target:
-            self._console_print("  Vim mode on — Esc for NORMAL, i to insert")
-        else:
-            self._console_print("  Vim mode off — standard keybindings")
-
     def _handle_battery_command(self, cmd_original: str) -> None:
         """``/battery`` toggles, ``/battery on|off`` sets, ``/battery status`` reports the
         setting plus a live reading. Persisted to ``display.battery``."""

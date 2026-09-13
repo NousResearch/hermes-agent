@@ -1,8 +1,7 @@
-"""Tests for the /vim CLI command and display.vim_mode config handling."""
+"""display.vim_mode: config-only vi keybindings for the CLI composer."""
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from prompt_toolkit.enums import EditingMode
 
@@ -11,48 +10,6 @@ def _import_cli():
     import cli as cli_mod
 
     return cli_mod
-
-
-class TestHandleVimCommand(unittest.TestCase):
-    """/vim toggles vi editing mode, persists it, and applies it live."""
-
-    def _make_cli(self, vim_mode=False, app=None):
-        return SimpleNamespace(
-            _vim_mode=vim_mode,
-            _app=app,
-            _console_print=lambda *a, **k: None,
-        )
-
-    def test_toggle_persists_and_applies_to_running_app(self):
-        cli_mod = _import_cli()
-        app = SimpleNamespace(editing_mode=EditingMode.EMACS)
-        stub = self._make_cli(vim_mode=False, app=app)
-
-        with patch.object(cli_mod, "save_config_value") as mock_save:
-            cli_mod.HermesCLI._handle_vim_command(stub, "/vim")
-        self.assertTrue(stub._vim_mode)
-        self.assertEqual(app.editing_mode, EditingMode.VI)
-        mock_save.assert_called_once_with("display.vim_mode", True)
-
-        with patch.object(cli_mod, "save_config_value") as mock_save:
-            cli_mod.HermesCLI._handle_vim_command(stub, "/vim off")
-        self.assertFalse(stub._vim_mode)
-        self.assertEqual(app.editing_mode, EditingMode.EMACS)
-        mock_save.assert_called_once_with("display.vim_mode", False)
-
-    def test_status_and_invalid_args_change_nothing(self):
-        cli_mod = _import_cli()
-        printed = []
-        stub = self._make_cli(vim_mode=True)
-        stub._console_print = lambda msg: printed.append(str(msg))
-
-        with patch.object(cli_mod, "save_config_value") as mock_save:
-            cli_mod.HermesCLI._handle_vim_command(stub, "/vim status")
-            cli_mod.HermesCLI._handle_vim_command(stub, "/vim sideways")
-
-        mock_save.assert_not_called()
-        self.assertTrue(stub._vim_mode)
-        self.assertIn("Usage", " ".join(printed))
 
 
 class TestVimModeLabel(unittest.TestCase):
@@ -74,6 +31,15 @@ class TestVimModeLabel(unittest.TestCase):
         self.assertEqual(cli_mod.HermesCLI._vim_mode_label(stub), "NORMAL")
         app.vi_state.input_mode = InputMode.REPLACE
         self.assertEqual(cli_mod.HermesCLI._vim_mode_label(stub), "REPLACE")
+
+
+class TestNoSlashCommand(unittest.TestCase):
+    """vim_mode is a config key only: no /vim command is registered."""
+
+    def test_vim_not_in_command_registry(self):
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        self.assertNotIn("vim", {c.name for c in COMMAND_REGISTRY})
 
 
 if __name__ == "__main__":

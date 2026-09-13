@@ -2947,8 +2947,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
-        # Vi/vim editing mode for the input composer (toggled via /vim, persisted to
-        # display.vim_mode). Off by default: prompt_toolkit's standard emacs bindings.
+        # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
+        # Off by default: prompt_toolkit's standard emacs bindings.
         self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
         # Hide rules + status bar until the next input after a resize, so SIGWINCH cannot
         # stamp a fresh status bar over one the terminal just reflowed into scrollback.
@@ -3763,7 +3763,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if _STEADY_CURSOR is not None:
             extra_kw["cursor"] = _STEADY_CURSOR
         if EditingMode is not None:
-            # Vi editing mode when display.vim_mode is on (toggled at runtime by /vim).
+            # Vi editing mode when display.vim_mode is on.
             # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
             extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
         return Application(

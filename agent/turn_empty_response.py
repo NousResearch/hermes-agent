@@ -59,6 +59,11 @@ def _retry_empty(
         _empty_guard.empty_retry_budget(agent, response)
         if empty_candidate else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
     )
+    # Proven output-cap starvation: ONE retry, never the default budget. The cap is
+    # a server-side property — retries 2+ would truncate identically and re-bill.
+    _starved_budget = _empty_guard.starvation_retry_budget(agent, finish_reason)
+    if _starved_budget != _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET:
+        budget = min(budget, _starved_budget)
     deterministic = empty_candidate and _empty_guard.deterministic_empty(agent)
     if not (empty_candidate and agent._empty_content_retries < budget and not deterministic):
         return None, None, deterministic
@@ -176,6 +181,28 @@ def recover_empty_response(
         agent._response_was_previewed = False
         return _verdict("break")
 
+    # Server-side output-cap starvation: the endpoint truncated the response before
+    # any usable output (reasoning consumed the cap). Nudging/prefilling would
+    # mutate the prompt (breaking the cached prefix) and re-bill the full input for
+    # a guaranteed-identical truncation — skip the nudge/prefill rounds below and
+    # run the budgeted retry path directly. The flag is ASSIGNED (not one-way set)
+    # so every ladder entry reflects the CURRENT response and a stale True can
+    # never suppress a later benign streak's nudge.
+    _starved_now = _empty_guard.is_output_starvation(
+        agent,
+        finish_reason=finish_reason,
+        response=response,
+        has_visible_content=bool(agent._strip_think_blocks(final_response or "").strip()),
+        has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
+    )
+    agent._output_starvation_detected = _starved_now
+    if _starved_now:
+        logger.warning(
+            "Output-cap starvation detected (finish_reason=%s, no content/tool calls) — "
+            "skipping nudge/prefill, budgeted retry only (model=%s provider=%s)",
+            finish_reason, agent.model, agent.provider,
+        )
+
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
     # With substantive tools it was mid-task narration and the empty reply is a choke;
     # let the post-tool nudge handle it.
@@ -187,18 +214,22 @@ def recover_empty_response(
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
         agent._empty_content_retries = 0
+        agent._output_starvation_detected = False
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
         agent._response_was_previewed = True
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
+    # Proven output-cap starvation NEVER nudges: the synthetic rows would mutate the
+    # prompt (breaking the cached prefix) and the retry truncates identically anyway.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
-    # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
+    # Ollama puts inline <think> tags in content, not reasoning_content, so _has_structured misses
     # it; detect here to route to prefill.
     _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))
     if (
         _prior_was_tool
+        and not getattr(agent, "_output_starvation_detected", False)
         and not getattr(agent, "_post_tool_empty_retried", False)
         and not _has_inline_thinking  # thinking model still working — let prefill handle
     ):
@@ -245,6 +276,27 @@ def recover_empty_response(
     # prefill exhaustion.
     _truly_empty = not agent._strip_think_blocks(final_response).strip()
     _empty_candidate = _truly_empty and (not _has_structured or agent._thinking_prefill_retries >= 2)
+    # Proven output-cap starvation collapses the retry budget to one; the streak
+    # also skips further nudge/prefill rounds (each re-bills full input and the
+    # truncation is deterministic while the cap is in effect).
+    if getattr(agent, "_output_starvation_detected", False) and _empty_guard.is_output_starvation(
+        agent, finish_reason=finish_reason, response=response,
+        has_visible_content=bool(agent._strip_think_blocks(final_response or "").strip()),
+        has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
+    ):
+        _empty_candidate = _truly_empty or _has_structured
+        if _has_structured:
+            # Suppress prefill continuation for starved streaks: the reasoning IS
+            # the truncated output, not a missing-answer state.
+            agent._thinking_prefill_retries = 2
+        # Surface the escape hatch only when actually entering the starved retry
+        # path (detection alone doesn't warn — prior-turn reuse may resolve the
+        # turn without any truncation-facing UX).
+        _provider_key = (getattr(agent, "provider", "") or "custom").split(":")[-1]
+        agent._buffer_status(
+            f"⚠️ Endpoint truncated the response at its output cap — set "
+            f"providers.{_provider_key}.extra_body.max_tokens to raise the cap"
+        )
     action, interrupt_result, _deterministic_empty = _retry_empty(
         agent, response, finish_reason, _empty_candidate, messages=messages,
         conversation_history=conversation_history, api_call_count=api_call_count,
@@ -274,6 +326,7 @@ def recover_empty_response(
         if agent._try_activate_fallback():
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0
+            agent._output_starvation_detected = False
             agent._buffer_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
             logger.info(
                 "Fallback activated after empty responses: now using %s on %s",

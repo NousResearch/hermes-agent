@@ -1669,8 +1669,16 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         mark_named_profile_deleted(old_dir)
         _notify_multiplexer(old_canon)
 
-    # 2. Rename directory
-    old_dir.rename(new_dir)
+    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing
+    # writer), undo the unroute above so we never strand the profile as tombstoned-but-present:
+    # restore its directory to the served set and clear the marker before re-raising.
+    try:
+        old_dir.rename(new_dir)
+    except Exception:
+        if served_by_mux:
+            clear_named_profile_deleted(old_dir)
+            _notify_multiplexer(old_canon)
+        raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
     # The tombstone lived at profiles/.deleted/<old_name>; old_dir is gone now so it can no
     # longer resurrect, and new_dir carries no tombstone. Clear the stale marker so a future

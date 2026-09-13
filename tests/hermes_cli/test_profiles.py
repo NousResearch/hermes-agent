@@ -824,6 +824,29 @@ class TestRenameProfile:
         assert not profiles.named_profile_is_deleted(old_dir)
         assert new_dir.is_dir()
 
+    def test_multiplexed_rename_failure_rolls_back_unroute(self, profile_env):
+        """If the directory move fails, the pre-move unroute is undone: the old name is
+        re-served (tombstone cleared, multiplexer re-notified) instead of left stranded as
+        tombstoned-but-present (which would make the profile vanish, worse than a ghost)."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+
+        signals = []
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=signals.append), \
+             patch("hermes_cli.profiles.Path.rename", side_effect=OSError("EXDEV")):
+            with pytest.raises(OSError, match="EXDEV"):
+                rename_profile("oldname", "newname")
+
+        # Old dir still there, tombstone cleared, and the last signal re-served the old name.
+        assert old_dir.is_dir()
+        assert not profiles.named_profile_is_deleted(old_dir)
+        assert signals[0] == "oldname"   # unroute on the way in
+        assert signals[-1] == "oldname"  # rollback re-serves it, never "newname"
+        assert "newname" not in signals
+
 
 # ===================================================================
 # TestExportImport

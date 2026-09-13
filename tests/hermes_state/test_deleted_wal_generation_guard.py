@@ -465,17 +465,21 @@ def test_refuse_helper_raises_while_deleted_wal_held(tmp_path, force_wal):
 
 @pytest.mark.macos_only
 def test_iter_finds_self_after_wal_unlink_on_darwin(tmp_path, force_wal):
+    """The retired generation is reported by identity, not pathname: after the unlink a
+    REPLACEMENT file owns the same path, yet the orphan inode we hold is still the holder --
+    libproc reports the vnode's last pathname with no `` (deleted)`` marker, so only
+    ``(st_dev, st_ino)`` can tell the two apart."""
     path = tmp_path / "state.db"
     db = make_db(path, "s", "held")
     wal = require_wal(db)
     inode_before = wal.stat().st_ino
     lose_sidecars(path, rename=False)
-    holders = iter_deleted_sqlite_sidecar_holders(path)
+    wal.write_bytes(b"replacement generation")
     try:
-        assert holders, "expected this process to still hold the deleted WAL inode"
-        assert any(pid == os.getpid() for pid, _target in holders)
-        assert any(target.endswith(("-wal", "-shm")) for _pid, target in holders)
-        assert not wal.exists() or wal.stat().st_ino != inode_before
+        assert wal.stat().st_ino != inode_before
+        holders = iter_deleted_sqlite_sidecar_holders(path)
+        assert any(pid == os.getpid() for pid, _target in holders), holders
+        assert any(target == os.path.realpath(str(wal)) for _pid, target in holders), holders
     finally:
         db.close()
 
@@ -490,24 +494,3 @@ def test_iter_finds_no_holder_while_sidecars_stay_linked_on_darwin(tmp_path, for
         assert iter_deleted_sqlite_sidecar_holders(path) == []
     finally:
         db.close()
-
-
-@pytest.mark.macos_only
-def test_iter_darwin_judges_by_identity_not_by_pathname(tmp_path):
-    """A retired generation stays a holder after the path names a DIFFERENT inode: libproc reports
-    the vnode's last pathname with no `` (deleted)`` marker, so only ``(st_dev, st_ino)`` can tell
-    the orphan apart from the replacement that now owns the path."""
-    path = tmp_path / "state.db"
-    sidecar = Path(str(path) + "-wal")
-    sidecar.write_bytes(b"retired generation")
-    held = sidecar.open("rb")
-    try:
-        retired_ino = os.fstat(held.fileno()).st_ino
-        sidecar.unlink()
-        sidecar.write_bytes(b"replacement generation")
-        assert sidecar.stat().st_ino != retired_ino
-        holders = iter_deleted_sqlite_sidecar_holders(path)
-        assert any(pid == os.getpid() for pid, _target in holders)
-        assert any(target == os.path.realpath(str(sidecar)) for _pid, target in holders)
-    finally:
-        held.close()

@@ -517,9 +517,32 @@ class _KanbanNotification:
         # ever degrades to a fresh session, never an exception.
         _delivery_meta = sub.get("delivery_metadata") or {}
         _chat_type = str(sub.get("chat_type") or _delivery_meta.get("chat_type") or "").strip()
+        _thread_id = sub.get("thread_id") or None
+        # KNOWN LIMITATION (preserved): chat_type is not persisted reliably on
+        # every subscription row (legacy/#60600 rows fall back to
+        # delivery_metadata then "group"), so a DM whose thread_id we recover
+        # here is still gated on the actual platform below.
+        if not _thread_id and str(getattr(self.plat, "value", self.plat)).lower() == "telegram" and _chat_type == "dm":
+            # Defense-in-depth: a Telegram DM subscription whose row has no
+            # thread_id (synthetic / recovered creator) must not wake the
+            # agent into the General topic. Recover the task's session topic
+            # binding and stamp it so the synthetic wake routes to the
+            # correct lane.
+            try:
+                from gateway.session import recover_telegram_dm_thread_id
+                _session_db = getattr(self.runner, "_session_db", None)
+                if _session_db is not None:
+                    _recovered_tid = recover_telegram_dm_thread_id(
+                        _session_db,
+                        session_id=self.session_key,
+                    )
+                    if _recovered_tid:
+                        _thread_id = _recovered_tid
+            except Exception:
+                _thread_id = None
         _source = SessionSource(
             platform=self.plat, chat_id=sub["chat_id"], chat_type=_chat_type or "group",
-            thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),
+            thread_id=_thread_id, user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),
             profile=self.sub_profile or None, scope_id=_wake_scope_id(self.adapter, sub),
             parent_chat_id=_delivery_meta.get("parent_chat_id"),
         )

@@ -90,7 +90,21 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     return {"success": True, "result": result.get("data", {}).get("result")}
 
 
-def _ensure_supervisor(task_id: str):
+def _existing_owned_session(task_id: str):
+    """Return the task's existing browser binding without creating or replacing it."""
+    from tools import browser_tool
+
+    session_key = browser_tool._last_session_key(task_id)
+    with browser_tool._cleanup_lock:
+        session_info = browser_tool._active_sessions.get(session_key)
+        if session_info is None or not browser_tool._session_info_owned_by_task(
+            session_info, task_id, session_key
+        ):
+            return None
+        return session_key, session_info
+
+
+def _ensure_supervisor(task_id: str, *, existing_session=None, session_key: Optional[str] = None):
     """The supervisor for ``task_id``, attaching one on demand for a LOCAL built-in browser session.
 
     Cloud/CDP-override sessions and browser_exec attach their supervisor when the session is created;
@@ -106,7 +120,13 @@ def _ensure_supervisor(task_id: str):
     from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
     from tools.browser_tool_session import _run_browser_command
 
-    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
+    effective_session_key = session_key or _last_session_key(task_id)
+    res = _run_browser_command(
+        effective_session_key,
+        "get",
+        ["cdp-url"],
+        **({"_existing_session": existing_session} if existing_session is not None else {}),
+    )
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp_url:
         return None
@@ -119,7 +139,7 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str, *, supervisor=None) -> Dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -128,11 +148,12 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
     When no supervisor session is available the caller gets a typed refusal
     (``error_type='supervisor_required'``) and nothing is written.
     """
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception as exc:
-        logger.debug("vault fill: supervisor unavailable (%s)", exc)
-        supervisor = None
+    if supervisor is None:
+        try:
+            supervisor = _ensure_supervisor(task_id)
+        except Exception as exc:
+            logger.debug("vault fill: supervisor unavailable (%s)", exc)
+            supervisor = None
 
     if supervisor is None:
         return {
@@ -412,15 +433,24 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
     # an independent external-browser task that cannot securely redeem secrets.
     supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
     if supervisor is None:
-        return json.dumps({
-            "success": False,
-            "error_type": "secure_fill_unsupported",
-            "error": (
-                "The active browser control path does not expose Hermes secure fill. Hermes will not switch "
-                "to a different browser or pass a password through chat, shell arguments, or an MCP tool. "
-                "Ego/Aside sessions require a trusted adapter with supervised target-bound secret fill."
-            ),
-        })
+        existing = _existing_owned_session(effective_task_id)
+        if existing is not None:
+            session_key, session_info = existing
+            supervisor = _ensure_supervisor(
+                effective_task_id,
+                existing_session=session_info,
+                session_key=session_key,
+            )
+        if supervisor is None:
+            return json.dumps({
+                "success": False,
+                "error_type": "secure_fill_unsupported",
+                "error": (
+                    "The active browser control path does not expose Hermes secure fill. Hermes will not switch "
+                    "to a different browser or pass a password through chat, shell arguments, or an MCP tool. "
+                    "Ego/Aside sessions require a trusted adapter with supervised target-bound secret fill."
+                ),
+            })
 
     if not _focus_bound_origin(effective_task_id, "", "export_password", supervisor=supervisor):
         return json.dumps({
@@ -462,7 +492,9 @@ def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
     fills = select_export_password_fills(controls, password)
     try:
         result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce)
+            effective_task_id,
+            build_fill_js(fills, expected_origin=origin, nonce=nonce),
+            supervisor=supervisor,
         )
     finally:
         del password

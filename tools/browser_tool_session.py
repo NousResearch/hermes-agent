@@ -556,6 +556,7 @@ def _run_browser_command(
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _existing_session: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
     ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
@@ -569,11 +570,20 @@ def _run_browser_command(
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
-    try:
-        session_info = _get_session_info(task_id)
-    except Exception as e:
-        _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
-        return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    if _existing_session is not None:
+        # Secret-capability discovery may inspect an already-bound local daemon,
+        # but must never create or switch to a browser when that binding vanished.
+        with _bt._cleanup_lock:
+            session_info = _bt._active_sessions.get(task_id)
+            if session_info is not _existing_session:
+                return {"success": False, "error": "Existing browser session is no longer bound"}
+        _lifecycle._update_session_activity(task_id)
+    else:
+        try:
+            session_info = _get_session_info(task_id)
+        except Exception as e:
+            _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
+            return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)

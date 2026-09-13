@@ -273,6 +273,8 @@ class TestClassifier:
         assert "el.form !== form" in js
         assert "el.disabled || el.readOnly" in js
         assert "getClientRects().length === 0" in js
+        assert "Array.from(form.elements)" in js
+        assert "el instanceof HTMLInputElement" in js
         assert "eligible.length === 2" in js
         assert js.index("exportPairValid") < js.index("setter.set.call")
         assert js.index("exportTargets.forEach(({ f, el })") < js.index("dispatchEvent")
@@ -331,8 +333,8 @@ class TestBrowserVaultTools:
                  patch.object(browser_vault_tool, "_current_page_origin", return_value="https://seller.test"), \
                  patch.object(browser_vault_tool, "_eval_js", return_value={"success": True, "result": json.dumps(controls)}), \
                  patch.object(browser_vault_tool, "_eval_js_secret",
-                              side_effect=lambda task, expr: secret_expressions.append(expr) or
-                              {"success": True, "result": json.dumps({"filled": 2})}), \
+                              side_effect=lambda task, expr, **kwargs: secret_expressions.append(expr) or
+                               {"success": True, "result": json.dumps({"filled": 2})}), \
                  patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
                 registry.get.return_value = object()
                 raw = browser_vault_tool.browser_vault_fill_export_password(task_id="task-bound")
@@ -350,6 +352,7 @@ class TestBrowserVaultTools:
 
         with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
              patch("tools.browser_tool_session._run_browser_command") as run_command, \
+             patch.object(browser_vault_tool, "_existing_owned_session", return_value=None), \
              patch.object(browser_vault_tool, "_focus_bound_origin") as focus:
             registry.get.return_value = None
             out = json.loads(browser_vault_tool.browser_vault_fill_export_password(task_id="external-task"))
@@ -357,6 +360,25 @@ class TestBrowserVaultTools:
         assert out["error_type"] == "secure_fill_unsupported"
         run_command.assert_not_called()
         focus.assert_not_called()
+
+    def test_export_password_attaches_to_existing_owned_local_session(self):
+        from tools import browser_vault_tool
+
+        local_session = {"session_name": "h_existing", "features": {"local": True}}
+        supervisor = object()
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as registry, \
+             patch.object(browser_vault_tool, "_existing_owned_session",
+                          return_value=("task-bound", local_session)), \
+             patch.object(browser_vault_tool, "_ensure_supervisor", return_value=supervisor) as ensure, \
+             patch.object(browser_vault_tool, "_focus_bound_origin", return_value=None) as focus:
+            registry.get.return_value = None
+            out = json.loads(browser_vault_tool.browser_vault_fill_export_password(task_id="task-bound"))
+
+        assert out["error_type"] == "no_export_password_fields"
+        ensure.assert_called_once_with(
+            "task-bound", existing_session=local_session, session_key="task-bound"
+        )
+        focus.assert_called_once_with("task-bound", "", "export_password", supervisor=supervisor)
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool

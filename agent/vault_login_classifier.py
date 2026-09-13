@@ -359,7 +359,8 @@ _FILL_JS_TEMPLATE = """(() => {
       const style = getComputedStyle(el);
       return style.display === "none" || style.visibility === "hidden" || el.getClientRects().length === 0;
     })) return false;
-    const eligible = Array.from(form.querySelectorAll('input[type="password"]')).filter((el) => {
+    const eligible = Array.from(form.elements).filter((el) => {
+      if (!(el instanceof HTMLInputElement) || el.type !== "password") return false;
       const style = getComputedStyle(el);
       return !el.disabled && !el.readOnly && style.display !== "none" && style.visibility !== "hidden" && el.getClientRects().length;
     });

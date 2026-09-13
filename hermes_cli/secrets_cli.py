@@ -24,15 +24,13 @@ from rich.table import Table
 _BWS_VERSION = "2.0.0"
 
 from hermes_cli._secrets_common import (
-    arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
+    arg, cfg_str, disable_secret_source, flag, print_status_panel, print_table,
     prompt_index, register_subcommands, require_enabled, rotate_token, secret_cli_env, section_cfg,
     yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
 from hermes_cli.secret_prompt import masked_secret_prompt
 
-# Old names kept bound: tests monkeypatch ``secrets_cli._bws_version``.
-_bws_version = cli_version
 _yn = yn
 
 _DEFAULT_TOKEN_ENV = "BWS_ACCESS_TOKEN"
@@ -50,6 +48,28 @@ def _load_bw():
     """Import ``agent.secret_sources.bitwarden`` on first use (crypto payload)."""
     from agent.secret_sources import bitwarden as _bw
     return _bw
+
+
+def _bws_version(binary: Path) -> str:
+    bw = _load_bw()
+    verified = bw.verify_bws_for_use(binary)
+    if verified is None:
+        return "version unknown"
+    try:
+        res = subprocess.run(
+            [str(verified), "--version"],
+            env=bw._probe_environment(verified),
+            capture_output=True,
+            text=True, encoding='utf-8', errors='replace',
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        if res.returncode == 0:
+            return (res.stdout or res.stderr).strip().splitlines()[0]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "version unknown"
+
 
 
 def __getattr__(name: str):
@@ -447,13 +467,18 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
+    bw = _load_bw()
+    verified = bw.verify_bws_for_use(binary)
+    if verified is None:
+        console.print("  [red]Refusing unverified bws binary.[/red]")
+        return None
     env = secret_cli_env()
     env["BWS_ACCESS_TOKEN"] = token
     if server_url:
         env["BWS_SERVER_URL"] = server_url
     try:
         res = subprocess.run(
-            [str(binary), "project", "list", "--output", "json"],
+            [str(verified), "project", "list", "--output", "json"],
             env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
     except (OSError, subprocess.TimeoutExpired) as exc:
         console.print(f"  [red]Couldn't list projects: {exc}[/red]")

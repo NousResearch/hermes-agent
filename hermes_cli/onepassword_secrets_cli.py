@@ -20,7 +20,6 @@ from agent.secret_sources import onepassword as op_src
 from hermes_cli._secrets_common import (
     arg,
     cfg_str,
-    cli_version,
     disable_secret_source,
     flag,
     print_status_panel,
@@ -37,8 +36,6 @@ from hermes_cli.config import get_env_path, load_config, save_config, save_env_v
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 _DOCS_URL = "https://developer.1password.com/docs/cli/get-started/"
 
-# Old name kept bound: tests call ``onepassword_secrets_cli._op_version`` directly.
-_op_version = cli_version
 
 
 def _op_cfg() -> dict:
@@ -110,7 +107,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         )
         console.print(f"  Install the 1Password CLI: {_DOCS_URL}")
         return 1
-    console.print(f"  [green]✓[/green] {binary}  ({_op_version(binary)})")
+    console.print(f"  [green]✓[/green] {binary}  ({_op_version(binary, explicit_binary=bool(binary_path))})")
     if binary_path:
         op_cfg["binary_path"] = binary_path
 
@@ -131,7 +128,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     elif os.environ.get(token_env):
         console.print(f"  [green]✓[/green] using service-account token from {token_env}")
     else:
-        who = _op_whoami(binary, op_cfg.get("account", ""))
+        who = _op_whoami(binary, op_cfg.get("account", ""), explicit_binary=bool(binary_path))
         if who:
             console.print(f"  [green]✓[/green] using existing op session ({who})")
         else:
@@ -179,7 +176,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         ("Token in env", yn(token_set)),
         ("Override existing", yn(bool(op_cfg.get("override_existing", True)))),
         ("Cache TTL (s)", str(op_cfg.get("cache_ttl_seconds", 300))),
-        ("op binary", f"{binary} ({_op_version(binary)})" if binary else "[yellow]not found[/yellow]"),
+        ("op binary", f"{binary} ({_op_version(binary, explicit_binary=bool(binary_path))})" if binary else "[yellow]not found[/yellow]"),
         ("References", str(len(references))),
     ))
 
@@ -191,7 +188,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         console.print("\n  Run [cyan]hermes secrets onepassword setup[/cyan] to enable.")
         return 0
     if binary and not token_set:
-        who = _op_whoami(binary, account)
+        who = _op_whoami(binary, account, explicit_binary=bool(binary_path))
         if who:
             console.print(f"\n  [green]Active op session:[/green] {who}")
         else:
@@ -263,7 +260,7 @@ def cmd_token(args: argparse.Namespace) -> int:
             )
             return False
         console.print("Verifying with `op whoami`…")
-        who = _op_whoami(binary, account, token_value=token)
+        who = _op_whoami(binary, account, token_value=token, explicit_binary=bool(binary_path))
         if who is None:
             console.print("[red]✗ New token was rejected by op — nothing was changed.[/red]")
             return False
@@ -374,10 +371,34 @@ def cmd_disable(args: argparse.Namespace) -> int:
     )
 
 
-def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional[str]:
+def _op_version(binary: Path, *, explicit_binary: bool = True) -> str:
+    from agent.secret_sources._binary_security import probe_environment
+
+    verified = op_src.verify_op_for_use(binary, explicit_binary=explicit_binary)
+    if verified is None:
+        return "version unknown"
+    try:
+        res = subprocess.run(
+            [str(verified), "--version"], env=probe_environment(verified),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5, stdin=subprocess.DEVNULL,
+        )
+        lines = (res.stdout or res.stderr or "").strip().splitlines()
+        if res.returncode == 0 and lines:
+            return lines[0]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "version unknown"
+
+
+def _op_whoami(binary: Path, account: str, *, token_value: str = "",
+               explicit_binary: bool = True) -> Optional[str]:
     """Short identity string if op is authenticated, else None. ``token_value`` probes a candidate
     token via the child's ``OP_SERVICE_ACCOUNT_TOKEN`` without touching the caller's environment."""
-    cmd = [str(binary), "whoami"]
+    verified = op_src.verify_op_for_use(binary, explicit_binary=explicit_binary)
+    if verified is None:
+        return None
+    cmd = [str(verified), "whoami"]
     if account:
         cmd += ["--account", account]
     env = secret_cli_env()

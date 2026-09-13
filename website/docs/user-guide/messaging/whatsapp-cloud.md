@@ -267,7 +267,7 @@ All interactive prompts gracefully degrade to plain text if the buttons fail to 
 
 Hermes acknowledges inbound messages immediately:
 
-- Your message shows **blue double-checkmarks** as soon as the gateway receives it.
+- Your message shows **blue double-checkmarks** when the gateway marks your message as read.
 - The bot's name in your WhatsApp chat shows **"typing…"** while the agent is preparing a reply.
 - The typing indicator auto-dismisses when the bot's first response message arrives.
 

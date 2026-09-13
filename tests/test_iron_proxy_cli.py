@@ -200,6 +200,83 @@ def test_cmd_restart_propagates_start_failure(hermes_home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_setup_discovers_validated_custom_secret_from_hermes_env(hermes_home, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["proxy"]["extra_secrets"] = [{
+        "env_var": "EBIRD_API_KEY",
+        "hosts": ["API.EBIRD.ORG", "api.ebird.org"],
+        "match_headers": ["x-ebirdapitoken"],
+    }]
+    save_config(cfg)
+    (hermes_home / ".env").write_text("EBIRD_API_KEY=real-ebird-secret\n", encoding="utf-8")
+    monkeypatch.delenv("EBIRD_API_KEY", raising=False)
+    monkeypatch.setattr(ip, "load_mappings", lambda: [])
+
+    mappings = proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args())
+
+    assert len(mappings) == 1
+    assert mappings[0].real_env_name == "EBIRD_API_KEY"
+    assert mappings[0].upstream_hosts == ("api.ebird.org",)
+    assert mappings[0].match_headers == ("x-ebirdapitoken",)
+    assert os.environ["EBIRD_API_KEY"] == "real-ebird-secret"
+
+
+def test_setup_rejects_non_string_custom_mapping_keys(monkeypatch):
+    monkeypatch.setattr(proxy_cli, "load_config", lambda: {
+        "proxy": {"extra_secrets": [{
+            "env_var": "SERVICE_SECRET",
+            "hosts": ["api.example.com"],
+            1: "unsupported",
+        }]},
+    })
+
+    assert proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args()) is None
+
+
+def test_load_env_file_backfills_header_auth_alias(hermes_home, monkeypatch):
+    (hermes_home / ".env").write_text("GOOGLE_API_KEY=google-secret\n", encoding="utf-8")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    assert proxy_cli._load_env_file_into_environ() == 1
+    mappings = ip.discover_provider_mappings()
+    assert [mapping.real_env_name for mapping in mappings] == ["GEMINI_API_KEY"]
+
+
+def test_flagless_setup_reuses_persisted_bitwarden_source_and_custom_token(
+    hermes_home, monkeypatch,
+):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["proxy"]["credential_source"] = "bitwarden"
+    cfg["proxy"]["extra_secrets"] = [{
+        "env_var": "SERVICE_SECRET",
+        "hosts": ["api.example.com"],
+        "match_headers": ["x-service-secret"],
+    }]
+    save_config(cfg)
+    existing = ip.TokenMapping(
+        "service-existing-token", "SERVICE_SECRET", ("api.example.com",),
+        ("x-service-secret",), (), False,
+    )
+    monkeypatch.setattr(ip, "load_mappings", lambda: [existing])
+    calls = []
+
+    def fake_bitwarden_env_names(console):
+        calls.append(True)
+        return ["SERVICE_SECRET"]
+
+    monkeypatch.setattr(proxy_cli, "_bitwarden_env_names", fake_bitwarden_env_names)
+
+    mappings = proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args())
+
+    assert calls == [True]
+    assert len(mappings) == 1
+    assert mappings[0].real_env_name == "SERVICE_SECRET"
+    assert mappings[0].proxy_token == "service-existing-token"
+    assert mappings[0].match_query is False
 
 
 

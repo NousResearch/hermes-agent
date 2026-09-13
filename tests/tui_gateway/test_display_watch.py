@@ -78,3 +78,27 @@ def test_release_in_another_process_is_broadcast_and_local_transition_not_duplic
 
     assert _wait_for(lambda: _lease_events(events, holder="agent")), events
     assert len(_lease_events(events, holder="agent")) == 1
+
+
+def test_screen_started_or_stopped_by_another_process_is_broadcast_as_status(tmp_path, monkeypatch):
+    """A start/stop made by the CLI or gateway process must reach an open Desktop: the portal's
+    status was otherwise one-shot (fetched once, then only lease events)."""
+    import tui_gateway.server as server
+
+    home = tmp_path / "home"
+    (home / "bot-desktop").mkdir(parents=True)
+    events = _watching(server, home, monkeypatch)
+    server._poll_runtime_files()  # seed
+    assert not [e for e in events if e[0] == "display.status"]
+
+    # what runtime.start() publishes from another process: launcher.pid then env
+    (home / "bot-desktop" / "launcher.pid").write_text("424242 1.5")
+    (home / "bot-desktop" / "env").write_text("DISPLAY=:77\n")
+    server._poll_runtime_files()
+    statuses = [p for e, p in events if e == "display.status"]
+    assert statuses and statuses[-1]["profile_key"] == str(home)
+
+    (home / "bot-desktop" / "env").unlink()  # stop() from the other process
+    server._poll_runtime_files()
+    assert len([e for e in events if e[0] == "display.status"]) == 2
+    assert [p for e, p in events if e == "display.status"][-1]["running"] is False

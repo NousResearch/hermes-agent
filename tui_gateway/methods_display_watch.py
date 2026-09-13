@@ -23,6 +23,9 @@ _lease_watcher_started = threading.Event()
 # made by THIS process is not re-broadcast when its file write is noticed a tick later).
 _lease_epochs: dict[str, int] = {}
 _lease_mtimes: dict[str, int | None] = {}
+# profile key → (env mtime, launcher.pid mtime): the screen's running/display identity. A start,
+# stop or crash made by another process (CLI, gateway auto-start) moves one of these.
+_runtime_marks: dict[str, tuple] = {}
 
 
 def _lease_event_payload(profile_key: str, lease) -> dict:
@@ -33,6 +36,34 @@ def _lease_event_payload(profile_key: str, lease) -> dict:
 
 def _watched_lease_homes() -> list[Path]:
     return [Path(_hermes_home), *_served_profile_homes]
+
+
+def _mtime(path: Path):
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _poll_runtime_files() -> None:
+    """Broadcast ``display.status`` when a home's screen started/stopped outside this process."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    for home in _watched_lease_homes():
+        key = hermes_home_key(home)
+        sd = home / "bot-desktop"
+        mark = (_mtime(sd / "env"), _mtime(sd / "launcher.pid"))
+        first = key not in _runtime_marks
+        if _runtime_marks.get(key) == mark:
+            continue
+        _runtime_marks[key] = mark
+        if first:  # seeding: display.status carries the current state
+            continue
+        token = set_hermes_home_override(home)
+        try:
+            payload = _display_snapshot()
+        finally:
+            reset_hermes_home_override(token)
+        _broadcast_global_event("display.status", payload)
 
 
 def _poll_lease_files() -> None:
@@ -77,6 +108,7 @@ def _ensure_lease_watcher() -> None:
         while True:
             try:
                 _poll_lease_files()
+                _poll_runtime_files()
             except Exception:  # noqa: BLE001 - a torn read must not kill the watcher
                 logger.debug("lease watcher poll failed", exc_info=True)
             time.sleep(_LEASE_POLL_S)

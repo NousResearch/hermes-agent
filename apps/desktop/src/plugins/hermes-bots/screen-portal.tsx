@@ -119,6 +119,20 @@ export function useScreenPortalState(bot: RosterRow) {
     [bot, profileKey]
   )
 
+  // A start/stop/crash made outside this window (CLI, gateway auto-start, another Desktop) is
+  // pushed by the serve-side runtime watcher; without it the portal's status was one-shot.
+  useEffect(
+    () =>
+      host.onEvent('display.status', (event: RpcEvent) => {
+        const payload = event.payload as DisplayStatus | undefined
+
+        if (payload?.profile_key && isEventForBotScreen(bot, event, profileKey)) {
+          setScreenStatus(bot, payload)
+        }
+      }),
+    [bot, profileKey]
+  )
+
   return { status, lease: state?.lease ?? null, tone: portalTone(status, state?.lease ?? null, state?.viewer ?? null, state?.unavailable) }
 }
 

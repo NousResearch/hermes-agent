@@ -37,6 +37,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { pathname } = useLocation();
   const [profiles, setProfiles] = useState<string[]>([]);
+  const [profileLabels, setProfileLabels] = useState<Record<string, string>>({});
   const [currentProfile, setCurrentProfile] = useState("default");
 
   // Initial value comes from the URL (deep link / refresh / unified-launch
@@ -87,6 +88,16 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
 
         setProfiles(profilesRes.profiles.map((p) => p.name));
+        // "display_name (id)" when set, else the bare id — same label shape
+        // as `hermes profile list` and the Profiles page.
+        setProfileLabels(
+          Object.fromEntries(
+            profilesRes.profiles.map((p) => [
+              p.name,
+              p.display_name?.trim() ? `${p.display_name.trim()} (${p.name})` : p.name,
+            ]),
+          ),
+        );
 
         const current = info.current || "default";
         const active = info.active || "default";
@@ -127,8 +138,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ profile, currentProfile, profiles, setProfile }),
-    [profile, currentProfile, profiles, setProfile],
+    () => ({ profile, currentProfile, profiles, profileLabels, setProfile }),
+    [profile, currentProfile, profiles, profileLabels, setProfile],
   );
 
   return (

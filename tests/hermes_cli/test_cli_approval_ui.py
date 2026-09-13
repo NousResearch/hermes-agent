@@ -155,6 +155,15 @@ class TestCliApprovalUi:
         assert cli._app.current_buffer.text == "draft command"
         assert cli._app.current_buffer.cursor_position == 5
 
+    def test_sudo_display_shows_command(self):
+        cli = _make_cli_stub()
+        cli._sudo_state = {"command": "sudo pacman -S task", "response_queue": queue.Queue()}
+
+        fragments = cli._get_sudo_display_fragments()
+        text = "".join(str(f[1]) for f in fragments if len(f) > 1)
+
+        assert "sudo pacman -S task" in text
+
 
     def test_handle_approval_selection_view_expands_in_place(self):
         cli = _make_cli_stub()

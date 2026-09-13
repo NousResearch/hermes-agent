@@ -726,6 +726,13 @@ class CLITuiMixin:
                 [f'The agent wants to sign into a site with a login saved in {backend}.',
                  'Type your master password (hidden) to unlock it for this session.',
                  'Enter on an empty line keeps it locked. The model never sees the password.'])
+        command = self._sudo_state.get("command") or ""
+        if command:
+            from cli import _wrap_panel_text_keep_ws
+            body = ['Command requiring sudo:']
+            body += [f'  {line}' for line in _wrap_panel_text_keep_ws(command, 72)]
+            body.append('Enter password below (hidden), or press Enter to skip')
+            return self._render_sudo_style_panel('🔐 Sudo Password Required', body)
         return self._render_sudo_style_panel(
             '🔐 Sudo Password Required', ['Enter password below (hidden), or press Enter to skip'])
 

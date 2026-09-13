@@ -733,14 +733,15 @@ class CLIModalMixin:
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — locked answers returned){_RST}")
         return {"answers": partial, "timed_out": True}
 
-    def _sudo_password_callback(self) -> str:
+    def _sudo_password_callback(self, command: str | None = None) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
-        state + queue answered by the Enter binding."""
+        state + queue answered by the Enter binding. ``command`` (when the backend supplies it)
+        is shown so the user can see what the password authorizes (#79874)."""
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
         self._capture_modal_input_snapshot()
-        self._sudo_state = {"response_queue": response_queue}
+        self._sudo_state = {"command": command or "", "response_queue": response_queue}
         self._sudo_deadline = _time.monotonic() + 45
         self._ring_bell(prompt=True, context="sudo password")
         self._paint_now()

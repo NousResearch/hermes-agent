@@ -7,7 +7,9 @@ reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
 import json
+import os
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 import yaml
@@ -226,6 +228,55 @@ class TestProfileScopedMcp:
         )
         assert resp.status_code == 200
         assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
+
+    def test_mcp_test_resolves_profile_secret_source_scope(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The probe's `${VAR}` interpolation must resolve from the REQUESTED
+        profile's secret scope, not the dashboard process's os.environ: a
+        secondary profile whose credential comes from an external secret source
+        (Bitwarden/1Password) never has it in the shared process env, so the
+        probe used to send the literal placeholder — or the default profile's
+        value of the same name — and the server answered 400 (#109901)."""
+        import hermes_cli.env_loader as env_loader
+        import hermes_cli.mcp_config as mcp_config
+
+        worker_home = isolated_profiles["worker_beta"]
+        (worker_home / "config.yaml").write_text(
+            "mcp_servers:\n  bw-srv:\n    url: http://x/mcp\n"
+            "    headers:\n      Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}\n",
+            encoding="utf-8",
+        )
+        # The shared dashboard process carries the DEFAULT profile's value of the
+        # same env name — the probe must not use it.
+        os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"] = "default-profile-token"
+
+        def _worker_sources(hermes_home):
+            if Path(hermes_home).resolve() == worker_home.resolve():
+                return {"GITHUB_PERSONAL_ACCESS_TOKEN": "bw-worker-token"}
+            return {}
+
+        monkeypatch.setattr(env_loader, "get_secret_source_values", _worker_sources)
+
+        resolved_headers = {}
+
+        def fake_probe(name, config, connect_timeout=30, details=None):
+            resolved = mcp_config._resolve_mcp_server_config(config)
+            resolved_headers.update(resolved.get("headers", {}))
+            return [("tool-a", "desc")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+
+        try:
+            resp = client.post(
+                "/api/mcp/servers/bw-srv/test", params={"profile": "worker_beta"}
+            )
+        finally:
+            os.environ.pop("GITHUB_PERSONAL_ACCESS_TOKEN", None)
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resolved_headers["Authorization"] == "Bearer bw-worker-token"
 
 
 class TestProfileScopedModel:

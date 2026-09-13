@@ -149,7 +149,39 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect."""
     from hermes_cli.mcp_config import _get_mcp_servers, _oauth_tokens_present, _probe_single_server
 
-    servers = await scoped_to_thread(profile, _get_mcp_servers)
+    def _secret_scoped(fn):
+        # Home + secret scope for BOTH the config read and the probe: config.yaml's
+        # `${VAR}` expansion (config._env_ref_lookup) and the probe's own
+        # interpolation resolve against plain os.environ while no scope is
+        # installed — the dashboard process's own environment, i.e. the DEFAULT
+        # profile's values (or nothing at all) on a shared remote dashboard. A
+        # secondary profile whose credential comes only from an external secret
+        # source (Bitwarden/1Password) then never resolves and the probe sends the
+        # literal placeholder (#109901). Home-only scope (contextvar), NOT
+        # _profile_scope: both stages can block for seconds and _profile_scope
+        # holds the process-global skills lock for its whole body, serializing
+        # every other endpoint. External sources hydrate per-home (once, cached);
+        # a scope miss still falls back to os.environ outside multiplexing, so
+        # shell-injected keys keep working.
+        def _run():
+            from pathlib import Path
+
+            from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+            from hermes_constants import get_hermes_home
+            from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+            with _config_profile_scope(profile):
+                home = Path(get_hermes_home())
+                hydrate_profile_secret_sources(home)  # first call may block on the source's fetch
+                scope_token = set_secret_scope(build_profile_secret_scope(home))
+                try:
+                    return fn()
+                finally:
+                    reset_secret_scope(scope_token)
+
+        return _run
+
+    servers = await asyncio.to_thread(_secret_scoped(_get_mcp_servers))
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
@@ -158,17 +190,12 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     # with no token — a false green. Require a token on disk, matching /auth.
     needs_oauth_token = servers[name].get("auth") == "oauth"
 
-    def _probe_scoped():
-        # Home-only scope (contextvar), NOT _profile_scope: a probe can block for
-        # seconds (stdio `npx` cold start) and _profile_scope holds the
-        # process-global skills lock for its whole body, serializing every other
-        # endpoint. The probe only needs HERMES_HOME for .env + token resolution.
-        with _config_profile_scope(profile):
-            tools = _probe_single_server(name, servers[name], details=details)
-            return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
+    def _probe():
+        tools = _probe_single_server(name, servers[name], details=details)
+        return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
 
     try:  # probe blocks on a dedicated MCP event loop — keep it off the FastAPI loop
-        tools, token_present = await asyncio.to_thread(_probe_scoped)
+        tools, token_present = await asyncio.to_thread(_secret_scoped(_probe))
     except Exception as exc:
         from hermes_cli.mcp_config import redact_mcp_probe_text
 

@@ -207,6 +207,7 @@ import {
   resolveGatewayFileBackend,
   writeBufferToFile
 } from './gateway-file-download'
+import { gatewaySharedProfiles, recordGatewaySharedProfiles } from './gateway-shared-profiles'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
@@ -11369,6 +11370,9 @@ function profileRouteOptions(profile, request?) {
     // per-profile override, env, or global). Unknown sub-profiles on that
     // gateway must route THROUGH it, not spawn local backends (#88296).
     primaryRemoteActive: primaryBackendIsRemote(),
+    // Which profiles the primary gateway serves from the shared home: such a
+    // profile reuses that gateway instead of getting a backend of its own.
+    gatewaySharedProfiles: gatewaySharedProfiles(),
     // A stored per-profile entry (local or remote) — pins this profile to
     // its own backend; absent entries inherit the primary's remote.
     ownEntry: Boolean((config.profiles || {})[key]),
@@ -16707,6 +16711,13 @@ async function handleHermesApiRequest(request) {
       upload: request?.upload,
       timeoutMs
     })
+
+    // The renderer's own status poll is the cheapest source for which profiles
+    // the primary gateway serves; record it here so route decisions can use it
+    // without a second fetch on their path.
+    if (apiRoute.backendProfile === null && String(apiRoute.requestPath || '').split('?')[0] === '/api/status') {
+      recordGatewaySharedProfiles(response?.gateway_shared_with)
+    }
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.

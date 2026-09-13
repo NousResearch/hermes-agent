@@ -454,6 +454,30 @@ const ROUTES = [
       requestPath: '/api/config'
     },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile the primary gateway reports serving reuses it with a query scope',
+    profile: 'default',
+    opts: { primaryProfile: 'work', gatewaySharedProfiles: ['default', 'work'] },
+    expected: { backend: 'primary', descriptorProfile: 'default', scopePath: true }
+  },
+  {
+    name: 'a named profile the gateway serves reuses the gateway as well',
+    profile: 'alpha',
+    opts: { primaryProfile: 'work', gatewaySharedProfiles: ['default', 'alpha'] },
+    expected: { backend: 'primary', descriptorProfile: 'alpha', scopePath: true }
+  },
+  {
+    name: 'a profile the gateway does not report keeps its own backend',
+    profile: 'default',
+    opts: { primaryProfile: 'work', gatewaySharedProfiles: ['work'] },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'an absent gateway report leaves the profile on its own backend',
+    profile: 'default',
+    opts: { primaryProfile: 'work', gatewaySharedProfiles: null },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   }
 ]
 

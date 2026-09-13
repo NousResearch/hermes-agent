@@ -564,6 +564,10 @@ export interface ProfileRouteOptions {
   profileRemoteOverride?: boolean
   /** The primary profile's own backend resolves to a remote host. */
   primaryRemoteActive?: boolean
+  /** Profiles the primary backend's gateway serves from the shared home (its
+   * `/api/status` `gateway_shared_with`). Null when unknown, which covers a
+   * standalone gateway and any backend older than the field. */
+  gatewaySharedProfiles?: null | string[]
   /** A stored per-profile entry exists for this profile (local or remote). */
   ownEntry?: boolean
   requestMethod?: null | string
@@ -692,7 +696,10 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  *     A stored local profile remains isolated in its own backend.
  *  5. A local profile REST request that the primary backend can safely scope
  *     reuses that backend, with `?profile=` when the handler accepts it.
- *  6. Any other local profile gets its own pooled backend, spawned with
+ *  6. A profile the primary gateway reports serving (`gateway_shared_with`)
+ *     reuses that gateway with `?profile=`: its own pooled backend would open
+ *     the same `state.db` from a second process.
+ *  7. Any other local profile gets its own pooled backend, spawned with
  *     `--profile`, so its `HERMES_HOME` scopes it.
  *
  * Routing used to be spread across three overlapping predicates that each
@@ -747,6 +754,14 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
       descriptorProfile: localScope ? scopedProfile : null,
       scopePath: localScope
     }
+  }
+
+  // A profile the gateway already serves from the shared home needs no backend
+  // of its own: a pooled process would open that same state.db alongside the
+  // gateway. Gated on the gateway's own report, so a standalone gateway still
+  // gives the profile its own backend.
+  if ((opts.gatewaySharedProfiles || []).includes(scopedProfile)) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
   }
 
   return { backend: 'pool', descriptorProfile: null, scopePath: false }

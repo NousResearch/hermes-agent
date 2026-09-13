@@ -33,3 +33,20 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource(undefined)).toBe(false)
   })
 })
+
+// Gateway inbound already writes source=a2a. Without this id on the messaging
+// allowlist, those chats stay in generic recents and get no platform section.
+describe('a2a messaging source registration', () => {
+  it('treats a2a as a messaging source (own sidebar section)', () => {
+    expect(isMessagingSource('a2a')).toBe(true)
+  })
+
+  it('is case/space insensitive on the source id', () => {
+    expect(isMessagingSource('A2A')).toBe(true)
+    expect(isMessagingSource('  a2a ')).toBe(true)
+  })
+
+  it('is registered in the messaging source id list', () => {
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain('a2a')
+  })
+})

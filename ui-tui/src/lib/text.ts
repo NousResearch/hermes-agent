@@ -1,3 +1,4 @@
+import { stripAnsi } from '@hermes/shared/ansi'
 import { compactNumber } from '@hermes/shared/format'
 
 import {
@@ -10,42 +11,7 @@ import {
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
-const ESC = String.fromCharCode(27)
-const BEL = String.fromCharCode(7)
-const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
-const ANSI_CSI_WITH_CMD_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*([@-~])`, 'g')
-const ANSI_INCOMPLETE_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*(?=${ESC}|\\n|$)`, 'g')
-const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-const ANSI_NON_CSI_ESC_SEQ_RE = new RegExp(`${ESC}(?!\\[|\\]|P|X|\\^|_)[ -/]*[0-~]`, 'g')
-const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
-// eslint-disable-next-line no-control-regex -- intentionally strips C0/C1 control chars
-const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
-
-export const stripAnsi = (s: string) =>
-  s
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_STRING_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_CSI_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
-
-export const sanitizeAnsiForRender = (s: string) =>
-  s
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_STRING_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
-
-export const hasAnsi = (s: string) => s.includes(ESC)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()

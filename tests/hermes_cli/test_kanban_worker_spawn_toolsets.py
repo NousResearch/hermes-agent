@@ -137,17 +137,9 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
-    """Under multiplex, a worker spawn must not crash when ``terminal.env_passthrough``
-    is configured, and the forwarded value must come from the ASSIGNEE profile's own
-    secret scope, not the dispatcher's ambient os.environ.
-
-    Regression guard: ``_default_spawn`` built the worker env via
-    ``build_subprocess_env(scrub_secrets=True)`` with no profile secret scope
-    installed. Any registered ``env_passthrough`` var made
-    ``resolve_passthrough_value()`` call ``get_secret()`` with no scope while
-    multiplexing was active, which raises ``UnscopedSecretError`` and crashed the
-    spawn for every task, every profile, as soon as ``terminal.env_passthrough``
-    was configured anywhere.
+    """Under multiplex a worker spawn with ``terminal.env_passthrough`` configured must
+    forward the ASSIGNEE profile's own value, never crash on an unscoped read or leak the
+    dispatcher's ambient os.environ (#109494).
     """
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"

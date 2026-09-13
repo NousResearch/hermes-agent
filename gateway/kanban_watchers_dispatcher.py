@@ -12,6 +12,7 @@ import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
@@ -247,12 +248,6 @@ class _KanbanDispatcher:
             return 0
         attempted = 0
         successes = 0
-        # This tick runs via _to_thread_process_service in a FRESH context, so no
-        # per-turn profile scope is installed. With gateway.multiplex_profiles on,
-        # agent.secret_scope.get_secret() fails closed without a scope and every
-        # decompose attempt dies with UnscopedSecretError before the aux LLM call.
-        # Scope the aux-LLM credential reads to the gateway's default profile —
-        # the same home load_gateway_config_for_runner() uses for the runner.
         with _default_profile_secret_scope():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
@@ -300,34 +295,21 @@ class _KanbanDispatcher:
 
 @contextlib.contextmanager
 def _default_profile_secret_scope():
-    """Install the gateway default profile's secret scope when multiplexing is on
-    and no scope is active (background ticks run in a fresh context). No-op
-    otherwise, so single-profile gateways keep reading os.environ as before.
-    """
-    try:
-        from pathlib import Path
+    """Install the gateway launch profile's secret scope while multiplexing is on.
 
-        from agent.secret_scope import (
-            build_profile_secret_scope,
-            current_secret_scope,
-            is_multiplex_active,
-            reset_secret_scope,
-            set_secret_scope,
-        )
-        from hermes_constants import get_hermes_home
-    except Exception:  # pragma: no cover
+    The tick runs via ``_to_thread_process_service`` in a fresh context, so no
+    per-turn scope exists and ``get_secret`` fails closed. The decomposer's aux
+    LLM reads ``auxiliary.*`` from ``get_hermes_home()``, so its credentials come
+    from that same home. No-op for single-profile gateways.
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from hermes_constants import get_hermes_home
+
+    if not is_multiplex_active():
         yield
         return
-    if not is_multiplex_active() or current_secret_scope() is not None:
-        yield
-        return
-    try:
-        secrets = build_profile_secret_scope(Path(get_hermes_home()))
-    except Exception:
-        logger.debug("kanban auto-decompose: could not build default profile secret scope", exc_info=True)
-        yield
-        return
-    token = set_secret_scope(secrets)
+    token = set_secret_scope(build_profile_secret_scope(Path(get_hermes_home())))
     try:
         yield
     finally:

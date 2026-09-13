@@ -451,6 +451,23 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+### Compact a Session
+
+Use `compact` to keep a session's identity and recent context while removing older messages from the active model transcript. The archived rows stay in `state.db` with their session ID and remain available to display and session search; this is context reduction, not a privacy delete. The command refuses to mutate a session while it has a live turn or compression lease.
+
+```bash
+# Keep the last 20 active messages
+hermes sessions compact 20250305_091523_a1b2c3d4 --keep-last 20
+
+# Keep messages at or after an ISO timestamp (naive timestamps are UTC)
+hermes sessions compact 20250305_091523_a1b2c3d4 --keep-until "2026-09-01T00:00:00Z"
+
+# Preview either operation without changing the database
+hermes sessions compact 20250305_091523_a1b2c3d4 --keep-last 20 --dry-run
+```
+
+`--keep-last` and `--keep-until` are mutually exclusive, and one is required. Message order follows the durable transcript order rather than timestamps, so platform-provided timestamps cannot reorder the retained context.
+
 ### Rename a Session
 
 ```bash

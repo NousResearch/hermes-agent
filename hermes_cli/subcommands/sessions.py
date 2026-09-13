@@ -15,7 +15,7 @@ def _flag(parser, *names, help, **kw):
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
-        "sessions", help="Manage session history (list, rename, export, prune, delete)",
+        "sessions", help="Manage session history (list, rename, export, compact, prune, delete)",
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
@@ -100,6 +100,17 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     add_yes_flag(sessions_delete, "Skip confirmation")
+
+    sessions_compact = sessions_subparsers.add_parser(
+        "compact", help="Drop older messages from a session without changing its ID",
+        description="Keep only the recent active transcript; archived rows remain recoverable and searchable.")
+    sessions_compact.add_argument("session_id", help="Session ID or unique prefix")
+    compact_boundary = sessions_compact.add_mutually_exclusive_group(required=True)
+    compact_boundary.add_argument("--keep-last", type=int, metavar="N",
+                                  help="Keep the last N active messages")
+    compact_boundary.add_argument("--keep-until", metavar="TIMESTAMP",
+                                  help="Keep messages at or after this ISO timestamp (UTC if naive)")
+    _flag(sessions_compact, "--dry-run", help="Show what would be compacted without changing anything")
 
     sessions_prune = sessions_subparsers.add_parser(
         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")

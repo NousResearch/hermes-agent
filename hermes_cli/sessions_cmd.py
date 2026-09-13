@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
@@ -526,6 +527,52 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
 
 # -- delete / prune / archive -------------------------------------------------
 
+def _parse_compact_timestamp(value: str) -> float:
+    """Parse an ISO timestamp for the UTC-based Unix timestamps in ``state.db``."""
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO timestamp: {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _cmd_compact(db, args):
+    resolved_session_id = db.resolve_session_id(args.session_id)
+    if not resolved_session_id:
+        return _not_found(args.session_id)
+    if args.keep_last is not None and args.keep_last < 1:
+        print("Error: --keep-last must be at least 1.")
+        return 1
+    keep_until = None
+    if args.keep_until is not None:
+        try:
+            keep_until = _parse_compact_timestamp(args.keep_until)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+    from hermes_state import SessionCompressionInProgressError
+    from hermes_state_errors import CompressionSessionClosedError, SessionTurnLeaseLostError
+    try:
+        result = db.compact_session(
+            resolved_session_id, keep_last=args.keep_last, keep_until=keep_until, dry_run=args.dry_run,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+    except (SessionCompressionInProgressError, SessionTurnLeaseLostError, CompressionSessionClosedError) as exc:
+        print(f"Error: cannot compact session '{resolved_session_id}': {exc}")
+        return 1
+    if args.dry_run:
+        print(f"Would compact {result['compacted']} message(s); {result['remaining']} active message(s) would remain.")
+    elif result["compacted"]:
+        print(f"Compacted {result['compacted']} message(s) in session '{resolved_session_id}'. "
+              f"{result['remaining']} active message(s) remain.")
+    else:
+        print(f"No active messages in session '{resolved_session_id}' match the compaction boundary.")
+
+
 def _cmd_delete(db, args):
     resolved_session_id = db.resolve_session_id(args.session_id)
     if not resolved_session_id:
@@ -938,7 +985,8 @@ def _cmd_stats(db, args):
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
 _DB_HANDLERS = {
-    "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
+    "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "compact": _cmd_compact,
+    "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,

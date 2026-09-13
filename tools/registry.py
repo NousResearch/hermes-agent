@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 from hermes_constants import hermes_home_key
 
@@ -161,6 +161,43 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
 
 
+# ---- Shared capability metadata ------------------------------------------------
+# Canonical tags every tool registration may declare. `unknown` is the fail-closed
+# default: a registration that names no capabilities carries exactly `(unknown,)`,
+# and consumers must not assume any capability is safe for such a tool.
+TOOL_CAPABILITIES: tuple = (
+    "read", "mutate", "delete", "external_write",
+    "money", "secrets", "account", "environment", "install",
+    "unknown",
+)
+UNKNOWN_CAPABILITY = "unknown"
+
+
+def _normalize_capabilities(capabilities: Optional[Iterable[str]]) -> tuple:
+    """Validate + dedupe a declared capability iterable, preserving first-seen order.
+
+    ``None`` (capability omitted) yields the fail-closed ``(unknown,)`` default so the
+    metadata never misrepresents an undeclared tool. Empty, non-canonical, or
+    non-string inputs raise ``ValueError``: silently accepting a typo could let a
+    dangerous tool claim no risk (fail-open), which this tag exists to prevent.
+    """
+    if capabilities is None:
+        return (UNKNOWN_CAPABILITY,)
+    normalized = []
+    for capability in capabilities:
+        if not isinstance(capability, str):
+            raise ValueError(f"Tool capabilities must be strings, got {capability!r}")
+        if capability not in TOOL_CAPABILITIES:
+            raise ValueError(
+                f"Unknown tool capability {capability!r}; canonical capabilities: "
+                + ", ".join(TOOL_CAPABILITIES))
+        if capability not in normalized:
+            normalized.append(capability)
+    if not normalized:
+        raise ValueError("Tool capabilities must not be empty")
+    return tuple(normalized)
+
+
 @dataclass(eq=False, slots=True)
 class ToolEntry:
     """Metadata for one registered tool (identity semantics: restore/CAS paths compare ``is``)."""
@@ -178,6 +215,9 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    # Canonical capability tags (TOOL_CAPABILITIES); an immutable tuple, defaulting to
+    # the fail-closed `(unknown,)` marker when a registration names none.
+    capabilities: tuple = (UNKNOWN_CAPABILITY,)
 
 
 class _PluginOverridePolicy:
@@ -603,10 +643,12 @@ class ToolRegistry:
         check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None, override: bool = False,
-        scope: Optional[str] = None):
+        scope: Optional[str] = None, capabilities: Optional[Iterable[str]] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
-        browser backend); without it, cross-toolset shadowing is rejected."""
+        browser backend); without it, cross-toolset shadowing is rejected. ``capabilities``
+        names canonical tags (``TOOL_CAPABILITIES``); an omitted declaration becomes
+        ``(unknown,)`` — the fail-closed default."""
         # Reject malformed schemas at registration, not at request time: a non-dict
         # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
         # whole turn far from the offending plugin. Failing here names the culprit instead.
@@ -618,6 +660,7 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
                 f"got {type(params).__name__}")
+        capabilities = _normalize_capabilities(capabilities)
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
@@ -667,7 +710,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides,
+                capabilities=capabilities)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,

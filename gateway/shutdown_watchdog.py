@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # Extra leash beyond ``agent.restart_drain_timeout`` so a slow-but-progressing drain survives.
 # Matches the issue #66892 suggested hardening.
 DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
+# Extra grace layered on top of the known bounded work that can still be running concurrently once
+# ``_stop_impl`` logs "Gateway stopped" — the cron ticker join, the housekeeping join, MCP shutdown
+# and the planned-stop-watcher join all happen in a separate coroutine chain
+# (``_start_gateway_shutdown_tail``) that isn't sequenced after ``_stop_impl``, so this alone must
+# not double as that budget. See #108729.
+DEFAULT_POST_TEARDOWN_EXIT_GRACE_S = 20.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0

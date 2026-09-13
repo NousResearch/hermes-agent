@@ -48,6 +48,24 @@ _LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS
 _LIKE_ANY_COLUMN_SQL = (
     "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
 )
+_REASONING_DETAILS_JSON_SQL = (
+    "CASE WHEN json_valid(COALESCE(m.reasoning_details, '')) "
+    "THEN m.reasoning_details ELSE '[]' END"
+)
+_LIKE_REASONING_SQL = (
+    "(COALESCE(m.reasoning, '') LIKE ? ESCAPE '\\' OR "
+    "COALESCE(m.reasoning_content, '') LIKE ? ESCAPE '\\' OR "
+    "(NOT json_valid(COALESCE(m.reasoning_details, '')) AND "
+    " COALESCE(m.reasoning_details, '') LIKE ? ESCAPE '\\') OR "
+    f"EXISTS (SELECT 1 FROM json_tree({_REASONING_DETAILS_JSON_SQL}) AS rd "
+    "        WHERE rd.type = 'text' AND CAST(rd.value AS TEXT) LIKE ? ESCAPE '\\'))"
+)
+_LIKE_ANY_COLUMN_WITH_REASONING_SQL = (
+    "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
+    "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
+    "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\' OR "
+    f"(m.role = 'assistant' AND {_LIKE_REASONING_SQL}))"
+)
 _LIKE_COALESCED_COLUMN_SQL = (
     "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
     "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
@@ -101,9 +119,51 @@ def _quote_fts_tokens(raw_query: str) -> str:
     )
 
 
-def _like_params(term: str) -> List[str]:
-    """One ``%term%`` bind per column of ``_LIKE_ANY_COLUMN_SQL``."""
-    return [f"%{_escape_like(term)}%"] * 3
+def _like_params(term: str, *, include_reasoning: bool = False) -> List[str]:
+    """One ``%term%`` bind per column in the selected canonical LIKE scope."""
+    return [f"%{_escape_like(term)}%"] * (7 if include_reasoning else 3)
+
+
+def _reasoning_snippet_sql(terms: List[str]) -> Tuple[str, List[str]]:
+    """Bounded snippet from the first query term and searchable field that match."""
+    cases: List[str] = []
+    params: List[str] = []
+    for term in terms:
+        pattern = f"%{_escape_like(term)}%"
+        for column in ("m.content", "m.tool_name", "m.tool_calls"):
+            cases.append(
+                f"WHEN COALESCE({column}, '') LIKE ? ESCAPE '\\' "
+                f"THEN substr({column}, max(1, instr(lower({column}), lower(?)) - 40), 120)"
+            )
+            params.extend((pattern, term))
+        for column in ("m.reasoning", "m.reasoning_content"):
+            cases.append(
+                f"WHEN m.role = 'assistant' AND COALESCE({column}, '') LIKE ? ESCAPE '\\' "
+                f"THEN substr({column}, max(1, instr(lower({column}), lower(?)) - 40), 120)"
+            )
+            params.extend((pattern, term))
+        cases.append(
+            "WHEN m.role = 'assistant' AND NOT json_valid(COALESCE(m.reasoning_details, '')) "
+            "AND COALESCE(m.reasoning_details, '') LIKE ? ESCAPE '\\' "
+            "THEN substr(m.reasoning_details, "
+            "max(1, instr(lower(m.reasoning_details), lower(?)) - 40), 120)"
+        )
+        params.extend((pattern, term))
+        cases.append(
+            f"WHEN m.role = 'assistant' AND EXISTS "
+            f"(SELECT 1 FROM json_tree({_REASONING_DETAILS_JSON_SQL}) AS rd "
+            "             WHERE rd.type = 'text' AND CAST(rd.value AS TEXT) LIKE ? ESCAPE '\\') "
+            f"THEN (SELECT substr(CAST(rd.value AS TEXT), "
+            "                         max(1, instr(lower(CAST(rd.value AS TEXT)), lower(?)) - 40), 120) "
+            f"      FROM json_tree({_REASONING_DETAILS_JSON_SQL}) AS rd "
+            "      WHERE rd.type = 'text' AND CAST(rd.value AS TEXT) LIKE ? ESCAPE '\\' LIMIT 1)"
+        )
+        params.extend((pattern, term, pattern))
+    return (
+        f"CASE {' '.join(cases)} "
+        "ELSE '' END AS snippet",
+        params,
+    )
 
 
 def _flatten_text(decoded: Any) -> str:
@@ -909,13 +969,23 @@ class SessionSearchMixin:
                 fail_open, exc)
             return None
 
-    def _like_rows(self, where: List[str], params: list, *, order_by: str, limit_sql: str) -> List[Dict[str, Any]]:
+    def _like_rows(self, where: List[str], params: list, *, order_by: str, limit_sql: str,
+                   include_reasoning: bool = False, snippet_terms: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Canonical-table LIKE scan; ``params[0]`` is the snippet anchor term."""
-        sql = _search_select_sql(_LIKE_SNIPPET_SQL, "messages m", where, order_by, limit_sql)
-        return [dict(row) for row in self._read_all(sql, params)]
+        if include_reasoning:
+            snippet_sql, snippet_params = _reasoning_snippet_sql(snippet_terms or [params[0]])
+            query_params = params if snippet_terms else params[1:]
+        else:
+            snippet_params = [params[0]]
+            snippet_sql = _LIKE_SNIPPET_SQL
+            query_params = params[1:]
+        sql = _search_select_sql(snippet_sql, "messages m", where, order_by, limit_sql)
+        return [dict(row) for row in self._read_all(sql, [*snippet_params, *query_params])]
 
     @staticmethod
-    def _compile_like_boolean_query(query: str) -> Tuple[str, List[Any], Optional[str]]:
+    def _compile_like_boolean_query(
+        query: str, *, include_reasoning: bool = False,
+    ) -> Tuple[str, List[Any], List[str]]:
         """Compile the supported FTS boolean subset into LIKE predicates: terms within an OR
         group are ANDed (FTS5's implicit conjunction) and ``NOT`` negates the next term."""
         groups: List[List[Tuple[str, bool]]] = [[]]
@@ -939,30 +1009,37 @@ class SessionSearchMixin:
 
         compiled_groups: List[str] = []
         params: List[Any] = []
-        snippet_term: Optional[str] = None
+        snippet_terms: List[str] = []
+        column_sql = _LIKE_ANY_COLUMN_WITH_REASONING_SQL if include_reasoning else _LIKE_COALESCED_COLUMN_SQL
         for group in groups:
             if not group or not any(not negated for _, negated in group):
                 continue
             clauses: List[str] = []
             for term, negated in group:
-                clauses.append(f"NOT {_LIKE_COALESCED_COLUMN_SQL}" if negated else _LIKE_COALESCED_COLUMN_SQL)
-                params.extend(_like_params(term))
-                if snippet_term is None and not negated:
-                    snippet_term = term
+                clauses.append(f"NOT {column_sql}" if negated else column_sql)
+                params.extend(_like_params(term, include_reasoning=include_reasoning))
+                if not negated:
+                    snippet_terms.append(term)
             compiled_groups.append(f"({' AND '.join(clauses)})")
-        return " OR ".join(compiled_groups), params, snippet_term
+        return " OR ".join(compiled_groups), params, snippet_terms
 
     def _search_messages_like_fallback(
-        self, query: str, *, limit: int, offset: int, sort: Optional[str], **filters) -> List[Dict[str, Any]]:
+        self, query: str, *, limit: int, offset: int, sort: Optional[str], include_reasoning: bool = False,
+        **filters,
+    ) -> List[Dict[str, Any]]:
         """Search canonical messages while derived FTS state is stale."""
-        predicate, params, snippet_term = self._compile_like_boolean_query(query)
-        if not predicate or snippet_term is None:
+        predicate, params, snippet_terms = self._compile_like_boolean_query(
+            query, include_reasoning=include_reasoning)
+        if not predicate or not snippet_terms:
             return []
         where = [f"({predicate})"]
         _search_filter_clauses(where, params, **filters)
         order = "ASC" if isinstance(sort, str) and sort.strip().lower() == "oldest" else "DESC"
-        return self._like_rows(where, [snippet_term, *params, limit, offset],
-                               order_by=f"ORDER BY m.timestamp {order}, m.id {order}", limit_sql="LIMIT ? OFFSET ?")
+        return self._like_rows(where, [*params, limit, offset] if include_reasoning
+                               else [snippet_terms[0], *params, limit, offset],
+                               order_by=f"ORDER BY m.timestamp {order}, m.id {order}", limit_sql="LIMIT ? OFFSET ?",
+                               include_reasoning=include_reasoning,
+                               snippet_terms=snippet_terms if include_reasoning else None)
 
     def _refresh_fts_stale_state(self) -> None:
         """Observe fail-open initiated by another process sharing state.db."""
@@ -1010,7 +1087,7 @@ class SessionSearchMixin:
     def search_messages(
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
-        include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        include_inactive: bool = False, fields: Optional[Collection[str]] = None, include_reasoning: bool = False,
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
         path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
@@ -1019,7 +1096,8 @@ class SessionSearchMixin:
         try:
             rows = self._search_messages_impl(
                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
-                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields)
+                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
+                include_reasoning=include_reasoning)
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
@@ -1031,7 +1109,7 @@ class SessionSearchMixin:
     def _search_messages_impl(
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
-        include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        include_inactive: bool = False, fields: Optional[Collection[str]] = None, include_reasoning: bool = False,
     ) -> List[Dict[str, Any]]:
         """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
@@ -1046,6 +1124,12 @@ class SessionSearchMixin:
             return []
         filters = dict(include_inactive=include_inactive, source_filter=source_filter,
                        exclude_sources=exclude_sources, role_filter=role_filter)
+        # Reasoning is deliberately absent from every derived index. The explicit opt-in
+        # searches canonical rows so existing databases work without a rebuild or index growth.
+        if include_reasoning:
+            matches = self._search_messages_like_fallback(
+                query, limit=limit, offset=offset, sort=sort, include_reasoning=True, **filters)
+            return self._finalize_search_matches(matches, result_fields=result_fields)
         # New oversized tool results index only a bounded prefix; an explicit tool-role search is the
         # opt-in full-body path and scans canonical rows via LIKE.
         if role_filter and "tool" in role_filter:

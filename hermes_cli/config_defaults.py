@@ -2280,6 +2280,14 @@ DEFAULT_CONFIG = {
         # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
         # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
+        # App blocklist (Cowork-inspired): deterministic per-app denial at the tool boundary.
+        # block_sensitive_apps gates the built-in sensitive list (trading/brokerage, crypto wallets,
+        # password managers — tools/computer_use/app_blocklist.py); blocked_apps adds patterns,
+        # unblocked_apps exempts built-in ones (false-positive valve). Token-sequence matching:
+        # "kraken" blocks the Kraken exchange app, never GitKraken.
+        "block_sensitive_apps": True,
+        "blocked_apps": [],
+        "unblocked_apps": [],
         # macOS only: allow an UNSIGNED CuaDriver.app for the private-session daemon. False fails
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.

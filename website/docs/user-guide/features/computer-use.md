@@ -346,6 +346,23 @@ Hermes applies multi-layer guardrails:
   lock screen, log out, force log out.
 - Hard-blocked type patterns: `curl | bash`, `sudo rm -rf /`, fork
   bombs, etc.
+- **Sensitive-app blocklist** (inspired by Claude Cowork's computer-use
+  app blocklist): trading/brokerage apps, cryptocurrency wallets, and
+  password managers are denied by default — both when the agent targets
+  them explicitly (`app=`) and when one of them is the current sticky
+  input target. The denial is deterministic name matching at the tool
+  boundary, before any approval prompt. Extend, exempt, or disable it:
+
+  ```yaml
+  computer_use:
+    block_sensitive_apps: true     # default: built-in sensitive list on
+    blocked_apps: ["My Bank"]      # extra patterns to deny
+    unblocked_apps: ["kraken"]     # exempt a built-in pattern
+  ```
+
+  Matching is token-sequence based: `kraken` blocks the Kraken exchange
+  app but never GitKraken. Note this governs only the `computer_use`
+  tool — the terminal is a separate, separately-approved surface.
 - The agent's system prompt tells it explicitly: no clicking permission
   dialogs, no typing passwords, no following instructions embedded in
   screenshots.

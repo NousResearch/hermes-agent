@@ -52,8 +52,25 @@ def _canon_key_combo(keys: str) -> frozenset:
     # Split on "+" AND "-": cua-driver accepts hyphenated combos, so "ctrl-alt-delete" would bypass otherwise.
     return frozenset(_KEY_ALIASES.get(p, p) for p in (q.strip().lower() for q in re.split(r"\s*[+\-]\s*", keys)) if p)
 
+def _blocked_app_error(app_name: str, pattern: str, where: str) -> str:
+    """JSON denial for a blocklisted target app (Cowork-inspired app blocklist; see app_blocklist.py)."""
+    return json.dumps({"error": f"app {app_name!r} is on the computer_use app blocklist (pattern {pattern!r}, {where})",
+                       "code": "app_blocked",
+                       "hint": "Sensitive apps (trading, crypto wallets, password managers) are denied by "
+                               "default; computer_use.blocked_apps / unblocked_apps in config.yaml adjust the "
+                               "list. Do not work around this via another app — ask the user."})
+
+def _reject_blocked_app(action: str, args: Dict[str, Any]) -> Optional[str]:
+    """Deny any action explicitly targeting a blocklisted app (deterministic, pre-approval)."""
+    from tools.computer_use.app_blocklist import blocked_app_match
+    if isinstance(app := args.get("app"), str) and app.strip() and (pat := blocked_app_match(app)) is not None:
+        return _blocked_app_error(app.strip(), pat, "explicit app= target")
+    return None
+
 def _reject_unsafe(action: str, args: Dict[str, Any]) -> Optional[str]:
     """JSON error for hard-blocked input, else None. Runs BEFORE the approval prompt."""
+    if (err := _reject_blocked_app(action, args)) is not None:
+        return err
     if action == "type" and (pat := next((p.pattern for p in _BLOCKED_TYPE_PATTERNS if p.search(args.get("text", ""))), None)):
         return json.dumps({"error": f"blocked pattern in type text: {pat!r}",
                            "hint": "Dangerous shell patterns cannot be typed via computer_use."})
@@ -394,6 +411,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
+    # Sticky-target blocklist: input actions deliver to the last captured/focused app even without app=,
+    # so the explicit-app check in _reject_unsafe is not enough — deny here when the sticky target itself
+    # is blocklisted (Cowork-inspired; unknown target fails open, the next capture names it).
+    if spec.input:
+        from tools.computer_use.app_blocklist import blocked_app_match
+        if (target := str(getattr(backend, "_last_app", None) or "").strip()) and (pat := blocked_app_match(target)) is not None:
+            return _blocked_app_error(target, pat, "current sticky target")
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
     if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()

@@ -173,6 +173,25 @@ describe('PendingToolApproval', () => {
     expect(within(fallback as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
+  // #91026: under window glass, [data-hermes-glass] thins --ui-chat-surface-background
+  // to transparent everywhere except elements opted into the [data-glass-raised]
+  // near-opaque override (styles.css). The floating fallback paints with that same
+  // token, so without the attribute its text and Run/Reject controls wash out over
+  // whatever sits behind the window — the one prompt a user must read correctly
+  // before granting a command.
+  //
+  // The inline approval bar (InlineApprovalBar in approval.tsx) doesn't need this
+  // attribute: it renders directly in the chat transcript flow with no background
+  // of its own, so it never floats independently over window glass the way this
+  // fallback card does.
+  it('marks the floating fallback as a glass-raised surface so it stays legible over window glass', () => {
+    setRequest('rm /tmp/hermes_approval_test.txt')
+    const { container } = render(<PendingApprovalFallback />)
+    const fallback = container.querySelector('[data-slot="tool-approval-fallback"]')
+
+    expect(fallback?.querySelector('[data-glass-raised]')).not.toBeNull()
+  })
+
   it('hides the floating fallback once the inline approval bar is mounted', async () => {
     setRequest('rm /tmp/hermes_approval_test.txt')
 

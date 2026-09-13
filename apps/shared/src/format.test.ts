@@ -14,6 +14,7 @@ describe('compactNumber', () => {
     [999_999, '1M'],
     [1_000_000, '1M'],
     [1_500_000, '1.5M'],
+    // `M` is the declared top rung (see format.ts): no `B`, so billions stay in M.
     [1_000_000_000, '1000M']
   ])('%d → %s', (value, expected) => {
     expect(compactNumber(value)).toBe(expected)

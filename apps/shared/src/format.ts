@@ -1,6 +1,9 @@
 // THE compact-number formatter — every user-facing count/token figure goes
 // through here. 999 → "999", 1000 → "1k", 1230 → "1.2k", 10000 → "10k",
-// 1_500_000 → "1.5M". Do not hand-roll `/ 1000` display math elsewhere.
+// 1_500_000 → "1.5M". `M` is the top rung by design: token and cost figures
+// this renders stay well under a billion, so 1e9 reads "1000M" rather than
+// growing a `B` rung that no surface needs (and that would collide with the
+// "bytes" reading in size labels). Do not hand-roll `/ 1000` display math elsewhere.
 export function compactNumber(value: null | number | undefined): string {
   const num = Number(value ?? 0)
 

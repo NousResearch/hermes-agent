@@ -2513,6 +2513,7 @@ export const zhHant = defineLocale({
       stageAll: '全部暫存',
       viewAsTree: '樹狀檢視',
       viewAsList: '清單檢視',
+      viewAsSmart: '依重要性顯示',
       revert: '還原',
       revertAll: '全部還原',
       revertConfirm: '捨棄對此檔案的變更並將其還原至已提交狀態？此操作無法復原。',

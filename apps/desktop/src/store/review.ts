@@ -46,16 +46,26 @@ export const $reviewCommitDefault = persistentAtom<CommitAction>(COMMIT_DEFAULT_
   encode: value => value
 })
 
-// Changed-file layout: a flat path list (VS Code's default) or a folder tree.
-export type ReviewTreeMode = 'list' | 'tree'
+// Changed-file layout: a folder tree, a flat path list (VS Code's default), or
+// a smart list — change-explaining files first, supporting files (tests,
+// fixtures, lockfiles, generated) dimmed at the bottom (Amp's intelligently
+// ordered diffs).
+export type ReviewTreeMode = 'list' | 'smart' | 'tree'
 
 export const $reviewTreeMode = persistentAtom<ReviewTreeMode>(TREE_MODE_KEY, 'tree', {
-  decode: raw => (raw === 'list' ? 'list' : 'tree'),
+  decode: raw => (raw === 'list' || raw === 'smart' ? raw : 'tree'),
   encode: value => value
 })
 
+// The header button cycles the three layouts in a fixed loop.
+const TREE_MODE_CYCLE: Record<ReviewTreeMode, ReviewTreeMode> = {
+  tree: 'list',
+  list: 'smart',
+  smart: 'tree'
+}
+
 export function toggleReviewTreeMode(): void {
-  $reviewTreeMode.set($reviewTreeMode.get() === 'tree' ? 'list' : 'tree')
+  $reviewTreeMode.set(TREE_MODE_CYCLE[$reviewTreeMode.get()])
 }
 
 export const $reviewFiles = atom<HermesReviewFile[]>([])

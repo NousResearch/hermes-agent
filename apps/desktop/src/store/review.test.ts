@@ -235,10 +235,12 @@ describe('selectReviewFile / clearReviewSelection', () => {
 })
 
 describe('view state', () => {
-  it('toggleReviewTreeMode flips list <-> tree', () => {
+  it('toggleReviewTreeMode cycles tree -> list -> smart -> tree', () => {
     $reviewTreeMode.set('tree')
     toggleReviewTreeMode()
     expect($reviewTreeMode.get()).toBe('list')
+    toggleReviewTreeMode()
+    expect($reviewTreeMode.get()).toBe('smart')
     toggleReviewTreeMode()
     expect($reviewTreeMode.get()).toBe('tree')
   })

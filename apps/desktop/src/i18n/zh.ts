@@ -3226,6 +3226,7 @@ export const zh = defineLocale({
       stageAll: '全部暂存',
       viewAsTree: '树状视图',
       viewAsList: '列表视图',
+      viewAsSmart: '按重要性显示',
       revert: '还原',
       revertAll: '全部还原',
       revertConfirm: '放弃对此文件的更改并将其恢复到已提交状态？此操作无法撤销。',

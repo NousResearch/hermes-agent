@@ -47,16 +47,7 @@ class RunRecorder:
 def recorder(monkeypatch, tmp_path):
     run = RunRecorder()
     monkeypatch.setattr(apple, "find_container_cli", lambda: "/usr/bin/container")
-    monkeypatch.setattr(
-        apple,
-        "platform",
-        SimpleNamespace(
-            system=lambda: "Darwin",
-            machine=lambda: "arm64",
-            mac_ver=lambda: ("26.0", ("", "", ""), ""),
-        ),
-        raising=False,
-    )
+    monkeypatch.setattr(apple, "is_apple_container_supported_host", lambda: True)
     monkeypatch.setattr(apple.subprocess, "run", run)
     monkeypatch.setattr(apple, "query_system_resources", lambda: {"total_cpus": 8, "total_memory_mb": 24576})
     monkeypatch.setattr(BaseEnvironment, "init_session", lambda self: None)

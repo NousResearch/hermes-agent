@@ -300,9 +300,14 @@ def map_cache_path_to_container(host_path: str, container_base: str = "/root/.he
 
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:
-    """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless Docker + cache dir."""
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
-        return container_path
+    """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless the backend maps cache paths."""
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend != "docker":
+        from agent.terminal_env_registry import provider_flag
+        base = provider_flag(backend, "cache_path_base", None)
+        if not base:
+            return container_path
+        container_base = str(base)
     mapped = _remap_cache_path(container_path, container_base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
     return mapped if mapped is not None else container_path
 

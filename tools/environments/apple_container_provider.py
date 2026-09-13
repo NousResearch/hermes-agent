@@ -1,20 +1,7 @@
-"""Apple Container terminal backend, expressed as a registry provider.
+"""Apple Container provider for the existing terminal registry.
 
-Upstream moved terminal-backend classification off hardcoded frozensets onto
-:mod:`agent.terminal_env_registry`. This module registers ``apple_container``
-through that registry instead of adding an eighth built-in special case at
-every classification site.
-
-``apple_container`` is deliberately NOT in
-:data:`agent.terminal_env_registry.BUILTIN_BACKEND_NAMES`, so the registry
-accepts it. The execution class itself stays in-tree at
-:mod:`tools.environments.apple_container`; this file is only the interface
-adapter plus the setup, probe and doctor UX the CLI surfaces read.
-
-Registration happens through :func:`register_builtin_providers`, which the
-registry calls lazily on its first read. The backend must be classified
-correctly even when no plugin discovery ran (a bare ``run_agent`` process
-never calls ``discover_plugins``).
+The registry exposes this in-tree provider as an immutable fallback and reserves
+its name against plugin replacement. No plugin discovery or bootstrap is needed.
 """
 
 from __future__ import annotations
@@ -49,10 +36,8 @@ class AppleContainerProvider(TerminalEnvironmentProvider):
     def skip_container_guards(self) -> bool:
         """Never skip approval prompts: volumes bind host paths into the VM.
 
-        ``tools.approval._should_skip_container_guards`` still decides this
-        itself (it reads no provider flag), and it treats apple_container the
-        way it treats docker: guards apply once host paths are mounted. This
-        flag agrees with that so the two cannot drift apart.
+        Approval routing makes a per-configuration decision through
+        apple_container_has_host_access. Static-only consumers must not skip.
         """
         return False
 
@@ -145,21 +130,6 @@ class AppleContainerProvider(TerminalEnvironmentProvider):
             "(start manually with: container system start)",
         )]
 
-    def apply_config_defaults(self, terminal: Dict[str, Any]) -> None:
-        """Seed the terminal.* keys `hermes setup` used to write inline.
-
-        Duck-typed hook, not part of the upstream ABC: the wizard calls it
-        when a provider defines it. The image and volume keys only fill a
-        gap, but the resource floor is an override: the shared default of 1
-        CPU makes an Apple Container VM unusable, and it is free on the
-        Apple Silicon hosts this backend requires.
-        """
-        terminal.setdefault("apple_container_image", DEFAULT_IMAGE)
-        terminal.setdefault("apple_container_volumes", [])
-        terminal["container_cpu"] = 4
-        terminal["container_memory"] = 5120
-        terminal["container_persistent"] = True
-
     def create_environment(
         self,
         *,
@@ -174,7 +144,7 @@ class AppleContainerProvider(TerminalEnvironmentProvider):
 
         cc = container_config or {}
         return AppleContainerEnvironment(
-            image=cc.get("apple_container_image") or image or DEFAULT_IMAGE,
+            image=image or cc.get("apple_container_image") or DEFAULT_IMAGE,
             cwd=cwd,
             timeout=timeout,
             cpu=int(cc.get("container_cpu", 0) or 0),
@@ -186,12 +156,37 @@ class AppleContainerProvider(TerminalEnvironmentProvider):
         )
 
 
-def register_builtin_providers() -> None:
-    """Register the in-tree providers that ride the plugin registry.
+def read_apple_container_config() -> Dict[str, Any]:
+    """Read the active profile through the same scope-aware bridge as terminal."""
+    import json
+    from tools.terminal_tool_config import _parse_env_var, _tenv
+    result = {"apple_container_image": _tenv("TERMINAL_APPLE_CONTAINER_IMAGE", DEFAULT_IMAGE)}
+    for key in ("apple_container_volumes", "apple_container_extra_args"):
+        value = _parse_env_var("TERMINAL_" + key.upper(), "[]", json.loads, "valid JSON")
+        if not isinstance(value, list) or any(not isinstance(arg, str) for arg in value):
+            raise ValueError(f"{key} must be a list of strings")
+        if any(any(c in arg for c in "\x00\r\n") for arg in value):
+            raise ValueError(f"{key} contains control characters")
+        result[key] = value
+    return result
 
-    Idempotent: ``register_provider`` overwrites a same-named entry, and the
-    registry only calls this once per generation.
+
+def apple_container_has_host_access(config: Dict[str, Any]) -> bool:
+    """Enable guards for user mounts and potential mount options in raw arguments.
+
+    Apple uses Swift ArgumentParser, not Docker's pflag. Deliberately count all
+    mount-like options, even named volumes or another option's value. This can
+    require approval or block unattended deny-mode execution. Managed workspace
+    persistence and automatic read-only skill/cache mounts retain existing policy.
     """
-    from agent.terminal_env_registry import register_provider
-
-    register_provider(AppleContainerProvider())
+    if config.get("apple_container_volumes"):
+        return True
+    args = config.get("apple_container_extra_args") or []
+    if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+        return True
+    for arg in args:
+        if arg in ("--mount", "--volume", "--ssh") or arg.startswith(("--mount=", "--volume=", "--ssh=")):
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and "v" in arg[1:]:
+            return True
+    return False

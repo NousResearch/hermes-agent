@@ -28,7 +28,8 @@ def test_factory_passes_all_apple_container_settings(monkeypatch):
     fake = Mock(return_value=object())
     monkeypatch.setattr(apple, "AppleContainerEnvironment", fake)
 
-    result = terminal_tool._create_environment(
+    from tools.terminal_tool_backends import _create_environment
+    result = _create_environment(
         env_type="apple_container",
         image="python:3.12-slim",
         cwd="/workspace",
@@ -71,7 +72,7 @@ def test_terminal_creation_passes_apple_specific_config(monkeypatch):
         return DummyEnvironment()
 
     monkeypatch.setattr(terminal_tool, "_get_env_config", _config)
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})

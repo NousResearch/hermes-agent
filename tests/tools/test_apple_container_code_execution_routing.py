@@ -35,7 +35,7 @@ def _capture(task_overrides=None):
          patch("tools.terminal_tool._creation_locks", {}), \
          patch("tools.terminal_tool._creation_locks_lock", threading.Lock()), \
          patch("tools.terminal_tool._task_env_overrides", task_overrides or {}), \
-         patch("tools.terminal_tool._create_environment", side_effect=create), \
+         patch("tools.terminal_tool_backends._create_environment", side_effect=create), \
          patch("tools.terminal_tool._start_cleanup_thread"):
         code_execution._get_or_create_env("apple-execute")
     return captured
@@ -83,7 +83,7 @@ def test_execute_code_carries_extra_args():
          patch("tools.terminal_tool._creation_locks", {}), \
          patch("tools.terminal_tool._creation_locks_lock", threading.Lock()), \
          patch("tools.terminal_tool._task_env_overrides", {}), \
-         patch("tools.terminal_tool._create_environment", side_effect=create), \
+         patch("tools.terminal_tool_backends._create_environment", side_effect=create), \
          patch("tools.terminal_tool._start_cleanup_thread"):
         code_execution._get_or_create_env("apple-extra-args")
     assert captured["container_config"]["apple_container_extra_args"] == [

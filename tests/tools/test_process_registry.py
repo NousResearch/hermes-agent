@@ -135,6 +135,71 @@ def test_kill_all_backward_compat_and_exclude_ids(registry):
     assert sorted(c[0] for c in calls) == ["proc_a", "proc_b"]
 
 
+def test_kill_all_skips_persist_on_release_sessions(registry):
+    """Lifecycle kill_all (agent release(), source='kill_all') must skip
+    persist_on_release=True sessions so explicitly persisted background jobs
+    survive session end / compression / error recovery (#41225)."""
+    a = _make_session(sid="proc_volatile", task_id="session-a")
+    p = _make_session(sid="proc_persisted", task_id="session-a")
+    p.persist_on_release = True
+    registry._running[a.id] = a
+    registry._running[p.id] = p
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append(session_id)
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert registry.kill_all("session-a") == 1
+    assert calls == ["proc_volatile"]
+
+
+def test_kill_all_direct_source_still_reaches_persisted_sessions(registry):
+    """An explicit non-lifecycle source (operator/user-driven) still reaches a
+    persisted session: persist_on_release is an agent-lifecycle opt-out, never
+    a protection against being stopped on purpose."""
+    p = _make_session(sid="proc_persisted", task_id="session-a")
+    p.persist_on_release = True
+    registry._running[p.id] = p
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append(session_id)
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert registry.kill_all("session-a", source="shutdown") == 1
+    assert calls == ["proc_persisted"]
+
+
+def test_spawn_local_stamps_persist_on_release(registry):
+    """spawn_local(persist_on_release=True) stamps the flag onto the minted
+    ProcessSession so the lifecycle kill_all filter can see it."""
+    with patch.object(registry, "_track_started"), \
+         patch("tools.terminal_tool_sudo._rewrite_compound_background", side_effect=lambda c: c), \
+         patch.object(ProcessRegistry, "_scope_argv", return_value=None), \
+         patch("subprocess.Popen") as fake_popen:
+        fake_popen.return_value = MagicMock(pid=4242)
+        session = registry.spawn_local(
+            "python -c 'import time; time.sleep(60)'", task_id="t1",
+            persist_on_release=True,
+        )
+    assert session.persist_on_release is True
+    # and the default stays opt-in
+    with patch.object(registry, "_track_started"), \
+         patch("tools.terminal_tool_sudo._rewrite_compound_background", side_effect=lambda c: c), \
+         patch.object(ProcessRegistry, "_scope_argv", return_value=None), \
+         patch("subprocess.Popen") as fake_popen:
+        fake_popen.return_value = MagicMock(pid=4243)
+        session = registry.spawn_local("echo hi", task_id="t1")
+    assert session.persist_on_release is False
+
+
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
     """Poll a predicate until it returns truthy or the timeout elapses."""
     deadline = time.monotonic() + timeout

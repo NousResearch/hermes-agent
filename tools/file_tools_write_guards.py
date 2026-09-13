@@ -120,7 +120,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+            "Use `hermes config set KEY VALUE` or `hermes config unset KEY` instead; "
+            "editing this file by hand is refused the same way (#109561).")
     return None
 
 

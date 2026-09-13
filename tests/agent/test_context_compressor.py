@@ -3402,6 +3402,63 @@ class TestMinTailUserMessages:
         assert accumulated > c.tail_token_budget
 
 
+class TestTailTokenBudgetCeiling:
+    def test_message_floor_does_not_unboundedly_override_soft_ceiling(self):
+        """Oversized optional rows must not ride the count floor past 1.5x budget."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=20,
+                quiet_mode=True,
+                tail_mode="lean",
+            )
+        c.tail_token_budget = 10_000
+        oversized = "x" * 24_000
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": "latest request"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call-latest", "function": {"name": "read_file", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call-latest", "content": "result " + ("r" * 20_000)},
+            {"role": "assistant", "content": "latest answer"},
+        ]
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        tail = messages[cut:]
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+        tail_tokens = sum(_estimate_msg_budget_tokens(message) for message in tail)
+        assert tail_tokens <= int(c.tail_token_budget * 1.5)
+        assert any(message.get("content") == "latest request" for message in tail)
+        assert tail[-1]["content"] == "latest answer"
+        assert [message.get("role") for message in tail if message.get("tool_call_id") == "call-latest"] == ["tool"]
+        assert any(
+            call.get("id") == "call-latest"
+            for message in tail
+            for call in message.get("tool_calls", [])
+        )
+
+        # The ceiling remains soft when required continuity is itself oversized:
+        # keep the active user's whole tool group and final assistant response.
+        messages[9]["content"] = "result " + ("r" * 80_000)
+        oversized_cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        oversized_tail = messages[oversized_cut:]
+        assert sum(_estimate_msg_budget_tokens(message) for message in oversized_tail) > int(
+            c.tail_token_budget * 1.5
+        )
+        assert messages[7:] == oversized_tail
+
+
 
 class TestContextLengthSetterCoherence:
     """The context_length setter must (a) not wipe runtime corrections on

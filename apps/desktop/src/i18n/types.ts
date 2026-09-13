@@ -167,6 +167,7 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    openInSystem: string
     download: string
     downloadSaved: string
     downloadFailed: string

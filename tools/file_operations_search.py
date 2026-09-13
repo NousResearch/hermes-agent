@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
@@ -371,7 +372,15 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except OSError:
+                # rg exited between poll() and the kill but is not reaped yet. macOS
+                # raises ESRCH from getpgid() and EPERM from killpg() on such a zombie
+                # group (Linux returns success for both). Same fallback as
+                # LocalEnvironment._kill_process; the wait() below reaps it.
+                with contextlib.suppress(OSError):
+                    proc.kill()
         proc.wait()
         drainer.join()
         proc.stdout.close()

@@ -337,10 +337,10 @@ class SessionPersistenceMixin:
             self._save_session_log(messages)
             persisted = self._flush_messages_to_session_db(messages, conversation_history)
             if persisted is not True:
-                # Do not clear the in-flight marker when the canonical DB write failed,
-                # or when no canonical SessionDB was available. The caller must observe
-                # the failure and fail closed rather than treating an in-memory turn as durable.
-                return False
+                # Do not clear the in-flight marker when the canonical DB write failed.
+                # Preserve None (disabled/unavailable) so callers can distinguish it from
+                # an explicit write failure and still suppress external delivery.
+                return persisted
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()
@@ -397,9 +397,9 @@ class SessionPersistenceMixin:
             return None
         batch_rows: List[Dict[str, Any]] = []
         try:
+            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
-            batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
             _db_flush_write(self, batch_rows, batch_msgs)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()

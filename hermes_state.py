@@ -294,6 +294,15 @@ _REPAIR_LOCK_TIMEOUT_SECONDS = 120.0
 _IS_WINDOWS = sys.platform == "win32"
 
 
+def _safe_session_filename_component(session_id: str) -> str:
+    """Return a bounded filename component for an untrusted session ID."""
+    raw = str(session_id or "").strip()
+    safe = re.sub(r"[^\w-]", "_", raw).strip("._")[:96] or "session"
+    if raw and safe == raw:
+        return safe
+    return f"{safe}_{hashlib.sha256(raw.encode('utf-8', errors='surrogatepass')).hexdigest()[:12]}"
+
+
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":
     """Append pending messages to HERMES_HOME/sessions/<id>.jsonl (state.db was replaced under a
     live process). Returns the path, or None if nothing to write."""
@@ -302,7 +311,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
         return None
     sessions_dir = get_hermes_home() / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    path = sessions_dir / f"{sid}.jsonl"
+    path = sessions_dir / f"{_safe_session_filename_component(sid)}.jsonl"
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:
             if msg is not None:

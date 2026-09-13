@@ -128,13 +128,57 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert result["messages"][-1]["content"] == "Done."
     assert isinstance(result["messages"][-1]["timestamp"], float)
     assert agent.persisted_messages is not None
-
-
     assert agent.persisted_messages[-1] == result["messages"][-1]
 
 
+def test_missing_canonical_persistence_blocks_external_observers(monkeypatch):
+    """A skipped canonical store is not a persistence receipt or delivery proof."""
+    hook_names = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda name, **_kwargs: hook_names.append(name) or [],
+    )
+    agent = FakeAgent()
+    trajectory_calls = []
+    sync_calls = []
+    context_calls = []
+    monkeypatch.setattr(
+        "agent.conversation_loop._notify_context_engine_turn_complete",
+        lambda *args, **kwargs: context_calls.append((args, kwargs)),
+    )
+    agent._save_trajectory = lambda *args: trajectory_calls.append(args)
+    agent._sync_external_memory_for_turn = lambda **kwargs: sync_calls.append(kwargs)
+    agent._persist_session = lambda *_args: None  # type: ignore[assignment]
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "do it"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=True,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["persistence_confirmed"] is False
+    assert result["failed"] is False
+    assert result["final_response"] == "Done."
+    assert result["turn_exit_reason"] == "text_response(final)"
+    assert trajectory_calls[-1][2] is True
+    assert sync_calls == []
+    assert "post_llm_call" not in hook_names
+    assert "on_session_end" not in hook_names
+    assert context_calls == []
+
+
 def test_persistence_receipt_covers_transformed_delivery_payload(monkeypatch):
-    """The durable assistant row must match the post-transform delivery payload."""
+    """The durable assistant row is written before post-persistence transformation."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setattr(
         "agent.turn_finalizer._append_file_mutation_footer",
@@ -184,7 +228,7 @@ def test_persistence_receipt_covers_transformed_delivery_payload(monkeypatch):
 
 
 def test_post_hook_is_exactly_once_and_only_after_persistence(monkeypatch):
-    """The real output-hook path must emit post_llm_call after persistence only."""
+    """The real output-hook path emits post_llm_call after persistence only."""
     agent = FakeAgent()
     events = []
 
@@ -216,7 +260,7 @@ def test_post_hook_is_exactly_once_and_only_after_persistence(monkeypatch):
 
     assert result["persistence_confirmed"] is True
     assert events == [
-        ("transform_llm_output", False),
+        ("transform_llm_output", True),
         ("post_llm_call", True),
     ]
     assert agent.persisted_messages[-1]["content"] == "answer [transformed]"
@@ -469,11 +513,6 @@ def test_persist_step_failure_is_not_external_delivery_proof(monkeypatch):
     persistence receipt, the result must not expose a final response.
     """
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
-    post_calls = []
-    monkeypatch.setattr(
-        "agent.turn_finalizer._emit_post_llm_call",
-        lambda *_args, **_kwargs: post_calls.append(True),
-    )
     agent = FakeAgent()
     agent._current_streamed_assistant_text = "  streamed answer  "
 
@@ -505,7 +544,6 @@ def test_persist_step_failure_is_not_external_delivery_proof(monkeypatch):
     assert result["persistence_confirmed"] is False
     assert result["turn_exit_reason"] == "session_persistence_failed"
     assert result["cleanup_errors"] == ["persist_session: override exploded"]
-    assert post_calls == []
     # The blank tail was filled before the raise (same order as the inline BASE block).
     assert messages[-1]["content"] == "streamed answer"
 

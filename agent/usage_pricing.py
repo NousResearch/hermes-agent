@@ -322,7 +322,8 @@ _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google
 
 
 def resolve_billing_route(
-    model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None
+    model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> BillingRoute:
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
@@ -343,6 +344,11 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    if provider_name == "anthropic" and (not base or host("api.anthropic.com")):
+        from agent.anthropic_credentials import _is_oauth_token
+
+        if _is_oauth_token(api_key or ""):
+            return BillingRoute(provider="anthropic", model=bare, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):
@@ -443,7 +449,7 @@ def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[PricingEntry]:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
     if route.provider == "openrouter":
@@ -553,7 +559,7 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if route.billing_mode == "subscription_included":
         return CostResult(
             amount_usd=_ZERO, status="included", source="none", label="included",

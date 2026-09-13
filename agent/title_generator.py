@@ -374,7 +374,7 @@ def auto_title_session(
         set_conversation_context(conversation_id)
         # Same for the accounting context, so the title call's token usage is recorded against this session
         # (task='title_generation', #23270).
-        set_accounting_context(session_db, session_id)
+        set_accounting_context(session_db, session_id, (main_runtime or {}).get("api_key"))
         title, source = generate_title(
             user_message, failure_callback=failure_callback, main_runtime=main_runtime, runtime_validator=runtime_validator,
         ), "llm"

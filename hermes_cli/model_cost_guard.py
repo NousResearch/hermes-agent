@@ -60,11 +60,11 @@ def _can_trust_model_info_pricing(
 
 
 def _can_trust_pricing_lookup(
-    model_name: str, *, provider: Optional[str], base_url: Optional[str]) -> bool:
+    model_name: str, *, provider: Optional[str], base_url: Optional[str], api_key: Optional[str]) -> bool:
     try:
         from agent.usage_pricing import resolve_billing_route
 
-        route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+        route = resolve_billing_route(model_name, provider=provider, base_url=base_url, api_key=api_key)
     except Exception:
         return False
     return route.billing_mode != "unknown"
@@ -97,7 +97,9 @@ def expensive_model_warning(
         except Exception:
             pass
 
-    if _unpriced() and _can_trust_pricing_lookup(model, provider=provider, base_url=base_url):
+    if _unpriced() and _can_trust_pricing_lookup(
+        model, provider=provider, base_url=base_url, api_key=api_key,
+    ):
         try:
             from agent.usage_pricing import get_pricing_entry
 

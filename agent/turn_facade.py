@@ -120,7 +120,7 @@ class TurnFacadeMixin:
             # usage into session_model_usage (task dimension) — the fix for aux spend being invisible in
             # analytics (issue #23270).
             acct_token = set_accounting_context(
-                getattr(self, "_session_db", None), getattr(self, "session_id", None)
+                getattr(self, "_session_db", None), getattr(self, "session_id", None), getattr(self, "api_key", None)
             )
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).

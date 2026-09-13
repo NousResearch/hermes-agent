@@ -308,6 +308,43 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     assert result.amount_usd is not None
 
 
+def test_anthropic_oauth_usage_is_subscription_included():
+    token = "sk-ant-oat01-test-oauth-token"
+    route = resolve_billing_route("claude-sonnet-5", provider="anthropic", api_key=token)
+    result = estimate_usage_cost(
+        "claude-sonnet-5", CanonicalUsage(input_tokens=100, output_tokens=100),
+        provider="anthropic", api_key=token,
+    )
+
+    assert route.billing_mode == "subscription_included"
+    assert result.status == "included"
+    assert result.amount_usd == Decimal("0")
+    assert result.label == "included"
+    assert "subscription" in result.notes[0]
+
+
+def test_anthropic_console_api_key_remains_metered():
+    token = "sk-ant-api03-test-console-key"
+    route = resolve_billing_route("claude-sonnet-5", provider="anthropic", api_key=token)
+    result = estimate_usage_cost(
+        "claude-sonnet-5", CanonicalUsage(input_tokens=100, output_tokens=100),
+        provider="anthropic", api_key=token,
+    )
+
+    assert route.billing_mode == "official_docs_snapshot"
+    assert result.status == "estimated"
+    assert result.amount_usd is not None and result.amount_usd > Decimal("0")
+
+
+def test_anthropic_oauth_token_on_third_party_endpoint_remains_metered():
+    route = resolve_billing_route(
+        "claude-sonnet-5", provider="anthropic", base_url="https://proxy.example/v1",
+        api_key="sk-ant-oat01-test-oauth-token",
+    )
+
+    assert route.billing_mode == "official_docs_snapshot"
+
+
 
 
 

@@ -477,13 +477,15 @@ def _serialize_assistant_message(message: Any) -> dict[str, Any]:
 
 
 def _canonical_usage_and_cost(canonical: Any, *, provider: str, model: str,
-                              base_url: str) -> tuple[dict[str, int], dict[str, float]]:
+                              base_url: str, billing_mode: str = "") -> tuple[dict[str, int], dict[str, float]]:
     """Translate canonical Hermes usage into Langfuse usage and cost maps."""
     usage_details: Dict[str, int] = {
         key: tokens for key, attr, _ in _USAGE_FIELDS
         if (tokens := getattr(canonical, attr)) or key in ("input", "output")
     }
     cost_details: Dict[str, float] = {}
+    if billing_mode == "subscription_included":
+        return usage_details, cost_details
     try:
         from agent.usage_pricing import estimate_usage_cost, resolve_billing_route
 
@@ -527,7 +529,7 @@ def _canonical_usage_and_cost(canonical: Any, *, provider: str, model: str,
 
 
 def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, api_mode: str = "",
-                    usage: Optional[dict] = None) -> tuple[dict[str, int], dict[str, float]]:
+                    usage: Optional[dict] = None, billing_mode: str = "") -> tuple[dict[str, int], dict[str, float]]:
     """Langfuse usage/cost maps from ``response.usage`` (post_llm_call) or, when ``usage``
     is given (post_api_request), from that pre-built CanonicalUsage summary dict."""
     raw_usage = getattr(response, "usage", None)
@@ -541,7 +543,9 @@ def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, 
             request_count=usage.get("request_count", 1),
             **{attr: usage.get(attr, 0) for attr in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")},
         )
-        return _canonical_usage_and_cost(canonical, provider=provider, model=model, base_url=base_url)
+        return _canonical_usage_and_cost(
+            canonical, provider=provider, model=model, base_url=base_url, billing_mode=billing_mode,
+        )
     except Exception as exc:  # pragma: no cover - fail-open
         if usage is None:
             _debug(f"usage normalization failed: {exc}")
@@ -808,7 +812,7 @@ def on_pre_llm_request(*, task_id: str = "", session_id: str = "", platform: str
 
 
 def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str = "", base_url: str = "",
-                     api_mode: str = "", model: str = "", api_call_count: int = 0, assistant_message: Any = None,
+                     api_mode: str = "", billing_mode: str = "", model: str = "", api_call_count: int = 0, assistant_message: Any = None,
                      response: Any = None, api_duration: float = 0.0, finish_reason: str = "", usage: Any = None,
                      assistant_content_chars: int = 0, assistant_tool_call_count: int = 0,
                      assistant_response: Any = None, turn_id: str = "", api_request_id: str = "",
@@ -843,10 +847,17 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
 
     # post_api_request's ``response`` is a sanitized dict with no ``.usage``;
     # gate on the attribute so the usage-dict fallback is actually reached.
+    pricing_kwargs = {"billing_mode": billing_mode} if billing_mode else {}
     if getattr(response, "usage", None) is not None:
-        usage_details, cost_details = _usage_and_cost(response, provider=provider, api_mode=api_mode, model=model, base_url=base_url)
+        usage_details, cost_details = _usage_and_cost(
+            response, provider=provider, api_mode=api_mode, model=model, base_url=base_url,
+            **pricing_kwargs,
+        )
     elif isinstance(usage, dict) and usage:
-        usage_details, cost_details = _usage_and_cost(None, provider=provider, model=model, base_url=base_url, usage=usage)
+        usage_details, cost_details = _usage_and_cost(
+            None, provider=provider, model=model, base_url=base_url, usage=usage,
+            **pricing_kwargs,
+        )
     else:
         usage_details, cost_details = {}, {}
 

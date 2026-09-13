@@ -278,6 +278,11 @@ class _NonStreamRequest:
             if agent._interrupt_requested:
                 self._interrupt(elapsed)
         if self.result["error"] is not None:
+            # A real HTTP response (429/5xx/4xx) proves the provider reachable —
+            # resolve the stale/no-response condition so the tripped breaker
+            # cannot short-circuit the normal retry policy's next attempt as
+            # "provider unresponsive".
+            h._resolve_stale_on_responsive_error(agent, self.result["error"])
             raise self.result["error"]
         # Success — the provider proved responsive: clear the breaker (#58962).
         if self.result["response"] is not None:

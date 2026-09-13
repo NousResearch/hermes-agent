@@ -315,4 +315,81 @@ describe('Enter submission and latch behavior', () => {
     // We don't simulate actual newline insertion here (requires complex DOM manipulation)
     // but we verify the guard did not block it
   })
+
+  // Interleaving covered nowhere else: dirty edit → blur schedules the 80ms
+  // cancel path → Enter submits before/after that timer. A torn-down composer
+  // (cancel won) would drop the edit silently; a wedged submit latch would
+  // leave the arrow dead. Issue #95798.
+  it('submits a dirty edit when Enter interleaves with the blur-cancel timer', async () => {
+    const uncaught: unknown[] = []
+    const onUncaught = (err: unknown) => {
+      uncaught.push(err)
+    }
+
+    process.on('uncaughtException', onUncaught)
+
+    try {
+      const onEdit = vi.fn(async () => {})
+      const { container } = render(<IncrementalHarness onEdit={onEdit} />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+      const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+      const editedText = 'dirty draft that must survive blur then submit'
+
+      await act(async () => {
+        editor.focus()
+        editor.textContent = editedText
+        fireEvent.input(editor)
+      })
+
+      // Blur without waiting — the 80ms cancel timer is now armed. Enter must
+      // still land the edit even if the timer fires in the same window.
+      await act(async () => {
+        editor.blur()
+        fireEvent.keyDown(editor, { key: 'Enter' })
+        await new Promise(resolve => window.setTimeout(resolve, 200))
+      })
+
+      await waitFor(() => {
+        expect(onEdit).toHaveBeenCalledTimes(1)
+      })
+      expect(onEdit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: [{ text: editedText, type: 'text' }]
+        })
+      )
+      expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeFalsy()
+      expect(uncaught.filter(err => /Composer is not available/.test(String(err)))).toEqual([])
+    } finally {
+      process.off('uncaughtException', onUncaught)
+    }
+  })
+
+  it('still submits after a dirty edit survived blur and focus left the composer', async () => {
+    const onEdit = vi.fn(async () => {})
+    const { container } = render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const editedText = 'edited after blur must still submit'
+
+    editor.textContent = editedText
+    fireEvent.input(editor)
+    await moveFocusOutside(editor)
+
+    expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+    expect(onEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [{ text: editedText, type: 'text' }]
+      })
+    )
+  })
 })

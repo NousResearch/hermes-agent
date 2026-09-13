@@ -399,6 +399,25 @@ async def _start_gateway_shutdown_tail(
 
 
 
+def _launch_home_may_multiplex() -> bool:
+    """A named profile serving ``default`` as a secondary splits default's local sessions between
+    the two stores (routing rows follow the launch home, receipts follow the authority), so the
+    multiplexer is the default profile's job. Exits EX_CONFIG: a config verdict, never a retry."""
+    from hermes_constants import profile_name_for_home
+    from gateway.run import get_hermes_home, logger
+    name = profile_name_for_home(get_hermes_home())
+    if name in (None, "default"):
+        return True
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from gateway.run import _write_runtime_status_quiet
+    logger.error(
+        "gateway.multiplex_profiles is set on profile %r, but only the default profile can run the "
+        "multiplexer. Unset the flag in this profile's config.yaml, or start the gateway from the "
+        "default profile (`hermes gateway run`), which serves this profile too.", name)
+    _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason="multiplex_requires_default_profile")
+    raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop deadlocks)."""
@@ -445,6 +464,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     resolved_config = config if config is not None else load_gateway_config_for_runner()
     profile_homes = (_multiplex_profile_homes(resolved_config)
                      if getattr(resolved_config, 'multiplex_profiles', False) else [])
+    if profile_homes and not _launch_home_may_multiplex():
+        return False
     try:
         process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
     except OwnershipConflict as exc:

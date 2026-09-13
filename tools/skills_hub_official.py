@@ -122,7 +122,13 @@ class OptionalSkillSource(SkillSource):
         for f in skill_dir.rglob("*"):
             if f.is_file() and not _skip_bundle_file(f.relative_to(skill_dir).as_posix()):
                 try:
-                    files[str(f.relative_to(skill_dir))] = f.read_bytes()
+                    # Bundle keys are POSIX-form relative paths. ``str()`` emits
+                    # "assets\\x\\y.wav" on Windows, which breaks three things at
+                    # once: ``bundle_content_hash`` hashes the key strings, so the
+                    # digest diverges from the installed tree's (which uses
+                    # ``as_posix``); ``quarantine_bundle`` writes files at these
+                    # keys; and callers index ``bundle.files`` with forward slashes.
+                    files[f.relative_to(skill_dir).as_posix()] = f.read_bytes()
                 except OSError:
                     continue
         return self._bundle(rel_id, files) if files else None

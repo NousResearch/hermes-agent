@@ -1591,15 +1591,12 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 # Rename
 
 def _atomic_write_json(path: Path, data: dict) -> bool:
-    """Write *data* to *path* via a sibling ``.tmp`` + rename. Returns False (tmp cleaned) on OSError."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    """Atomic rewrite of a third-party JSON config; False on OSError (nothing partially written)."""
+    from utils import atomic_json_write
     try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        atomic_json_write(path, data)
         return True
     except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
         return False
 
 

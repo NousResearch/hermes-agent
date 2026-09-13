@@ -1617,18 +1617,13 @@ def _plugin_toolset_keys_cache_path() -> Path:
 def _persist_plugin_toolset_keys() -> None:
     """Persist discovered plugin toolset keys + portable MCP names (best-effort)."""
     try:
-        import tempfile
+        from utils import atomic_json_write
         keys = sorted({ts_key for ts_key, _, _ in get_plugin_toolsets()})
         try:
             portable = sorted(get_plugin_manager().get_portable_mcp_servers())
         except Exception:
             portable = []
-        path = _plugin_toolset_keys_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".pt_keys.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"toolset_keys": keys, "portable_mcp": portable}, fh)
-        os.replace(tmp, path)
+        atomic_json_write(_plugin_toolset_keys_cache_path(), {"toolset_keys": keys, "portable_mcp": portable}, indent=None)
     except Exception:
         logger.debug("plugin toolset key persist failed", exc_info=True)
 

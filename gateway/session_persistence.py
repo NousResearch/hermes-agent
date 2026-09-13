@@ -7,12 +7,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import json
-import os
-import tempfile
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
-from utils import atomic_replace
+from utils import atomic_json_write
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry
@@ -475,22 +473,7 @@ class SessionPersistenceMixin:
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index (atomic + fsync)."""
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        sessions_file = self.sessions_dir / "sessions.json"
-        data = {"_README": _SESSIONS_JSON_README, **data}
-        fd, tmp_path = tempfile.mkstemp(dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, sessions_file)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError as e:
-                logger.debug("Could not remove temp file %s: %s", tmp_path, e)
-            raise
+        atomic_json_write(self.sessions_dir / "sessions.json", {"_README": _SESSIONS_JSON_README, **data})
 
     def _save_entries(self) -> None:
         """Snapshot latest state under ``_lock`` and persist after releasing it."""

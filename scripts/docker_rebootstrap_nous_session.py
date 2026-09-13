@@ -187,14 +187,22 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     # Surgical replacement: swap ONLY providers.nous, preserve everything else.
     providers["nous"] = seed_nous
 
-    tmp_path = f"{auth_path}.rebootstrap.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(store, fh)
-    os.replace(tmp_path, auth_path)
+    # 0600 from creation: the seed holds a refresh token and must never sit at umask, even briefly.
+    # (stdlib only by design — see module docstring — so this mirrors utils.atomic_json_write by hand.)
+    tmp_path = f"{auth_path}.rebootstrap.{os.getpid()}.tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.chmod(auth_path, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(store, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, auth_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return "reseeded" if terminal else "reseeded_newer"
 
 

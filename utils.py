@@ -174,25 +174,51 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None, preserve_owner: bool = True) -> None:
+def fsync_directory(path: Union[str, Path]) -> None:
+    """Best-effort fsync of a directory entry so a just-renamed file survives power loss.
+
+    No-op on Windows (directories can't be opened with ``os.open``; the file fsync still applies)
+    and on any OSError — durability of the directory entry is never worth failing a write that
+    has already been replaced into place.
+    """
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        with suppress(OSError):
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
-    *write(f)* emits the payload into the open text handle. *mode* is fchmod'd onto the temp fd
-    BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is Unix-only;
-    the post-replace chmod is the sole path on Windows). The temp file is removed on any failure —
+    *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
+    is created by ``mkstemp`` — ``O_CREAT|O_EXCL`` at 0600 regardless of umask — so a secret is
+    never readable at process umask, not even between create and chmod. *mode* is fchmod'd onto
+    the temp fd BEFORE the replace so the target never transits through mkstemp's 0600 (fchmod is
+    Unix-only; the post-replace chmod is the sole path on Windows). *fsync_dir* also fsyncs the
+    parent so the rename itself is durable. The temp file is removed on any failure —
     ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
+        with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):
                 os.fchmod(f.fileno(), mode)
             write(f)
             f.flush()
             os.fsync(f.fileno())
         _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        if fsync_dir:
+            fsync_directory(path.parent)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
@@ -206,29 +232,44 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
 
 
 def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None) -> None:
+                      preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
+                      fsync_dir: bool = False) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
     The target is never left partially written on crash/interrupt. Shared by every destructive
-    file rewrite (memory store, skill manager, agent importer, ...).
+    file rewrite (memory store, skill manager, agent importer, ...). *mode* forces the final
+    permission bits (secret files: ``0o600``) regardless of what exists; *create_mode* applies only
+    when the target is new and *preserve_mode* carries an existing file's bits and owner across.
     """
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, encoding=encoding,
-                  mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
+                  mode=mode if mode is not None else _mode_for_write(path, create_mode, preserve=preserve_mode),
+                  preserve_owner=preserve_mode, fsync_dir=fsync_dir)
+
+
+def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",
+                       mode: "int | None" = None, fsync_dir: bool = False) -> None:
+    """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
+    path = Path(path)
+    _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
+                  mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
 
 
 def atomic_json_write(
     path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
-    ensure_ascii: bool = False, **dump_kwargs: Any,
+    ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
 
     ``ensure_ascii=True`` lets callers persist surrogate-escaped strings (non-UTF-8 argv/paths)
-    that a utf-8 text handle would otherwise reject with ``UnicodeEncodeError``.
+    that a utf-8 text handle would otherwise reject with ``UnicodeEncodeError``. ``mode=0o600``
+    is the private-credential form: the temp file is 0600 from creation (mkstemp), so the payload
+    is never umask-readable.
     """
     path = Path(path)
     _atomic_write(path, lambda f: json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs),
-                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path))
+                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
+                  fsync_dir=fsync_dir)
 
 
 def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: str = "", log: logging.Logger | None = None) -> bool:

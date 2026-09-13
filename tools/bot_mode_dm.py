@@ -407,9 +407,8 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import (
-        _fsync_dir, deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
-    )
+    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from utils import fsync_directory
 
     intent: dict[str, Any]
     intent_path = Path(dm_file + ".live.json")
@@ -432,7 +431,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
                 json.dump(intent, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            _fsync_dir(intent_path.parent)
+            fsync_directory(intent_path.parent)
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None:

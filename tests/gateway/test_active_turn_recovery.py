@@ -24,6 +24,46 @@ from gateway.session import SessionEntry, SessionSource, SessionStore
 ACTIVE_TURN_MAX_AGE_SECONDS = 60 * 60
 
 
+def test_direct_user_turn_without_session_store_keeps_pending_notes():
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_model_notes = {"direct": "Model changed"}
+    ctx = TurnContext(message="Hello", session_key="direct", history=[])
+
+    assert TurnRunner(runner, ctx)._prepare_turn_message([]) == (None, None)
+    assert ctx.message == "Model changed\n\nHello"
+    assert runner._pending_model_notes == {}
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_typed_recovery_owner_blocks_generic_tool_recovery(tmp_path, malformed):
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    store = _make_store(tmp_path)
+    entry = store.get_or_create_session(_make_source())
+    assert store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt"
+    )
+    if malformed:
+        with store._lock:
+            store._entries[entry.session_key].metadata[TYPED_EVENT_RECOVERY_METADATA_KEY] = {}
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._pending_model_notes = {entry.session_key: "Model changed"}
+    history = [{"role": "tool", "content": "Pending output"}]
+    ctx = TurnContext(
+        message="Hello", session_key=entry.session_key, session_id=entry.session_id,
+        history=history,
+    )
+
+    assert TurnRunner(runner, ctx)._prepare_turn_message(history) == (None, None)
+    assert ctx.message == "Hello"
+    assert runner._pending_model_notes == {entry.session_key: "Model changed"}
+
+
 def _make_source(chat_id: str = "active-turn-chat") -> SessionSource:
     return SessionSource(
         platform=Platform.DISCORD,

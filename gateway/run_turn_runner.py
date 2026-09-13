@@ -1453,10 +1453,11 @@ class TurnRunner:
         persist_override: Optional[Any] = ctx.persist_user_message
         if ctx.gateway_system_event is not None:
             return None, None
-        if ctx.session_key:
-            with self._runner.session_store._lock:
-                self._runner.session_store._ensure_loaded_locked()
-                if self._runner.session_store._typed_event_recovery_state_locked(ctx.session_id) != "none":
+        session_store = getattr(self._runner, "session_store", None)
+        if ctx.session_key and session_store is not None:
+            with session_store._lock:
+                session_store._ensure_loaded_locked()
+                if session_store._typed_event_recovery_state_locked(ctx.session_id) != "none":
                     return persist_override, ctx.persist_user_timestamp
         self._prepend_pending_note("_pending_model_notes")
         # Auto-continue: history ending with a tool result means the previous turn was cut off

@@ -1,6 +1,7 @@
 """Trajectory saving + scratchpad helpers (``_convert_to_trajectory_format`` stays an AIAgent method — batch_runner.py calls it)."""
 
 import json
+import gzip
 import logging
 import os
 from datetime import datetime
@@ -35,13 +36,14 @@ def _lock_append_handle(f, acquire: bool) -> None:
 
 
 def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):
-    """Append a ShareGPT-format entry to a JSONL file (default trajectory_samples.jsonl / failed_trajectories.jsonl by ``completed``)."""
+    """Append a ShareGPT-format entry, gzip-compressed by default."""
     if filename is None:
-        filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
+        filename = "trajectory_samples.jsonl.gz" if completed else "failed_trajectories.jsonl.gz"
     entry = {"conversations": trajectory, "timestamp": datetime.now().isoformat(), "model": model, "completed": completed}
     try:
         line = json.dumps(entry, ensure_ascii=False) + "\n"  # serialize before taking the lock
-        with open(filename, "a", encoding="utf-8") as f:
+        opener = gzip.open if str(filename).endswith(".gz") else open
+        with opener(filename, "at", encoding="utf-8") as f:
             # Gateway sessions and batch workers append to the SAME default file; without an
             # exclusive lock around write+flush, entries larger than one write() interleave and the
             # JSONL stops parsing (#12684).

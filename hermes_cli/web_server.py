@@ -34,6 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_cli import __version__
 from hermes_cli.config import load_config
+from hermes_cli.response_compression import SelectiveGZipMiddleware
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -395,6 +396,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024, compresslevel=6)
 
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot

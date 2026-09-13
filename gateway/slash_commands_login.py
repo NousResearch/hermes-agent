@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from gateway.run_agent_cache import _first_agent
+from gateway.session import is_paired_direct_session
 from gateway.slash_access import policy_for_source
 from hermes_cli import anon_auth
 
@@ -28,11 +29,6 @@ class _SignInAttempt:
     key: tuple
     source: Any
     cancelled: bool = False
-
-
-# These adapters use "dm" for a broadcast topic, a channel, or an agent peer. Sending a consent
-# link and sign-in code there would publish them rather than deliver them to one person.
-_LOGIN_BLOCKED_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
 
 
 class GatewayLoginCommandsMixin:
@@ -62,13 +58,7 @@ class GatewayLoginCommandsMixin:
 
     async def _handle_login_command(self, event) -> str:
         src = event.source
-        platform = str(getattr(src.platform, "value", src.platform)).lower()
-        paired_dm = (
-            getattr(src, "chat_type", None) in {"dm", "private"}
-            and bool(getattr(src, "chat_id", None))
-            and platform not in _LOGIN_BLOCKED_PLATFORMS
-        )
-        if not paired_dm:
+        if not is_paired_direct_session(src):
             return anon_auth.LOGIN_DM_ONLY
 
         policy = policy_for_source(self.config, src)

@@ -622,6 +622,34 @@ def is_shared_multi_user_session(
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
+_NON_PAIRED_DIRECT_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
+
+
+def is_paired_direct_session(source: SessionSource) -> bool:
+    """True when a direct-chat source identifies one private conversation."""
+    platform = str(getattr(source.platform, "value", source.platform)).lower()
+    return (
+        source.chat_type in {"dm", "private"}
+        and bool(source.chat_id)
+        and platform not in _NON_PAIRED_DIRECT_PLATFORMS
+    )
+
+
+def is_session_principal_isolated(
+    source: SessionSource, *, group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> bool:
+    """Whether one sender's security state can safely key on this session."""
+    if source.chat_type == "dm":
+        if source.chat_id:
+            return is_paired_direct_session(source)
+        return bool(_canonical_participant(source))
+    if not _canonical_participant(source):
+        return False
+    thread_id = source.thread_id or source.prospective_thread_id
+    return bool(group_sessions_per_user and not (thread_id and not thread_sessions_per_user))
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
     (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two

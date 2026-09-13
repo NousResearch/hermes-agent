@@ -11,6 +11,7 @@ must attempt libatomic1 up front.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -89,12 +90,20 @@ def _run_install_node(tmp_path: Path, node_body: str) -> tuple[int, str, str, li
         "curl",
         "#!/bin/sh\n"
         "# Called as: curl -fsSL <index-url>        (stdout -> tarball name)\n"
+        "#           curl -fsSL <index-url>SHASUMS256.txt   (stdout -> checksum entry)\n"
         "#           curl -fsSL <download-url> -o <path>\n"
-        "if [ \"${3:-}\" = \"-o\" ]; then\n"
-        '    cp "$FIXTURE" "$4"\n'
-        "else\n"
-        "    echo 'node-v26.7.0-linux-x64.tar.xz'\n"
-        "fi\n",
+        "case \"${2:-}\" in\n"
+        "  *SHASUMS256.txt)\n"
+        '    echo "$SHA256  node-v26.7.0-linux-x64.tar.xz"\n'
+        "    ;;\n"
+        "  *)\n"
+        '    if [ "${3:-}" = "-o" ]; then\n'
+        '        cp "$FIXTURE" "$4"\n'
+        "    else\n"
+        "        echo 'node-v26.7.0-linux-x64.tar.xz'\n"
+        "    fi\n"
+        "    ;;\n"
+        "esac\n",
     )
     _stub("sudo", "#!/bin/sh\nshift_if_env() { :; }\nexec env \"$@\"\n")
     _stub(
@@ -106,6 +115,10 @@ def _run_install_node(tmp_path: Path, node_body: str) -> tuple[int, str, str, li
     env.update(
         {
             "FIXTURE": str(fixture),
+            # Digest of the fixture tarball — the SHASUMS256.txt route of the
+            # curl stub serves it so the checksum gate verifies and the probe
+            # behavior under test is reached.
+            "SHA256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
             "APT_LOG": str(apt_log),
             "PATH": f"{bin_dir}:{env['PATH']}",
         }

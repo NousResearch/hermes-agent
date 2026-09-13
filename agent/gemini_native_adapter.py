@@ -439,6 +439,7 @@ def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(
         prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount"),
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=count("thoughtsTokenCount")),
     )
 
 

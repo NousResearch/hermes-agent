@@ -3,6 +3,7 @@ include/exclude filtering, trust-tier metadata capture, utility-tool selection, 
 resolution and the schema-cache write-through. Both entry points (``_register_server_tools``
 live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_register_candidates``."""
 
+import hashlib
 import json
 import logging
 import threading
@@ -399,11 +400,36 @@ def _server_enabled(config: dict) -> bool:
     return _parse_boolish(config.get("enabled", True), default=True)
 
 
+def _oauth_credential_fingerprint(name: str, auth_method: str, hermes_home: Optional[str] = None) -> Optional[str]:
+    """Fingerprint of the profile identified by *hermes_home*'s on-disk OAuth token material for
+    *name* — the identity half that ``config_fingerprint`` deliberately omits. ``None`` when the
+    server is not OAuth-authenticated (with no per-profile credential material, two profiles on the
+    same route are one identity and sharing is safe) or when that profile has no token file yet
+    (a pending flow still rides the legacy shareable route)."""
+    if not (auth_method or "").lower().strip():
+        return None
+    from tools.mcp_oauth import _get_token_dir, _safe_filename
+
+    token_dir = _get_token_dir(hermes_home)
+    stem = _safe_filename(name)
+    material = []
+    for suffix in (".json", ".client.json", ".meta.json"):
+        path = token_dir / f"{stem}{suffix}"
+        data = path.read_bytes() if path.exists() else None
+        material.append(f"{suffix}:{hashlib.sha256(data).hexdigest() if data is not None else '-'}")
+    if ".json:-" in material:
+        return None
+    return hashlib.sha256("".join(material).encode("utf-8")).hexdigest()[:16]
+
+
 def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
     the schema cache survives a token rotation). Two profiles pointing at the same URL with different
-    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
+    headers/env/auth are two identities; borrowing across them would call tools as the other user.
+    The per-profile OAuth token files are compared separately in ``_same_server_route``: two
+    profiles with their OWN token files are two identities even with identical static config, so
+    a profile never adopts a live connection authenticated as a different user (#109422)."""
     from tools.mcp_schema_cache import config_fingerprint
 
     def _frozen(value):
@@ -413,8 +439,24 @@ def _connection_identity(config: dict) -> tuple:
             (config.get("auth") or "").lower().strip())
 
 
-def _same_server_route(server: Any, config: dict) -> bool:
-    return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
+def _same_server_route(server: Any, config: dict, server_name: str = "", *,
+                       owner_home: Optional[str] = None) -> bool:
+    """Adoption predicate: may the CALLING profile ride a live connection opened under
+    *owner_home*? The route + static-credential portion must match AND, when the server is
+    OAuth-authenticated, the owner's and caller's on-disk token state must be the same identity —
+    different users' token files are different identities even for the identical config block."""
+    server_identity = _connection_identity(getattr(server, "_config", {}) or {})
+    caller_identity = _connection_identity(config)
+    if server_identity != caller_identity:
+        return False
+    auth_method = caller_identity[3]
+    if not auth_method:
+        return True
+    owner_creds = _oauth_credential_fingerprint(server_name, auth_method, owner_home)
+    caller_creds = _oauth_credential_fingerprint(server_name, auth_method)
+    if owner_creds is None or caller_creds is None:
+        return True
+    return owner_creds == caller_creds
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -448,7 +490,9 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                    or getattr(server, "session", None) is None
+                    or not _same_server_route(server, config, _key_name(key),
+                                              owner_home=_core._server_registry_scope(key))):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -463,7 +507,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config)]
+                      and _same_server_route(live, config, name,
+                                             owner_home=_core._server_registry_scope(key))]
         if not shared:
             continue
         key, server = shared[0]

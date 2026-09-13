@@ -35,9 +35,19 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:  # pragma: no cover — never break dispatch
         pass
 
+    required = set(((schema or {}).get("parameters") or {}).get("required") or ())
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
         if not prop_schema:
+            continue
+        # Some providers emit an empty string instead of omitting an optional
+        # nullable date field. An empty string cannot be a valid JSON Schema
+        # date/date-time, while forwarding it makes MCP servers reject an
+        # otherwise valid call. Keep empty strings for ordinary strings: those
+        # can carry application-specific meaning.
+        if (value == "" and key not in required and _schema_allows_null(prop_schema)
+                and prop_schema.get("format") in {"date", "date-time"}):
+            args.pop(key)
             continue
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))

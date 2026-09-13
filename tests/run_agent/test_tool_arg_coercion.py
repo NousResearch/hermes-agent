@@ -247,3 +247,34 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+def test_coerce_tool_args_omits_empty_string_for_optional_nullable_argument():
+    """An absent optional date must not be forwarded as an invalid empty string."""
+    schema = {
+        "name": "test_tool",
+        "description": "test",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "before": {"type": "string", "format": "date-time", "nullable": True},
+                "limit": {"type": "integer"},
+            },
+        },
+    }
+    with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        assert coerce_tool_args("test_tool", {"before": "", "limit": 10}) == {"limit": 10}
+
+
+def test_coerce_tool_args_preserves_empty_string_for_optional_nullable_text():
+    """Empty strings remain valid when an optional text parameter uses them deliberately."""
+    schema = {
+        "name": "test_tool",
+        "description": "test",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "nullable": True}},
+        },
+    }
+    with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        assert coerce_tool_args("test_tool", {"query": ""}) == {"query": ""}

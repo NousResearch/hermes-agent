@@ -322,6 +322,45 @@ def test_multiple_profiles_require_identity_matched_successors(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_unrecorded_stale_gateway_keeps_marker_pending(monkeypatch):
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(_marker_body(started=1, expected_sha="new-sha"), encoding="utf-8")
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(json.dumps({
+        "pid": 99999999,
+        "update_id": _UPDATE_ID,
+        "post_update": {"sha": "new-sha"},
+        "plan": {"inventory_complete": True, "runtimes": []},
+    }), encoding="utf-8")
+    homes = [("default", get_hermes_home())]
+    monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: homes)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt._socket_identity",
+        lambda _home: (42, {"profile": "default", "code_sha": "old-sha"}),
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [42])
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
+def test_unidentified_gateway_keeps_marker_pending(monkeypatch):
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(_marker_body(started=1, expected_sha="new-sha"), encoding="utf-8")
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(json.dumps({
+        "pid": 99999999,
+        "update_id": _UPDATE_ID,
+        "post_update": {"sha": "new-sha"},
+        "plan": {"inventory_complete": True, "runtimes": []},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [42])
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
 @pytest.mark.parametrize(("inventory_complete", "pending"), [(True, False), (None, True)])
 def test_empty_worklist_requires_completed_inventory(inventory_complete, pending):
     marker = update_cmd._fleet_restart_pending_marker_path()
@@ -357,6 +396,7 @@ def test_catchup_rechecks_generation_before_clearing_marker(monkeypatch):
     }
     (receipt_dir / "latest.json").write_text(json.dumps(receipt), encoding="utf-8")
     pending = iter([True, False])
+    original = marker.read_bytes()
     seen = []
     monkeypatch.setattr(update_cmd_fleet, "_pending_fleet_restart_needed", lambda: next(pending))
     monkeypatch.setattr(
@@ -364,11 +404,11 @@ def test_catchup_rechecks_generation_before_clearing_marker(monkeypatch):
         "_run_pending_fleet_restart",
         lambda *, receipt=None: seen.append(receipt) or True,
     )
-    monkeypatch.setattr(update_cmd_fleet, "_clear_fleet_restart_pending_marker", lambda: seen.append("cleared"))
 
     update_cmd_fleet._apply_pending_fleet_restart_catchup()
 
-    assert seen == [receipt, "cleared"]
+    assert seen == [receipt]
+    assert marker.read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -875,7 +915,7 @@ def test_already_up_to_date_runs_pending_restart_when_marker_present(
     hermes_main.cmd_update(args)
 
     assert seen["ran"] is True
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
     out = capsys.readouterr().out
     assert "unverified fleet-restart obligation" in out
 

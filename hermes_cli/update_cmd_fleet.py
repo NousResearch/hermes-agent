@@ -164,7 +164,7 @@ def _sha_includes(loaded_sha: object, expected_sha: str) -> bool:
 
 
 def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
-    """Prove every gateway owed by *receipt* was replaced after *marker*."""
+    """Prove every recorded runtime was replaced and no live runtime escaped the plan."""
     from hermes_cli.update_receipt import _profile_homes, _socket_identity
 
     plan = receipt.get("plan")
@@ -175,9 +175,8 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
         return False
     if plan.get("inventory_complete") is not True:
         return False
-    if not runtimes:
-        return True
     owed: dict[str, int] = {}
+    recorded_pids: set[int] = set()
     for runtime in runtimes:
         if not isinstance(runtime, dict) or runtime.get("kind") != "gateway":
             return False
@@ -195,11 +194,48 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
         ):
             return False
         owed[profile] = old_pid
+        recorded_pids.add(old_pid)
 
-    homes = dict(_profile_homes())
+    try:
+        homes = dict(_profile_homes())
+        live_sockets: dict[str, tuple[int, dict]] = {}
+        for profile, home in homes.items():
+            socket = _socket_identity(home)
+            if socket is None:
+                continue
+            successor_pid, identity = socket
+            if (
+                successor_pid <= 0
+                or identity.get("profile") != profile
+                or not _sha_includes(identity.get("code_sha"), marker["expected_sha"])
+            ):
+                return False
+            live_sockets[profile] = socket
+
+        # Control sockets prove loaded code identity, while the canonical process scan catches
+        # gateways that appeared after the pre-pull plan but never exposed a socket. Such an
+        # unidentified process cannot safely be treated as current.
+        from hermes_cli.gateway import find_gateway_pids
+
+        scanned_pids = {int(pid) for pid in find_gateway_pids(all_profiles=True)}
+        if not scanned_pids <= {pid for pid, _identity in live_sockets.values()}:
+            return False
+
+        # Serve/dashboard runtimes have no loaded-code identity or catch-up path. A new ledger
+        # runtime that was absent from the pre-pull plan therefore keeps the obligation pending.
+        from hermes_cli.process_identity import ledger_entries
+
+        if any(
+            int(entry.get("pid", 0)) not in recorded_pids
+            for entry in ledger_entries()
+            if entry.get("purpose") in {"serve", "dashboard"}
+        ):
+            return False
+    except Exception:
+        return False
+
     for profile, old_pid in owed.items():
-        home = homes.get(profile)
-        socket = _socket_identity(home) if home is not None else None
+        socket = live_sockets.get(profile)
         if socket is None:
             return False
         successor_pid, identity = socket
@@ -592,7 +628,8 @@ def _apply_pending_fleet_restart_catchup() -> None:
         else _run_pending_fleet_restart()
     )
     if restart_ok and not _pending_fleet_restart_needed():
-        _clear_fleet_restart_pending_marker()
+        # A verified marker is retained with digest-bound completion evidence. Clearing it in a
+        # separate step could delete a newer generation written after the check above.
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     if marker_path.is_file():

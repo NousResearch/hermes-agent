@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { NEW_CHAT_ROUTE, primaryRouteSelectedSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import {
+  acceptedSidebarNavChildren,
+  NEW_CHAT_ROUTE,
+  primaryRouteSelectedSessionId,
+  sessionRoute,
+  SETTINGS_ROUTE
+} from './routes'
 
 const SESS_A = 'sess-a'
 const SESS_B = 'sess-b'
@@ -26,5 +32,31 @@ describe('primaryRouteSelectedSessionId', () => {
 
   it('returns null on a non-chat route with no store selection', () => {
     expect(primaryRouteSelectedSessionId(SETTINGS_ROUTE, null)).toBeNull()
+  })
+})
+
+describe('acceptedSidebarNavChildren', () => {
+  it('keeps absolute paths with labels and defaults the icon', () => {
+    expect(
+      acceptedSidebarNavChildren([
+        { path: '/workflow/mail', label: 'Mail', codicon: 'mail' },
+        { path: '/workflow/calendar', label: 'Calendar' }
+      ])
+    ).toEqual([
+      { path: '/workflow/mail', label: 'Mail', codicon: 'mail' },
+      { path: '/workflow/calendar', label: 'Calendar', codicon: 'circle-outline' }
+    ])
+  })
+
+  it('drops children that cannot navigate', () => {
+    expect(
+      acceptedSidebarNavChildren([
+        { path: 'relative', label: 'Nope' },
+        { path: '/ok', label: '' },
+        { path: '/ok' },
+        null,
+        'x'
+      ])
+    ).toEqual([])
   })
 })

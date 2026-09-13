@@ -124,6 +124,13 @@ export interface HandoffFailResponse {
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
+export interface SidebarNavChildItem {
+  id: string
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  route: string
+}
+
 export interface SidebarNavItem {
   /** Built-in view id, or a contributed row's namespaced contribution id. */
   id: SidebarNavId | (string & {})
@@ -133,6 +140,8 @@ export interface SidebarNavItem {
   action?: 'new-session'
   /** Keybind action id — when set, the tooltip shows the keybind hint. */
   keybindActionId?: string
+  /** Plugin-contributed nested pages under this row. */
+  children?: SidebarNavChildItem[]
 }
 
 export interface PersistedDisplayTranscriptProvenance {

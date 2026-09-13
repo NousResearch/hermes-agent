@@ -114,6 +114,54 @@ function isContributedPath(pathname: string): boolean {
 
 export const SIDEBAR_NAV_AREA = 'sidebar.nav'
 
+/** Nested row under a contributed sidebar nav group. */
+export interface SidebarNavChildContribution {
+  /** Codicon name, e.g. `'mail'`. */
+  codicon?: string
+  label: string
+  /** Route to navigate to. */
+  path: string
+}
+
+/** Accepted child after dropping junk paths/labels. */
+export interface SidebarNavChildSpec {
+  codicon: string
+  label: string
+  path: string
+}
+
+/** Keep only children that can actually navigate (absolute path + label). */
+export function acceptedSidebarNavChildren(children: unknown): SidebarNavChildSpec[] {
+  if (!Array.isArray(children)) {
+    return []
+  }
+
+  const out: SidebarNavChildSpec[] = []
+
+  for (const child of children) {
+    if (!child || typeof child !== 'object') {
+      continue
+    }
+
+    const path = 'path' in child ? child.path : undefined
+    const label = 'label' in child ? child.label : undefined
+
+    if (typeof path !== 'string' || !path.startsWith('/') || typeof label !== 'string' || !label) {
+      continue
+    }
+
+    const codicon = 'codicon' in child ? child.codicon : undefined
+
+    out.push({
+      path,
+      label,
+      codicon: typeof codicon === 'string' && codicon ? codicon : 'circle-outline'
+    })
+  }
+
+  return out
+}
+
 /** Payload of a `sidebar.nav` data contribution. */
 export interface SidebarNavContribution {
   /** Codicon name, e.g. `'project'`. */
@@ -121,6 +169,11 @@ export interface SidebarNavContribution {
   label: string
   /** Route to navigate to (usually a contributed page's path). */
   path: string
+  /**
+   * Optional nested pages. When present the parent row becomes an expandable
+   * group; children render indented underneath while the group is open.
+   */
+  children?: SidebarNavChildContribution[]
 }
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.

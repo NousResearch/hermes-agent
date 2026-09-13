@@ -8,6 +8,7 @@ import { useLocation } from 'react-router'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { KbdGroup } from '@/components/ui/kbd'
@@ -19,7 +20,10 @@ import {
   SidebarGroupContent,
   SidebarMenu,
   SidebarMenuButton,
-  SidebarMenuItem
+  SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -39,6 +43,7 @@ import {
   $sidebarCardRows,
   $sidebarCronOpen,
   $sidebarFiltersActive,
+  $sidebarNavGroupOpen,
   $sidebarGrouping,
   $sidebarMessagingOpenIds,
   $sidebarOrdering,
@@ -61,6 +66,7 @@ import {
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
   setSidebarCronOpen,
+  setSidebarNavGroupOpen,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
@@ -138,10 +144,11 @@ import {
   CRON_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
+  acceptedSidebarNavChildren,
   type SidebarNavContribution,
   SKILLS_ROUTE
 } from '../../routes'
-import type { SidebarNavItem } from '../../types'
+import type { SidebarNavChildItem, SidebarNavItem } from '../../types'
 import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session-drag'
 
 import { SidebarSectionAddButton } from './chrome'
@@ -352,13 +359,23 @@ export function ChatSidebar({
         }
 
         const codicon = data.codicon || 'plug'
+        const childSpecs = acceptedSidebarNavChildren(data.children)
+        const children: SidebarNavChildItem[] | undefined = childSpecs.length
+          ? childSpecs.map((child, index) => ({
+              id: `${c.id}:${index}:${child.path}`,
+              label: child.label,
+              icon: (props: { className?: string }) => <Codicon name={child.codicon} {...props} />,
+              route: child.path
+            }))
+          : undefined
 
         return [
           {
             id: c.id,
             label: data.label,
             icon: (props: { className?: string }) => <Codicon name={codicon} {...props} />,
-            route: data.path
+            route: data.path,
+            ...(children?.length ? { children } : {})
           }
         ]
       }),
@@ -390,6 +407,7 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
+  const navGroupOpenState = useStore($sidebarNavGroupOpen)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
   const selectedSessionId = useStore($focusedStoredSessionId)
@@ -1475,6 +1493,12 @@ export function ChatSidebar({
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
               {[...SIDEBAR_NAV, ...contributedNav].map(item => {
+                const children = item.children
+                const hasChildren = Boolean(children?.length)
+                const onChildRoute = Boolean(children?.some(child => pathname === child.route))
+                const groupOpen = hasChildren
+                  ? (navGroupOpenState[String(item.id)] ?? true) || onChildRoute
+                  : false
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -1482,14 +1506,19 @@ export function ChatSidebar({
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
                   (item.id === 'cron' && currentView === 'cron') ||
-                  // Contributed rows light up at their own route.
-                  (currentView === 'extension' && Boolean(item.route) && pathname === item.route)
+                  // Contributed rows light up at their own route; a parent whose
+                  // child route is active stays dim — the child highlights itself.
+                  (currentView === 'extension' &&
+                    Boolean(item.route) &&
+                    pathname === item.route &&
+                    !onChildRoute)
 
                 const isNewSession = item.id === 'new-session'
 
                 const button = (
                   <SidebarMenuButton
                     aria-disabled={!isInteractive}
+                    aria-expanded={hasChildren ? groupOpen : undefined}
                     className={cn(
                       // no-drag: these rows sit directly under the titlebar's
                       // [-webkit-app-region:drag] strips (app-shell.tsx), with only
@@ -1561,6 +1590,29 @@ export function ChatSidebar({
                     <span className="min-w-0 truncate" data-tip-arrow-only="" data-tour={`sidebar-nav-${item.id}`}>
                       {s.nav[item.id] ?? item.label}
                     </span>
+                    {hasChildren && (
+                      <span
+                        className="ml-auto inline-flex size-5 items-center justify-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                        onClick={event => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setSidebarNavGroupOpen(String(item.id), !groupOpen)
+                        }}
+                        onKeyDown={event => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return
+                          }
+
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setSidebarNavGroupOpen(String(item.id), !groupOpen)
+                        }}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <DisclosureCaret open={groupOpen} />
+                      </span>
+                    )}
                     {isNewSession && (
                       <KbdGroup
                         className={cn('ml-auto opacity-55', newSessionKbdFlash && 'opacity-100!')}
@@ -1594,6 +1646,38 @@ export function ChatSidebar({
                       </ContextMenu>
                     ) : (
                       button
+                    )}
+                    {hasChildren && groupOpen && children && (
+                      <SidebarMenuSub>
+                        {children.map(child => {
+                          const childActive = pathname === child.route
+
+                          return (
+                            <SidebarMenuSubItem key={child.id}>
+                              <SidebarMenuSubButton
+                                className={cn(
+                                  'h-7 cursor-pointer border border-transparent text-[0.8125rem] font-medium text-(--ui-text-secondary) [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                                  childActive &&
+                                    'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground'
+                                )}
+                                isActive={childActive}
+                                onClick={event => {
+                                  event.preventDefault()
+                                  onNavigate({
+                                    id: child.id,
+                                    label: child.label,
+                                    icon: child.icon,
+                                    route: child.route
+                                  })
+                                }}
+                              >
+                                <child.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                                <span className="min-w-0 truncate">{child.label}</span>
+                              </SidebarMenuSubButton>
+                            </SidebarMenuSubItem>
+                          )
+                        })}
+                      </SidebarMenuSub>
                     )}
                   </SidebarMenuItem>
                 )

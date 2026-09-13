@@ -81,8 +81,14 @@ def _ack():
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
+    MAX_MESSAGE_LENGTH = 2048  # WeCom text-message limit for message/send
+    # send() chunks oversized content via truncate_message() instead of
+    # silently truncating; tells gateway/delivery.py to hand the adapter
+    # the full payload (cron output included).
+    splits_long_messages = True
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
@@ -177,21 +183,75 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             await self._http_client.aclose()
         self._http_client = None
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    # ------------------------------------------------------------------
+    # Outbound: proactive send via access-token API
+    # ------------------------------------------------------------------
+
+    async def _send_text_once(
+        self, app: Dict[str, Any], touser: str, text: str,
+    ) -> SendResult:
+        """POST one text message via message/send, refreshing a stale token once."""
+        payload = {
+            "touser": touser,
+            "msgtype": "text",
+            "agentid": int(str(app.get("agent_id") or 0)),
+            "text": {"content": text},
+            "safe": 0,
+        }
+        for _attempt in range(2):
+            token = await self._get_access_token(app)
+            resp = await self._http_client.post(f"{_SEND_URL}{token}", json=payload)
+            data = resp.json()
+            errcode = data.get("errcode")
+            if errcode in {40001, 42001} and _attempt == 0:
+                # WeCom rejected the token — evict the cached entry so
+                # the next _get_access_token call forces a fresh fetch.
+                logger.warning(
+                    "[WecomCallback] Token rejected for app '%s' (errcode=%s), refreshing",
+                    app.get("name", "default"), errcode,
+                )
+                self._access_tokens.pop(app["name"], None)
+                continue
+            if errcode != 0:
+                return SendResult(success=False, error=str(data))
+            return SendResult(
+                success=True,
+                message_id=str(data.get("msgid", "")),
+                raw_response=data,
+            )
+        return SendResult(success=False, error="send failed after token refresh")
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        del reply_to, metadata
         app = self._resolve_app_for_chat(chat_id)
+        touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
         try:
-            payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content[:2048]}, "safe": 0}
-            for _attempt in range(2):
-                token = await self._get_access_token(app)
-                resp = await self._http_client.post(f"{_SEND_URL}{token}", json=payload)
-                data = resp.json()
-                errcode = data.get("errcode")
-                if errcode in {40001, 42001} and _attempt == 0:  # token rejected — evict so the retry fetches a fresh one
-                    logger.warning("[WecomCallback] Token rejected for app '%s' (errcode=%s), refreshing", app.get("name", "default"), errcode)
-                    self._access_tokens.pop(app["name"], None)
-                    continue
-                return SendResult(success=True, message_id=str(data.get("msgid", "")), raw_response=data) if errcode == 0 else SendResult(success=False, error=str(data))
-            return SendResult(success=False, error="send failed after token refresh")
+            # Chunk oversized content instead of silently truncating it —
+            # mirrors the WeCom AI Bot adapter's send() behaviour.
+            # Plain-text msgtype does not render markdown tables in WeCom,
+            # so the simpler fence-aware base splitter is intentional here
+            # (the table-aware split_message_for_wecom is used on the
+            # markdown path in adapter.py).
+            chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH)
+            last_result: Optional[SendResult] = None
+            total = len(chunks)
+            for idx, chunk in enumerate(chunks, start=1):
+                last_result = await self._send_text_once(app, touser, chunk)
+                if not last_result.success:
+                    return SendResult(
+                        success=False,
+                        error=f"chunk {idx}/{total} failed: {last_result.error}",
+                        raw_response=last_result.raw_response,
+                    )
+            if last_result is None:
+                return SendResult(success=False, error="nothing to send")
+            return last_result
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 

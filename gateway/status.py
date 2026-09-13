@@ -404,7 +404,13 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
         return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
     # Default profile: accept unless argv names another profile or a conflicting explicit
     # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
-    if "--profile " in command_lc or " -p " in command_lc:
+    # An explicit "--profile default"/"-p default" names THE DEFAULT PROFILE
+    # ITSELF (hand-written launchd plists mirror the named-profile service
+    # shape to make identity explicit), so it belongs to the default home --
+    # rejecting it reported a running default gateway as stopped (#100817).
+    if "--profile default" in command_lc or " -p default" in command_lc:
+        pass  # explicitly the default profile -- belongs to this home
+    elif "--profile " in command_lc or " -p " in command_lc:
         return False
     return not ("hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc)
 

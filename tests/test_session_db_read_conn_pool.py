@@ -37,6 +37,7 @@ connection count and make such assertions flaky.
 
 import hermes_state_readpool
 import queue
+import sqlite3
 import threading
 
 import pytest
@@ -650,3 +651,100 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     finally:
         for d in extra:
             d.close()
+
+
+@pytest.mark.requires_wal
+def test_poisoned_pooled_read_conn_is_evicted_not_recycled(db):
+    """A pooled connection that raises a transient I/O error must not go back
+    into the pool: the error is sticky per handle, so recycling it would fail
+    every later read identically even though a fresh connection to the same
+    file succeeds (2026-09-01 state.db corruption: one transient 'disk I/O
+    error' broke reads for the process lifetime)."""
+    with db._read_ctx() as conn:
+        poisoned = conn
+    assert db._read_pool.qsize() == 1, "healthy connection was not returned to the pool"
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        with db._read_ctx() as conn:
+            assert conn is poisoned, "expected the pooled connection to be reused first"
+            raise sqlite3.OperationalError("disk I/O error")
+
+    assert db._read_pool.qsize() == 0, "poisoned connection went back into the pool"
+    with db._read_ctx() as conn:
+        assert conn is not poisoned, "next read reused the poisoned connection"
+        assert tuple(conn.execute("SELECT 1").fetchone()) == (1,)
+    # Eviction released the permit: exactly one pooled connection exists again.
+    assert db._read_pool.qsize() == 1
+    assert _live_count(db.db_path) <= db._read_pool.maxsize + 1
+
+
+@pytest.mark.requires_wal
+def test_direct_database_error_evicts_the_pooled_conn(db):
+    """A bare DatabaseError (e.g. 'database disk image is malformed') is an
+    I/O-class signal: evict like OperationalError. Genuine permanent
+    corruption still fails every later read on the fresh connection."""
+    with db._read_ctx() as conn:
+        poisoned = conn
+
+    with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+        with db._read_ctx() as conn:
+            assert conn is poisoned
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+    assert db._read_pool.qsize() == 0, "poisoned connection went back into the pool"
+    with db._read_ctx() as conn:
+        assert conn is not poisoned
+
+
+@pytest.mark.requires_wal
+@pytest.mark.parametrize(
+    "exc_type",
+    [sqlite3.ProgrammingError, sqlite3.IntegrityError, sqlite3.DataError,
+     sqlite3.NotSupportedError, sqlite3.InternalError],
+)
+def test_caller_level_database_errors_do_not_evict(db, exc_type):
+    """Caller-level DatabaseError subclasses say nothing about connection
+    health: the error propagates AND the same connection is reused."""
+    with db._read_ctx() as conn:
+        first = conn
+
+    with pytest.raises(exc_type):
+        with db._read_ctx() as conn:
+            assert conn is first
+            raise exc_type("caller-level mistake")
+
+    assert db._read_pool.qsize() == 1, "healthy connection was evicted on a caller-level error"
+    with db._read_ctx() as conn:
+        assert conn is first, "caller-level error must not evict the pooled connection"
+
+
+@pytest.mark.requires_wal
+def test_poisoned_shared_writer_conn_is_evicted(db, monkeypatch):
+    """The degraded branch (reads served from the writer connection under
+    self._lock) must evict too: otherwise the process-wide singleton's one
+    connection poisons every read AND every write until a restart."""
+    monkeypatch.setattr(db, "_checkout_read_conn", lambda: None)
+    poisoned = db._conn
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        with db._read_ctx() as conn:
+            assert conn is poisoned
+            raise sqlite3.OperationalError("disk I/O error")
+
+    assert db._conn is not poisoned, "poisoned writer connection was kept"
+    # The fresh connection serves reads immediately; permanent corruption
+    # would instead fail again here, correctly surfaced.
+    assert db.get_session("s1")["id"] == "s1"
+
+
+@pytest.mark.requires_wal
+def test_caller_level_error_on_the_writer_branch_does_not_evict(db, monkeypatch):
+    monkeypatch.setattr(db, "_checkout_read_conn", lambda: None)
+    writer = db._conn
+
+    with pytest.raises(sqlite3.IntegrityError):
+        with db._read_ctx():
+            raise sqlite3.IntegrityError("UNIQUE constraint failed")
+
+    assert db._conn is writer, "caller-level error evicted the shared writer connection"
+

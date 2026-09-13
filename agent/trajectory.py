@@ -59,12 +59,20 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: boo
             with open(filename, "ab") as raw:
                 locked = False
                 try:
+                    append_start = raw.seek(0, os.SEEK_END)
                     # Lock the stable raw descriptor for the one-shot append;
                     # Windows locking must never use a moving gzip wrapper.
                     _lock_append_handle(raw, True)
                     locked = True
-                    raw.write(payload)
-                    raw.flush()
+                    try:
+                        raw.write(payload)
+                        raw.flush()
+                    except Exception:
+                        # A short write or failed flush must not poison the
+                        # concatenated gzip stream for later workers.
+                        raw.truncate(append_start)
+                        raw.flush()
+                        raise
                     locked = False
                 finally:
                     if locked:

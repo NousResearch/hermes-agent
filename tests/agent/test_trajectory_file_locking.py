@@ -78,6 +78,40 @@ def test_interrupted_gzip_member_never_reaches_destination(tmp_path):
         assert json.loads(stream.readline())["conversations"][0]["value"] == "after-interruption"
 
 
+def test_failed_gzip_append_rolls_back_partial_member(tmp_path, monkeypatch):
+    """A write failure must restore the stream to its pre-append EOF."""
+    target = tmp_path / "partial-trajectory.jsonl.gz"
+    real_open = open
+
+    class PartialAppend:
+        def __init__(self):
+            self.raw = real_open(target, "ab")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self.raw.__exit__(exc_type, exc, tb)
+
+        def __getattr__(self, name):
+            return getattr(self.raw, name)
+
+        def write(self, payload):
+            self.raw.write(payload[:7])
+            raise OSError("simulated disk-full write")
+
+    monkeypatch.setattr("agent.trajectory._lock_append_handle", lambda *_args: None)
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: PartialAppend())
+
+    save_trajectory([{"from": "human", "value": "broken"}], "m", True, str(target))
+
+    assert not target.exists() or target.stat().st_size == 0
+    monkeypatch.undo()
+    save_trajectory([{"from": "human", "value": "after-failure"}], "m", True, str(target))
+    with gzip.open(target, "rt", encoding="utf-8") as stream:
+        assert json.loads(stream.readline())["conversations"][0]["value"] == "after-failure"
+
+
 @pytest.mark.windows_only
 def test_concurrent_gzip_appends_are_serialized_on_windows(tmp_path):
     """Windows must serialize gzip members through one stable raw descriptor lock."""

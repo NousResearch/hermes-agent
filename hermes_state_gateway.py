@@ -613,7 +613,7 @@ class SessionGatewayMixin:
         rows = self._read_all(
             "SELECT backend_id, pid, started_at, last_heartbeat, profile, host FROM gateway_heartbeats"
             " ORDER BY last_heartbeat DESC")
-        return [dict(r) for r in rows]
+        return [self._session_row_dict(r) for r in rows]
 
     def request_handoff(self, session_id: str, platform: str) -> bool:
         """Mark a session pending handoff to *platform*; False if a handoff is already in flight."""

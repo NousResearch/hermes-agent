@@ -896,7 +896,9 @@ class SessionSearchMixin:
         search never runs the unbounded rebuild. Other ``DatabaseError``s propagate."""
         sql, params = self._fts_match_sql(table, match_query, order_by_sql, **kwargs)
         try:
-            return [dict(row) for row in self._read_all(sql, params)]
+            # Shared normalization boundary so a BLOB-stored cell never escapes the public
+            # search rows as bytes (#109465 review).
+            return [self._session_row_dict(row) for row in self._read_all(sql, params)]
         except sqlite3.OperationalError:
             if operational_debug:
                 logger.debug(operational_debug, exc_info=True)
@@ -912,7 +914,7 @@ class SessionSearchMixin:
     def _like_rows(self, where: List[str], params: list, *, order_by: str, limit_sql: str) -> List[Dict[str, Any]]:
         """Canonical-table LIKE scan; ``params[0]`` is the snippet anchor term."""
         sql = _search_select_sql(_LIKE_SNIPPET_SQL, "messages m", where, order_by, limit_sql)
-        return [dict(row) for row in self._read_all(sql, params)]
+        return [self._session_row_dict(row) for row in self._read_all(sql, params)]
 
     @staticmethod
     def _compile_like_boolean_query(query: str) -> Tuple[str, List[Any], Optional[str]]:
@@ -1070,7 +1072,7 @@ class SessionSearchMixin:
         else:
             sql, params = self._fts_match_sql("messages_fts", query, **route)
             try:
-                matches = [dict(row) for row in self._read_all(sql, params)]
+                matches = [self._session_row_dict(row) for row in self._read_all(sql, params)]
             except sqlite3.OperationalError:
                 return []  # FTS5 syntax error despite sanitization
             except sqlite3.DatabaseError as exc:

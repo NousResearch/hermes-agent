@@ -798,7 +798,7 @@ class SessionSessionsMixin:
                 LIMIT 1""",
             (session_id,),
         )
-        return dict(row) if row else None
+        return self._session_row_dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Exact id, else the single unambiguous prefix match, else None."""

@@ -1,0 +1,34 @@
+name: High-value agent evaluations
+
+on:
+  workflow_dispatch:
+    inputs:
+      evaluation:
+        description: "Evaluation to run"
+        required: true
+        default: toolperf
+        type: choice
+        options: [toolperf, compression]
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v6.0.0
+        with: {python-version: "3.13"}
+      - run: python -m pip install --disable-pip-version-check pytest==9.1.1
+      - run: python -m pytest -q tests/scripts/test_context_compression_eval_contract.py tests/scripts/test_toolperf_report_contract.py
+
+  external-evaluation:
+    needs: contract-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: echo "Contracts passed. External model-backed evaluation requires explicitly provisioned credentials and remains manual." >> "$GITHUB_STEP_SUMMARY"

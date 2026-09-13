@@ -63,7 +63,8 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { $settingsOwner } from '@/store/settings-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -211,17 +212,36 @@ export function DesktopOnboardingOverlay({
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   const targetProfile = onboarding.targetProfile ?? profile
+  const targetScope = onboarding.targetScope
 
   // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
       profile: targetProfile,
-      requestGateway: onboarding.targetProfile
-        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-        : requestGateway,
+      scope: targetScope,
+      requestGateway:
+        targetScope && typeof targetScope === 'object' && targetScope.connectionId
+          ? (method, params) =>
+              requestGatewayForAgent(targetScope.connectionId ?? null, targetProfile, method, params)
+          : targetScope && typeof targetScope === 'object' && targetScope.legacyConnection
+            ? async (method, params) => {
+                const currentOwner = $settingsOwner.get()
+
+                if (
+                  currentOwner?.legacyConnection !== targetScope.legacyConnection ||
+                  currentOwner?.profile !== targetProfile
+                ) {
+                  throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
+                }
+
+                return requestGatewayForProfile(targetProfile, method, params)
+              }
+          : onboarding.targetProfile
+            ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+            : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
     }),
-    [onboarding.targetProfile, targetProfile, requestGateway]
+    [onboarding.targetProfile, requestGateway, targetProfile, targetScope]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat

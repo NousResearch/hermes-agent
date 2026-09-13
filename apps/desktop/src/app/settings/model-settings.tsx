@@ -672,15 +672,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     const lower = slug.toLowerCase()
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
+      startManualLocalEndpoint(null, scopeProfile)
     } else if (rowSlug) {
-      startManualProviderOAuth(rowSlug)
+      startManualProviderOAuth(rowSlug, scopeProfile)
     } else {
       // An absent row has no trustworthy auth metadata. Open the generic
       // provider picker instead of deep-linking an unknown or stale slug.
-      startManualOnboarding()
+      startManualOnboarding(undefined, scopeProfile)
     }
-  }, [selectedProvider, selectedProviderRow])
+  }, [scopeProfile, selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {

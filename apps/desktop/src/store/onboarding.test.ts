@@ -32,7 +32,9 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
   }
 }
 
-function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
+function installApiMock(
+  api: (request: { connectionId?: string; path: string; profile?: string }) => Promise<unknown>
+) {
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { api }
@@ -82,6 +84,49 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
 }
 
 describe('refreshOnboarding', () => {
+  it('keeps a manual OAuth flow on its initiating gateway owner', async () => {
+    const { startManualOnboarding, startProviderOAuth } = await import('./onboarding')
+    const requests: { connectionId?: string; path: string; profile?: string }[] = []
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path === '/api/providers/oauth') {
+        return { providers: [] }
+      }
+
+      if (request.path.endsWith('/start')) {
+        return { flow: 'pkce', session_id: 'fixture', auth_url: 'https://example.com', expires_in: 600 }
+      }
+
+      return { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    const scope = { connectionId: 'remote-a', profile: 'research' }
+
+    startManualOnboarding(null, scope)
+    await vi.waitFor(() => expect(requests.some(request => request.path === '/api/providers/oauth')).toBe(true))
+    await startProviderOAuth(makeOAuthProvider('fixture'), {
+      profile: 'research',
+      scope,
+      requestGateway: async () => ({}) as never
+    })
+
+    expect(requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          connectionId: 'remote-a',
+          path: '/api/providers/oauth',
+          profile: 'research'
+        }),
+        expect.objectContaining({
+          connectionId: 'remote-a',
+          path: '/api/providers/oauth/fixture/start',
+          profile: 'research'
+        })
+      ])
+    )
+  })
+
   it('keeps onboarding work in its initiating lifetime and profile', async () => {
     const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
       await import('./onboarding')

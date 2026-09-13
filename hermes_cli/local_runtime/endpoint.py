@@ -108,6 +108,17 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
     return None
 
 
+def llamacpp_route_available(config: dict | None = None) -> bool:
+    """Whether a llamacpp alias has a usable or booting managed route.
+
+    Readiness callers must not wait for startup, but they must keep the route
+    configured while an enabled, installed managed runtime is booting.
+    """
+    if _boot_in_flight(config):
+        return True
+    return resolve_llamacpp_endpoint(config=config, wait_for_boot_s=0) is not None
+
+
 _KICK_LOCK = threading.Lock()
 
 

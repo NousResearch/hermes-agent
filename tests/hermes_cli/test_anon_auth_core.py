@@ -397,7 +397,8 @@ class TestBootstrapIsTheOneCreator:
         fb.reset_for_tests()
         return fb
 
-    def test_bootstrap_mints_once_records_and_a_second_run_is_free(self, portal):
+    def test_bootstrap_mints_once_records_and_a_second_run_is_free(self, portal, monkeypatch):
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         fb = self._fresh()
         record = fb.run_bootstrap()
         assert record.free_tier and record.has_identity and record.provider_configured

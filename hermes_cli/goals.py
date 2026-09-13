@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from tools.registry import TOOL_CAPABILITIES
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,10 @@ LANDING_STATES: Tuple[str, ...] = (
 )
 _LANDING_STATE_SET = frozenset(LANDING_STATES)
 
+# Canonical capability tags accepted in GoalToolConstraints.denied_capabilities; the registry
+# owns the canonical list (B1), and `unknown` is a first-class entry that may be denied explicitly.
+_TOOL_CAPABILITY_SET = frozenset(TOOL_CAPABILITIES)
+
 # Change receipts are a bounded audit tail — keep only the newest ones on both load and append.
 MAX_CHANGE_RECEIPTS = 32
 
@@ -454,6 +459,105 @@ class ChangeReceipt:
 
 
 @dataclass
+class GoalToolConstraints:
+    """Typed tool constraints: denied capabilities plus optional tool/target allow-lists.
+
+    ``denied_capabilities`` are canonical strings from ``tools.registry.TOOL_CAPABILITIES``
+    (``unknown`` may be denied explicitly); omit/``None`` means deny nothing. ``allowed_tools``
+    and ``target_prefixes`` are optional non-empty lists; ``None`` means unrestricted and an
+    empty array is rejected so it can never ambiguously mean "clear". ``from_dict`` is strict —
+    unknown keys are rejected with ValueError. ``None`` input returns ``None`` so old persisted
+    JSON without tool constraints loads unchanged. Direct construction goes through the same
+    canonical rules via ``__post_init__``.
+    """
+
+    denied_capabilities: List[str] = field(default_factory=list)
+    allowed_tools: Optional[List[str]] = None
+    target_prefixes: Optional[List[str]] = None
+
+    @staticmethod
+    def _coerce_tool_list(value: Any, field: str) -> Optional[List[str]]:
+        """Optional non-empty list of non-empty strings, deduplicated preserving order."""
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError(f"goal tool constraints {field} must be an array or null")
+        cleaned: List[str] = []
+        for raw in value:
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(f"goal tool constraints {field} entries must be non-empty strings")
+            item = raw.strip()
+            if item not in cleaned:
+                cleaned.append(item)
+        if not cleaned:
+            raise ValueError(f"goal tool constraints {field} cannot be an empty array")
+        return cleaned
+
+    def _coerce_and_validate(self) -> None:
+        """Canonical rules shared by ``__post_init__`` and ``from_dict`` (which constructs via ``cls``)."""
+        raw_denied = self.denied_capabilities
+        if raw_denied is None:
+            denied: List[str] = []
+        elif not isinstance(raw_denied, list):
+            raise ValueError("goal tool constraints denied_capabilities must be an array")
+        else:
+            denied = []
+            for raw in raw_denied:
+                if not isinstance(raw, str) or not raw.strip():
+                    raise ValueError("goal tool constraints denied_capabilities must be non-empty strings")
+                item = raw.strip()
+                if item not in _TOOL_CAPABILITY_SET:
+                    raise ValueError(
+                        f"unknown capability {item!r}; canonical capabilities: {', '.join(TOOL_CAPABILITIES)}"
+                    )
+                if item not in denied:
+                    denied.append(item)
+        self.denied_capabilities = denied
+        self.allowed_tools = self._coerce_tool_list(self.allowed_tools, "allowed_tools")
+        self.target_prefixes = self._coerce_tool_list(self.target_prefixes, "target_prefixes")
+
+    def __post_init__(self) -> None:
+        self._coerce_and_validate()
+
+    def is_empty(self) -> bool:
+        return (
+            not self.denied_capabilities
+            and self.allowed_tools is None
+            and self.target_prefixes is None
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "denied_capabilities": list(self.denied_capabilities),
+            "allowed_tools": None if self.allowed_tools is None else list(self.allowed_tools),
+            "target_prefixes": None if self.target_prefixes is None else list(self.target_prefixes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> Optional["GoalToolConstraints"]:
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError("goal tool constraints must be an object")
+        unknown = set(data) - {"denied_capabilities", "allowed_tools", "target_prefixes"}
+        if unknown:
+            raise ValueError(f"unknown goal tool_constraints key(s): {sorted(unknown)}")
+        # Value validation/normalization is owned by __post_init__ so direct
+        # construction and from_dict can never diverge. Only a missing/None key
+        # means "empty"; falsy non-lists (e.g. "", 0, False) pass through
+        # unchanged so the shared validator rejects them instead of being
+        # silently coerced away.
+        raw_denied = data.get("denied_capabilities") if "denied_capabilities" in data else []
+        if raw_denied is None:
+            raw_denied = []
+        return cls(
+            denied_capabilities=raw_denied,
+            allowed_tools=data.get("allowed_tools"),
+            target_prefixes=data.get("target_prefixes"),
+        )
+
+
+@dataclass
 class GoalContract:
     """Optional structured completion contract; empty fields are omitted everywhere."""
     outcome: str = ""
@@ -462,15 +566,21 @@ class GoalContract:
     boundaries: str = ""
     stop_when: str = ""
     landing: Optional[GoalLanding] = None
+    tool_constraints: Optional[GoalToolConstraints] = None
 
     def is_empty(self) -> bool:
         return not any(getattr(self, f).strip() for f in _CONTRACT_FIELDS) and (
             self.landing is None or self.landing.is_empty()
+        ) and (
+            self.tool_constraints is None or self.tool_constraints.is_empty()
         )
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {f: getattr(self, f) for f in _CONTRACT_FIELDS}
         data["landing"] = self.landing.to_dict() if self.landing is not None else None
+        data["tool_constraints"] = (
+            self.tool_constraints.to_dict() if self.tool_constraints is not None else None
+        )
         return data
 
     @classmethod
@@ -478,7 +588,11 @@ class GoalContract:
         if not isinstance(data, dict):
             return cls()
         landing = GoalLanding.from_dict(data.get("landing")) if data.get("landing") else None
-        return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS}, landing=landing)
+        return cls(
+            **{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS},
+            landing=landing,
+            tool_constraints=GoalToolConstraints.from_dict(data.get("tool_constraints")),
+        )
 
     def render_block(self) -> str:
         """Non-empty fields as a labelled block; empty contract → empty string."""
@@ -494,6 +608,13 @@ class GoalContract:
                 lines.append(f"- Live probe: {self.landing.live_probe}")
             if self.landing.restart_required:
                 lines.append("- Restart required: yes")
+        if self.tool_constraints is not None and not self.tool_constraints.is_empty():
+            constraints = self.tool_constraints
+            lines.append(f"- Denied capabilities: {', '.join(constraints.denied_capabilities)}")
+            if constraints.allowed_tools:
+                lines.append(f"- Allowed tools: {', '.join(constraints.allowed_tools)}")
+            if constraints.target_prefixes:
+                lines.append(f"- Target prefixes: {', '.join(constraints.target_prefixes)}")
         return "\n".join(lines)
 
 

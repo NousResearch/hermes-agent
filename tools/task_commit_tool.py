@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Optional
 
-from hermes_cli.goals import GoalContract, GoalLanding, GoalManager, LANDING_STATES
+from hermes_cli.goals import GoalContract, GoalLanding, GoalManager, GoalToolConstraints, LANDING_STATES
 from tools.registry import registry
 
 
@@ -83,6 +83,37 @@ TASK_COMMIT_SCHEMA = {
                 "additionalProperties": False,
                 "description": "Typed landing metadata for the deliverable. Reject unknown keys; shell/command execution is never admitted here.",
             },
+            "tool_constraints": {
+                "type": ["object", "null"],
+                "properties": {
+                    "denied_capabilities": {
+                        "type": ["array", "null"],
+                        "items": {"type": "string"},
+                        "description": (
+                            "Canonical tool capabilities (from the tools registry) the goal must not use. "
+                            "Omit or null for none; 'unknown' may be listed explicitly."
+                        ),
+                    },
+                    "allowed_tools": {
+                        "type": ["array", "null"],
+                        "items": {"type": "string"},
+                        "description": (
+                            "Exact tool names the goal may use; null means unrestricted. "
+                            "Must be a non-empty list when provided."
+                        ),
+                    },
+                    "target_prefixes": {
+                        "type": ["array", "null"],
+                        "items": {"type": "string"},
+                        "description": (
+                            "Filesystem/URL prefixes the goal may operate on; null means no target "
+                            "restriction. Must be a non-empty list when provided."
+                        ),
+                    },
+                },
+                "additionalProperties": False,
+                "description": "Typed tool constraints for the goal. Reject unknown keys; shell/command execution is never admitted here.",
+            },
         },
         "required": ["operation"],
         "additionalProperties": False,
@@ -137,6 +168,17 @@ def _landing(value: Any) -> Optional[GoalLanding]:
     return landing
 
 
+def _tool_constraints(value: Any) -> Optional[GoalToolConstraints]:
+    """Admit a typed tool_constraints object; reject unknown keys, invalid capability enums,
+    non-string entries, and empty list values. Shell/command keys are unknown keys here —
+    execution is never admitted."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("tool_constraints must be an object or null")
+    return GoalToolConstraints.from_dict(value)
+
+
 def _field_items(value: str) -> list[str]:
     """Recover V1 list semantics while preserving legacy one-line GoalContract values."""
     if not value or not value.strip():
@@ -155,7 +197,7 @@ def _join_items(items: Iterable[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
-def _contract(outcome: str, verification: str, constraints, boundaries, stop_when, landing: Optional[GoalLanding] = None) -> GoalContract:
+def _contract(outcome: str, verification: str, constraints, boundaries, stop_when, landing: Optional[GoalLanding] = None, tool_constraints: Optional[GoalToolConstraints] = None) -> GoalContract:
     return GoalContract(
         outcome=outcome,
         verification=verification,
@@ -163,6 +205,7 @@ def _contract(outcome: str, verification: str, constraints, boundaries, stop_whe
         boundaries=_join_items(boundaries or []),
         stop_when=_join_items(stop_when or []),
         landing=landing,
+        tool_constraints=tool_constraints,
     )
 
 
@@ -206,6 +249,7 @@ def task_commit(
     boundaries: Optional[list[str]] = None,
     stop_when: Optional[list[str]] = None,
     landing: Optional[dict] = None,
+    tool_constraints: Optional[dict] = None,
 ) -> str:
     """Create, amend, or replace one session's persistent GoalContract."""
     try:
@@ -216,9 +260,10 @@ def task_commit(
         if operation not in {"create", "amend", "replace"}:
             raise ValueError("operation must be create, amend, or replace")
 
-        # Admission runs up front for every operation: a malformed landing payload is rejected
-        # even on amend, before any merge/persist logic runs.
+        # Admission runs up front for every operation: a malformed landing or tool_constraints
+        # payload is rejected even on amend, before any merge/persist logic runs.
         landing_obj = _landing(landing)
+        tc_obj = _tool_constraints(tool_constraints)
 
         manager = GoalManager(session_id=sid)
         current = manager.state
@@ -235,7 +280,7 @@ def task_commit(
             proposed = _contract(
                 values["outcome"], values["verification"],
                 list_values["constraints"], list_values["boundaries"], list_values["stop_when"],
-                landing_obj,
+                landing_obj, tc_obj,
             )
 
             if operation == "create" and has_goal:
@@ -284,6 +329,7 @@ def task_commit(
             boundaries=_join_items(merged["boundaries"]),
             stop_when=_join_items(merged["stop_when"]),
             landing=landing_obj if landing is not None else old.landing,
+            tool_constraints=tc_obj if tool_constraints is not None else old.tool_constraints,
         )
         if _same_contract(old, proposed):
             return json.dumps({"success": True, "result": "idempotent_noop", "goal": _snapshot(manager)}, ensure_ascii=False)
@@ -310,6 +356,7 @@ registry.register(
         boundaries=args.get("boundaries"),
         stop_when=args.get("stop_when"),
         landing=args.get("landing"),
+        tool_constraints=args.get("tool_constraints"),
     ),
     check_fn=check_task_commit_requirements,
 )

@@ -1130,3 +1130,130 @@ class TestChangeReceipt:
         restored = GoalState.from_json(GoalState(goal="g", receipts=receipts).to_json())
         assert len(restored.receipts) == MAX_CHANGE_RECEIPTS
         assert restored.receipts[0].receipt_id == "rc-8"
+
+
+class TestGoalToolConstraints:
+    def test_valid_constraints_direct_and_from_dict_agree(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        tc = GoalToolConstraints(
+            denied_capabilities=["mutate", "external_write"],
+            allowed_tools=["read_file", "search_files"],
+            target_prefixes=["C:/src"],
+        )
+        from_dict = GoalToolConstraints.from_dict(tc.to_dict())
+        assert from_dict == tc
+        assert from_dict.denied_capabilities == ["mutate", "external_write"]
+        assert from_dict.allowed_tools == ["read_file", "search_files"]
+        assert from_dict.target_prefixes == ["C:/src"]
+
+    def test_from_dict_normalizes_and_dedupes(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        tc = GoalToolConstraints.from_dict({
+            "denied_capabilities": [" mutate ", "external_write", "mutate"],
+            "allowed_tools": [" read_file ", "read_file"],
+            "target_prefixes": [" C:/src ", "C:/src"],
+        })
+        assert tc.denied_capabilities == ["mutate", "external_write"]
+        assert tc.allowed_tools == ["read_file"]
+        assert tc.target_prefixes == ["C:/src"]
+
+    def test_unknown_capability_rejected(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        with pytest.raises(ValueError):
+            GoalToolConstraints(denied_capabilities=["shell"])
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"denied_capabilities": ["exec"]})
+
+    def test_unknown_key_rejected(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"denied_capabilities": ["mutate"], "shell": "rm -rf /"})
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"command": "run"})
+
+    def test_non_string_denied_capability_rejected(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        with pytest.raises(ValueError):
+            GoalToolConstraints(denied_capabilities=[42])
+
+    def test_empty_allowed_tools_and_target_prefixes_rejected(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        with pytest.raises(ValueError):
+            GoalToolConstraints(allowed_tools=[])
+        with pytest.raises(ValueError):
+            GoalToolConstraints(target_prefixes=[])
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"allowed_tools": []})
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"target_prefixes": []})
+
+    def test_non_string_allowed_tools_and_target_prefixes_rejected(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        with pytest.raises(ValueError):
+            GoalToolConstraints(allowed_tools=[42])
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"target_prefixes": [None]})
+        with pytest.raises(ValueError):
+            GoalToolConstraints.from_dict({"allowed_tools": [""]})
+
+    def test_empty_object_is_semantically_empty(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        direct = GoalToolConstraints()
+        parsed = GoalToolConstraints.from_dict({})
+        assert direct == parsed
+        assert direct.is_empty()
+        assert parsed.denied_capabilities == []
+        assert parsed.allowed_tools is None
+        assert parsed.target_prefixes is None
+        assert GoalToolConstraints.from_dict(parsed.to_dict()) == parsed
+
+    def test_empty_or_missing_denied_capabilities_valid(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        assert GoalToolConstraints(denied_capabilities=[]).denied_capabilities == []
+        assert GoalToolConstraints.from_dict({"denied_capabilities": []}).denied_capabilities == []
+        assert GoalToolConstraints.from_dict({}).denied_capabilities == []
+        assert GoalToolConstraints.from_dict({"denied_capabilities": None}).denied_capabilities == []
+        assert GoalToolConstraints.from_dict(None) is None
+
+    def test_from_dict_rejects_falsy_non_list_denied_capabilities(self):
+        from hermes_cli.goals import GoalToolConstraints
+
+        # Only missing/None means "empty". Falsy non-lists must not be silently
+        # coerced away (fail-open); they go through shared validation and fail.
+        for bad in ("", 0, False, {}, {"mutate": True}):
+            with pytest.raises(ValueError):
+                GoalToolConstraints.from_dict({"denied_capabilities": bad})
+
+    def test_roundtrips_through_goal_contract(self):
+        from hermes_cli.goals import GoalContract, GoalToolConstraints
+
+        contract = GoalContract(
+            outcome="probe the deployment",
+            tool_constraints=GoalToolConstraints(
+                denied_capabilities=["external_write"],
+                allowed_tools=["read_file"],
+                target_prefixes=["C:/deploy"],
+            ),
+        )
+        restored = GoalContract.from_dict(contract.to_dict())
+        assert restored.tool_constraints == contract.tool_constraints
+        block = contract.render_block()
+        assert "Denied capabilities: external_write" in block
+        assert "Allowed tools: read_file" in block
+        assert "Target prefixes: C:/deploy" in block
+        assert not contract.is_empty()
+
+    def test_contract_is_empty_when_constraints_empty(self):
+        from hermes_cli.goals import GoalContract, GoalToolConstraints
+
+        assert GoalContract(tool_constraints=GoalToolConstraints()).is_empty()
+        assert GoalContract(tool_constraints=GoalToolConstraints.from_dict({})).is_empty()

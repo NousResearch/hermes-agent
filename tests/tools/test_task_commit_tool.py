@@ -530,3 +530,151 @@ def test_29_inline_executor_persists_landing():
     assert landing.required_state == "LIVE_ACCEPTED"
     assert landing.targets == ["https://example.com/health"]
     assert landing.restart_required is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Typed tool constraints admission
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_30_tool_constraints_create_persists_typed_contract():
+    result = call(
+        "tc-session", operation="create",
+        objective="Harden the deploy", outcome="Deploy is hardened",
+        verification="audit log shows no writes",
+        tool_constraints={
+            "denied_capabilities": ["external_write", "mutate"],
+            "allowed_tools": ["read_file", "search_files"],
+            "target_prefixes": ["C:/src"],
+        },
+    )
+    assert result["success"] and result["result"] == "created"
+    tc = GoalManager("tc-session").state.contract.tool_constraints
+    assert tc is not None
+    assert tc.denied_capabilities == ["external_write", "mutate"]
+    assert tc.allowed_tools == ["read_file", "search_files"]
+    assert tc.target_prefixes == ["C:/src"]
+    assert result["goal"]["contract"]["tool_constraints"]["denied_capabilities"] == ["external_write", "mutate"]
+
+
+def test_31_tool_constraints_rejects_shell_and_command_keys():
+    for key in ("shell", "command"):
+        result = call(
+            "tc-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            tool_constraints={"denied_capabilities": ["mutate"], key: "rm -rf /"},
+        )
+        assert not result["success"], key
+        assert "tool_constraints" in result["error"]
+
+
+def test_32_tool_constraints_rejects_invalid_capability():
+    result = call(
+        "tc-bad", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        tool_constraints={"denied_capabilities": ["nuke"]},
+    )
+    assert not result["success"]
+    assert "capability" in result["error"]
+
+
+def test_33_tool_constraints_rejects_non_string_and_empty_lists():
+    for bad in ([], [42], [None], "", "read_file"):
+        result = call(
+            "tc-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            tool_constraints={"allowed_tools": bad},
+        )
+        assert not result["success"], bad
+        assert "tool constraints" in result["error"], bad
+    for bad_prefixes in ([], [42], [None]):
+        result = call(
+            "tc-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            tool_constraints={"target_prefixes": bad_prefixes},
+        )
+        assert not result["success"], bad_prefixes
+        assert "tool constraints" in result["error"], bad_prefixes
+
+
+def test_34_tool_constraints_amend_preserves_when_omitted_and_replaces_when_given():
+    call(
+        "tc-amend", operation="create",
+        objective="Ship it", outcome="Live", verification="Probe",
+        tool_constraints={"denied_capabilities": ["external_write"], "allowed_tools": ["read_file"]},
+    )
+    noop = call("tc-amend", operation="amend", constraints=["keep"])
+    assert noop["success"] and noop["result"] == "amended"
+    tc = GoalManager("tc-amend").state.contract.tool_constraints
+    assert tc is not None
+    assert tc.denied_capabilities == ["external_write"]
+    assert tc.allowed_tools == ["read_file"]
+    replaced = call(
+        "tc-amend", operation="amend",
+        tool_constraints={"denied_capabilities": ["mutate"], "target_prefixes": ["C:/src"]},
+    )
+    assert replaced["success"] and replaced["result"] == "amended"
+    contract = GoalManager("tc-amend").state.contract
+    assert contract.tool_constraints.denied_capabilities == ["mutate"]
+    assert contract.tool_constraints.allowed_tools is None
+    assert contract.tool_constraints.target_prefixes == ["C:/src"]
+    assert "keep" in contract.constraints
+
+
+def test_35_tool_constraints_inline_executor_persists():
+    agent = SimpleNamespace(session_id="inline-tc-session")
+    ctx = InlineToolContext(effective_task_id="turn")
+    result = json.loads(INLINE_TOOL_EXECUTORS["task_commit"](agent, {
+        "operation": "create", "objective": "Inline tc", "outcome": "Done",
+        "verification": "Probe passes", "constraints": None, "boundaries": None, "stop_when": None,
+        "landing": None,
+        "tool_constraints": {"denied_capabilities": ["external_write"], "allowed_tools": ["read_file"]},
+    }, ctx))
+    assert result["success"] and result["result"] == "created"
+    tc = GoalManager("inline-tc-session").state.contract.tool_constraints
+    assert tc is not None
+    assert tc.denied_capabilities == ["external_write"]
+    assert tc.allowed_tools == ["read_file"]
+
+
+def test_36_tool_constraints_empty_object_is_semantically_empty():
+    result = call(
+        "tc-empty", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        tool_constraints={},
+    )
+    assert result["success"] and result["result"] == "created"
+    tc = GoalManager("tc-empty").state.contract.tool_constraints
+    assert tc is None or tc.is_empty()
+    repeated = call(
+        "tc-empty", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        tool_constraints={},
+    )
+    assert repeated["success"] and repeated["result"] == "idempotent_noop"
+
+
+def test_37_tool_constraints_rejects_falsy_denied_capabilities():
+    for bad in ("", 0, False, {}, {"mutate": True}):
+        result = call(
+            "tc-bad", operation="create",
+            objective="X", outcome="Y", verification="Z",
+            tool_constraints={"denied_capabilities": bad},
+        )
+        assert not result["success"], repr(bad)
+        assert "tool constraints" in result["error"], repr(bad)
+
+
+def test_38_tool_constraints_null_denied_capabilities_persists_empty():
+    result = call(
+        "tc-null", operation="create",
+        objective="X", outcome="Y", verification="Z",
+        tool_constraints={"denied_capabilities": None},
+    )
+    assert result["success"] and result["result"] == "created"
+    assert result["goal"]["contract"]["tool_constraints"]["denied_capabilities"] == []
+    tc = GoalManager("tc-null").state.contract.tool_constraints
+    assert tc is not None
+    assert tc.denied_capabilities == []
+    assert tc.is_empty()
+    assert TASK_COMMIT_SCHEMA["parameters"]["properties"]["tool_constraints"]["properties"]["denied_capabilities"]["type"] == ["array", "null"]

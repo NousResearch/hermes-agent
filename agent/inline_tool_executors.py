@@ -161,6 +161,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("operation", "operation", ""), ("objective", "objective"), ("outcome", "outcome"),
         ("verification", "verification"), ("constraints", "constraints"),
         ("boundaries", "boundaries"), ("stop_when", "stop_when"), ("landing", "landing"),
+        ("tool_constraints", "tool_constraints"),
         session_id=lambda agent, ctx: getattr(agent, "session_id", "") or "",
     ),
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot

@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import tempfile
 
@@ -14,11 +15,33 @@ from hermes_state_terminal import terminal_admission
 _READY = 'gateway.input-custody.v2'
 _FIELDS = ('principal_id', 'target_session_id', 'request_id', 'payload_digest')
 _DIGEST = re.compile(r'[0-9a-f]{64}')
+_DECIMAL = re.compile(r'0|[1-9][0-9]*')
+_IDENTITY_FORMAT = 'device-inode-decimal-v1'
+
+
+def _stored_identity(device, inode):
+    if any(not isinstance(value, str) or not _DECIMAL.fullmatch(value) for value in (device, inode)):
+        raise ValueError('invalid saved file identity')
+    result = int(device), int(inode)
+    if result[1] == 0:
+        raise ValueError('unknown saved inode')
+    return result
 
 
 def _ready(conn, root):
     row = conn.execute('SELECT value FROM state_meta WHERE key=?', (_READY,)).fetchone()
-    return row is not None and row[0] == _json({'version': 2, 'root': str(root)})
+    if row is None or row[0] != _json({'version': 2, 'root': str(root), 'identity_format': _IDENTITY_FORMAT}):
+        return False
+    try:
+        columns = {row[1]: (row[2].upper(), row[3])
+                   for row in conn.execute('PRAGMA table_info(gateway_legacy_input_paths)')}
+        if any(columns.get(field) != ('TEXT', 1) for field in ('device', 'inode')):
+            return False
+        for device, inode in conn.execute('SELECT device,inode FROM gateway_legacy_input_paths'):
+            _stored_identity(device, inode)
+    except (sqlite3.Error, ValueError, TypeError):
+        return False
+    return True
 
 
 def initialize_input_custody(db):
@@ -33,11 +56,12 @@ def initialize_input_custody(db):
         if row is not None:
             if not _ready(conn, root):
                 raise RuntimeStoreError('storage_unavailable')
-            conn.execute('SELECT path,digest FROM gateway_legacy_input_paths LIMIT 0')
+            conn.execute('SELECT path,digest,device,inode FROM gateway_legacy_input_paths LIMIT 0')
             conn.execute('SELECT admission_id,principal_id,target_session_id,request_id,payload_digest FROM gateway_legacy_input_admissions LIMIT 0')
             return
         conn.execute('''CREATE TABLE IF NOT EXISTS gateway_legacy_input_paths(
-            path TEXT PRIMARY KEY, digest TEXT NOT NULL)''')
+            path TEXT PRIMARY KEY, digest TEXT NOT NULL,
+            device TEXT NOT NULL, inode TEXT NOT NULL)''')
         conn.execute('CREATE INDEX IF NOT EXISTS gateway_legacy_input_digest ON gateway_legacy_input_paths(digest)')
         conn.execute('''CREATE TABLE IF NOT EXISTS gateway_legacy_input_admissions(
             admission_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL,
@@ -54,16 +78,21 @@ def initialize_input_custody(db):
                 if not stat.S_ISDIR(directory.stat(follow_symlinks=False).st_mode):
                     raise RuntimeStoreError('storage_unavailable')
                 for path in directory.iterdir():
-                    if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
+                    observed = path.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(observed.st_mode):
                         raise RuntimeStoreError('storage_unavailable')
-                    conn.execute('INSERT INTO gateway_legacy_input_paths VALUES(?,?)',
-                                 (str(path.relative_to(root)), directory.name))
+                    device, inode = str(observed.st_dev), str(observed.st_ino)
+                    _stored_identity(device, inode)
+                    conn.execute('INSERT INTO gateway_legacy_input_paths VALUES(?,?,?,?)',
+                                 (str(path.relative_to(root)), directory.name, device, inode))
         conn.executemany('INSERT INTO gateway_legacy_input_admissions VALUES(?,?,?,?,?)', rows)
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
-                     (_READY, _json({'version': 2, 'root': str(root)})))
+                     (_READY, _json({'version': 2, 'root': str(root), 'identity_format': _IDENTITY_FORMAT})))
+        if not _ready(conn, root):
+            raise RuntimeStoreError('storage_unavailable')
     try:
         db._execute_write(initialize)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, sqlite3.Error) as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
 
 
@@ -106,12 +135,13 @@ def custody_holds(conn, db_path, reference):
         return True
     if not _legacy_active(conn):
         return False
-    for row in conn.execute('SELECT path FROM gateway_legacy_input_paths WHERE digest=?', (reference['sha256'],)):
+    for row in conn.execute('SELECT path,device,inode FROM gateway_legacy_input_paths WHERE digest=?', (reference['sha256'],)):
         old = root / row[0]
         if old == path:
             return True
         try:
-            if _file_identity(old) == _file_identity(path):
+            candidate = _file_identity(path)
+            if _stored_identity(row[1], row[2]) == candidate or _file_identity(old) == candidate:
                 return True
         except FileNotFoundError:
             continue

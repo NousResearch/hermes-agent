@@ -12,7 +12,9 @@ from mathutils import Vector
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GENERATED = ROOT / "public" / "lunar-city" / "generated-3d"
+# Review inputs and generated board outputs must stay outside Electron's
+# packaged public tree; these are provenance artifacts, not runtime assets.
+GENERATED = ROOT / "lunar-city-reference"
 BUILDINGS_DIR = GENERATED / "hunyuan2mv-reference-2026-09-04"
 WORKERS_DIR = GENERATED / "hunyuan2mv-worker-reference-2026-09-04"
 OUT_DIR = GENERATED / "hunyuan2mv-reference-board-2026-09-04"
@@ -98,7 +100,7 @@ def label(text: str, location: tuple[float, float, float], size: float = 0.18) -
         bsdf.inputs["Emission Color"].default_value = (0.1, 0.55, 1.0, 1)
         bsdf.inputs["Emission Strength"].default_value = 0.35
     obj.data.materials.append(material)
-    direction = Vector((0, 0, 1)) - Vector(location)
+    direction = Vector((0, -22, 12)) - Vector(location)
     obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
 
@@ -173,9 +175,9 @@ def setup_scene() -> None:
     rim.data.color = (1.0, 0.35, 0.12)
     rim.data.size = 5
 
-    bpy.ops.object.camera_add(location=(0, -16, 9))
+    bpy.ops.object.camera_add(location=(0, -22, 12))
     camera = bpy.context.object
-    camera.data.lens = 48
+    camera.data.lens = 32
     camera.data.sensor_width = 36
     camera.rotation_euler = (Vector((0, 0.7, 1.5)) - camera.location).to_track_quat("-Z", "Y").to_euler()
     bpy.context.scene.camera = camera

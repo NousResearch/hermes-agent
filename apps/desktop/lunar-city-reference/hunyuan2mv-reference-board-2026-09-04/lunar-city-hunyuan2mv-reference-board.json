@@ -225,9 +225,9 @@
       "vertices": 873666
     }
   ],
-  "blend": "hunyuan2mv-reference-board-2026-09-04/lunar-city-hunyuan2mv-reference-board.blend",
+  "blend": null,
   "generator": "build_lunar_city_hunyuan_reference_board.py",
-  "glb": "hunyuan2mv-reference-board-2026-09-04/lunar-city-hunyuan2mv-reference-board.glb",
+  "glb": null,
   "notes": [
     "Hunyuan3D-2mv shape-only reference pass from approved 2x2 turnarounds.",
     "Plan views were retained as QA references but not mislabeled as elevations.",

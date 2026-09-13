@@ -8,6 +8,7 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Optional
@@ -288,6 +289,12 @@ def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
     return name in {f"hermes-serve{suffix}", f"hermes-dashboard{suffix}"}
 
 
+# A HERMES_HOME outside the native root names the gateway ``<base>-<sha256[:8]>``
+# (_profile_suffix in hermes_cli/gateway.py); exact 8 lowercase hex only, so a named
+# profile whose name merely looks numeric is never claimed as the default's hash.
+_GATEWAY_HASH_SERVICE_NAME = re.compile(r"(?:hermes-gateway|ai\.hermes\.gateway|gateway)-[0-9a-f]{8}")
+
+
 def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     """Match an exact gateway service/label (systemd/launchd/s6 shapes) to a profile.
 
@@ -296,10 +303,17 @@ def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     not contain the substring ``hermes-gateway``, so a successful macOS kickstart must
     still credit the planned default gateway. A scope prefix (``user/hermes-gateway``,
     ``gui/501/ai.hermes.gateway``) is stripped the same way serve units are.
+    For the default profile, the hash-suffixed unit names a non-native HERMES_HOME's
+    gateway carries (``hermes-gateway-03b57a39``) are credited too: the restart phase
+    restarts that real unit, and failing to credit it trips the "never touched"
+    tripwire on every update of such an install (#110238).
     """
     name = str(service).removesuffix(".service").rsplit("/", 1)[-1]
     if profile == "default":
-        return name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
+        return (
+            name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
+            or _GATEWAY_HASH_SERVICE_NAME.fullmatch(name) is not None
+        )
     return name in {f"hermes-gateway-{profile}", f"ai.hermes.gateway-{profile}", f"gateway-{profile}"}
 
 

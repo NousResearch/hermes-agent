@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $subagentsBySession,
   activeSubagentCount,
+  activeSubagentsForStoredSession,
   allSubagents,
   buildSubagentTree,
   clearSessionSubagents,
   failedSubagentCount,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
+  restoreActiveSubagents,
   upsertSubagent
 } from './subagents'
 
@@ -175,6 +177,41 @@ describe('subagent store', () => {
     expect(item?.summary).toBe('finished later')
   })
 
+  it.each(['completed', 'failed', 'interrupted'] as const)(
+    'keeps an authoritative %s row when a stale running snapshot arrives',
+    status => {
+      upsertSubagent(
+        's1',
+        { status, subagent_id: 'finished-during-reload', summary: 'finished while reconnecting' },
+        false,
+        'subagent.complete'
+      )
+
+      expect(listFor('s1')).toMatchObject([
+        {
+          id: 'finished-during-reload',
+          status,
+          summary: 'finished while reconnecting'
+        }
+      ])
+
+      restoreActiveSubagents('s1', [
+        {
+          goal: 'stale running snapshot',
+          owner_agent_session_id: 'stored-owner',
+          status: 'running',
+          subagent_id: 'finished-during-reload'
+        }
+      ])
+
+      expect(listFor('s1')[0]).toMatchObject({
+        id: 'finished-during-reload',
+        status,
+        summary: 'finished while reconnecting'
+      })
+    }
+  )
+
   it('pruneFinishedSessionSubagents leaves other sessions untouched', () => {
     upsertSubagent('s1', { goal: 'live', status: 'running', subagent_id: 'a', task_index: 0 })
     upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'b', task_index: 1 })
@@ -333,5 +370,65 @@ describe('subagent store', () => {
     upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'late1', task_index: 0, text: 'late' })
 
     expect(listFor('s1')[0]?.status).toBe('failed')
+  })
+
+  it('restores a running backend snapshot into an empty runtime bucket', () => {
+    restoreActiveSubagents('runtime-owner', [
+      {
+        goal: 'inspect the renderer',
+        owner_agent_session_id: 'stored-owner',
+        started_at: 1_700_000_000,
+        status: 'running',
+        subagent_id: 'sa-restored'
+      }
+    ])
+
+    expect(listFor('runtime-owner')).toMatchObject([
+      {
+        goal: 'inspect the renderer',
+        id: 'sa-restored',
+        startedAt: 1_700_000_000_000,
+        status: 'running'
+      }
+    ])
+  })
+
+  it('selects the durable owner across compression lineage without leaking another session', () => {
+    const entries = [
+      { owner_agent_session_id: 'root-owner', subagent_id: 'ours' },
+      { owner_agent_session_id: 'stored-foreign', subagent_id: 'foreign' },
+      { subagent_id: 'unowned' }
+    ]
+
+    const sessions = [
+      {
+        _lineage_ids: ['root-owner', 'middle-owner', 'tip-owner'],
+        _lineage_root_id: 'root-owner',
+        id: 'tip-owner'
+      }
+    ]
+
+    expect(activeSubagentsForStoredSession('tip-owner', entries, sessions as never)).toEqual([entries[0]])
+  })
+
+  it('keeps nested descendants whose durable owner is their immediate parent session', () => {
+    const entries = [
+      { owner_agent_session_id: 'stored-owner', subagent_id: 'root-child' },
+      {
+        owner_agent_session_id: 'root-child-session',
+        parent_id: 'root-child',
+        subagent_id: 'nested-child'
+      },
+      {
+        owner_agent_session_id: 'nested-child-session',
+        parent_id: 'nested-child',
+        subagent_id: 'nested-grandchild'
+      },
+      { owner_agent_session_id: 'stored-foreign', subagent_id: 'foreign-root' }
+    ]
+
+    expect(activeSubagentsForStoredSession('stored-owner', entries, [] as never).map(item => item.subagent_id)).toEqual(
+      ['root-child', 'nested-child', 'nested-grandchild']
+    )
   })
 })

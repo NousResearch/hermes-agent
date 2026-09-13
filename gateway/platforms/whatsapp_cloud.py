@@ -234,12 +234,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
         return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
 
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Allowlist check against the normalized bare wa_id."""
-        if self._dm_policy == "allowlist":
-            bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
-            return (bare or sender_id) in self._normalize_allow_ids(self._live_dm_allow_from())
-        return super()._is_dm_allowed(sender_id)
+    def _entry_matches(self, entries, target: str) -> bool:
+        """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
+        so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
+        entries = set(entries or ())
+        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
+        return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
 
     def _allow_all_env_names(self) -> tuple[str, ...]:
         """Also honor the documented WHATSAPP_CLOUD_ALLOW_ALL_USERS opt-in."""

@@ -31,6 +31,7 @@ def _hosts():
     """One bare instance per own-policy class, attributes set exactly as the adapters do."""
     from gateway.platforms.qqbot.adapter import QQAdapter
     from gateway.platforms.weixin import WeixinAdapter
+    from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
     from gateway.platforms.yuanbao import AccessPolicy
     from plugins.platforms.wecom.adapter import WeComAdapter
@@ -40,9 +41,11 @@ def _hosts():
         "wecom": object.__new__(WeComAdapter),
         "qqbot": object.__new__(QQAdapter),
         "whatsapp": WhatsAppBehaviorMixin(),
+        "whatsapp_cloud": object.__new__(WhatsAppCloudAdapter),
         "yuanbao": AccessPolicy("open", [], "open", []),
     }
     hosts["whatsapp"]._dm_allowlist_source = "config"
+    hosts["whatsapp_cloud"]._dm_allowlist_source = "config"
     hosts["wecom"]._groups = {}
     return hosts
 
@@ -64,7 +67,9 @@ def _verdicts(host, name, dm_policy, group_policy):
 # would pass with a host whose prefix is missing — that is exactly how WeCom regressed once.
 PLATFORM_OPT_IN = {"weixin": "WEIXIN_ALLOW_ALL_USERS", "wecom": "WECOM_ALLOW_ALL_USERS",
                    "qqbot": "QQ_ALLOW_ALL_USERS", "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",
-                   "yuanbao": "YUANBAO_ALLOW_ALL_USERS"}
+                   "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS", "yuanbao": "YUANBAO_ALLOW_ALL_USERS"}
+# Hosts whose allowlists document ``*`` (weixin/yuanbao match literally, as before).
+WILDCARD_HOSTS = ("wecom", "qqbot", "whatsapp", "whatsapp_cloud")
 
 
 def _all_agree(hosts, opt_in_for, label):
@@ -91,6 +96,20 @@ def test_all_own_policy_adapters_agree(monkeypatch, mode):
         "platform": lambda name: {PLATFORM_OPT_IN[name]: "true"},
     }[mode]
     _all_agree(_hosts(), opt_in_for, mode)
+
+
+@pytest.mark.parametrize("name", WILDCARD_HOSTS)
+def test_wildcard_allowlist_admits_strangers_on_every_path(name):
+    """``*`` must open strict DM auth, DM intake AND group intake alike — whatsapp_cloud once
+    honoured it on intake only, then on neither."""
+    host = _hosts()[name]
+    host._dm_policy = host._group_policy = "allowlist"
+    host._allow_from, host._group_allow_from = ["*"], ["*"]
+    group_args = ("room-2", "stranger") if name in ("wecom", "qqbot") else ("room-2",)
+    assert host._is_dm_allowed("stranger") is True
+    assert host._is_dm_intake_allowed("stranger") is True
+    assert host._is_group_allowed(*group_args) is True
+    assert host._is_dm_intake_allowed("   ") is False
 
 
 def test_mixin_host_without_prefix_is_rejected_at_class_creation():

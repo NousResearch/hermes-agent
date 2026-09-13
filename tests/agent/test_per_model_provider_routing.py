@@ -1,5 +1,6 @@
 """``provider_routing.models.<id>`` overlays the flat OpenRouter routing for the CURRENT agent.model."""
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -38,3 +39,46 @@ def test_per_model_match_is_spelling_tolerant_and_follows_model_switch(routing_c
     assert cch._provider_preferences_for_agent(agent)["only"] == ["openai"]
     agent.model = "claude-fable-5-1"
     assert cch._provider_preferences_for_agent(agent)["only"] == ["anthropic"]
+
+
+def test_batch_constructed_agent_gets_request_time_overlay():
+    """Batch omits constructor routing; request-time models.<id> overlay still applies."""
+    from hermes_cli.config import set_config_value
+    from run_agent import AIAgent
+
+    set_config_value(
+        "provider_routing.models.google/gemini-flash.only",
+        '["google"]',
+    )
+
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+        patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=200_000,
+        ),
+    ):
+        agent = AIAgent(
+            model="google/gemini-flash",
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            max_iterations=10,
+            save_trajectories=False,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert not agent.providers_allowed
+    assert not agent.providers_order
+    prefs = cch._provider_preferences_for_agent(agent)
+    assert prefs.get("only") == ["google"]
+    kwargs = cch._iteration_summary_chat_kwargs(
+        agent,
+        [{"role": "user", "content": "hi"}],
+    )
+    extra = kwargs.get("extra_body") or {}
+    assert extra.get("provider", {}).get("only") == ["google"]

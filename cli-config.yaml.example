@@ -290,6 +290,32 @@ model:
 #   # Try providers in this order (overrides default load balancing)
 #   # order: ["anthropic", "google", "together"]
 #
+#   # Pin one slug from order across requests so prompt cache stays
+#   # warm. OpenRouter disables its own sticky routing when you set a
+#   # manual order; without this pin, providers can hop every request.
+#   # Opt-in (default: off). Rotates on timeout / overload / 5xx.
+#   # Timeout and overload also walk every slug before eager model
+#   # fallback; 5xx rotates and retries but is not in that deferred
+#   # fallback class. 429 and empty/invalid responses keep the pin
+#   # and follow the normal retry/fallback path. A logical request is
+#   # each model API call (including tool-loop rounds); an idle gap
+#   # longer than ttl_seconds between any two of them resets to the
+#   # first slug. Live only for api_mode chat_completions on native
+#   # OpenRouter. Nous Portal is excluded (Portal ignores or rejects
+#   # the provider object). Not live for @preset/ models, :nitro/:floor
+#   # variants, gpt-6-astra speed-tier slugs (-fast/-flex), custom:
+#   # endpoints, anthropic_messages, codex_responses, other api_modes,
+#   # or direct providers. Cron binds sticky from config (including
+#   # per-model overlay). Batch workers do not get the flat
+#   # constructor routing args from config; the request-time
+#   # per-model overlay and sticky bind still apply when
+#   # provider_routing is configured. Batch also has an order
+#   # (and therefore a sticky pool) when providers_order is
+#   # passed on the CLI.
+#   # sticky_order:
+#   #   enabled: true            # default: false
+#   #   ttl_seconds: 600         # default: 600
+#
 #   # Require providers to support all parameters in your request
 #   # require_parameters: true
 #

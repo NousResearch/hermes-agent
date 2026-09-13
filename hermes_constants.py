@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import math
 import os
 import re
 import shutil
@@ -11,6 +12,7 @@ import stat
 import sys
 from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import NamedTuple
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
@@ -925,6 +927,92 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+class StickyOrderConfig(NamedTuple):
+    """Validated ``provider_routing.sticky_order`` settings (opt-in pin)."""
+
+    enabled: bool = False
+    ttl_seconds: float = 600.0
+
+
+DEFAULT_STICKY_ORDER = StickyOrderConfig()
+
+
+def resolve_sticky_order_config(routing_dict) -> StickyOrderConfig:
+    """Parse ``provider_routing.sticky_order`` with safe defaults.
+
+    Invalid values log a warning and fall back to the matching default
+    (disabled / 600s). Missing or non-dict sections return the disabled
+    default without raising. This section is passthrough config — defaults
+    live here, not in ``DEFAULT_CONFIG``.
+    """
+    defaults = DEFAULT_STICKY_ORDER
+    if not isinstance(routing_dict, dict):
+        return defaults
+    raw = routing_dict.get("sticky_order")
+    if raw is None:
+        return defaults
+    if not isinstance(raw, dict):
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid provider_routing.sticky_order (expected mapping), "
+            "using disabled defaults",
+        )
+        return defaults
+
+    enabled, enabled_ok = _coerce_sticky_order_enabled(raw.get("enabled", False))
+    if not enabled_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid provider_routing.sticky_order.enabled %r, defaulting to false",
+            raw.get("enabled"),
+        )
+
+    ttl, ttl_ok = _coerce_sticky_order_ttl(
+        raw.get("ttl_seconds", defaults.ttl_seconds),
+    )
+    if not ttl_ok:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Invalid provider_routing.sticky_order.ttl_seconds %r, "
+            "defaulting to %s",
+            raw.get("ttl_seconds"),
+            defaults.ttl_seconds,
+        )
+
+    return StickyOrderConfig(enabled=enabled, ttl_seconds=ttl)
+
+
+def _coerce_sticky_order_enabled(value) -> tuple[bool, bool]:
+    """Return ``(enabled, valid)``. Invalid → ``(False, False)``."""
+    if isinstance(value, bool):
+        return value, True
+    if isinstance(value, (int, float)) and value in (0, 1) and not isinstance(value, bool):
+        return bool(value), True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True, True
+        if normalized in {"false", "no", "off", "0", ""}:
+            return False, True
+    if value is None:
+        return False, True
+    return False, False
+
+
+def _coerce_sticky_order_ttl(value) -> tuple[float, bool]:
+    """Return ``(seconds, valid)``. Must be a finite number ``> 0``."""
+    # * bool is a subclass of int; float(True) == 1.0 must not count as valid.
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return DEFAULT_STICKY_ORDER.ttl_seconds, False
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_STICKY_ORDER.ttl_seconds, False
+    if not math.isfinite(parsed) or parsed <= 0:
+        return DEFAULT_STICKY_ORDER.ttl_seconds, False
+    return parsed, True
 
 
 def parse_reasoning_effort(effort) -> dict | None:

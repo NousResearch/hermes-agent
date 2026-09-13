@@ -165,6 +165,32 @@ def test_message_override_and_error_context_sanitized(monkeypatch):
     assert result.error_context == {"upstream_provider": "AcmeCloud"}
 
 
+def test_plugin_is_empty_or_invalid_survives_sanitizer(monkeypatch):
+    """Sticky's empty-response marker must not be dropped on the plugin path."""
+    monkeypatch.setattr(
+        plugins_mod, "invoke_hook",
+        lambda name, **kw: [{
+            "reason": "server_error",
+            "is_empty_or_invalid": True,
+        }],
+    )
+
+    result = _classify_unclaimed_error()
+    assert result.reason == FailoverReason.server_error
+    assert result.is_empty_or_invalid is True
+
+
+def test_plugin_omitted_empty_flag_defaults_false(monkeypatch):
+    monkeypatch.setattr(
+        plugins_mod, "invoke_hook",
+        lambda name, **kw: [{"reason": "server_error"}],
+    )
+
+    result = _classify_unclaimed_error()
+    assert result.reason == FailoverReason.server_error
+    assert result.is_empty_or_invalid is False
+
+
 # ── Plugin register() end-to-end (synthetic, written at test time) ──────
 
 _SYNTHETIC_PLUGIN = '''

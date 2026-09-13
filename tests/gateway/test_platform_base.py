@@ -747,6 +747,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_root = fake_home / ".hermes"
         profile_b = hermes_root / "profiles" / "beta"
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
 
@@ -839,6 +840,7 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_ROOT", hermes_root
         )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
 
         assert (
             BasePlatformAdapter.validate_media_delivery_path(str(image))

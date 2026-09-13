@@ -1,6 +1,7 @@
 """Tests for gateway /yolo session scoping."""
 
 import os
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -72,6 +73,29 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
     assert "OFF" in result_off
     assert is_session_yolo_enabled(session_a) is False
     assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+@pytest.mark.asyncio
+async def test_yolo_uses_the_normalized_message_turn_session_key():
+    runner = _make_runner()
+    event = _make_event("chat-a", user_id="admin")
+    normalized = replace(event.source, thread_id="recovered-topic")
+    runner._normalize_source_for_session_key = MagicMock(return_value=normalized)
+    raw_key = runner._session_key_for_source(event.source)
+    normalized_key = runner._session_key_for_source(normalized)
+    disable_session_yolo(raw_key)
+    disable_session_yolo(normalized_key)
+
+    try:
+        result = await runner._handle_yolo_command(event)
+
+        assert "ON" in result
+        runner._normalize_source_for_session_key.assert_called_once_with(event.source)
+        assert is_session_yolo_enabled(raw_key) is False
+        assert is_session_yolo_enabled(normalized_key) is True
+    finally:
+        disable_session_yolo(raw_key)
+        disable_session_yolo(normalized_key)
 
 
 @pytest.mark.asyncio

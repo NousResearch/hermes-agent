@@ -204,6 +204,70 @@ def test_fs_delete_refuses_managed_root(monkeypatch, client, tmp_path):
     assert locked.exists()
 
 
+def test_fs_mutation_refuses_symlinked_parent(client, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel.txt").write_text("keep")
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    create = client.post("/api/fs/create", json={"path": str(root / "link" / "evil.txt"), "directory": False})
+    rename = client.post("/api/fs/rename", json={"path": str(root / "link" / "sentinel.txt"), "name": "moved.txt"})
+    delete = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "link" / "sentinel.txt"), "recursive": False}
+    )
+
+    assert create.status_code == 400
+    assert rename.status_code == 400
+    assert delete.status_code == 400
+    # Nothing was created/renamed/deleted outside the project tree.
+    assert not (outside / "evil.txt").exists()
+    assert (outside / "sentinel.txt").read_text() == "keep"
+    assert not (outside / "moved.txt").exists()
+
+
+def test_fs_delete_refuses_ancestor_of_managed_root(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import files as files_router
+
+    locked = tmp_path / "opt-data"
+    locked.mkdir()
+    (locked / "keep.txt").write_text("keep")
+
+    monkeypatch.setattr(
+        files_router,
+        "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    # Deleting an ANCESTOR of the locked root with recursive must be refused:
+    # a naive `target == locked_root` guard would let rmtree(ancestor) remove
+    # the locked /opt/data underneath it.
+    response = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(tmp_path), "recursive": True}
+    )
+
+    assert response.status_code == 400
+    assert (locked / "keep.txt").exists()
+
+
+def test_fs_create_file_atomically_refuses_existing(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    (parent / "taken.txt").write_text("precious")
+
+    # The same-body call twice: os.open(O_CREAT|O_EXCL) makes this a hard 409 —
+    # Path.touch() would have silently succeeded and clobbered the content.
+    for _ in range(2):
+        response = client.post("/api/fs/create", json={"path": str(parent / "taken.txt"), "directory": False})
+
+    assert response.status_code == 409
+    assert (parent / "taken.txt").read_text() == "precious"
+
+
 def test_fs_delete_never_removes_filesystem_root(client, tmp_path):
     response = client.request("DELETE", "/api/fs/delete", json={"path": "/", "recursive": True})
 

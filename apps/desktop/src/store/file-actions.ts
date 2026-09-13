@@ -11,6 +11,7 @@ import {
 } from '@/lib/desktop-fs'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 // Shared file-row actions for BOTH trees (the file browser + the review/git
@@ -75,6 +76,25 @@ export async function requestNewEntry(creating: CreatingEntry): Promise<void> {
 export function cancelNewEntry(): void {
   $creatingEntry.set(null)
 }
+
+// Inline rename/create and the delete-confirm dialog hold ABSOLUTE paths that
+// are only valid on the connection they were opened against. The connection
+// atom changes on a gateway/session switch; cancelling the pending actions
+// then prevents an old path from being applied to a different (or new) backend
+// — e.g. a rename started on gateway A committing to gateway B, and the
+// review's "old path reaches the new connection" class of bugs.
+let lastConnectionKey = ''
+$connection.subscribe(connection => {
+  const key = connection?.connectionId || connection?.baseUrl || `${connection?.mode || 'local'}:${connection?.remoteKind || ''}`
+  const changed = lastConnectionKey !== '' && key !== lastConnectionKey
+  lastConnectionKey = key
+
+  if (changed) {
+    $creatingEntry.set(null)
+    $renamingPath.set(null)
+    $fileActionDialog.set(null)
+  }
+})
 
 /** Create the entry after the inline input commits. Throws on failure so the
  *  CALLER (InlineRenameInput) owns the error notification — this function only

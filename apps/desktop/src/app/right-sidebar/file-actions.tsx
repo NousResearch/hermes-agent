@@ -163,7 +163,8 @@ interface InlineRenameInputProps {
  *  pre-select, and a first-tab-all select). */
 export function InlineRenameInput({ className, name, path }: InlineRenameInputProps) {
   const creating = useStore($creatingEntry)
-  const seedName = creating && creating.parentDir === path ? '' : name
+  const creatingHere = creating && creating.parentDir === path
+  const seedName = creatingHere ? '' : name
   const [value, setValue] = useState(seedName)
   // Enter then the resulting blur must not both commit; latch on first finish.
   const done = useRef(false)
@@ -205,7 +206,11 @@ export function InlineRenameInput({ className, name, path }: InlineRenameInputPr
 
   return (
     <input
-      aria-label={translateNow('fileMenu.renameLabel')}
+      aria-label={
+        creatingHere
+          ? translateNow(creating.directory ? 'fileMenu.newFolder' : 'fileMenu.newFile')
+          : translateNow('fileMenu.renameLabel')
+      }
       autoCapitalize="off"
       autoComplete="off"
       autoCorrect="off"

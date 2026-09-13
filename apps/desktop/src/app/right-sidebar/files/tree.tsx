@@ -160,10 +160,11 @@ export function ProjectTree({
   )
 
   // F2 / Enter on the selected row begins an inline rename. Capture-phase so it
-  // beats arborist's own Enter-to-activate; skipped while an edit is in progress
-  // (the editor input owns Enter/Esc then) and for placeholder rows.
+  // beats arborist's own Enter-to-activate; skipped while an edit OR a new-entry
+  // create is in progress (the editor input owns Enter/Esc then) and for
+  // placeholder rows.
   const handleRenameShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!isRenameShortcut(event) || $renamingPath.get()) {
+    if (!isRenameShortcut(event) || $renamingPath.get() || $creatingEntry.get()) {
       return
     }
 

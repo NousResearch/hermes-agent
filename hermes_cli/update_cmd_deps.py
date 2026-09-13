@@ -982,36 +982,37 @@ def _sync_python_dependencies_after_pull(
     print(
         "→ Python dependencies unchanged — skipping reinstall" if deps_current
         else "→ Updating Python dependencies...")
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    # `uv self update` if we already have a managed uv.
-    update_managed_uv()
-    uv_bin = ensure_uv()
-    pip_cmd = [sys.executable, "-m", "pip"]
-    if not uv_bin:
-        uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if not uv_bin:
-        _ensure_venv_pip(pip_cmd, sys.executable)
-    install_prefix, lazy_env = _pip_install_prefix(uv_bin)
     install_group = "all"
-    is_termux = _m()._is_termux_env(lazy_env)
-    if is_termux:
-        if lazy_env is not None:
-            lazy_env.pop("PYTHONPATH", None)
-            lazy_env.pop("PYTHONHOME", None)
-        install_group = "termux-all"
-        uv_note = "uv + " if uv_bin else ""
-        print(f"  → Termux detected: using {uv_note}curated termux-all optional profile...")
     if deps_current:
+        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+        # `uv self update` if we already have a managed uv.
+        update_managed_uv()
+        uv_bin = ensure_uv()
+        pip_cmd = [sys.executable, "-m", "pip"]
+        if not uv_bin:
+            uv_bin = _ensure_uv_for_termux(pip_cmd)
+        if not uv_bin:
+            _ensure_venv_pip(pip_cmd, sys.executable)
+        install_prefix, lazy_env = _pip_install_prefix(uv_bin)
+        is_termux = _m()._is_termux_env(lazy_env)
+        if is_termux:
+            if lazy_env is not None:
+                lazy_env.pop("PYTHONPATH", None)
+                lazy_env.pop("PYTHONHOME", None)
+            install_group = "termux-all"
+            uv_note = "uv + " if uv_bin else ""
+            print(f"  → Termux detected: using {uv_note}curated termux-all optional profile...")
         # Verification normally runs inside the skipped install; run it here so a wrong skip
         # self-heals (both verifiers reinstall what they find missing).
         _m()._verify_core_dependencies_installed(install_prefix, env=lazy_env, group=install_group)
         _m()._verify_console_scripts_installed(install_prefix, env=lazy_env)
     else:
-        if is_termux and _is_android_python():
-            print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-            _install_psutil_android_compat(install_prefix, env=lazy_env)
-        _m()._install_python_dependencies_with_optional_fallback(
-            install_prefix, env=lazy_env, group=install_group)
+        install_prefix, lazy_env = _m()._install_checkout_python_dependencies_for_update()
+        install_group = (
+            "termux-all"
+            if _m()._is_termux_env(lazy_env) or _m()._is_termux_env()
+            else "all"
+        )
 
     # Clear the core breadcrumb before lazy refresh, which uses its own marker so a lazy
     # failure can't be "healed" by a narrow core import probe.

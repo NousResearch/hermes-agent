@@ -35,6 +35,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
+    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
+    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
+    duck types) counts when it defines ``send_exec_approval`` itself."""
+    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
+    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
+        return bool(probe())
+    return getattr(adapter_cls, "send_exec_approval", None) is not None
+
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1309,7 +1319,7 @@ class TurnRunner:
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
+        if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(

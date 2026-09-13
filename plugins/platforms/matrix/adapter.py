@@ -59,7 +59,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -1621,32 +1621,24 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: failed to add %s reaction %s: %s", label, emoji, exc)
         return result
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+    _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
+    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
+                  "always": "♾️ = approve always", "deny": "❎ = deny"}
+    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
+                      "always": "`!approve always` to approve permanently, "}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if smart_denied:
-            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
-        else:
-            scope_choices = (
-                ("Reply `!approve session` to approve this pattern for the session, " if allow_session else "")
-                + ("`!approve always` to approve permanently, " if allow_permanent else ""))
-        legend = ["✅ = approve once"]
-        reactions = ["✅"]
-        if allow_session:
-            legend.append("🌀 = approve for this session")
-            reactions.append("🌀")
-            if allow_permanent:
-                legend.append("♾️ = approve always")
-                reactions.append("♾️")
-        legend.append("❎ = deny")
-        reactions.append("❌")
+        choices = prompt.choices
+        typed_hints = "" if prompt.smart_denied else "".join(self._EA_TYPED_HINT[c] for c in choices if c in self._EA_TYPED_HINT)
         text = (
-            f"{self._format_exec_approval(command, description)}\n\n"
-            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(legend))
+            f"{prompt.text}\n\n"
+            f"{typed_hints}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
+            "You can also click the reaction to approve:\n" + "\n".join(self._EA_LEGEND[c] for c in choices))
+        reactions = tuple(self._EA_REACTIONS[c] for c in choices)
+        session_key, chat_id = prompt.session_key, prompt.chat_id
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
@@ -1657,7 +1649,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at)
         return await self._send_reaction_prompt(
-            chat_id, text, metadata, _make, self._approval_prompts_by_event, tuple(reactions), "approval")
+            chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,

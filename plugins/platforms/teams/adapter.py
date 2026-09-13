@@ -55,7 +55,7 @@ HttpMethod = str  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult, cache_image_from_url, cache_media_bytes_async,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
@@ -624,31 +624,28 @@ class TeamsAdapter(BasePlatformAdapter):
             return "⛔ Not authorized."
         return None
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+    _EA_CMD_BUDGET = 2000
+    _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
+    _EA_CARD_STYLES = {"primary": "positive", "danger": "destructive"}
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": session_key, "cmd": _truncate(command, 200), "desc": description}
-
-        def _action(title: str, hermes_action: str, **kw) -> "ExecuteAction":
-            return ExecuteAction(
-                title=title, verb="hermes_approve", data={**btn_data_base, "hermes_action": hermes_action}, **kw)
-
-        actions = [_action("Allow Once", "approve_once", style="positive")]
-        if not smart_denied and allow_session:
-            actions.append(_action("Allow Session", "approve_session"))
-            if allow_permanent:
-                actions.append(_action("Always Allow", "approve_always"))
-        actions.append(_action("Deny", "deny", style="destructive"))
-        body = _approval_body(_truncate(command, 2000), description, always=True)
-        if smart_denied:
-            body.append(TextBlock(text="Smart DENY: owner override applies to this one operation only.", wrap=True))
+        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        actions = []
+        for label, choice, style in prompt.actions:
+            kw = {"style": self._EA_CARD_STYLES[style]} if style else {}
+            actions.append(ExecuteAction(
+                title=label, verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
+        body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        if prompt.smart_denied:
+            body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))
         card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)
         try:
-            result = await self._send_card(chat_id, card)
+            result = await self._send_card(prompt.chat_id, card)
             return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)

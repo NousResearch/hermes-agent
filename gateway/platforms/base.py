@@ -1581,6 +1581,27 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
 
 
 @dataclass
+class ExecApprovalPrompt:
+    """One exec-approval prompt, ready for a platform to render natively (see
+    ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
+    with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
+    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
+    ``danger`` / ``""``."""
+    chat_id: str
+    session_key: str
+    text: str
+    actions: List[Tuple[str, str, str]]
+    command: str
+    description: str
+    smart_denied: bool
+    metadata: Optional[Dict[str, Any]] = None
+
+    @property
+    def choices(self) -> List[str]:
+        return [choice for _, choice, _ in self.actions]
+
+
+@dataclass
 class SendResult:
     """Result of sending a message."""
     success: bool
@@ -2550,6 +2571,7 @@ class BasePlatformAdapter(ABC):
     _EA_REASON_LABEL: str = "Reason: "
     _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
+    _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
 
     @staticmethod
     def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
@@ -2561,15 +2583,67 @@ class BasePlatformAdapter(ABC):
         """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
         return text
 
+    def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
+        """Chars of command preview that fit; platforms with a hard message cap compute it."""
+        return self._EA_CMD_BUDGET
+
     def _format_exec_approval(
         self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
         """Shared exec-approval prompt text: header + fenced (truncated) command + reason,
         plus the smart-deny line. Buttons/trailing instructions stay platform-local."""
-        cmd_preview = self._truncate_preview(str(command or ""), self._EA_CMD_BUDGET)
+        if self._EA_REASON_BUDGET:
+            description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
+        cmd_preview = self._truncate_preview(
+            str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
                 f"{self._EA_REASON_LABEL}{self._ea_escape(description)}")
         return text + self._EA_SMART_DENY_LINE if smart_denied else text
+
+    # ── Exec-approval prompt (template method). The choice set is one rule for every button
+    # surface — three separate "same fix × N adapters" commits motivated lifting it here.
+    _EA_ACTION_LABELS: Dict[str, str] = {
+        "once": "Allow Once", "session": "Allow Session", "always": "Always Allow", "deny": "Deny"}
+    _EA_ACTION_STYLES: Dict[str, str] = {"once": "primary", "deny": "danger"}
+
+    def _exec_approval_actions(
+            self, *, allow_permanent: bool, allow_session: bool, smart_denied: bool) -> List[Tuple[str, str, str]]:
+        """``(label, choice, style)`` rows for the approval buttons. A smart deny is an owner
+        override for one operation only, so it offers neither the session nor the permanent tier;
+        the permanent tier is never offered without the session tier."""
+        choices = ["once"]
+        if not smart_denied and allow_session:
+            choices.append("session")
+            if allow_permanent:
+                choices.append("always")
+        choices.append("deny")
+        return [(self._EA_ACTION_LABELS[c], c, self._EA_ACTION_STYLES.get(c, "")) for c in choices]
+
+    @classmethod
+    def supports_exec_approval_buttons(cls) -> bool:
+        """True when the adapter renders native approval buttons (overrides the prompt hook);
+        the runner otherwise sends the plain-text ``/approve`` prompt."""
+        return cls._send_exec_approval_prompt is not BasePlatformAdapter._send_exec_approval_prompt
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Interactive exec-approval prompt; a press resolves via
+        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
+        render them natively in ``_send_exec_approval_prompt``."""
+        prompt = ExecApprovalPrompt(
+            chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
+            description=description, smart_denied=smart_denied,
+            text=self._format_exec_approval(command, description, smart_denied),
+            actions=self._exec_approval_actions(
+                allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
+        return await self._send_exec_approval_prompt(prompt)
+
+    async def _send_exec_approval_prompt(self, prompt: "ExecApprovalPrompt") -> SendResult:
+        """Render ``prompt`` with the platform's native buttons; the default has none."""
+        return SendResult(success=False, error="Not supported")
 
     @staticmethod
     def _format_choice_page(options: list, page: int, per_page: int) -> "tuple[list, Dict[str, Any]]":

@@ -209,7 +209,11 @@ const approval: Handler = ctx => {
 
 const sudo: Handler = ctx => {
   rememberServerRequest(ctx.request)
-  setSudoRequest({ requestId: ctx.request.id, sessionId: ctx.sessionId || null })
+  setSudoRequest({
+    command: str(ctx.request.params.command),
+    requestId: ctx.request.id,
+    sessionId: ctx.sessionId || null
+  })
   markNeedsInput(ctx)
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }

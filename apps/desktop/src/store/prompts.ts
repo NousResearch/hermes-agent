@@ -103,6 +103,8 @@ interface PendingApprovalPayload {
 }
 
 export interface SudoRequest extends KeyedPrompt {
+  /** The privileged command the password will authorize (#79874). */
+  command?: string
   requestId: string
 }
 

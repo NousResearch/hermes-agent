@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $sudoRequest, clearAllPrompts } from '@/store/prompts'
+import { resetServerRequestsForTests } from '@/store/server-requests'
+import { $activeSessionId } from '@/store/session'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest } from './server-requests'
@@ -55,5 +58,42 @@ describe('tour request routing', () => {
     expect(respond).toHaveBeenCalledWith({
       value: JSON.stringify({ error: 'Tours only run in the session the user is looking at.', success: false })
     })
+  })
+})
+
+describe('sudo request routing', () => {
+  afterEach(() => {
+    clearAllPrompts()
+    resetServerRequestsForTests()
+    $activeSessionId.set(null)
+  })
+
+  it('parks the sudo request with the command being authorized', () => {
+    $activeSessionId.set('s1')
+    const respond = vi.fn()
+    const fail = vi.fn()
+    const updateSessionState = vi.fn()
+
+    const handled = handleServerRequest(
+      {
+        fail,
+        id: 'sudo-1',
+        method: 'sudo',
+        params: { command: 'sudo whoami', session_id: 's1' },
+        profile: 'default',
+        replayed: true,
+        respond
+      } as never,
+      { sessionInterrupted: () => false, updateSessionState } as never,
+      's1'
+    )
+
+    expect(handled).toBe(true)
+    expect($sudoRequest.get()).toEqual({
+      command: 'sudo whoami',
+      requestId: 'sudo-1',
+      sessionId: 's1'
+    })
+    expect(updateSessionState).toHaveBeenCalledWith('s1', expect.any(Function))
   })
 })

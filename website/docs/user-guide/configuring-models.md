@@ -197,6 +197,19 @@ providers:
 
 With discovery off, the model picker (`hermes model`, `/model`) shows the configured list instead of a live probe.
 
+**`hidden_models`** — a list of model IDs to keep out of every model picker (`/model`, `hermes model`, the TUI/desktop pickers, gateway inline keyboards) even when the endpoint's live `/models` listing still offers them. Use it for a retired alias a vendor leaves in its catalog: deleting the ID from `models` is not enough, because every picker row is rebuilt from a live probe and the ID comes straight back.
+
+```yaml
+providers:
+  my-gateway:
+    api: https://llm.internal.example.com/v1
+    api_key: sk-...
+    hidden_models:
+      - old-model-4-pro   # retired upstream; vendor still lists it
+```
+
+A hidden ID does not have to appear in `models` — retired IDs are usually deleted from config entirely. Matching is case-insensitive. The model you are **currently running** is never hidden from its own provider row, so you can always see what you're on and switch away from it. Typing a hidden ID explicitly (`/model <id>`) still works: the exclusion is picker-scoped.
+
 **`openai_native_compaction`** — set this capability to `true` only for an OpenAI-compatible endpoint that you trust with conversation content. Native compaction sends its payload to that provider's configured `base_url`:
 
 ```yaml

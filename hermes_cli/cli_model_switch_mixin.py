@@ -637,6 +637,15 @@ class CLIModelSwitchMixin:
                     model_list = provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
+            # Honour ``hidden_models:`` from the provider's config entry. Rows built by
+            # ``model_switch_providers`` are already filtered; this also covers the live
+            # ``provider_model_ids`` fallback above, which would otherwise resurrect a retired
+            # ID the vendor still advertises.
+            hidden_ids = {
+                str(m).strip().lower() for m in (provider_data.get("hidden_models") or [])
+                if str(m).strip()}
+            if hidden_ids:
+                model_list = [m for m in model_list if str(m).strip().lower() not in hidden_ids]
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
                 selected=0, filter="", _filtered_pairs=None)

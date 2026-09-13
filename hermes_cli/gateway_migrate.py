@@ -587,6 +587,9 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         "default": plan.default.to_dict(),
         "secondaries": [p.to_dict() for p in plan.standalone_secondaries],
     }
+    # Recovery metadata must exist before the first destructive operation; the manifest never
+    # changes afterwards, so this is the only write it needs.
+    _write_manifest(plan.default_home, manifest)
     for p in plan.standalone_secondaries:
         if p.service is not None:
             kind, system = p.service
@@ -596,10 +599,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         if p.pid is not None:
             _stop_gateway_process(p.home)
             print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
-        # Record progressively so a crash mid-way still leaves a usable rollback manifest.
-        _write_manifest(plan.default_home, manifest)
     _write_multiplex_flag(plan.default_home, True)
-    _write_manifest(plan.default_home, manifest)
     print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
     print(f"  ✓ {_restart_default(plan.default, plan.target_service_kind(), plan.default_home)}")
 

@@ -1138,8 +1138,23 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         # Fall back to the base's own zone only when nothing is configured.
         zone = get_timezone() or base_time.tzinfo
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
-        return (croniter(expr, base_wall).get_next(datetime)
-                .replace(tzinfo=zone).isoformat())
+        it = croniter(expr, base_wall)
+        # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
+        # attaching the zone to a naive wall clock resolves the repeated autumn hour
+        # to its EARLIER occurrence (fold=0), so a base inside the second occurrence
+        # got a "next run" up to an hour in the PAST — the fire path would re-fire
+        # immediately and re-anchor, looping. Try both folds of each candidate wall
+        # clock and return the earliest instant strictly after the base; a repeated
+        # hour has two instants, so two candidates always suffice.
+        base_ts = base_time.timestamp()
+        next_wall = it.get_next(datetime)
+        for _ in range(2):
+            for fold in (0, 1):
+                candidate = next_wall.replace(tzinfo=zone, fold=fold)
+                if candidate.timestamp() > base_ts:
+                    return candidate.isoformat()
+            next_wall = it.get_next(datetime)
+        return next_wall.replace(tzinfo=zone).isoformat()
     return None
 
 

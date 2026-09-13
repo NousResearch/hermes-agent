@@ -65,6 +65,30 @@ export function mediaName(path: string): string {
   }
 }
 
+// A relative path in a MEDIA tag (the model violating the MEDIA:/absolute/path
+// instruction) must be resolved against the SESSION's cwd — otherwise the main
+// process resolves it against the app's own cwd, which 404s and renders an
+// unplayable black card. Absolute, home, drive-letter and scheme'd forms
+// (data:, blob:, https:, the media stream scheme) are always left untouched.
+const MEDIA_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/
+const WINDOWS_DRIVE_RE = /^[A-Za-z]:[/\\]/
+
+export function absolutizeMediaPath(path: string, baseCwd?: string | null): string {
+  const p = path.trim()
+
+  if (!baseCwd || !p) {
+    return path
+  }
+
+  if (p.startsWith('/') || p.startsWith('~') || p.startsWith('\\') || WINDOWS_DRIVE_RE.test(p) || MEDIA_SCHEME_RE.test(p)) {
+    return path
+  }
+
+  const sep = baseCwd.includes('\\') && !baseCwd.includes('/') ? '\\' : '/'
+
+  return `${baseCwd.replace(/[/\\]+$/, '')}${sep}${p}`
+}
+
 export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }

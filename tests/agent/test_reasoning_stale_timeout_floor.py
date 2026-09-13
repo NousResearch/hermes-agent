@@ -89,6 +89,15 @@ import pytest
     ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4.6", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # Z.AI GLM-5 family: always-thinking on the Coding endpoint
+    # (#89241, #85904).  glm-5-turbo matches the family prefix by
+    # design (separator right-anchor); that over-match is accepted
+    # as a patience ceiling, same trade-off as qwen3.
+    ("glm-5", 600.0),
+    ("glm-5.2", 600.0),
+    ("glm-5.3", 600.0),
+    ("zai/glm-5.3", 600.0),
+    ("glm-5-turbo", 600.0),
     # Thinking Machines Inkling — family entry covers -small and the
     # OpenRouter :free / :batch SKU suffixes (":" is a slug separator
     # in the right anchor, same as "-").
@@ -103,6 +112,19 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
         f"{expected}; bare substrings and shared prefixes must not "
         f"over-match community derivatives."
     )
+
+
+@pytest.mark.parametrize("model", [
+    "glam-5",
+    "aglm-5",
+    "glm",
+    "glm-50",
+    "glm-4.5",
+    "glm-4.71",
+])
+def test_reasoning_stale_timeout_floor_negative_cases(model):
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    assert get_reasoning_stale_timeout_floor(model) is None
 
 
 
@@ -161,6 +183,39 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     base, implicit = agent._resolved_api_call_stale_timeout_base()
     assert base == 90.0
     assert implicit is True
+
+
+def test_glm5_non_stream_stale_timeout_floor(monkeypatch, tmp_path):
+    """zai/glm-5.2 (the requested, pre-reroute id) gets the 600s floor
+    in the non-stream resolver; a non-reasoning control keeps 90s."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    # No provider config, no env var -> floor decides (issue #89241).
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+
+    agent = _make_agent(
+        tmp_path,
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        model="zai/glm-5.2",
+    )
+    assert agent._compute_non_stream_stale_timeout(
+        {"messages": [{"role": "user", "content": "hi"}]}
+    ) == 600.0
+
+    control = _make_agent(
+        tmp_path,
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        model="gpt-5.5",
+    )
+    assert control._compute_non_stream_stale_timeout(
+        {"messages": [{"role": "user", "content": "hi"}]}
+    ) == 90.0
 
 
 # ── stream-side mirror (the real builder lives in a worker thread) ────────

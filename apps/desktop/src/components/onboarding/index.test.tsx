@@ -1,11 +1,13 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import { $connection } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { Picker } from '.'
+import { DesktopOnboardingOverlay, Picker } from '.'
 
 function setProviders(providers: OAuthProvider[]) {
   $desktopOnboarding.set({
@@ -45,6 +47,7 @@ afterEach(() => {
     localEndpoint: false,
     freeTierReady: false
   })
+  $connection.set(null)
 })
 
 describe('onboarding Picker', () => {
@@ -119,5 +122,40 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+})
+
+describe('DesktopOnboardingOverlay owner routing', () => {
+  it('fails closed when a legacy Settings owner changes mid-flow', async () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://legacy-a.example', token: 'token-a' } as never)
+    const scope = $settingsOwner.get()
+    const provider = { ...makeOAuthProvider('fixture'), flow: 'external' as const }
+    const requestGateway = vi.fn(async () => ({ ok: true }))
+
+    expect(scope?.legacyConnection).toBeTruthy()
+    $desktopOnboarding.set({
+      ...$desktopOnboarding.get(),
+      configured: true,
+      flow: { status: 'external_pending', provider, copied: false },
+      manual: true,
+      requested: true,
+      targetProfile: 'default',
+      targetScope: scope ?? undefined
+    })
+    render(
+      <DesktopOnboardingOverlay
+        enabled
+        profile="default"
+        requestGateway={requestGateway as OnboardingContext['requestGateway']}
+      />
+    )
+
+    $connection.set({ mode: 'remote', baseUrl: 'https://legacy-b.example', token: 'token-b' } as never)
+    fireEvent.click(screen.getByRole('button', { name: "I've signed in" }))
+
+    await waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('error'))
+    expect(requestGateway).not.toHaveBeenCalled()
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status === 'error' ? flow.message : '').toContain('Settings gateway changed')
   })
 })

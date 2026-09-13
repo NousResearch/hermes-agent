@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -415,6 +416,49 @@ def _rewrite_compound_background(command: str) -> str:
         separator = " ;" if needs_separator else ""
         result = result[:insert_pos] + "{ " + result[insert_pos:amp_pos] + "& }" + separator + suffix
     return result
+
+
+def _process_has_no_new_privs() -> bool:
+    """True when this process has PR_SET_NO_NEW_PRIVS latched (Linux /proc).
+
+    Packaged Electron with a setuid chrome-sandbox sets the flag on itself; the
+    spawned backend inherits it and cannot exec setuid sudo. The bit cannot be
+    cleared. Missing /proc (Windows, some containers) is treated as clear.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        with open("/proc/self/status", encoding="utf-8") as status:
+            for line in status:
+                if line.startswith("NoNewPrivs:"):
+                    return line.split()[1] == "1"
+    except OSError:
+        return False
+    return False
+
+
+def _wrap_local_command_for_no_new_privs(command: str) -> str:
+    """Run a local sudo-bearing command in a fresh systemd user unit.
+
+    ``systemd-run --user --pipe`` is a sibling of the user manager, not a child
+    of Electron, so it does not inherit NoNewPrivs. No-ops when the flag is
+    clear, systemd-run is missing, or the command has no real sudo invocation.
+    """
+    if not command or sys.platform == "win32":
+        return command
+    if not _process_has_no_new_privs():
+        return command
+    if _rewrite_real_sudo_invocations(command)[1] == 0:
+        return command
+    binary = shutil.which("systemd-run")
+    if not binary:
+        return command
+    # --pipe: sudo -S password on our stdin reaches the unit.
+    # --wait/--collect: foreground, then drop the transient unit.
+    return (
+        f"{shlex.quote(binary)} --user --pipe --wait --quiet --collect -- "
+        f"/bin/bash -lc {shlex.quote(command)}"
+    )
 
 
 def _transform_sudo_command(

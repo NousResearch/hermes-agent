@@ -712,6 +712,28 @@ class LocalEnvironment(BaseEnvironment):
 
     _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        from tools.terminal_tool_sudo import _wrap_local_command_for_no_new_privs
+
+        transformed, sudo_stdin = super()._prepare_command(command)
+        if transformed is None:
+            return transformed, sudo_stdin
+        return _wrap_local_command_for_no_new_privs(transformed), sudo_stdin
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """Probe ``sudo -n`` outside Electron's NoNewPrivs tree when latched."""
+        from tools.terminal_tool_sudo import _wrap_local_command_for_no_new_privs
+
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        try:
+            probe = _wrap_local_command_for_no_new_privs("sudo -n true")
+            proc = self._run_bash(probe, timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return False
+
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True

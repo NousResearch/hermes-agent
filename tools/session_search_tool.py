@@ -259,14 +259,16 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
 
 
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
-              detail: str, current_session_id: str = None, link_profile: str = None) -> str:
+              detail: str, current_session_id: str = None, link_profile: str = None,
+              include_reasoning: bool = False) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
         exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS), "FTS5 search failed: %s", "Search failed")
+        fields=_DISCOVER_SEARCH_FIELDS, include_reasoning=include_reasoning),
+        "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
@@ -470,7 +472,8 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-              around_message_id, window, sort, profile, detail, owned_dbs) -> str:
+              around_message_id, window, sort, profile, detail, owned_dbs,
+              include_reasoning=False) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
@@ -502,13 +505,18 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         db=db, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
-        current_session_id=current_session_id, link_profile=profile)
+        current_session_id=current_session_id, link_profile=profile,
+        include_reasoning=include_reasoning)
 
 
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
-                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
-    """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
+                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
+                   include_reasoning: bool = False) -> str:
+    """Run session search, optionally over reasoning traces, and close DBs opened here.
+
+    Positional order is frozen for old callers.
+    """
     from hermes_state import format_session_db_unavailable
     from hermes_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []
@@ -519,7 +527,8 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
         owned_dbs.append(db)
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
-                         around_message_id, window, sort, profile, detail, owned_dbs)
+                         around_message_id, window, sort, profile, detail, owned_dbs,
+                         include_reasoning)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -544,6 +553,8 @@ SESSION_SEARCH_SCHEMA = {
         "`session_id` alone = read a whole session — how you resolve an "
         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
         "args = browse recent sessions. Results are actual DB messages, no LLM. "
+        "Hits returned with `include_reasoning` come from what the assistant reasoned, "
+        "not from what it said. "
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
         "conclude 'not found' from history alone. Use for questions about past "
@@ -625,6 +636,16 @@ SESSION_SEARCH_SCHEMA = {
                     "behaviour) or 'tool' to search tool output only."
                 ),
             },
+            "include_reasoning": {
+                "type": "boolean",
+                "description": (
+                    "Search the assistant's reasoning traces instead of message text. "
+                    "Reasoning is stored on the row but is not in the FTS index, so this "
+                    "answers from canonical rows via a scan (slower, no ranking) and exists "
+                    "for facts the assistant worked out but never wrote into a reply. "
+                    "Default false."
+                ),
+            },
             "profile": {
                 "type": "string",
                 "description": (
@@ -649,6 +670,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+        include_reasoning=args.get("include_reasoning", False),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

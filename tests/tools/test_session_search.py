@@ -84,7 +84,7 @@ class TestSchema:
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
-    def test_detail_parameter_is_appended_for_positional_compatibility(self):
+    def test_new_parameters_are_appended_for_positional_compatibility(self):
         parameters = list(inspect.signature(session_search).parameters)
         historical_prefix = [
             "query",
@@ -98,7 +98,7 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "include_reasoning"]
 
 
 class TestFormatTimestamp:

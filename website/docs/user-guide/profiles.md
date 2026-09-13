@@ -80,6 +80,34 @@ hermes profile create work --clone-from coder
 hermes profile create work-backup --clone-from coder --clone-all
 ```
 
+### Messaging channels are never cloned (`--clone-channels` to opt in)
+
+Every clone — `--clone`, `--clone-from`, `--clone-all`, and the dashboard / Desktop / TUI
+"clone from profile" option — copies the source **without its messaging channels**: bot tokens
+and allowlists (`TELEGRAM_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`, `WHATSAPP_ENABLED`,
+`API_SERVER_KEY`, `WEBHOOK_SECRET`, …), the `platforms:` / `telegram:` / `discord:` sections of
+`config.yaml`, `gateway.multiplex_profiles` / `profile_routes`, and (for `--clone-all`) the
+pairing store, WhatsApp session and other per-bot state. Provider and tool API keys, the model
+block, memory settings, skills and `SOUL.md` are copied as before. The command prints which
+platforms were left behind.
+
+The reason is that a bot can only belong to one profile: two standalone gateways holding the
+same token fight over its long-poll, and a [multiplexed gateway](./multi-profile-gateways.md)
+parks the duplicate adapter (and `hermes gateway migrate --multiplex` refuses with one
+duplicate-credential blocker per platform). Configure the new profile's own bots with
+`hermes -p <name> setup` or the dashboard Messaging page.
+
+```bash
+hermes profile create twin --clone --clone-channels   # keep the source's bots anyway
+```
+
+`--clone-channels` is refused when a running multiplexed gateway already serves the source
+(the copy would be parked immediately) and otherwise prints a warning naming the platforms
+now shared with the source. `hermes profile list` prints the same warning for any existing
+profile whose bot credential is byte-identical to the default's, so older clones surface
+before they bite. The key set is derived from the platform adapters themselves (registry
+entries and the gateway's env table), so a newly added platform is covered automatically.
+
 :::tip Honcho memory + profiles
 When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
 :::

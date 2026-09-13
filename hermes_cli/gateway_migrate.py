@@ -109,7 +109,9 @@ class MigrationPlan:
         }
 
     def eligible_for_migration(self) -> bool:
-        """>= 2 profiles, at least one secondary with its own gateway, multiplex off, no blockers."""
+        """>= 2 profiles, at least one secondary with its own gateway, multiplex off, no blockers.
+        This is the AUTO-migration (``hermes update``) bar; the explicit command also proceeds with
+        zero standalone secondaries (see :func:`cmd_migrate`)."""
         return (
             len(self.profiles) >= 2 and bool(self.standalone_secondaries)
             and not self.already_multiplexed and not self.blocked
@@ -434,14 +436,22 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     for p in plan.standalone_secondaries:
         what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.service else "") if x)
         steps.append(f"  - {p.name}: {what}")
+    if len(plan.profiles) < 2:  # the notice already says "only one profile exists"
+        return lines + _plan_tail(plan)
     if not steps:
-        lines.append("  No secondary profile runs its own gateway; nothing to migrate.")
+        lines.append("  No secondary profile runs its own gateway; the only step is turning the flag on:")
     else:
-        lines += ["  Steps:", *steps, f"  - default: set gateway.multiplex_profiles: true in {plan.default_home / 'config.yaml'}"]
-        target = plan.target_service_kind()
-        lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
-                     + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
-        lines.append(f"  - record removed services in {plan.default_home / MANIFEST_NAME} (rollback: hermes gateway migrate --standalone)")
+        lines += ["  Steps:", *steps]
+    lines.append(f"  - default: set gateway.multiplex_profiles: true in {plan.default_home / 'config.yaml'}")
+    target = plan.target_service_kind()
+    lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
+                 + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
+    lines.append(f"  - record the previous state in {plan.default_home / MANIFEST_NAME} (rollback: hermes gateway migrate --standalone)")
+    return lines + _plan_tail(plan)
+
+
+def _plan_tail(plan: MigrationPlan) -> list[str]:
+    lines: list[str] = []
     if plan.blockers:
         lines += ["", "  ✗ Blockers (fix these first, nothing will be changed):"]
         lines += [f"    • {b}" for b in plan.blockers]
@@ -635,10 +645,10 @@ def cmd_migrate(args) -> None:
         return
     if plan.already_multiplexed:
         return
-    if plan.blocked:
-        sys.exit(1)
-    if not plan.standalone_secondaries:
-        return
+    if plan.blocked or len(plan.profiles) < 2:
+        sys.exit(1 if plan.blocked else 0)
+    # Zero standalone secondaries is still a migration when the user asks for it explicitly: the flag
+    # goes on and the default gateway restarts (the update hook keeps treating that case as a no-op).
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         from hermes_cli.setup import prompt_yes_no
         if not prompt_yes_no("Apply this migration now?", True):

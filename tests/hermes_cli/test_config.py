@@ -1910,3 +1910,13 @@ class TestConfigCommandFailClosedSurface:
         assert excinfo.value.code == 1
         assert "not valid YAML" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_gateway_multiplex_keys_are_recognized_config_keys():
+    """``hermes config set gateway.multiplex_profiles true`` used to warn 'not a recognized config
+    key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
+    assert _validate_config_key("gateway.profile_routes") == (True, None)

@@ -1946,6 +1946,19 @@ DEFAULT_CONFIG = {
         # (primary copy: state.db gateway_routing table). True for external tooling and downgrade
         # safety; False stops producing the file.
         "write_sessions_json": True,
+        # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
+        # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
+        # stamps the profile into session keys. Flip with `hermes gateway migrate --multiplex`
+        # (records a rollback manifest; `--standalone` undoes it) or `hermes config set
+        # gateway.multiplex_profiles true` + `hermes gateway restart`. GATEWAY_MULTIPLEX_PROFILES
+        # in the environment overrides. Two profiles configuring the same bot token cannot be
+        # served together — the duplicate adapter is parked; `hermes profile create --clone`
+        # therefore leaves messaging channels behind unless --clone-channels is passed.
+        "multiplex_profiles": False,
+        # Route inbound chats of the default profile's bots to another profile
+        # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
+        # Most-specific match wins; only read by the multiplexing default gateway.
+        "profile_routes": [],
         # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
         # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can

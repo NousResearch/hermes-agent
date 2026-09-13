@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +35,9 @@ _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_RUNTIME_STATUS_LOCK_FILENAME = "gateway_state.lock"
 _gateway_lock_handle = None
+_runtime_status_write_lock = threading.RLock()
 # Windows byte-range locks are mandatory for other readers: lock a byte well past
 # the JSON payload so status/PID readers can read while another process holds it.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
@@ -164,6 +167,33 @@ def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
 
 def _get_runtime_status_path() -> Path:
     return _get_process_hermes_home() / _RUNTIME_STATUS_FILE
+
+
+def _get_runtime_status_lock_path() -> Path:
+    return _get_process_hermes_home() / _RUNTIME_STATUS_LOCK_FILENAME
+
+
+@contextmanager
+def _runtime_status_write_guard():
+    """Serialize the read/merge/write transaction within and across processes."""
+    with _runtime_status_write_lock:
+        path = _get_runtime_status_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+", encoding="utf-8")
+        try:
+            if _IS_WINDOWS:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write("\n")
+                    handle.flush()
+                handle.seek(_WINDOWS_LOCK_OFFSET)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            _release_file_lock(handle)
+            handle.close()
 
 
 def _get_lock_dir() -> Path:
@@ -799,7 +829,7 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
     return {"status": state if state in {"ok", "unavailable", "retrying"} else "unknown"}
 
 
-def write_runtime_status(
+def _write_runtime_status_unlocked(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
@@ -861,6 +891,12 @@ def write_runtime_status(
     with contextlib.suppress(Exception):
         from agent.monitoring.gateway_health import emit_runtime_status_transition
         emit_runtime_status_transition(previous_payload, payload)
+
+
+def write_runtime_status(**kwargs) -> None:
+    """Persist runtime health using a serialized read/merge/write transaction."""
+    with _runtime_status_write_guard():
+        _write_runtime_status_unlocked(**kwargs)
 
 
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:

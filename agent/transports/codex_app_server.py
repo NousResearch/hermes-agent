@@ -15,11 +15,107 @@ import re
 import subprocess
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
 from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
+_GIT_COMMON_DIR_TIMEOUT_SECONDS = 5
+
+
+def _kanban_writable_roots(env: dict[str, str]) -> list[str]:
+    """Return the narrow extra roots a managed Kanban Codex worker needs.
+
+    A linked worktree stores its administrative files in the repository's
+    shared ``.git`` directory, outside the worktree itself.  Codex's
+    ``workspace-write`` sandbox therefore needs that directory explicitly,
+    but only after Git resolves it from the worker workspace.  The probe is
+    deliberately bounded and failure-tolerant: the normal workspace and board
+    roots still retain their existing behavior, while a failed probe cannot
+    turn into an unbounded subprocess retry loop.
+    """
+    raw_roots = [
+        os.path.dirname(env["HERMES_KANBAN_DB"]) if env.get("HERMES_KANBAN_DB") else "",
+        env.get("HERMES_KANBAN_WORKSPACES_ROOT", ""),
+        env.get("HERMES_KANBAN_WORKSPACE", ""),
+        env.get("HERMES_KANBAN_ROOT", ""),
+    ]
+    workspace = env.get("HERMES_KANBAN_WORKSPACE") or os.getcwd()
+    workspace_path: Optional[Path]
+    try:
+        workspace_path = Path(workspace).expanduser().resolve(strict=True)
+        if not workspace_path.is_dir():
+            workspace_path = None
+    except OSError:
+        workspace_path = None
+    if workspace_path is not None:
+        try:
+            git_args = [
+                "-C", str(workspace_path), "rev-parse", "--path-format=absolute",
+                "--show-toplevel", "--git-common-dir",
+            ]
+            probe_env = noninteractive_git_env()
+            # The assigned workspace, rather than ambient process state, is the authority for this
+            # admission check.  In particular, an inherited GIT_DIR can make Git resolve an unrelated
+            # repository and grant its administrative directory to the sandbox.
+            for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+                probe_env.pop(key, None)
+            result = subprocess.run(
+                ["git", *harden_git_argv(git_args)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_GIT_COMMON_DIR_TIMEOUT_SECONDS,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                env=probe_env,
+            )
+        except (OSError, subprocess.SubprocessError):
+            result = None
+    else:
+        result = None
+    if result is not None and result.returncode == 0:
+        fields = (result.stdout or "").splitlines()
+        if (
+            len(fields) == 2
+            and all(field.strip() == field and field for field in fields)
+            and all(Path(field).is_absolute() for field in fields)
+        ):
+            repo_root, common_dir = (Path(field).expanduser() for field in fields)
+            try:
+                repo_root = repo_root.resolve(strict=True)
+                common_dir = common_dir.resolve(strict=True)
+                # A regular checkout has <repo>/.git; a linked worktree is below that same
+                # repository root.  Require both the Git-reported root and the administrative
+                # directory to agree with that relationship and the on-disk Git layout.
+                common_root = common_dir.parent if common_dir.name == ".git" else None
+                if (
+                    common_root is not None
+                    and workspace_path.is_relative_to(common_root)
+                    and workspace_path.is_relative_to(repo_root)
+                    and common_dir.is_dir()
+                    and all((common_dir / marker).exists() for marker in ("HEAD", "config", "objects", "refs"))
+                ):
+                    raw_roots.append(str(common_dir))
+            except (OSError, ValueError):
+                pass
+
+    roots: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_roots:
+        if not raw:
+            continue
+        try:
+            resolved = str(Path(raw).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            roots.append(resolved)
+    return roots
 
 
 @dataclass
@@ -70,22 +166,25 @@ class CodexAppServerClient:
         # Native shell children remain unowned. Only Hermes' managed MCP tool
         # endpoint acts for this worker; grant it scope via its existing per-server
         # environment, never by granting the whole executor process ownership.
-        owned_task = os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
+        # ``hermes_subprocess_env`` intentionally removes Hermes control-plane
+        # variables. Keep the original worker identity for this one admission
+        # decision, while still passing only the explicit MCP scope below.
+        kanban_env = dict(os.environ)
+        kanban_env.update(spawn_env)
+        owned_task = kanban_env.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
         if owned_task:
             for key in (*KANBAN_ENV_KEYS, "HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
-                if key in os.environ:
-                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(os.environ[key])}"]
+                if key in kanban_env:
+                    cmd += ["-c", f"mcp_servers.hermes-mcp.env.{key}={json.dumps(kanban_env[key])}"]
             cmd += ["-c", f'mcp_servers.hermes-mcp.env.{DELEGATED_CHILD_ENV_MARKER}=""']
         spawn_env = delegated_child_subprocess_env(spawn_env)
         # Kanban workers must write handoff/status to the board DB outside the
         # workspace: keep the sandbox on, add the Kanban root as writable.
         if owned_task:
-            kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
-            kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
+            writable_roots = _kanban_writable_roots(kanban_env)
             cmd += [
                 "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                "-c", f"sandbox_workspace_write.writable_roots={json.dumps(writable_roots)}",
                 "-c", "sandbox_workspace_write.network_access=false",
             ]
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.

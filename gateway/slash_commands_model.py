@@ -166,10 +166,67 @@ def _model_provider_listing_lines(providers) -> list[str]:
     return lines
 
 
+class ModelSwitchConfirmation(str):
+    """Successful typed ``/model`` switch reply.
+
+    Structural marker so the dispatcher can route an inline payload after the switch without
+    parsing localized confirmation text; error/picker/help replies are plain strings.
+    """
+
+    __slots__ = ()
+
+
+class RoutedModelSwitchConfirmation(ModelSwitchConfirmation):
+    """Approval-path switch confirmation that also carries the retained inline payload.
+
+    Must subclass str: ``tools.slash_confirm.resolve`` only forwards str handler results back to
+    the reply intercepts; the text stays display-only and the payload routes as the user turn.
+    """
+
+    __slots__ = ("payload",)
+
+    def __new__(cls, text: str, payload: str) -> "RoutedModelSwitchConfirmation":
+        obj = super().__new__(cls, text)
+        obj.payload = payload
+        return obj
+
+
+class _ModelInlinePayload(str):
+    """Unique request-local token; text equality does not grant another callback ownership.
+
+    The slash-confirm registry binds the callback to its confirm_id and lifetime.
+    This token also lets the existing conversation-boundary cleanup revoke that callback.
+    """
+
+    __slots__ = ()
+
+
 class GatewayModelCommandsMixin:
     """Model-route slash commands (/model, /codex-runtime, /reasoning, /fast, /personality)."""
 
     # ----------------------------------------------------------------- /model
+
+    @staticmethod
+    def _split_inline_command_payload(event: MessageEvent) -> tuple[MessageEvent, str]:
+        """Split ``/model <name>\\n<payload>`` → (command-line event, inline payload).
+
+        No newline returns the event unchanged with an empty payload; otherwise the event copy
+        carries the command line only and the payload is returned for post-switch routing.
+        """
+        command_line, _, payload = (event.text or "").partition("\n")
+        if not payload:
+            return event, ""
+        return dataclasses.replace(event, text=command_line.rstrip("\r")), payload.lstrip("\r\n")
+
+    def _model_inline_payload_stash(self) -> dict:
+        """Session-keyed inline payloads retained across a pending selection-guard confirmation.
+
+        Cleared by the conversation-scope funnel (``_CONVERSATION_SCOPED_STATE``) on /new and
+        session boundaries, and popped by the confirm handler itself (exactly-once routing)."""
+        stash = getattr(self, "_pending_model_inline_payloads", None)
+        if stash is None:
+            stash = self._pending_model_inline_payloads = {}
+        return stash
 
     async def _perform_model_switch(
         self, ctx: _ModelSwitchContext, raw_input: str, explicit_provider, source
@@ -356,7 +413,9 @@ class GatewayModelCommandsMixin:
         if error is not None:
             return error
         await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        return await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        return ModelSwitchConfirmation(
+            await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        )
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
@@ -426,7 +485,7 @@ class GatewayModelCommandsMixin:
         return "\n".join(lines)
 
     async def _model_selection_guard_reply(
-        self, event: MessageEvent, ctx: _ModelSwitchContext, result
+        self, event: MessageEvent, ctx: _ModelSwitchContext, result, *, inline_payload: str = ""
     ) -> tuple[bool, Optional[str]]:
         """Selection-guard confirmation for the typed path (pickers confirm via their own UI).
 
@@ -446,11 +505,27 @@ class GatewayModelCommandsMixin:
         if warning is None:
             return False, None
 
+        # Bind the exact request before registration can expose a button or text reply.
+        # A fresh token is required even for empty/equal text: requests are not identified
+        # by their wording. Expired/superseded confirm_ids cannot invoke this callback.
+        stash_key = self._session_key_for_source(event.source)
+        payload = _ModelInlinePayload(inline_payload)
+        stash = self._model_inline_payload_stash()
+        stash[stash_key] = payload
+
         async def _on_cost_confirm(choice: str) -> str:
+            # Reset/supersession revokes ownership. Never consume a successor's payload.
+            current_stash = self._model_inline_payload_stash()
+            if current_stash.get(stash_key) is not payload:
+                return "Model switch confirmation is no longer current."
+            current_stash.pop(stash_key, None)
             if choice == "cancel":
                 return f"🟡 Model switch cancelled. Current model unchanged ({ctx.current_model or 'unknown'})."
             # "once" and "always" both proceed — selection guards have no persistent opt-out.
-            return await self._commit_model_switch(result, ctx, source=ctx.source)
+            reply = await self._commit_model_switch(result, ctx, source=ctx.source)
+            if payload.strip() and isinstance(reply, ModelSwitchConfirmation):
+                return RoutedModelSwitchConfirmation(reply, str(payload))
+            return reply
 
         _p = self._typed_command_prefix_for(event.source.platform)
         message = (
@@ -461,7 +536,9 @@ class GatewayModelCommandsMixin:
             event=event, command="model", title=warning.title, message=message, handler=_on_cost_confirm,
         )
 
-    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
+    async def _handle_model_command(
+        self, event: MessageEvent, *, inline_payload: str = ""
+    ) -> Optional[str]:
         """Handle /model command — switch model."""
         from gateway.run import _hermes_home
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
@@ -511,7 +588,9 @@ class GatewayModelCommandsMixin:
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
         if error is not None:
             return error
-        guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
+        guard_fired, guard_reply = await self._model_selection_guard_reply(
+            event, ctx, result, inline_payload=inline_payload,
+        )
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch(result, ctx, source=source)

@@ -86,7 +86,8 @@ def _publish_tool_snapshot(
 
 def refresh_agent_mcp_tools(
     agent, *, enabled_override=None, disabled_override=None, quiet_mode: bool = True,
-    content_aware: bool = False, preserve_prefix: bool = False) -> set:
+    content_aware: bool = False, preserve_prefix: bool = False,
+    skip_tool_search_assembly: Optional[bool] = None) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry; returns the
     newly-added tool names (empty when unchanged). The agent snapshots ``agent.tools`` at build
     time, so servers that connect later (slow OAuth, ``/reload-mcp``) are invisible until
@@ -107,7 +108,12 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
-    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
+    if skip_tool_search_assembly is None:
+        skip_tool_search_assembly = getattr(agent, "platform", None) == "acp"
+    new_defs = list(get_tool_definitions(
+        enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+    ) or [])
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)

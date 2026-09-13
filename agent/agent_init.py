@@ -1062,6 +1062,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        skip_tool_search_assembly=getattr(agent, "platform", None) == "acp",
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()

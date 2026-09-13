@@ -166,7 +166,45 @@ def finish_text_response(
 
     final_response = agent._strip_think_blocks(final_response).strip()
 
+    try:
+        from hermes_cli.plugins import apply_required_lifecycle_output
+
+        raw_required_output = final_response
+        required_output, final_response = apply_required_lifecycle_output(
+            final_response,
+            session_id=agent.session_id or "",
+            task_id=getattr(agent, "_current_task_id", "") or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+        if required_output:
+            agent._required_lifecycle_output_turn_id = getattr(
+                agent, "_current_turn_id", ""
+            )
+            agent._required_lifecycle_output_transformed = (
+                final_response != raw_required_output
+            )
+    except Exception as required_exc:
+        from hermes_cli.required_lifecycle import (
+            REQUIRED_LIFECYCLE_FAILURE_TEXT,
+            RequiredLifecycleError,
+        )
+
+        if not isinstance(required_exc, RequiredLifecycleError):
+            raise
+        final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+        agent._required_lifecycle_output_turn_id = getattr(
+            agent, "_current_turn_id", ""
+        )
+        agent._required_lifecycle_output_transformed = True
+
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    if getattr(agent, "_required_lifecycle_output_turn_id", "") == getattr(
+        agent, "_current_turn_id", ""
+    ):
+        final_msg["content"] = final_response
+        final_msg.pop("api_content", None)
 
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).

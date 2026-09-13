@@ -170,6 +170,26 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            # Direct-return and exceptional paths may bypass finalize_turn.  The
+            # cached agent must never carry publication buffering or opaque
+            # provider continuity into its next user turn.
+            with suppress(Exception):
+                from hermes_cli.required_lifecycle import scrub_required_provider_fields
+
+                scrub_required_provider_fields(self)
+            if hasattr(self, "_required_lifecycle_stream_delta_callback"):
+                self.stream_delta_callback = self._required_lifecycle_stream_delta_callback
+                del self._required_lifecycle_stream_delta_callback
+            if hasattr(self, "_required_lifecycle_disable_streaming"):
+                self._disable_streaming = self._required_lifecycle_disable_streaming
+                del self._required_lifecycle_disable_streaming
+            with suppress(Exception):
+                from hermes_cli.plugins import finish_required_lifecycle_turn
+
+                finish_required_lifecycle_turn(
+                    session_id=session_id,
+                    turn_id=str(getattr(self, "_current_turn_id", "") or relay_turn_id),
+                )
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)

@@ -63,6 +63,14 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry,
 )
+from hermes_cli.required_lifecycle import (
+    REQUIRED_LIFECYCLE_FAILURE_TEXT,
+    REQUIRED_LIFECYCLE_HOOKS,
+    RequiredLifecycleError,
+    RequiredLifecycleLatch,
+    parse_required_lifecycle_policy,
+    required_hook_result,
+)
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -897,9 +905,39 @@ class PluginContext:
         logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
         return count
 
-    def register_hook(self, hook_name: str, callback: Callable) -> PluginRegistration:
+    @_serialized_replacement
+    def register_hook(
+        self,
+        hook_name: str,
+        callback: Callable,
+        *,
+        registration_id: str = "",
+    ) -> PluginRegistration:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
-        return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
+        if not callable(callback):
+            raise TypeError("Plugin hook callback must be callable")
+        if registration_id:
+            required_hook_result(registration_id)
+        if hook_name not in VALID_HOOKS:
+            logger.warning(
+                "Plugin '%s' registered unknown hook '%s' (valid: %s)",
+                self.manifest.name,
+                hook_name,
+                ", ".join(sorted(VALID_HOOKS)),
+            )
+        self._manager._hooks.setdefault(hook_name, []).append(callback)
+        handle = self._manager._track_registration(
+            self.manifest,
+            "hook",
+            hook_name,
+            lambda: self._manager._remove_callback(
+                self._manager._hooks, hook_name, callback
+            ),
+            registration_id=registration_id,
+            callback=callback,
+        )
+        logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+        return handle
 
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
@@ -1176,6 +1214,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # any remaining process-global slots when the symmetric force-reload lands.
         self._ownership_ledger: Dict[str, List[PluginRegistration]] = {}
         self._registration_order: List[PluginRegistration] = []
+        self._registration_generation = 0
+        self._required_lifecycle_policy: dict[
+            str, dict[str, tuple[str, ...]]
+        ] = {}
+        self._required_lifecycle_policy_error: RequiredLifecycleError | None = None
+        self._required_lifecycle_latch = RequiredLifecycleLatch()
         # Force re-discovery drains this via _evict_stale_persistent_registrations(): entries whose plugin
         # re-registered the same (kind, key) are kept (the upsert rotated them in place), the rest are
         # disposed so a disabled/removed auth plugin's provider does not outlive its plugin (#91701
@@ -1214,6 +1258,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 return
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
+            self._refresh_required_lifecycle_policy()
             if env_var_enabled("HERMES_SAFE_MODE"):
                 logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
                 self._discovered = True
@@ -1243,6 +1288,22 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             except BaseException:
                 self._discovered = False
                 raise
+
+    def _refresh_required_lifecycle_policy(self) -> None:
+        """Freeze the profile's required-hook policy for this discovery sweep."""
+        self._required_lifecycle_policy = {}
+        self._required_lifecycle_policy_error = None
+        try:
+            config = load_config_readonly() or {}
+            if not isinstance(config, Mapping):
+                raise RequiredLifecycleError("required_lifecycle_policy_invalid")
+            self._required_lifecycle_policy = parse_required_lifecycle_policy(config)
+        except RequiredLifecycleError as exc:
+            self._required_lifecycle_policy_error = exc
+        except Exception:
+            self._required_lifecycle_policy_error = RequiredLifecycleError(
+                "required_lifecycle_policy_unavailable"
+            )
 
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded
@@ -1729,6 +1790,56 @@ def has_hook(hook_name: str) -> bool:
     return _delivery_manager().has_hook(hook_name)
 
 
+def requires_hook(hook_name: str) -> bool:
+    """Return whether the frozen profile makes this lifecycle hook mandatory."""
+    return _delivery_manager().requires_hook(hook_name)
+
+
+def assert_required_lifecycle_turn_healthy(
+    *, session_id: str, turn_id: str
+) -> None:
+    _delivery_manager().assert_required_lifecycle_turn_healthy(
+        session_id=session_id, turn_id=turn_id
+    )
+
+
+def finish_required_lifecycle_turn(*, session_id: str, turn_id: str) -> None:
+    _delivery_manager().finish_required_lifecycle_turn(
+        session_id=session_id, turn_id=turn_id
+    )
+
+
+def apply_required_lifecycle_output(
+    response_text: str,
+    *,
+    session_id: str,
+    task_id: str,
+    turn_id: str,
+    model: str,
+    platform: str,
+) -> tuple[bool, str]:
+    manager = _delivery_manager()
+    manager.assert_required_lifecycle_turn_healthy(
+        session_id=session_id, turn_id=turn_id
+    )
+    if not manager.requires_hook("transform_llm_output"):
+        return False, response_text
+    results = manager.invoke_hook(
+        "transform_llm_output",
+        response_text=response_text,
+        session_id=session_id,
+        task_id=task_id,
+        turn_id=turn_id,
+        model=model,
+        platform=platform,
+    )
+    replacement = next(
+        (result for result in results if isinstance(result, str) and result),
+        response_text,
+    )
+    return True, replacement
+
+
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     """Return a stable snapshot of callbacks registered for a hook."""
     return get_plugin_manager().iter_hook_callbacks(hook_name)
@@ -1794,11 +1905,16 @@ def _get_pre_tool_call_directive_details(
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
     from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
-    hook_results = invoke_lifecycle_hook(
-        "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
-        task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
-        api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
-    )
+    try:
+        hook_results = invoke_lifecycle_hook(
+            "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
+            task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
+            api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
+        )
+    except RequiredLifecycleError:
+        return _PreToolCallDirective(
+            action="block", message=REQUIRED_LIFECYCLE_FAILURE_TEXT
+        )
     modified_args: Optional[Dict[str, Any]] = None
     for result in hook_results:
         if not isinstance(result, dict):

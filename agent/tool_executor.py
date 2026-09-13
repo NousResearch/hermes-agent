@@ -45,6 +45,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.tool_result_classification import tool_may_have_side_effect
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -144,6 +145,11 @@ class _BatchAbandoned(BaseException):
     so ``except Exception`` handlers in the middleware chain can't swallow it."""
 
 
+class _UndurableToolSettlement(Exception):
+    """Internal control signal: stop the batch without leaking an interrupt past
+    a tool-call settlement that could not be made canonical."""
+
+
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
     try:
@@ -194,6 +200,25 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
+
+
+def _flush_interrupted_tool_settlement(agent, messages: list) -> bool:
+    """Persist an interrupt settlement before propagating ``KeyboardInterrupt``.
+
+    One bounded retry covers a transient DB handoff.  A persistent failure is
+    stronger than the user interrupt: the caller must stop through the normal
+    persistence-failure path so turn finalization/replay recovery can run.
+    """
+    stage = "keyboard-interrupt tool settlement"
+    if _flush_session_db_after_tool_progress(agent, messages, stage=stage):
+        return True
+    if _flush_session_db_after_tool_progress(
+        agent, messages, stage=f"{stage} retry"
+    ):
+        agent._incremental_persistence_failed = False
+        agent._last_persistence_error_cause = None
+        return True
+    return False
 
 
 def _image_generate_parallel_limit() -> int:
@@ -315,12 +340,12 @@ def _append_skipped_tool_results(
     for tc in tool_calls:
         name = _tc_name(tc)
         result = content.format(name=name)
-        messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
                 agent, result,
                 status="cancelled", error_type=hook_error_type, error_message="Tool execution skipped due to user interrupt",
             )
+        messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if flush_stage is not None:
             flushed = _flush_session_db_after_tool_progress(agent, messages, stage=f"{flush_stage} {name}")
             if not flushed and stop_on_flush_failure:
@@ -621,7 +646,7 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[st
 
 def _pre_tool_block(agent, ref: _ToolCallRef):
     """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
+    hook-modified args applied. Optional failures allow; required failures propagate."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
@@ -632,7 +657,11 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
             middleware_trace=list(ref.trace),
         )
         return block_msg, (ref.args if modified_args is None else modified_args)
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if isinstance(exc, RequiredLifecycleError):
+            raise
         return None, ref.args
 
 
@@ -1575,6 +1604,62 @@ def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, p
     return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
 
 
+def _settle_required_post_failure(
+    agent,
+    messages: list,
+    ref: _ToolCallRef,
+    remaining_calls,
+    *,
+    effect_disposition: str,
+) -> None:
+    """Persist only redacted rows when required terminal settlement was denied."""
+    from hermes_cli.required_lifecycle import REQUIRED_LIFECYCLE_FAILURE_TEXT
+
+    agent._current_tool = None
+    messages.append(
+        make_tool_result_message(
+            ref.name,
+            REQUIRED_LIFECYCLE_FAILURE_TEXT,
+            ref.call_id,
+            effect_disposition=effect_disposition,
+        )
+    )
+    for tool_call in remaining_calls:
+        messages.append(
+            make_tool_result_message(
+                _tc_name(tool_call),
+                REQUIRED_LIFECYCLE_FAILURE_TEXT,
+                _pairing_tool_call_id(tool_call),
+                effect_disposition="none",
+            )
+        )
+    _flush_session_db_after_tool_progress(
+        agent, messages, stage=f"required post-tool settlement {ref.name}"
+    )
+
+
+def _unsettled_sequential_calls(messages: list, calls, *, result_start: int) -> list:
+    """Return calls without a result in this execution frame, preserving model order.
+
+    Tool-call IDs are opaque and may be reused by a later provider turn.  Historical
+    rows before ``result_start`` therefore cannot settle the current frame.  Counts,
+    rather than a set, also keep malformed duplicate IDs from hiding a missing row.
+    """
+    settled_counts: dict[str, int] = {}
+    for message in messages[result_start:]:
+        if isinstance(message, dict) and message.get("role") == "tool":
+            call_id = str(message.get("tool_call_id") or "")
+            settled_counts[call_id] = settled_counts.get(call_id, 0) + 1
+    unsettled = []
+    for call in calls:
+        call_id = _pairing_tool_call_id(call)
+        if settled_counts.get(call_id, 0):
+            settled_counts[call_id] -= 1
+        else:
+            unsettled.append(call)
+    return unsettled
+
+
 def _run_sequential_call(
     agent,
     dispatch: _SequentialDispatch,
@@ -1585,16 +1670,22 @@ def _run_sequential_call(
     remaining_calls,
     display_index: int,
     tool_start_time: float,
+    execution_started: threading.Event,
+    defer_quiet_completion: bool = False,
 ) -> tuple[_ManagedToolResult, float]:
     """Run one sequential call with its spinner/error policy; returns ``(managed, duration)``.
     KeyboardInterrupt (registry tools only) emits results for THIS and every remaining call
     before re-raising so the tool-call turn keeps matching results (alternation)."""
     _spinner_result = None
     try:
+        def _execute_started(args):
+            execution_started.set()
+            return dispatch.execute(args)
+
         managed = _run_sequential_tool_execution_middleware(
             agent,
             **dict(ref.middleware_kwargs(), middleware_trace=dispatch.middleware_trace_arg),
-            execute=dispatch.execute,
+            execute=_execute_started,
             scope_block=scope_block,
             display_index=display_index,
         )
@@ -1606,12 +1697,40 @@ def _run_sequential_call(
         _spinner_result = ref.emit_cancelled(agent, tool_start_time)
         with contextlib.suppress(Exception):
             agent.interrupt("keyboard interrupt")
+        messages.append(
+            make_tool_result_message(
+                ref.name,
+                _spinner_result,
+                ref.call_id,
+                effect_disposition="unknown",
+            )
+        )
         _append_skipped_tool_results(
-            agent, messages, remaining_calls, ref.task_id,
+            agent, messages, remaining_calls[1:], ref.task_id,
             content="[Tool execution cancelled — {name} was skipped due to keyboard interrupt]",
         )
+        settlement_durable = _flush_interrupted_tool_settlement(agent, messages)
+        if defer_quiet_completion and dispatch.finish_spinner:
+            with contextlib.suppress(Exception):
+                _finish_quiet_tool_spinner(
+                    agent,
+                    dispatch.spinner,
+                    ref.name,
+                    ref.args,
+                    time.time() - tool_start_time,
+                    json.dumps(
+                        {"error": "Tool execution was interrupted."},
+                        ensure_ascii=False,
+                    ),
+                )
+        if not settlement_durable:
+            raise _UndurableToolSettlement()
         raise
     except Exception as tool_error:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if isinstance(tool_error, RequiredLifecycleError):
+            raise
         if dispatch.error_result is None:
             raise
         function_result = dispatch.error_result(tool_error)
@@ -1621,14 +1740,25 @@ def _run_sequential_call(
         if dispatch.is_delegate:
             agent._delegate_spinner = None
         tool_duration = time.time() - tool_start_time
-        if dispatch.finish_spinner and dispatch.finish_in_finally:
+        if dispatch.finish_spinner and dispatch.finish_in_finally and not defer_quiet_completion:
             _finish_quiet_tool_spinner(agent, dispatch.spinner, ref.name, ref.args, tool_duration, _spinner_result)
-    if dispatch.finish_spinner and not dispatch.finish_in_finally:
+    if dispatch.finish_spinner and not dispatch.finish_in_finally and not defer_quiet_completion:
         _finish_quiet_tool_spinner(agent, dispatch.spinner, ref.name, ref.args, tool_duration, _spinner_result)
     return managed, tool_duration
 
 
-def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed: _ManagedToolResult, *, tool_duration: float, index: int, budget: BudgetConfig) -> bool:
+def _publish_sequential_result(
+    agent,
+    messages: list,
+    ref: _ToolCallRef,
+    managed: _ManagedToolResult,
+    *,
+    tool_duration: float,
+    index: int,
+    budget: BudgetConfig,
+    quiet_completion_spinner=None,
+    finish_quiet_completion: bool = False,
+) -> bool:
     """Terminal hook → observe → commit → completion callbacks/print for one sequential
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
@@ -1650,9 +1780,31 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         verbose_text=_multimodal_text_summary,
     )
     if committed is None:
+        if finish_quiet_completion:
+            with contextlib.suppress(Exception):
+                _finish_quiet_tool_spinner(
+                    agent,
+                    quiet_completion_spinner,
+                    ref.name,
+                    ref.args,
+                    tool_duration,
+                    json.dumps(
+                        {"error": "Tool result could not be saved."},
+                        ensure_ascii=False,
+                    ),
+                )
         return False
     function_result, display_function_result, risk_metadata = committed
 
+    if finish_quiet_completion:
+        _finish_quiet_tool_spinner(
+            agent,
+            quiet_completion_spinner,
+            ref.name,
+            ref.args,
+            tool_duration,
+            display_function_result,
+        )
     _emit_tool_complete_and_risk(agent, ref, display_function_result, risk_metadata, managed.blocked)
     if _tool_progress_enabled(agent):
         _print_tool_completed(agent, index, tool_duration, function_result)
@@ -1663,44 +1815,149 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
     owns turn-end work)."""
+    from hermes_cli.plugins import requires_hook
+    from hermes_cli.required_lifecycle import (
+        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+        RequiredLifecycleError,
+    )
+
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
+    required_post_settlement = requires_hook("post_tool_call")
 
     for i, tool_call in enumerate(tool_calls, 1):
+        result_start = len(messages)
         if getattr(agent, "_incremental_persistence_failed", False):
             return
-        # Check interrupt BEFORE each tool so a "stop" during the previous one skips the rest.
-        if agent._interrupt_requested:
-            if not _skip_remaining_sequential(
-                agent, messages, tool_calls[i - 1:], effective_task_id,
-                notice="tool call(s)",
-                content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
-                hook_error_type="user_interrupt",
-                hook_id=lambda tc: getattr(tc, "id", "") or "",
-                flush_stage="cancelled tool result",
+        try:
+            from hermes_cli.plugins import assert_required_lifecycle_turn_healthy
+
+            assert_required_lifecycle_turn_healthy(
+                session_id=getattr(agent, "session_id", "") or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+            )
+        except Exception as required_exc:
+            from hermes_cli.required_lifecycle import (
+                REQUIRED_LIFECYCLE_FAILURE_TEXT,
+                RequiredLifecycleError,
+            )
+
+            if not isinstance(required_exc, RequiredLifecycleError):
+                raise
+            for skipped in tool_calls[i - 1:]:
+                messages.append(
+                    make_tool_result_message(
+                        skipped.function.name,
+                        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+                        _pairing_tool_call_id(skipped),
+                        effect_disposition="none",
+                    )
+                )
+            _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage="required lifecycle batch settlement",
+            )
+            raise
+        ref = _ToolCallRef(
+            _canonical_tool_name(_tc_name(tool_call)),
+            {},
+            effective_task_id,
+            _pairing_tool_call_id(tool_call),
+            [],
+        )
+        dispatch = None
+        execution_started = threading.Event()
+        tool_start_time = time.time()
+        try:
+            # Check interrupt BEFORE each tool so a "stop" during the previous one skips the rest.
+            if agent._interrupt_requested:
+                if not _skip_remaining_sequential(
+                    agent, messages, tool_calls[i - 1:], effective_task_id,
+                    notice="tool call(s)",
+                    content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+                    hook_error_type="user_interrupt",
+                    hook_id=lambda tc: getattr(tc, "id", "") or "",
+                    flush_stage="cancelled tool result",
+                ):
+                    return
+                break
+
+            pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
+            ref = pc.ref(effective_task_id)
+            if pc.parse_error is not None:
+                if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
+                    return
+                continue
+
+            dispatch = _resolve_sequential_dispatch(agent, ref, messages)
+            managed, tool_duration = _run_sequential_call(
+                agent, dispatch, ref,
+                scope_block=pc.scope_block,
+                messages=messages,
+                remaining_calls=tool_calls[i - 1:],
+                display_index=i,
+                tool_start_time=tool_start_time,
+                execution_started=execution_started,
+                defer_quiet_completion=required_post_settlement,
+            )
+            if not _publish_sequential_result(
+                agent, messages, ref, managed,
+                tool_duration=tool_duration, index=i, budget=_tool_budget,
+                quiet_completion_spinner=dispatch.spinner,
+                finish_quiet_completion=(
+                    required_post_settlement and dispatch.finish_spinner
+                ),
             ):
                 return
-            break
-
-        pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
-        ref = pc.ref(effective_task_id)
-        if pc.parse_error is not None:
-            if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
-                return
-            continue
-
-        tool_start_time = time.time()
-        dispatch = _resolve_sequential_dispatch(agent, ref, messages)
-        managed, tool_duration = _run_sequential_call(
-            agent, dispatch, ref,
-            scope_block=pc.scope_block,
-            messages=messages,
-            remaining_calls=tool_calls[i - 1:],
-            display_index=i,
-            tool_start_time=tool_start_time,
-        )
-        if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
+        except _UndurableToolSettlement:
             return
+        except RequiredLifecycleError:
+            current_calls = tool_calls[i - 1:]
+            unsettled = _unsettled_sequential_calls(
+                messages,
+                current_calls,
+                result_start=result_start,
+            )
+            failed_ref = ref
+            if unsettled:
+                failed_call = unsettled[0]
+                failed_id = _pairing_tool_call_id(failed_call)
+                if failed_id != ref.call_id:
+                    failed_ref = _ToolCallRef(
+                        _canonical_tool_name(_tc_name(failed_call)),
+                        {},
+                        effective_task_id,
+                        failed_id,
+                        [],
+                    )
+                _settle_required_post_failure(
+                    agent,
+                    messages,
+                    failed_ref,
+                    unsettled[1:],
+                    effect_disposition=(
+                        "unknown"
+                        if failed_call is tool_call
+                        and execution_started.is_set()
+                        and tool_may_have_side_effect(failed_ref.name)
+                        else "none"
+                    ),
+                )
+            if dispatch is not None and dispatch.finish_spinner:
+                with contextlib.suppress(Exception):
+                    _finish_quiet_tool_spinner(
+                        agent,
+                        dispatch.spinner,
+                        failed_ref.name,
+                        failed_ref.args,
+                        time.time() - tool_start_time,
+                        json.dumps(
+                            {"error": REQUIRED_LIFECYCLE_FAILURE_TEXT},
+                            ensure_ascii=False,
+                        ),
+                    )
+            raise
 
         if agent._interrupt_requested and i < len(tool_calls):
             if not _skip_remaining_sequential(

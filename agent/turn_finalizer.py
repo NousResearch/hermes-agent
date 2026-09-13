@@ -441,6 +441,25 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    from hermes_cli.required_lifecycle import (
+        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+        RequiredLifecycleError,
+    )
+
+    try:
+        from hermes_cli.plugins import assert_required_lifecycle_turn_healthy
+
+        assert_required_lifecycle_turn_healthy(
+            session_id=agent.session_id or "", turn_id=turn_id
+        )
+    except RequiredLifecycleError as required_exc:
+        final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+        failed = True
+        _turn_exit_reason = (
+            "required_lifecycle_blocked("
+            f"{required_exc.reason_code})"
+        )
+
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
@@ -449,6 +468,56 @@ def finalize_turn(
         _pending_verification_response_previewed=_pending_verification_response_previewed,
         logger=logger,
     )
+
+    response_transformed = False
+    pre_transform_response = None
+    required_output_hook = False
+    try:
+        from hermes_cli.plugins import apply_required_lifecycle_output, requires_hook
+
+        required_output_hook = requires_hook("transform_llm_output")
+        output_already_applied = (
+            getattr(agent, "_required_lifecycle_output_turn_id", "") == turn_id
+        )
+        if required_output_hook and output_already_applied:
+            response_transformed = bool(
+                getattr(agent, "_required_lifecycle_output_transformed", False)
+            )
+        elif required_output_hook and not interrupted:
+            raw_response = final_response if isinstance(final_response, str) else ""
+            _, final_response = apply_required_lifecycle_output(
+                raw_response,
+                session_id=agent.session_id or "",
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+            response_transformed = final_response != raw_response
+    except RequiredLifecycleError as required_exc:
+        required_output_hook = True
+        final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+        response_transformed = True
+        failed = True
+        _turn_exit_reason = (
+            "required_lifecycle_blocked("
+            f"{required_exc.reason_code})"
+        )
+
+    if required_output_hook and not interrupted:
+        replaced_terminal = False
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "user":
+                break
+            if message.get("role") == "assistant" and not message.get("tool_calls"):
+                message["content"] = final_response
+                message.pop("api_content", None)
+                replaced_terminal = True
+                break
+        if not replaced_terminal and final_response:
+            append_message(messages, {"role": "assistant", "content": final_response})
 
     completed = (
         final_response is not None
@@ -495,18 +564,16 @@ def finalize_turn(
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
     # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not required_output_hook:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
+    if not interrupted and not required_output_hook:
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
 
     _platform = getattr(agent, "platform", None) or ""
-    _response_transformed = False
-    _pre_transform_response = None
-    if final_response and not interrupted:
-        final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
+    if final_response and not interrupted and not required_output_hook:
+        final_response, response_transformed, pre_transform_response = _apply_output_hooks(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
         )
@@ -545,8 +612,8 @@ def finalize_turn(
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
-        "response_transformed": _response_transformed,
-        "pre_transform_response": _pre_transform_response,
+        "response_transformed": response_transformed,
+        "pre_transform_response": pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         "provider": agent.provider,
@@ -590,6 +657,16 @@ def finalize_turn(
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
     agent._stream_callback = None  # don't leak into future calls
+    if hasattr(agent, "_required_lifecycle_stream_delta_callback"):
+        agent.stream_delta_callback = agent._required_lifecycle_stream_delta_callback
+        del agent._required_lifecycle_stream_delta_callback
+    if hasattr(agent, "_required_lifecycle_disable_streaming"):
+        agent._disable_streaming = agent._required_lifecycle_disable_streaming
+        del agent._required_lifecycle_disable_streaming
+    if getattr(agent, "_required_lifecycle_output_turn_id", "") == turn_id:
+        del agent._required_lifecycle_output_turn_id
+        if hasattr(agent, "_required_lifecycle_output_transformed"):
+            del agent._required_lifecycle_output_transformed
 
     # Skill trigger is checked NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = (
@@ -599,6 +676,10 @@ def finalize_turn(
     )
     if _should_review_skills:
         agent._iters_since_skill = 0
+
+    from hermes_cli.required_lifecycle import scrub_required_provider_fields
+
+    scrub_required_provider_fields(agent)
 
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
@@ -640,4 +721,12 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+    try:
+        from hermes_cli.plugins import finish_required_lifecycle_turn
+
+        finish_required_lifecycle_turn(
+            session_id=agent.session_id or "", turn_id=turn_id
+        )
+    except RequiredLifecycleError:
+        pass
     return result

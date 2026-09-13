@@ -1411,7 +1411,9 @@ def _dump_if_model(value):
     return _model_dump_safe(value) if hasattr(value, "model_dump") else value
 
 
-def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
+def _assistant_reasoning_text(
+    agent, assistant_message, *, publish: bool = True
+) -> Optional[str]:
     """Structured reasoning, else inline ``<think>`` blocks embedded in content."""
     reasoning_text = agent._extract_reasoning(assistant_message)
     if not reasoning_text:
@@ -1419,13 +1421,19 @@ def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
         think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
         if think_blocks:
             reasoning_text = "\n\n".join(b.strip() for b in think_blocks if b.strip()) or None
-    if reasoning_text and agent.verbose_logging:
+    if reasoning_text and agent.verbose_logging and publish:
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
     # When streaming is active the reasoning was already displayed during the
     # stream (structured deltas or <think> tag extraction); fire only for
     # non-streaming modes (gateway, batch, quiet). Anything not shown during
     # streaming is caught by the CLI post-response fallback.
-    if reasoning_text and agent.reasoning_callback and not agent.stream_delta_callback and not agent._stream_callback:
+    if (
+        reasoning_text
+        and publish
+        and agent.reasoning_callback
+        and not agent.stream_delta_callback
+        and not agent._stream_callback
+    ):
         with contextlib.suppress(Exception):
             agent.reasoning_callback(reasoning_text)
     return _sanitize_surrogates(reasoning_text) if reasoning_text else reasoning_text
@@ -1496,9 +1504,21 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     single owner — write-time padding broke codex commentary turns and cannot
     survive ``_rows_to_conversation``."""
     assistant_tool_calls = getattr(assistant_message, "tool_calls", None)
-    reasoning_text = _assistant_reasoning_text(agent, assistant_message)
+    try:
+        from hermes_cli.plugins import requires_hook as _requires_hook
+
+        required_output_publication = _requires_hook("transform_llm_output")
+    except Exception:
+        required_output_publication = True
+    reasoning_text = _assistant_reasoning_text(
+        agent, assistant_message, publish=not required_output_publication
+    )
     msg = stamp_message_timestamp({"role": "assistant",
-        "content": _assistant_content_for_storage(agent, assistant_message), "reasoning": reasoning_text,
+        "content": (
+            "" if required_output_publication
+            else _assistant_content_for_storage(agent, assistant_message)
+        ),
+        "reasoning": None if required_output_publication else reasoning_text,
         "finish_reason": finish_reason})
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
@@ -1574,6 +1594,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
+    if required_output_publication:
+        from hermes_cli.required_lifecycle import quarantine_required_provider_fields
+
+        quarantine_required_provider_fields(agent, msg)
     return msg
 
 

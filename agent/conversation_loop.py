@@ -984,6 +984,70 @@ def _partial_turn_result(
     }
 
 
+def _apply_required_direct_result(agent, result: Any, state: Any) -> Any:
+    """Authorize a phase's direct-return result before it leaves the turn loop.
+
+    Phase helpers intentionally own several early exits.  Required output policy
+    must still be the single publication boundary for those paths.
+    """
+    if not isinstance(result, dict):
+        return result
+    from hermes_cli.required_lifecycle import (
+        REQUIRED_LIFECYCLE_FAILURE_TEXT,
+        RequiredLifecycleError,
+    )
+
+    raw = result.get("final_response")
+    raw = raw if isinstance(raw, str) else ""
+    try:
+        from hermes_cli.plugins import apply_required_lifecycle_output
+
+        required, final = apply_required_lifecycle_output(
+            raw,
+            session_id=agent.session_id or "",
+            task_id=state.effective_task_id,
+            turn_id=state.turn_id,
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+    except RequiredLifecycleError as exc:
+        required, final = True, REQUIRED_LIFECYCLE_FAILURE_TEXT
+        result["failed"] = True
+        result["completed"] = False
+        result["error"] = "required_lifecycle_terminal"
+        result["failure_reason"] = exc.reason_code
+    if not required:
+        return result
+
+    result["final_response"] = final
+    result["response_transformed"] = final != raw
+    result["pre_transform_response"] = None
+    if isinstance(result.get("error"), str):
+        result["error"] = "required_lifecycle_terminal"
+    messages = result.get("messages")
+    if isinstance(messages, list):
+        replaced = False
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "user":
+                break
+            if message.get("role") == "assistant" and not message.get("tool_calls"):
+                message["content"] = final
+                message.pop("api_content", None)
+                replaced = True
+                break
+        if not replaced and final:
+            append_message(messages, {"role": "assistant", "content": final})
+        try:
+            agent._persist_session(messages, state.conversation_history)
+        except Exception:
+            result["failed"] = True
+            result["completed"] = False
+            result["error"] = "session_persistence_failed"
+    return result
+
+
 def _compression_deferred_result(agent, messages: List[Dict], api_call_count: int, reason: str = "lock") -> Dict[str, Any]:
     """Soft turn result for a transiently-deferred compression. Both reasons must end as
     ``compression_deferred``, never ``compression_exhausted`` — the gateway wipes the
@@ -1292,6 +1356,7 @@ class _LoopState:
     _should_review_memory: Any
     _plugin_user_context: Any
     _ext_prefetch_cache: Any
+    _required_lifecycle_failure: Any
     # Turn-scoped state (rebound by the phases).
     messages: Any
     active_system_prompt: Any
@@ -1359,6 +1424,7 @@ _CTX_FIELDS = frozenset({
     "user_message", "original_user_message", "conversation_history", "effective_task_id", "turn_id",
     "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "messages",
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
+    "_required_lifecycle_failure",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
 _PHASE_PARAMS: Dict[Any, tuple] = {}
@@ -1502,23 +1568,78 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    if s._required_lifecycle_failure:
+        from hermes_cli.required_lifecycle import REQUIRED_LIFECYCLE_FAILURE_TEXT
+
+        s.final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+        s.failed = True
+        s._turn_exit_reason = (
+            "required_lifecycle_blocked("
+            f"{s._required_lifecycle_failure})"
+        )
+        append_message(
+            s.messages, {"role": "assistant", "content": s.final_response}
+        )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
+    if not s._required_lifecycle_failure and agent.api_mode == "codex_app_server":
+        from hermes_cli.plugins import requires_hook as _requires_hook
 
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        if _requires_hook("transform_llm_output"):
+            from hermes_cli.required_lifecycle import REQUIRED_LIFECYCLE_FAILURE_TEXT
+
+            s._required_lifecycle_failure = "required_lifecycle_surface_unsupported"
+            s.final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+            s.failed = True
+            s._turn_exit_reason = (
+                "required_lifecycle_blocked(required_lifecycle_surface_unsupported)"
+            )
+            append_message(
+                s.messages, {"role": "assistant", "content": s.final_response}
+            )
+        else:
+            return agent._run_codex_app_server_turn(
+                user_message=s.user_message, original_user_message=s.original_user_message,
+                messages=s.messages, effective_task_id=s.effective_task_id,
+                should_review_memory=s._should_review_memory,
+            )
+
+    while not s._required_lifecycle_failure and (
+        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0)
+        or agent._budget_grace_call
+    ):
+        try:
+            from hermes_cli.plugins import assert_required_lifecycle_turn_healthy
+
+            assert_required_lifecycle_turn_healthy(
+                session_id=agent.session_id or "", turn_id=s.turn_id
+            )
+        except Exception as required_exc:
+            from hermes_cli.required_lifecycle import (
+                REQUIRED_LIFECYCLE_FAILURE_TEXT,
+                RequiredLifecycleError,
+            )
+
+            if not isinstance(required_exc, RequiredLifecycleError):
+                raise
+            s._required_lifecycle_failure = required_exc.reason_code
+            s.final_response = REQUIRED_LIFECYCLE_FAILURE_TEXT
+            s.failed = True
+            s._turn_exit_reason = (
+                "required_lifecycle_blocked("
+                f"{required_exc.reason_code})"
+            )
+            append_message(
+                s.messages, {"role": "assistant", "content": s.final_response}
+            )
+            break
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":
-            return _pg.result
+            return _apply_required_direct_result(agent, _pg.result, s)
         if _pg.action == "break":
             break
         if _pg.action == "continue":
@@ -1531,7 +1652,7 @@ def _run_conversation_turn(
 
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
-            return early_result
+            return _apply_required_direct_result(agent, early_result, s)
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":
@@ -1542,14 +1663,14 @@ def _run_conversation_turn(
         try:
             _ri = _run_phase(normalize_model_response, agent, s)
             if _ri.action == "return":
-                return _ri.result
+                return _apply_required_direct_result(agent, _ri.result, s)
             if _ri.action == "continue":
                 continue
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )
             if _v.action == "return":
-                return _v.result
+                return _apply_required_direct_result(agent, _v.result, s)
             if _v.action == "break":
                 break
             if _v.action == "continue":

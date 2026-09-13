@@ -9,6 +9,7 @@ the final roll-back. Nothing here imports ``agent.conversation_loop`` at module 
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass
@@ -166,7 +167,12 @@ class _Trunc(TruncationVerdict):
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
-        agent._persist_session(self.messages, self.conversation_history)
+        # Direct truncation results pass through conversation_loop's required
+        # output publication boundary.  When that boundary is configured (or
+        # its policy is invalid), persisting here would durably expose raw
+        # provider fragments before transform_llm_output can authorize them.
+        if not _required_output_pending():
+            agent._persist_session(self.messages, self.conversation_history)
         return self.done("return", partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
@@ -441,6 +447,20 @@ _CODEX_REPLAY_KEYS = (
 )
 
 
+def _required_output_pending() -> bool:
+    """Whether raw direct-return text must stay process-local until authorized."""
+    try:
+        from hermes_cli.plugins import requires_hook
+
+        return requires_hook("transform_llm_output")
+    except Exception as exc:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if not isinstance(exc, RequiredLifecycleError):
+            raise
+        return True
+
+
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int,
@@ -457,6 +477,9 @@ def continue_codex_incomplete(
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
+    required_output_pending = _required_output_pending()
+    if n == 1 and required_output_pending:
+        agent._required_codex_incomplete_start = len(messages)
 
     interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
     interim_has_content = bool((interim_msg.get("content") or "").strip())
@@ -495,7 +518,8 @@ def continue_codex_incomplete(
                     last_msg[_key] = interim_msg[_key]
         else:
             append_message(messages, interim_msg)
-            agent._emit_interim_assistant_message(interim_msg)
+            if not required_output_pending:
+                agent._emit_interim_assistant_message(interim_msg)
 
     if n < 3:
         # If the interim has nothing the Responses converter will replay, a bare retry is
@@ -530,7 +554,14 @@ def continue_codex_incomplete(
         return None
 
     agent._codex_incomplete_retries = 0
-    agent._persist_session(messages, conversation_history)
+    if required_output_pending:
+        start = getattr(agent, "_required_codex_incomplete_start", len(messages))
+        if isinstance(start, int) and not isinstance(start, bool) and 0 <= start <= len(messages):
+            del messages[start:]
+    else:
+        agent._persist_session(messages, conversation_history)
+    with contextlib.suppress(AttributeError):
+        del agent._required_codex_incomplete_start
     return partial_result(
         messages, api_call_count, "Codex response remained incomplete after 3 continuation attempts"
     )
@@ -566,14 +597,22 @@ def handle_content_policy_refusal(
     if not _refusal_text:
         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
 
-    agent._invoke_api_request_error_hook(
-        task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
-        api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
-        error_type="ContentPolicyBlocked",
-        error_message=_refusal_text or "model declined to respond (content_filter)",
-        status_code=None, retry_count=retry_count, max_retries=max_retries, retryable=False,
-        reason=FailoverReason.content_policy_blocked.value,
-    )
+    try:
+        from hermes_cli.plugins import requires_hook as _requires_hook
+
+        required_output_publication = _requires_hook("transform_llm_output")
+    except Exception:
+        required_output_publication = True
+
+    if not required_output_publication:
+        agent._invoke_api_request_error_hook(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+            error_type="ContentPolicyBlocked",
+            error_message=_refusal_text or "model declined to respond (content_filter)",
+            status_code=None, retry_count=retry_count, max_retries=max_retries, retryable=False,
+            reason=FailoverReason.content_policy_blocked.value,
+        )
     stop_thinking_spinner(agent, thinking_spinner)
 
     if agent._has_pending_fallback():
@@ -587,7 +626,8 @@ def handle_content_policy_refusal(
     logger.warning(
         "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s refusal=%s",
         agent.log_prefix, agent.model, agent.provider,
-        _refusal_log or "(no text)",
+        "(withheld by required output policy)"
+        if required_output_publication else _refusal_log or "(no text)",
     )
     agent._emit_status("⚠️ The model declined to respond to this request (safety refusal).")
     _refusal_detail = (

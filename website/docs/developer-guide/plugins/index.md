@@ -934,6 +934,12 @@ def register(ctx):
     ctx.register_hook("on_session_end", on_session_end)
 ```
 
+`register_hook()` also accepts a stable `registration_id=` for callbacks selected
+by the operator as mandatory lifecycle boundaries. Required callbacks must return
+`hermes_cli.plugins.required_hook_result(registration_id, result)`. See
+[Operator-required lifecycle hooks](/user-guide/features/hooks#operator-required-lifecycle-hooks)
+for the closed configuration and failure behavior.
+
 ### Hook reference
 
 Each hook is documented in full on the **[Event Hooks reference](/user-guide/features/hooks#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:

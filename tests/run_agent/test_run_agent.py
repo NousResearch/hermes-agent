@@ -2318,7 +2318,8 @@ class TestConcurrentToolExecution:
         manager = SimpleNamespace(_middleware={
             "tool_request": [],
             "tool_execution": [execution_middleware],
-        })
+        }, assert_required_lifecycle_turn_healthy=lambda **_kwargs: None,
+            requires_hook=lambda _name: False)
         monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
         monkeypatch.setattr(
             "hermes_cli.lifecycle.invoke_hook",

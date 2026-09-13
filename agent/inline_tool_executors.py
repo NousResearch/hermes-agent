@@ -40,7 +40,11 @@ def emit_terminal_post_tool_call(
     error_message: Optional[str] = None,
     middleware_trace: Optional[list] = None,
 ) -> None:
-    """Emit the one terminal ``post_tool_call`` hook for a tool_call_id (best-effort)."""
+    """Emit the one terminal ``post_tool_call`` hook for a tool_call_id.
+
+    Optional observer failures remain best-effort.  A required lifecycle failure
+    must reach the tool executor before it publishes the result.
+    """
     try:
         from model_tools import _emit_post_tool_call_hook
         _emit_post_tool_call_hook(
@@ -54,7 +58,11 @@ def emit_terminal_post_tool_call(
             error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
-    except Exception:
+    except Exception as exc:
+        from hermes_cli.required_lifecycle import RequiredLifecycleError
+
+        if isinstance(exc, RequiredLifecycleError):
+            raise
         pass
 
 

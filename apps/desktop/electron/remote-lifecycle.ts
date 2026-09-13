@@ -1103,7 +1103,16 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `trap 'rm -rf "$reservation"' EXIT; ` +
       `if [ -f "$lock" ]; then ` +
       `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
-      `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
+      // #95532 fail-closed skew sentinel, mirrored here: a lock this sed
+      // can't extract a pid from is not proof of "no owner" — it can equally
+      // be a foreign/pretty-printed shape from a different (fork) build,
+      // exactly the state the TS-side readLockfile()/isLockfileSkew() check
+      // refuses to reap. Deleting it here on parse failure would close the
+      // TOCTOU window this reservation mutex exists to guard by murdering
+      // that build's live lockfile and spawning on top of it. Fail the
+      // reservation (exit 75, the same sentinel already used above for a
+      // reservation-mutex timeout) instead of guessing.
+      `case "$existing_pid" in ''|*[!0-9]*) exit 75;; *) ` +
       `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
       `${markerClear}; marker_clear || exit 75; mkdir -p "$(dirname ${logPath})" && ` +
       `${detachedSpawn}; ` +

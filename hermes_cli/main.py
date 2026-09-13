@@ -427,11 +427,21 @@ def _scan_profile_flag(argv: list) -> tuple:
     from hermes_cli._parser import top_level_value_flag_sets
 
     value_flags, optional_value_flags = top_level_value_flag_sets()
+    command = None
+    webhook_action = None
     i = 0
     while i < len(argv):
         arg = argv[i]
         if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
             break
+        webhook_route_profile = (
+            command == "webhook"
+            and webhook_action in {"subscribe", "add"}
+            and (arg == "--profile" or arg.startswith("--profile="))
+        )
+        if webhook_route_profile:
+            i += 2 if arg == "--profile" and i + 1 < len(argv) else 1
+            continue
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             if re.match(_PROFILE_NAME_RE, argv[i + 1]):
                 return argv[i + 1], 2, i
@@ -442,7 +452,15 @@ def _scan_profile_flag(argv: list) -> tuple:
             arg in value_flags
             or (arg in optional_value_flags and not argv[i + 1].startswith("-"))
         )
-        i += 2 if takes_value else 1
+        if takes_value:
+            i += 2
+            continue
+        if not arg.startswith("-"):
+            if command is None:
+                command = arg
+            elif command == "webhook" and webhook_action is None:
+                webhook_action = arg
+        i += 1
     return None, 0, None
 
 

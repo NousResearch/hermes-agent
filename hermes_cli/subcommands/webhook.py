@@ -27,6 +27,9 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
     wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
     wh_sub.add_argument(
+        "--profile", default=None,
+        help="Profile that may receive this route (default: default; preserved on update)")
+    wh_sub.add_argument(
         "--deliver-only", action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "
         "message. Zero LLM cost. Requires --deliver to be a real target "

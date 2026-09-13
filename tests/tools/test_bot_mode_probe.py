@@ -273,3 +273,20 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+def test_roster_resolves_default_to_root_home_over_stray_directory(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    # A stray profiles/default/ directory must not shadow the reserved root home.
+    stray = home / "profiles" / "default"
+    stray.mkdir()
+    (stray / "state.db").write_bytes(b"")
+
+    roster = bot_mode_probe._roster(home)
+    homes = dict(roster)
+    assert homes["default"] == home
+    assert homes["researcher"] == home / "profiles" / "researcher"
+    names = [name for name, _ in roster]
+    assert names.count("default") == 1

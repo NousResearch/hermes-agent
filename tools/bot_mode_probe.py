@@ -71,7 +71,14 @@ def _handle(name: str) -> str:
 def _roster(root: Path) -> list[tuple[str, Path]]:
     """(name, dir) for the default profile + every named profile, sorted."""
     profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
+    named = _swallow(
+        lambda: [
+            (c.name, c)
+            for c in sorted(profiles.iterdir())
+            if c.is_dir() and c.name != "default"
+        ],
+        [],
+    )
     return [("default", root), *named]
 
 

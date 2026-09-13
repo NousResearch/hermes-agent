@@ -633,11 +633,14 @@ class SessionMessagesMixin:
             pending = []
             # Only reaction-bearing rows cross into Python: display_metadata also carries delivery /
             # attachment markers on most rows, and the lineage scan grows with the session's age.
-            for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                    f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+            # CAST defeats the tolerant text_factory (same seam contract as set_message_reaction):
+            # an undecodable cell aborts the take instead of being rewritten as U+FFFD soup that
+            # silently destroys the row's unrelated metadata (#109465 review, completeness gap 1).
+            for row in conn.execute("SELECT id, role, content, CAST(display_metadata AS BLOB) AS display_metadata "
+                    f"FROM messages WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
                     f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
                     "ORDER BY id", tuple(lineage)).fetchall():
-                meta = self._decode_display_metadata(row["display_metadata"])
+                meta = self._strict_display_metadata_cell(row["display_metadata"], row["id"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):
                     continue
@@ -1457,6 +1460,13 @@ class SessionMessagesMixin:
         msg = dict(row)
         msg.pop("display_identity", None)
         msg.pop("display_order", None)
+        # display_identity (popped above) is the messages table's only legitimate BLOB column, so
+        # any surviving bytes is a corrupt cell that landed in BLOB storage and bypassed text_factory
+        # (sqlite3 contract). Normalize centrally: NO public read surface may hand out bytes, or
+        # json.dumps(message) raises TypeError on e.g. a BLOB-stored reasoning cell (#109465 review).
+        for key, value in msg.items():
+            if isinstance(value, bytes):
+                msg[key] = tolerant_decode_bytes(value)
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
         msg["content"] = self._decode_content(msg["content"])

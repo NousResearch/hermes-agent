@@ -18,7 +18,8 @@
     "./model-search-text": "./src/model-search-text.ts",
     "./reasoning-effort": "./src/reasoning-effort.ts",
     "./reconnect-backoff": "./src/reconnect-backoff.ts",
-    "./skin": "./src/skin.ts"
+    "./skin": "./src/skin.ts",
+    "./slash": "./src/slash.ts"
   },
   "types": "./src/index.ts",
   "scripts": {

@@ -14,6 +14,7 @@ import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
+  $activeSessionId,
   $busy,
   $connection,
   $currentCwd,
@@ -22,6 +23,7 @@ import {
   $sessions,
   $terminalBackend,
   $turnStartedAt,
+  setActiveSessionId,
   setCurrentUsage,
   setMessages,
   setSessions
@@ -41,6 +43,7 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 // never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
+  setActiveSessionId(null)
 })
 
 vi.mock('@/hermes', () => ({
@@ -2024,6 +2027,50 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(typeof armed).toBe('number')
     expect(armed as number).toBeGreaterThanOrEqual(before)
     expect(armed as number).toBeLessThanOrEqual(Date.now())
+  })
+
+  it('publishes a directly resumed foreground runtime before its turn events arrive', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-stale' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-session-a' }
+    let boundRuntimeId: null | string = null
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        boundRuntimeId = 'rt-recovered'
+
+        return { session_id: boundRuntimeId } as never
+      }
+
+      return {} as never
+    })
+
+    setActiveSessionId('rt-stale')
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="rt-stale"
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-session-a'}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => undefined}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId="stored-session-a"
+      />
+    )
+
+    await handle!.submitText('ask the user a question')
+
+    expect(activeSessionIdRef.current).toBe('rt-recovered')
+    expect($activeSessionId.get()).toBe('rt-recovered')
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: 'rt-recovered', text: 'ask the user a question' },
+      1_800_000
+    )
   })
 
   it('keeps a live turn clock when a second seed races it (?? guard)', async () => {

@@ -2,7 +2,7 @@ import type { useSensors } from '@dnd-kit/core'
 import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { type ProfileGroupHeaderContribution, SIDEBAR_PROFILE_GROUP_HEADER_AREA } from '@/app/routes'
@@ -339,14 +339,28 @@ function ProfileGroupHeaderSlot({ connectionId, profile }: { connectionId: null 
           return null
         }
 
-        const render = data.render
-
         return (
           <ContribBoundary id={item.id} key={item.id} variant="chip">
-            <ContribRender render={() => render({ connectionId, profile })} />
+            <ProfileGroupHeaderItem connectionId={connectionId} profile={profile} render={data.render} />
           </ContribBoundary>
         )
       })}
     </div>
   )
+}
+
+/** One stable render identity per (render, connection, profile): ContribRender mounts whatever
+ *  function it is handed, so an inline closure would remount the contribution on every paint. */
+function ProfileGroupHeaderItem({
+  connectionId,
+  profile,
+  render
+}: {
+  connectionId: null | string
+  profile: string
+  render: ProfileGroupHeaderContribution['render']
+}) {
+  const Row = useMemo(() => () => render({ connectionId, profile }), [connectionId, profile, render])
+
+  return <ContribRender render={Row} />
 }

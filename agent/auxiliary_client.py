@@ -5663,7 +5663,22 @@ def _resolve_task_provider_model(
     """
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
-        task_config = _get_auxiliary_task_config(task, main_runtime=main_runtime)
+        task_config = _get_auxiliary_task_config(task)
+        runtime = _normalize_main_runtime(main_runtime)
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.config_providers import get_custom_provider_model_auxiliary
+
+            model_override = get_custom_provider_model_auxiliary(
+                runtime.get("model", ""), task,
+                provider=runtime.get("provider", ""),
+                requested_provider=runtime.get("requested_provider", ""),
+                base_url=runtime.get("base_url", ""),
+                config=load_config_readonly(),
+            )
+        except (ImportError, TypeError, ValueError):
+            model_override = {}
+        task_config = {**task_config, **model_override}
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
@@ -5735,51 +5750,7 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 _COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
 
 
-def _primary_model_auxiliary_config(
-    task: str, config: Dict[str, Any], main_runtime: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Return a named custom provider's per-model auxiliary task override.
-
-    Invalid runtime/config shapes deliberately return no override: auxiliary routing must
-    retain its established global configuration and fail-open behavior.
-    """
-    runtime = _normalize_main_runtime(main_runtime)
-    provider = str(runtime.get("provider") or "").strip().lower()
-    requested_provider = str(runtime.get("requested_provider") or "").strip().lower()
-    model = str(runtime.get("model") or "").strip()
-    if not (provider or requested_provider) or not model:
-        return {}
-    aliases = {identity for identity in (provider, requested_provider) if identity}
-    aliases.update(
-        identity.removeprefix("custom:")
-        for identity in tuple(aliases)
-        if identity.startswith("custom:")
-    )
-    try:
-        from hermes_cli.config_providers import get_compatible_custom_providers
-        entries = get_compatible_custom_providers(config)
-    except Exception:
-        return {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        names = {
-            str(entry.get(field) or "").strip().lower()
-            for field in ("name", "provider_key")
-        }
-        if not aliases.intersection(names):
-            continue
-        models = entry.get("models")
-        model_config = models.get(model) if isinstance(models, dict) else None
-        auxiliary = model_config.get("auxiliary") if isinstance(model_config, dict) else None
-        task_config = auxiliary.get(task) if isinstance(auxiliary, dict) else None
-        return dict(task_config) if isinstance(task_config, dict) else {}
-    return {}
-
-
-def _get_auxiliary_task_config(
-    task: str, *, main_runtime: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
     declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG."""
     if not task:
@@ -5799,12 +5770,11 @@ def _get_auxiliary_task_config(
             if _entry.get("key") == task:
                 _defaults = _entry.get("defaults") or {}
                 if isinstance(_defaults, dict):
-                    task_config = {**_defaults, **task_config}
+                    return {**_defaults, **task_config}
                 break
     except Exception:
         pass  # plugin discovery failure must not break aux task config reads
-    override = _primary_model_auxiliary_config(task, config, main_runtime)
-    return {**task_config, **override}
+    return task_config
 
 
 class CompressionFastLane(NamedTuple):
@@ -6846,8 +6816,7 @@ def _prepare_aux_request(
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     if not async_mode:
-        compression_config = _get_auxiliary_task_config(
-            "compression", main_runtime=main_runtime) if task == "compression" else {}
+        compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
         _, effective_extra_body = _compression_fast_lane_controls(
             task, actual_provider=request_provider, actual_model=final_model,
             requested_provider=provider, requested_model=model, route_config=compression_config,

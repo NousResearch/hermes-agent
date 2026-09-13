@@ -970,6 +970,10 @@ def build_cache_parity_fork(
         inherited_scope = resolve_prompt_cache_scope_safe(agent)
         if inherited_scope:
             review_agent._inherited_cache_scope = inherited_scope
+        # Same reason for the Portal ``conversation=`` tag: with no DB the fork's own
+        # _conversation_root_id() falls back to the parent's PHYSICAL id, so after a compression
+        # rotation the review's usage was attributed to a different conversation than its parent.
+        review_agent._cached_conversation_root = agent._conversation_root_id()
         _inherit_parent_tool_surface(review_agent, agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in

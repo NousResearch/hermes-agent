@@ -520,10 +520,14 @@ def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
 def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
     """#109964 invariant 1 (rotated-lineage case): a CLI parent whose lineage
     root != current physical id must also pass its scope to the fork. Pre-fix
-    the parent resolved 'root-sid' while the fork fell to the physical id."""
+    the parent resolved 'root-sid' while the fork fell to the physical id.
+
+    Every identity the fork publishes must equal the parent's: body cache key, the
+    affinity header (None for both — a physical root is not a declared ``gwk_`` scope)
+    and the Portal ``conversation=`` root (fork has no DB to walk the lineage)."""
     import run_agent
     from agent.background_review import build_cache_parity_fork
-    from agent.prompt_cache_scope import resolve_prompt_cache_scope
+    from agent.prompt_cache_scope import declared_conversation_scope, resolve_prompt_cache_scope
     from hermes_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -543,6 +547,9 @@ def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
         assert resolve_prompt_cache_scope(agent) == "root-sid"
         assert getattr(fork, "_inherited_cache_scope", None) == "root-sid"
         assert resolve_prompt_cache_scope(fork) == "root-sid"
+        assert declared_conversation_scope(fork) is declared_conversation_scope(agent) is None
+        fork_root = run_agent.AIAgent._conversation_root_id(fork)
+        assert fork_root == agent._conversation_root_id() == "root-sid"
     finally:
         db.close()
 

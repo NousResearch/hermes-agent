@@ -575,6 +575,22 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
     assert f"branch refs/heads/{branch}" in listed
 
 
+def test_worktree_without_path_or_board_workdir_fails_at_creation(kanban_home):
+    """A worktree card with no path, no project, and no board default_workdir can
+    never spawn — reject it at creation, not silently park it at dispatch."""
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError):
+            kb.create_task(conn, title="ship", workspace_kind="worktree")
+
+
+def test_dir_without_path_fails_at_creation(kanban_home):
+    """A dir card with no path can never resolve its workspace — reject it at
+    creation rather than letting it die at dispatch."""
+    with kbc.connect() as conn:
+        with pytest.raises(ValueError):
+            kb.create_task(conn, title="ship", workspace_kind="dir")
+
+
 # ---------------------------------------------------------------------------
 # Scratch cleanup containment (#28818)
 # ---------------------------------------------------------------------------

@@ -125,6 +125,11 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
 
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
+// Near-bottom slack for re-arming the live thinking preview's growth pin, matching the
+// outer transcript's RUN_START_SNAP_THRESHOLD_PX semantics: a reader a line or two off
+// the bottom still tracks, a reader in history must not be yanked back down (#109510).
+const THINKING_PIN_RESUME_THRESHOLD_PX = 64
+
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
   <>
     <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
@@ -205,12 +210,28 @@ const ThinkingDisclosure: FC<{
     // growth needs the pin; the height rides the RO entry, reflow-free.
     let lastHeight = -1
 
+    // Follow/escape gate, mirroring the semantics the outer transcript gets
+    // from use-stick-to-bottom (RUN_START_SNAP_THRESHOLD_PX): a reader a line
+    // or two off the bottom still tracks new tokens, but once they scroll
+    // further up the growth pin must stop yanking them back — re-arming only
+    // when they return near the bottom. Derived from the user's own scrolls,
+    // not from geometry at growth time: right after content grows everyone is
+    // "off the bottom", so the position alone cannot tell follower from
+    // escapee.
+    let following = true
+
+    const onScroll = () => {
+      following = el.scrollHeight - el.scrollTop - el.clientHeight < THINKING_PIN_RESUME_THRESHOLD_PX
+    }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+
     const pin = (entries: readonly ResizeObserverEntry[]) => {
       const height = entries[entries.length - 1]?.borderBoxSize?.[0]?.blockSize ?? -1
       const grew = height < 0 || height > lastHeight
       lastHeight = height
 
-      if (grew) {
+      if (grew && following) {
         el.scrollTop = el.scrollHeight
       }
     }
@@ -220,7 +241,10 @@ const ThinkingDisclosure: FC<{
     const observer = new ResizeObserver(pin)
     observer.observe(content)
 
-    return () => observer.disconnect()
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      observer.disconnect()
+    }
     // Re-run when the disclosure toggles so the observer attaches to the new
     // DOM after expand/collapse (refs are conditionally rendered on `open`).
   }, [isPreview, open])

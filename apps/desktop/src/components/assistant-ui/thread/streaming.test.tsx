@@ -30,6 +30,10 @@ class TestResizeObserver {
     resizeObservers.delete(this)
   }
 
+  get observed(): Element | null {
+    return this.target
+  }
+
   trigger(height: number) {
     if (!this.target) {
       return
@@ -641,6 +645,43 @@ describe('assistant-ui streaming renderer', () => {
     expect(settled).toContain('max-h-40')
     expect(settled).toMatch(/\boverflow-auto\b/)
     expect(settled).not.toMatch(/\boverflow-hidden\b/)
+  })
+
+  it('stops pinning the live thinking preview when the user scrolls it up, re-arms near the bottom', async () => {
+    const { container } = render(<RunningReasoningHarness />)
+
+    const body = container.querySelector<HTMLElement>('[data-slot="aui_thinking-body"]')
+    expect(body).toBeTruthy()
+
+    // jsdom has no layout: give the capped body a scrollable geometry.
+    Object.defineProperty(body, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(body, 'clientHeight', { value: 160, configurable: true })
+
+    const growThinkingContent = (height: number) => {
+      act(() => {
+        for (const observer of resizeObservers) {
+          if (body.contains(observer.observed)) {
+            observer.trigger(height)
+          }
+        }
+      })
+    }
+
+    // No user scroll yet: content growth pins the preview to the bottom.
+    growThinkingContent(50)
+    expect(body.scrollTop).toBe(1000)
+
+    // The reader scrolls up to re-read: the next growth must not yank them back.
+    body.scrollTop = 200
+    fireEvent.scroll(body)
+    growThinkingContent(60)
+    expect(body.scrollTop).toBe(200)
+
+    // Returning near the bottom (within the 64px slack) re-arms the pin.
+    body.scrollTop = 1000 - 160 - 40
+    fireEvent.scroll(body)
+    growThinkingContent(70)
+    expect(body.scrollTop).toBe(1000)
   })
 
   it('does not collapse a live thinking preview when the turn settles', async () => {

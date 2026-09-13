@@ -772,10 +772,9 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_constants import get_hermes_home
-            from hermes_state import SessionDB
+            from hermes_state import SessionDB, _default_db_path
             from agent.insights import InsightsEngine
-            if not (get_hermes_home() / "state.db").exists():
+            if not _default_db_path().exists():
                 print("  No session data yet.")
                 return
             db = SessionDB(read_only=True)

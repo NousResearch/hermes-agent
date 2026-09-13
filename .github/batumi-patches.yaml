@@ -24,6 +24,7 @@ patches:
       - .github/workflows/js-autofix.yml
       - .github/workflows/js-tests.yml
       - .github/workflows/osv-scanner.yml
+      - .github/workflows/docker-lint.yml
       - Dockerfile
       - tests/scripts/test_js_tests_workflow.py
       - tests/scripts/test_osv_scanner_workflow.py

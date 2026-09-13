@@ -54,19 +54,26 @@ jobs:
             nix/node-gyp-11-4-0-package-lock.json \
             .osv-lockfiles/node-gyp-11-4-0/package-lock.json
 
+      # Direct digest-pinned osv-scanner invocation (was
+      # google/osv-scanner-action/osv-scanner-action@6e4298eb… # v2.5.1).
+      # The remote action.yml pins its container by mutable tag
+      # (docker://ghcr.io/google/osv-scanner-action:v2.5.1), which we cannot
+      # edit; running the same image by digest gives identical behavior with
+      # immutable provenance. The wrapper's default entrypoint is
+      # `osv-scanner --lockfile=...` per scan-args.
       - name: Scan lockfiles
-        uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
-        with:
-          # Scan the complete explicit set of tracked dependency lockfiles
-          # rather than relying on recursive discovery.
-          scan-args: |-
-            --output=results.json
-            --format=json
-            --lockfile=uv.lock
-            --lockfile=package-lock.json
-            --lockfile=website/package-lock.json
-            --lockfile=plugins/platforms/photon/sidecar/package-lock.json
-            --lockfile=scripts/whatsapp-bridge/package-lock.json
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
+            --output=results.json \
+            --format=json \
+            --lockfile=uv.lock \
+            --lockfile=package-lock.json \
+            --lockfile=website/package-lock.json \
+            --lockfile=plugins/platforms/photon/sidecar/package-lock.json \
+            --lockfile=scripts/whatsapp-bridge/package-lock.json \
             --lockfile=.osv-lockfiles/node-gyp-11-4-0/package-lock.json
         # The reporter below owns the blocking vulnerability verdict.
         continue-on-error: true
@@ -91,13 +98,23 @@ jobs:
               raise SystemExit("OSV scan produced results.json with an unexpected schema")
           PY
 
+      # Direct digest-pinned osv-reporter invocation (was
+      # google/osv-scanner-action/osv-reporter-action@6e4298eb… # v2.5.1):
+      # same rationale as the scanner step above. The reporter action uses
+      # entrypoint /root/osv-reporter in the same image.
       - name: Report vulnerabilities
-        uses: google/osv-scanner-action/osv-reporter-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
-        with:
-          scan-args: |-
-            --output=osv-results.sarif
-            --new=results.json
-            --gh-annotations=false
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+            --entrypoint /root/osv-reporter \
+            ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
+            --output=osv-results.sarif \
+            --new=results.json \
+            --gh-annotations=false \
             --fail-on-vuln=true
 
       - name: Upload SARIF artifact

@@ -29,12 +29,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Direct digest-pinned hadolint invocation (was
+      # hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf v3.1.0).
+      # The action uses `using: docker, image: Dockerfile` — it builds an image
+      # from this repo's Dockerfile at run time, which the supply-chain audit
+      # cannot verify. Running the official hadolint image by digest gives the
+      # same lint with immutable provenance.
       - name: hadolint
-        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
-        with:
-          dockerfile: Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: warning
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace \
+            hadolint/hadolint:2.12.0-alpine@sha256:3c206a451cec6d486367e758645269fd7d696c5ccb6ff59d8b03b0e45268a199 \
+            hadolint --config .hadolint.yaml --failure-threshold warning Dockerfile
 
   shellcheck:
     name: Lint docker/ shell scripts (shellcheck)

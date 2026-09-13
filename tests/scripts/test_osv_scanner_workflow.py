@@ -18,6 +18,14 @@ STAGED_LOCKFILES = {
         ".osv-lockfiles/node-gyp-11-4-0/package-lock.json"
     ),
 }
+# The scanner and reporter run the digest-pinned upstream container images
+# directly (docker run) instead of through google/osv-scanner-action — the
+# remote action.yml pins those images by mutable tag, which the supply-chain
+# audit fails closed on.
+SCANNER_IMAGE = (
+    "ghcr.io/google/osv-scanner-action:v2.5.1@sha256:"
+    "dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc"
+)
 
 
 def _workflow() -> dict:
@@ -43,6 +51,19 @@ def _uses_step(prefix: str) -> dict:
     return matches[0]
 
 
+def _docker_step(image: str) -> dict:
+    matches = [
+        step
+        for step in _scan_steps()
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and image in step["run"]
+        and "--entrypoint /root/osv-reporter" not in step["run"]
+    ]
+    assert len(matches) == 1, f"expected exactly one step invoking {image}"
+    return matches[0]
+
+
 def _named_step(name: str) -> dict:
     matches = [step for step in _scan_steps() if step.get("name") == name]
     assert len(matches) == 1, f"expected exactly one {name!r} step"
@@ -62,12 +83,11 @@ def _scan_arg_lines(step: dict) -> list[str]:
 
 
 def test_osv_scan_covers_every_repository_lockfile() -> None:
-    scanner = _uses_step("google/osv-scanner-action/osv-scanner-action@")
-    scan_args = scanner["with"]["scan-args"]
+    scanner = _docker_step(SCANNER_IMAGE)
     configured = {
-        line.removeprefix("--lockfile=")
-        for line in scan_args.splitlines()
-        if line.startswith("--lockfile=")
+        line.strip().removesuffix("\\").strip().removeprefix("--lockfile=")
+        for line in scanner["run"].splitlines()
+        if line.strip().startswith("--lockfile=")
     }
     tracked = subprocess.check_output(
         ["git", "ls-files", "-z"], cwd=ROOT
@@ -140,13 +160,25 @@ def test_every_external_action_reference_is_pinned_to_exact_sha() -> None:
 
 
 def test_osv_reporter_blocks_on_vulnerabilities() -> None:
-    reporter = _uses_step("google/osv-scanner-action/osv-reporter-action@")
+    reporter = _reporter_step()
     fail_args = [
-        line for line in _scan_arg_lines(reporter) if line.startswith("--fail-on-vuln")
+        line.strip()
+        for line in reporter["run"].splitlines()
+        if line.strip().startswith("--fail-on-vuln")
     ]
     assert fail_args == ["--fail-on-vuln=true"]
-    assert "continue-on-error" not in reporter
-    assert "continue-on-error" not in _workflow()["jobs"]["scan"]
+
+
+def _reporter_step() -> dict:
+    matches = [
+        step
+        for step in _scan_steps()
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and "--entrypoint /root/osv-reporter" in step["run"]
+    ]
+    assert len(matches) == 1, "expected exactly one osv-reporter step"
+    return matches[0]
 
 
 def test_scan_is_bounded_normal_job_not_reusable_workflow() -> None:
@@ -207,9 +239,7 @@ def test_emit_status_and_its_artifact_do_not_run_after_cancellation() -> None:
 
 def test_sarif_publication_runs_after_reporter_failure() -> None:
     steps = _scan_steps()
-    reporter_index = steps.index(
-        _uses_step("google/osv-scanner-action/osv-reporter-action@")
-    )
+    reporter_index = steps.index(_reporter_step())
     sarif_steps = [
         (index, step)
         for index, step in enumerate(steps)

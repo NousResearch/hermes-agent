@@ -256,6 +256,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   // so a request in flight when the user switches profiles can't paint profile
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
+  // Debounced MoA writes resolve their target profile when they fire. A profile
+  // switch must therefore cancel pending timers and invalidate in-flight saves
+  // before the ambient active profile changes underneath them.
+  const moaSaveTimer = useRef<number | null>(null)
+  const moaSaveGeneration = useRef(0)
 
   const setCaughtError = useCallback(
     (err: unknown, fallback: string) => {
@@ -327,6 +332,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
+    if (moaSaveTimer.current !== null) {
+      window.clearTimeout(moaSaveTimer.current)
+      moaSaveTimer.current = null
+    }
+    moaSaveGeneration.current += 1
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
     // truth. Ordinary same-profile refreshes still preserve in-progress edits.
@@ -399,19 +409,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     moaRef.current = moa
   }, [moa])
 
-  const moaSaveTimer = useRef<number | null>(null)
-
   useEffect(
     () => () => {
-      if (moaSaveTimer.current) {
+      if (moaSaveTimer.current !== null) {
         window.clearTimeout(moaSaveTimer.current)
+        moaSaveTimer.current = null
       }
     },
     []
   )
-
-  // Guard against stale save responses overwriting newer state.
-  const moaSaveGeneration = useRef(0)
 
   // Quiet debounced persist for inline MoA edits — mirrors the config page's
   // autosave so slot/aggregator tweaks save themselves, matching the

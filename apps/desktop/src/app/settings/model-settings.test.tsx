@@ -505,6 +505,65 @@ describe('ModelSettings MoA preset editor', () => {
     return { ref1Provider: all.at(-6)!, ref1Model: all.at(-5)! }
   }
 
+  it('cancels a pending MoA autosave when the active profile changes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+
+      await act(async () => {
+        profileSwitchHandler?.()
+      })
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores an in-flight MoA save response after the active profile changes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let resolveSave: ((value: ReturnType<typeof moaConfig>) => void) | undefined
+    const staleProfileResponse = moaConfig()
+
+    staleProfileResponse.presets.default.enabled = false
+    saveMoaModels.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveSave = resolve
+      })
+    )
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      expect(saveMoaModels).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        profileSwitchHandler?.()
+      })
+      await waitFor(() => expect(getMoaModels).toHaveBeenCalledTimes(2))
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: 'Enabled' }).getAttribute('data-state')).toBe('checked')
+      )
+
+      await act(async () => {
+        resolveSave?.(staleProfileResponse)
+        await Promise.resolve()
+      })
+
+      expect(screen.getByRole('switch', { name: 'Enabled' }).getAttribute('data-state')).toBe('checked')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('holds the autosave while a slot is half-filled (provider changed, model pending)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 

@@ -6,6 +6,8 @@ the ambient accounting context (agent/aux_accounting.py), making aux model
 spend visible in analytics.
 """
 from pathlib import Path
+import sqlite3
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -292,3 +294,151 @@ class TestInsightsAuxTotals:
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
 
+
+@pytest.fixture
+def home_db(_isolate_hermes_home):
+    """state.db at the isolated HERMES_HOME — the path the dashboard analytics routes open."""
+    from hermes_constants import get_hermes_home
+
+    db = SessionDB(get_hermes_home() / "state.db")
+    yield db
+    db.close()
+
+
+def _seed_main_and_aux(db):
+    """One session: 1 000/100 main-loop tokens plus a 300/30 ``vision`` aux call."""
+    db.create_session("s1", source="cli")
+    db.update_token_counts(
+        "s1", input_tokens=1000, output_tokens=100,
+        model="main-model", billing_provider="nous", api_call_count=1,
+    )
+    db.append_message("s1", role="user", content="hello")
+    db.record_auxiliary_usage(
+        "s1", "vision", model="vision-model", billing_provider="gemini",
+        input_tokens=300, output_tokens=30, estimated_cost_usd=0.03,
+    )
+
+
+class TestAuxUsageInTotals:
+    """Readers presenting a *total* must add the auxiliary rows: the ``sessions`` counters are the
+    main agent loop only, so each of these reported less than the sum of its own lines (#23270)."""
+
+    def test_usage_totals_adds_aux_tokens_and_estimate(self, home_db):
+        _seed_main_and_aux(home_db)
+
+        totals = home_db.usage_totals()
+
+        # 1 000 + 100 main loop, 300 + 30 vision
+        assert totals["tokens"] == 1430
+        assert totals["cost_usd"] == pytest.approx(0.03)
+
+    def test_usage_totals_keeps_the_sessions_filters(self, home_db):
+        """The aux part joins the same filtered sessions, so a session that does not qualify
+        (below min_message_count) contributes neither figure."""
+        _seed_main_and_aux(home_db)
+
+        assert home_db.usage_totals(min_message_count=2) == {"tokens": 0, "cost_usd": 0.0}
+
+    def test_session_auxiliary_tokens_counts_every_counter(self, home_db):
+        db = home_db
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "compression", model="m", input_tokens=10, output_tokens=1,
+            cache_read_tokens=100, cache_write_tokens=1000, reasoning_tokens=5,
+        )
+
+        assert db.get_session_auxiliary_tokens("s1") == 1116
+        assert db.get_session_auxiliary_tokens("other") == 0
+
+    def test_analytics_totals_match_their_own_by_model_lines(self, home_db):
+        from hermes_cli.web_routers.analytics import _get_usage_analytics
+
+        _seed_main_and_aux(home_db)
+
+        data = _get_usage_analytics(days=7)
+        by_model = {row["model"]: row for row in data["by_model"]}
+        # the aux-only vision model is its own line ...
+        assert by_model["vision-model"]["input_tokens"] == 300
+        assert by_model["main-model"]["input_tokens"] == 1000
+        # ... and the total is the sum of those lines, not the sessions-only figure
+        assert data["totals"]["total_input"] == sum(row["input_tokens"] for row in data["by_model"])
+        assert data["totals"]["total_output"] == sum(row["output_tokens"] for row in data["by_model"])
+        assert data["totals"]["total_api_calls"] == sum(row["api_calls"] for row in data["by_model"])
+        assert data["totals"]["total_estimated_cost"] == pytest.approx(
+            sum(row["estimated_cost"] for row in data["by_model"])
+        )
+        # daily carries the same aux tokens, once
+        assert sum(row["input_tokens"] for row in data["daily"]) == 1300
+        assert sum(row["output_tokens"] for row in data["daily"]) == 130
+        assert [row["task"] for row in data["by_task"]] == ["vision"]
+
+    def test_models_totals_match_their_own_cards(self, home_db):
+        from hermes_cli.web_routers.analytics import _get_models_analytics
+
+        _seed_main_and_aux(home_db)
+
+        data = _get_models_analytics(days=7)
+
+        assert {card["model"] for card in data["models"]} == {"main-model", "vision-model"}
+        assert data["totals"]["distinct_models"] == len(data["models"])
+        columns = {"total_input": "input_tokens", "total_output": "output_tokens",
+                   "total_cache_read": "cache_read_tokens", "total_reasoning": "reasoning_tokens",
+                   "total_estimated_cost": "estimated_cost", "total_actual_cost": "actual_cost",
+                   "total_api_calls": "api_calls"}
+        for total_key, card_key in columns.items():
+            assert data["totals"][total_key] == sum(card.get(card_key) or 0 for card in data["models"])
+
+
+def _commit_usage_delta_from_second_connection(db_path: str, session_id: str = "s2") -> None:
+    """Commit one more main-loop usage row from a SECOND connection — what a live write does
+    while a response is being assembled."""
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, model, billing_provider,"
+            " input_tokens, output_tokens, estimated_cost_usd, api_call_count)"
+            " VALUES (?, 'cli', ?, 'late-model', 'nous', 900000, 9000, 9.0, 1)",
+            (session_id, time.time()),
+        )
+    finally:
+        conn.close()
+
+
+class TestUsageResponseIsOneSnapshot:
+    """One response = one read instant. These component reads are autocommit SELECTs on a live WAL
+    store, so a usage write committing between them used to leave ``totals`` (derived from the older
+    ``daily`` pass) below the ``by_model`` lines the same response carried — the contradiction the
+    additive accounting of #23270 exists to rule out."""
+
+    def test_usage_analytics_ignores_a_write_committed_between_component_reads(
+        self, home_db, monkeypatch
+    ):
+        from hermes_cli.web_routers import analytics
+
+        _seed_main_and_aux(home_db)
+        before = analytics._get_usage_analytics(days=7)["totals"]
+
+        # Deterministic interleaving: the second connection commits the delta right after the
+        # first component read (the sessions-derived ``daily``) and before all the others.
+        real_rows = analytics._rows
+        fired: list = []
+
+        def rows_with_interleaved_commit(db, sql, cutoff):
+            out = real_rows(db, sql, cutoff)
+            if not fired:
+                fired.append(True)
+                _commit_usage_delta_from_second_connection(home_db.db_path)
+            return out
+
+        monkeypatch.setattr(analytics, "_rows", rows_with_interleaved_commit)
+        data = analytics._get_usage_analytics(days=7)
+
+        # the delta is really in the store now — the interleaving did happen
+        assert home_db._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id = 's2'"
+        ).fetchone()[0] == 1
+        # ... and the whole response still describes the single instant it started from
+        assert data["totals"] == before
+        assert {row["model"] for row in data["by_model"]} == {"main-model", "vision-model"}
+        assert data["totals"]["total_input"] == sum(row["input_tokens"] for row in data["by_model"])
+        assert data["totals"]["total_input"] == sum(row["input_tokens"] for row in data["daily"])

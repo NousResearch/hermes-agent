@@ -104,6 +104,38 @@ async def test_status_command_reads_token_totals_from_session_db():
 
 
 @pytest.mark.asyncio
+async def test_status_command_includes_auxiliary_tokens(tmp_path):
+    """Auxiliary calls (vision, compression, ...) are recorded in session_model_usage with a task
+    name and never touch the sessions row, so the lifetime total must add them (#23270)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="openai/gpt-test")
+        db.update_token_counts(
+            "sess-1", input_tokens=1000, output_tokens=250, api_call_count=1,
+        )
+        db.record_auxiliary_usage(
+            "sess-1", "vision", model="gemini-3-flash", input_tokens=500, output_tokens=50,
+        )
+
+        result = await runner._handle_message(_make_event("/status"))
+
+        # 1000 + 250 main loop, 500 + 50 vision
+        assert "**Lifetime tokens billed:** 1,800" in result
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_status_command_includes_live_agent_model_and_context():
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),

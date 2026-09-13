@@ -386,7 +386,13 @@ class SessionUsageMixin:
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
+        shrink with paging. Spend prefers the billed figure over the estimate.
+
+        Both figures add the auxiliary part: the ``sessions`` counters are the main agent loop
+        only, while auxiliary calls (vision, compression, title generation, ...) live solely in
+        ``session_model_usage`` with ``task != ''`` (see :meth:`record_auxiliary_usage`, #23270).
+        Reading ``sessions`` alone under-reports the store by the auxiliary share.
+        """
         where = ["parent_session_id IS NULL", "message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
@@ -397,4 +403,50 @@ class SessionUsageMixin:
               FROM sessions
              WHERE {' AND '.join(where)}
             """, params)
-        return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+        aux = self._read_aux_costs(where, params)
+        return {
+            "tokens": int((row[0] or 0) + aux[0]),
+            "cost_usd": float((row[1] or 0) + aux[1]),
+        }
+
+    def get_session_auxiliary_tokens(self, session_id: str) -> int:
+        """Every token counter (input + output + cache read/write + reasoning) auxiliary calls
+        recorded for one session — the ``session_model_usage`` rows with ``task != ''`` that the
+        session's own ``sessions`` row never carries (:meth:`record_auxiliary_usage`, #23270).
+        Callers that present the session's lifetime total add this to the row's counters.
+        """
+        try:
+            row = self._read_one("""
+                SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                                     + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+                                     + COALESCE(reasoning_tokens, 0)), 0)
+                  FROM session_model_usage
+                 WHERE session_id = ? AND task != ''
+                """, (session_id,))
+        except Exception as exc:
+            # pre-task-column DB opened read-only by newer code (same guard as _aux_usage_rows)
+            logger.debug("auxiliary token scan failed for %s: %s", session_id, exc)
+            return 0
+        return int(row[0] or 0) if row else 0
+
+    def _read_aux_costs(self, where: List[str], params: List[Any]) -> Tuple[int, float]:
+        """``(tokens, cost_usd)`` of the auxiliary usage of the sessions ``where`` selects.
+
+        Auxiliary rows never carry a billed figure (:meth:`record_auxiliary_usage` takes no
+        ``actual_cost_usd``), so a zero actual falls back to the estimate — the same
+        billed-over-estimated preference the ``sessions`` figure applies, per row.
+        """
+        try:
+            row = self._read_one(f"""
+                SELECT COALESCE(SUM(COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0)), 0),
+                       COALESCE(SUM(CASE WHEN COALESCE(u.actual_cost_usd, 0) != 0 THEN u.actual_cost_usd
+                                         ELSE COALESCE(u.estimated_cost_usd, 0) END), 0)
+                  FROM session_model_usage u
+                 WHERE u.task != ''
+                   AND u.session_id IN (SELECT id FROM sessions WHERE {' AND '.join(where)})
+                """, params)
+        except Exception as exc:
+            # pre-task-column DB opened read-only by newer code (same guard as _aux_usage_rows)
+            logger.debug("auxiliary cost scan failed: %s", exc)
+            return 0, 0.0
+        return int(row[0] or 0) if row else 0, float(row[1] or 0) if row else 0.0

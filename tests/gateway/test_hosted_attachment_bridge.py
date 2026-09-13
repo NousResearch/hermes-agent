@@ -5,7 +5,12 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_authorized_upload_send_download_and_task_consumption(tmp_path):
+def test_authorized_upload_send_download_and_task_consumption(tmp_path, monkeypatch):
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    from hermes_state import SessionDB
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(tmp_path / 'state.db') as db:
+        initialize_input_custody(db)
     from gateway.session_hosted_attachments import upload, download, submission_payload
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     from gateway import hosted_rooms

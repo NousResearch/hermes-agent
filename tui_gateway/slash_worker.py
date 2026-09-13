@@ -126,7 +126,15 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            _reply(id=rid, ok=True, output=_run(cli, req.get("command", "")))
+            out = _run(cli, req.get("command", ""))
+            # Structured, resolved side-effect metadata for the parent. The worker ran
+            # inside the session's profile scope, so the parent mirrors from THIS snapshot
+            # instead of re-resolving aliases against its own process state. Produced by
+            # the CLI's model-switch commit; never carries credentials.
+            _reply(
+                id=rid, ok=True, output=out,
+                meta=getattr(cli, "_last_slash_metadata", None),
+            )
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

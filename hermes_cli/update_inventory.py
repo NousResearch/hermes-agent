@@ -344,7 +344,9 @@ def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
 def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     """Match an exact gateway service/label (systemd/launchd/s6 shapes) to a profile.
 
-    Never substring-match: ``foo`` must not claim ``hermes-gateway-foobar.service``.
+    Never substring-match: ``foo`` must not claim ``hermes-gateway-foobar.service``. Fleet-generated
+    systemd units have an opaque ``hermes-gateway-<8 lowercase hex>.service`` name; that exact unit
+    shape applies to every gateway profile, unlike a profile suffix.
     Launchd labels are ``ai.hermes.gateway`` / ``ai.hermes.gateway-<profile>`` — they do
     not contain the substring ``hermes-gateway``, so a successful macOS kickstart must
     still credit the planned default gateway. A scope prefix (``user/hermes-gateway``,

@@ -133,6 +133,40 @@ def test_restarted_service_unit_matches_profile():
     assert outcomes[0]["outcome"] == "restarted"
 
 
+def test_hashed_systemd_gateway_units_reconcile_but_near_misses_do_not():
+    """Fleet-generated systemd units use an opaque, lowercase eight-hex suffix.
+
+    The suffix is not a profile name, so the valid unit must credit either
+    planned gateway profile. Similar-looking names must remain unaccounted.
+    """
+    for profile, pid, unit in [
+        ("default", 403, "hermes-gateway-deadbeef.service"),
+        ("work", 404, "hermes-gateway-c0ffee12.service"),
+    ]:
+        outcomes = match_runtime_outcomes(
+            _plan(_rt(profile, pid, supervisor="systemd")),
+            restarted_services=[unit], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        )
+        assert outcomes[0]["outcome"] == "restarted"
+
+    for near_miss in [
+        "hermes-gateway-deadbee.service",
+        "hermes-gateway-deadbeef0.service",
+        "hermes-gateway-DEADBEEF.service",
+        "hermes-gateway-deadbeeg.service",
+        "hermes-gateway-deadbeef-extra.service",
+        "hermes-gateway-deadbeef",
+        "user/hermes-gateway-deadbeef.service",
+    ]:
+        outcomes = match_runtime_outcomes(
+            _plan(_rt("default", 405, supervisor="systemd")),
+            restarted_services=[near_miss], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        )
+        assert outcomes[0]["outcome"] == "unaccounted"
+
+
 def test_launchd_default_gateway_restarted_via_ai_hermes_label():
     """macOS restart bookkeeping records ``ai.hermes.gateway``, which does not
     contain the substring ``hermes-gateway``. The default-profile gateway must

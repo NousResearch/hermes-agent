@@ -79,6 +79,16 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     assert set(opened) == set(closed)
 
 
+def _fail_large_schema_replay(self, script):
+    # The schema initializer replays the full canonical schema as one
+    # large multi-statement script (single durable-shape authority,
+    # #94691). Simulate the DDL failure on that path so the
+    # connect-close-on-init-failure contract stays pinned.
+    if len(script) > 1000:
+        raise sqlite3.OperationalError("simulated schema init failure")
+    return self._real.executescript(script)
+
+
 def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
     """A PRAGMA/DDL failure after connect() must still close the connection."""
     _point_ledger(monkeypatch, tmp_path)
@@ -97,6 +107,8 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
         return _FailingSchemaConnection(conn, closed)
 
     monkeypatch.setattr(ad.sqlite3, "connect", tracking_connect)
+
+    _FailingSchemaConnection.executescript = _fail_large_schema_replay
 
     with pytest.raises(sqlite3.OperationalError):
         with ad._transaction():

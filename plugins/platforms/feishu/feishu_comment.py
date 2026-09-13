@@ -6,6 +6,7 @@ add_whole_comment; local -> reply_to_comment, falling back to add_whole_comment 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -607,7 +608,12 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     logger.info("[Feishu-Comment] [Step 4/5] Prompt built (%d chars), running agent...", len(prompt))
     logger.debug("[Feishu-Comment] Full prompt:\n%s", prompt)
     # run_conversation is synchronous -> thread. Session key groups all comment cards on one doc.
-    response = await asyncio.get_running_loop().run_in_executor(None, _run_comment_agent, prompt, client, _session_key(file_type, file_token))
+    # This turn bypasses the gateway's per-profile message handler, so the only scope it has is the
+    # one on this coroutine (the adapter's profile under multiplex). A bare executor thread starts
+    # with an EMPTY context: model/credential resolution and the AIAgent would then run under the
+    # LAUNCH profile (UnscopedSecretError, or the default profile's config/model/state). Carry it.
+    response = await asyncio.get_running_loop().run_in_executor(
+        None, contextvars.copy_context().run, _run_comment_agent, prompt, client, _session_key(file_type, file_token))
     if not response or _NO_REPLY_SENTINEL in response:
         logger.info("[Feishu-Comment] Agent returned NO_REPLY, skipping delivery")
     else:

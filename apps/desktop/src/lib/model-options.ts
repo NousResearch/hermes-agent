@@ -1,96 +1,28 @@
 import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
 import type { ModelOptionProvider } from '@/types/hermes'
 
-/**
- * True only when a persisted **manual** composer pick has been removed from the
- * catalog (its provider still ships models, but no longer this one) — so a new
- * chat would keep 404'ing the dead model. Deliberately conservative to never
- * clobber a still-valid pick: an unknown/absent provider, an empty model list
- * (re-auth / unconfigured), or a not-yet-loaded catalog all return false.
- */
-export function manualPickRemoved(
-  providers: ModelOptionProvider[] | undefined,
-  provider: string,
-  model: string
-): boolean {
-  if (!providers?.length || !provider || !model) {
+type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
+
+/** True when `currentProvider` is this catalog row — slug, display name, or
+ *  a custom-provider alias (`custom:<key>` vs the bare config key, #87035). */
+export function catalogProviderMatches(provider: CatalogProviderIdentity, currentProvider: string): boolean {
+  if (!currentProvider) {
     return false
   }
 
-  const row = providers.find(p => p.slug === provider || p.name === provider)
-
-  if (!row) {
-    return false
-  }
-
-  const models = row.models ?? []
-
-  // Empty list means the provider is present but unconfigured / awaiting
-  // re-auth, not that the model was dropped — leave the pick alone.
-  if (models.length === 0) {
-    return false
-  }
-
-  return !models.includes(model)
+  return (
+    provider.slug === currentProvider ||
+    provider.name === currentProvider ||
+    (provider.aliases?.includes(currentProvider) ?? false)
+  )
 }
 
-const MOA_PROVIDER_SLUG = 'moa'
-
-/** True when `model` appears in any provider's live list. Used after Refresh
- *  Models so a group/catalog swap can tell "still offered" from "gone". */
-export function selectionInCatalog(providers: ModelOptionProvider[] | undefined, model: string): boolean {
-  if (!providers?.length || !model) {
-    return false
-  }
-
-  return providers.some(provider => (provider.models ?? []).includes(model))
-}
-
-/** First real (non-MoA) catalog row that still has models. */
-export function firstSelectableCatalogModel(
-  providers: ModelOptionProvider[] | undefined
-): { model: string; provider: string } | null {
-  if (!providers?.length) {
-    return null
-  }
-
-  for (const provider of providers) {
-    if (provider.slug === MOA_PROVIDER_SLUG) {
-      continue
-    }
-
-    const model = provider.models?.[0]
-
-    if (model) {
-      return { model, provider: provider.slug }
-    }
-  }
-
-  return null
-}
-
-/**
- * After Refresh Models replaces the catalog: keep the current pick when it is
- * still listed; otherwise switch to the first available model in the new
- * catalog. Returns null when the catalog is empty/unloaded so we never wipe
- * a selection on a failed or still-hydrating refresh.
- */
-export function reconcileSelectionAfterCatalogRefresh(
-  currentModel: string,
-  providers: ModelOptionProvider[] | undefined
-): { model: string; provider: string } | null {
-  const next = firstSelectableCatalogModel(providers)
-
-  if (!next) {
-    return null
-  }
-
-  if (selectionInCatalog(providers, currentModel)) {
-    return null
-  }
-
-  return next
-}
+// A picked (provider, model) pair is never retargeted from catalog membership.
+// Picker rows are hints (discovered / curated / capped lists); a custom endpoint
+// or a newer release legitimately serves ids the row lacks, and the backend
+// soft-accepts them. Diffing the pick against the catalog silently swapped
+// `deepseek-v4.1-flash` for the row's `-0731` sibling. The only authority on a
+// pick's validity is the gateway's switch result.
 
 interface ModelOptionsRequest {
   /** When false, include ambient/unconfigured providers (onboarding/setup

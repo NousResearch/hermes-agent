@@ -272,8 +272,9 @@ def settle_unrecovered_error(
     # ``FailoverReason.billing`` (402) is deliberately NOT excluded: pool rotation and
     # eager fallback already gave up, so retrying only burns paid requests on a depleted
     # balance. Mirrors 401/403.
+    is_local_validation_error = _is_local_validation_error(api_error)
     is_client_error = (
-        _is_local_validation_error(api_error)
+        is_local_validation_error
         or (
             not classified.retryable
             and not classified.should_compress
@@ -282,6 +283,10 @@ def settle_unrecovered_error(
     ) and not is_context_length_error
 
     if is_client_error:
+        # A Codex ChatGPT-account entitlement 400 names the model: with nothing to rotate the
+        # slug is dead for this account, so record it before the fallback walk runs (#106475).
+        from agent.fallback_cooldown import _mark_entitlement_rejected_model
+        _mark_entitlement_rejected_model(agent, api_error)
         # Copilot self-heal BEFORE fallback: a stale credential yields a 400
         # ``model_not_available_for_integrator`` / ``model_not_supported``, not a 401.
         # Fresh token + client rebuild, one retry, SAME provider.
@@ -300,17 +305,23 @@ def settle_unrecovered_error(
                 )
                 retry_count = 0
                 return _verdict("continue")
-        # Announce the fallback only when a chain exists, else "trying fallback..." lies
-        # before a silent abort.
-        if agent._has_pending_fallback():
-            _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-            agent._buffer_status(f"⚠️ {_label} — trying fallback...")
-        if agent._try_activate_fallback():
-            # Direct ``return _verdict("break")`` is load-bearing: the restart handler
-            # re-runs the pre-API preflight against the fallback's context window.
-            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-            retry_count = compression_attempts = 0
-            return _verdict("break")
+        # ``should_fallback=False`` marks a deterministic failure no other provider can fix (the
+        # model's own malformed tool-call JSON, #12770; MoA preset/adapter faults, #55933): skip
+        # the cascade. An UNCLASSIFIED local ValueError/TypeError keeps its historical fallback;
+        # a recognised verdict that opts out wins even when the exception is a ValueError subclass.
+        _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
+        if classified.should_fallback or _unclassified_local:
+            # Announce the fallback only when a chain exists, else "trying fallback..." lies
+            # before a silent abort.
+            if agent._has_pending_fallback():
+                _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
+                agent._buffer_status(f"⚠️ {_label} — trying fallback...")
+            if agent._try_activate_fallback():
+                # Direct ``return _verdict("break")`` is load-bearing: the restart handler
+                # re-runs the pre-API preflight against the fallback's context window.
+                active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+                retry_count = compression_attempts = 0
+                return _verdict("break")
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,

@@ -210,6 +210,33 @@ describe('session resolution', () => {
 
     expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
   })
+
+  it('stores a durable key returned by a title resume after a legacy sentinel', async () => {
+    const room = await loadRoom()
+    const member: GroupMember = { name: 'helper', title: '' }
+
+    const first = await room.turns.ensureGroupChatSession('TitleResume', member)
+    room.chat.updateGroupChat('TitleResume', current => {
+      current.sessions = { helper: true }
+
+      return current
+    })
+    room.gateway.rpc.length = 0
+
+    const recovered = await room.turns.ensureGroupChatSession('TitleResume', member)
+    const stored = room.chat.$groupChats.get().TitleResume.sessions?.helper
+
+    expect(stored).toBe(first.stored)
+    expect(recovered.stored).toBe(first.stored)
+    expect(room.gateway.rpcFor('session.resume').map(call => call.params.session_id)).toEqual([
+      'Group: TitleResume'
+    ])
+
+    room.gateway.rpc.length = 0
+    await room.turns.ensureGroupChatSession('TitleResume', member)
+
+    expect(room.gateway.rpcFor('session.resume')[0].params.session_id).toBe(stored)
+  })
 })
 
 describe('session-gone classification', () => {

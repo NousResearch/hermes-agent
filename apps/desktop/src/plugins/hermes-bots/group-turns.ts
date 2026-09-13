@@ -112,8 +112,8 @@ interface GroupSessionSnapshot {
 interface GroupMemberSessionHandle {
   /** Live runtime id every RPC in this turn targets. */
   runtime: null | string
-  /** Durable id persisted in `room.sessions`; `true` is the legacy sentinel. */
-  stored?: null | string | true
+  /** Durable id persisted in `room.sessions`; legacy sentinels are normalised away. */
+  stored?: null | string
 }
 
 function durableGroupSessionId(value: null | string | true | undefined): null | string {
@@ -387,11 +387,9 @@ async function retainGroupTurnRoute(member: GroupMember): Promise<() => void> {
 async function submitGroupTurnPrompt(
   member: GroupMember,
   runtime: string,
-  stored: null | string | true | undefined,
+  stored: null | string | undefined,
   text: string
 ): Promise<string> {
-  const durableStored = durableGroupSessionId(stored)
-
   try {
     await requestForBot(member, 'prompt.submit', {
       session_id: runtime,
@@ -400,12 +398,12 @@ async function submitGroupTurnPrompt(
 
     return runtime
   } catch (error: any) {
-    if (!isSessionGoneError(error) || !durableStored) {
+    if (!isSessionGoneError(error) || !stored) {
       throw error
     }
 
     const res = (await requestForBot(member, 'session.resume', {
-      session_id: durableStored,
+      session_id: stored,
       profile: member.name,
       omit_messages: true
     })) as GroupSessionSnapshot

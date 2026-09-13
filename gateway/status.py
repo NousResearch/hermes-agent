@@ -1091,6 +1091,23 @@ def get_runtime_status_running_pid(
     return pid
 
 
+def live_gateway_pid_for_home(home: Path) -> Optional[int]:
+    """Verified PID of the gateway owned by ``home`` (pid file + runtime lock first, then the runtime
+    status record), or None. Every reader of another home's gateway identity goes through this so
+    they all prove the same thing: the PID passes the start-time reuse guard, its live command line is
+    a gateway's belonging to ``home``, and the record is not ``stopped``. Bare PID existence is not
+    identity -- a stale record whose PID was recycled by an unrelated process lent it ``served_profiles``
+    and put phantom gateways into the update inventory (#109680) -- while a launch-service gateway whose
+    ``gateway.pid`` was unlinked is still live (#110166). Never unlinks ``home``'s identity files."""
+    home = Path(home)
+    # Cached: dashboard surfaces poll this for every served profile; the cache invalidates on any
+    # pid/lock file change, so a stopped or replaced gateway is seen at once.
+    pid = get_running_pid_cached(home / "gateway.pid", cleanup_stale=False)
+    if pid is not None:
+        return pid
+    return get_runtime_status_running_pid(read_runtime_status(home / "gateway_state.json"), expected_home=home)
+
+
 def remove_pid_file() -> None:
     """Remove the PID file only if it belongs to this process: during --replace the old process's
     atexit can fire AFTER the new process wrote its own record."""

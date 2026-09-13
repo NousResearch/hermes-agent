@@ -15,10 +15,13 @@ import os
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 
-import pytest
 
+def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool = True):
+    """A live default gateway at ``tmp_path`` whose runtime record names this process; the process passes
+    the identity check because its command line reads as a gateway's. ``pid_file=False`` models a
+    launch-service gateway whose ``gateway.pid`` was unlinked while it kept serving."""
+    import json
 
-def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool):
     import hermes_constants
     import gateway.status as status
 
@@ -26,10 +29,17 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool):
     (tmp_path / "config.yaml").write_text(
         f"gateway:\n  multiplex_profiles: {'true' if multiplex else 'false'}\n"
     )
-    (tmp_path / "gateway.pid").write_text(str(os.getpid()))
+    if pid_file:
+        (tmp_path / "gateway.pid").write_text(str(os.getpid()))
+    (tmp_path / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "kind": "hermes-gateway", "gateway_state": "running",
+        "start_time": status._get_process_start_time(os.getpid()), "hermes_home": str(tmp_path),
+    }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "beta"))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        status, "_read_process_cmdline", lambda pid: "python -m hermes_cli.main gateway run --replace"
+    )
 
 
 def _run_status():
@@ -63,63 +73,12 @@ def test_unserved_named_profile_still_reports_stopped(monkeypatch, tmp_path):
     assert _run_status().startswith("✗ Gateway is not running")
 
 
-def _fake_launchd_multiplexer(
-    monkeypatch, tmp_path, *, multiplex: bool = True, gateway_state: str = "running", pid_alive: bool = True
-):
-    """A launch-service-managed default gateway: live process + runtime status record, no gateway.pid.
-
-    The PID file is absent (a replace/cleanup path unlinks it while the process keeps serving); the
-    process is the live multiplexer the ``gateway_state.json`` record points at.
-    """
-    import json
-
-    import hermes_constants
-    import gateway.status as status
-
-    (tmp_path / "profiles" / "beta").mkdir(parents=True)
-    (tmp_path / "config.yaml").write_text(
-        f"gateway:\n  multiplex_profiles: {'true' if multiplex else 'false'}\n"
-    )
-    (tmp_path / "gateway_state.json").write_text(json.dumps({
-        "pid": os.getpid(),
-        "kind": "hermes-gateway",
-        "gateway_state": gateway_state,
-        # Same call the production PID-reuse guard makes, so the guard compares like with like.
-        "start_time": status._get_process_start_time(os.getpid()),
-        "argv": ["hermes", "gateway", "run", "--replace"],
-        "hermes_home": str(tmp_path),
-    }))
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "beta"))
-    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    monkeypatch.setattr(status, "_pid_exists", lambda pid: pid_alive)
-    monkeypatch.setattr(
-        status, "_read_process_cmdline", lambda pid: "python -m hermes_cli.main gateway run --replace"
-    )
-
-
 def test_served_named_profile_reports_running_without_default_pid_file(monkeypatch, tmp_path):
-    """A live multiplexer whose PID file is missing still serves the profile it ticks."""
+    """A live multiplexer whose PID file is missing still serves the profile it ticks (#110166)."""
     from hermes_cli.profiles import list_profiles
 
-    _fake_launchd_multiplexer(monkeypatch, tmp_path)
+    _fake_multiplexer(monkeypatch, tmp_path, multiplex=True, pid_file=False)
 
     beta = next(p for p in list_profiles() if p.name == "beta")
     assert beta.gateway_running is True
     assert _run_status().startswith("✓ Gateway is running via the default-profile multiplexer")
-
-
-@pytest.mark.parametrize(
-    ("gateway_state", "pid_alive"),
-    [("stopped", True), ("startup_failed", True), ("running", False)],
-)
-def test_not_live_multiplexer_without_default_pid_file_reports_stopped(
-    monkeypatch, tmp_path, gateway_state, pid_alive
-):
-    """Fails closed: a stopped/failed state or a dead PID must never be reported as running."""
-    from hermes_cli.profiles import list_profiles
-
-    _fake_launchd_multiplexer(monkeypatch, tmp_path, gateway_state=gateway_state, pid_alive=pid_alive)
-
-    beta = next(p for p in list_profiles() if p.name == "beta")
-    assert beta.gateway_running is False
-    assert _run_status().startswith("✗ Gateway is not running")

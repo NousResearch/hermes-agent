@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from tools.registry import TOOL_CAPABILITIES, UNKNOWN_CAPABILITY, ToolRegistry
+import tools.file_tools  # noqa: F401  (triggers production registrations)
+from tools.registry import TOOL_CAPABILITIES, UNKNOWN_CAPABILITY, ToolRegistry, registry
 
 
 def _dummy_handler(args, **kwargs):
@@ -99,3 +100,17 @@ def test_override_and_restore_retain_each_entries_capabilities(reg):
     restored = reg.get_entry("cap_tool")
     assert restored is first
     assert restored.capabilities == ("read", "mutate")
+
+
+def test_core_file_tools_declare_exact_capabilities():
+    """The four core file tools classify read/mutate exactly as declared."""
+    expected = {
+        "read_file": ("read",),
+        "search_files": ("read",),
+        "write_file": ("mutate",),
+        "patch": ("mutate",),
+    }
+    for name, caps in expected.items():
+        entry = registry.get_entry(name)
+        assert entry is not None
+        assert entry.capabilities == caps

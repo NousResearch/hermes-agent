@@ -1847,6 +1847,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     _cb_record_failure(
         getattr(agent, "provider", ""),
         str(getattr(agent, "base_url", "") or ""),
+        reason=reason,
     )
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):

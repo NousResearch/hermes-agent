@@ -64,9 +64,22 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
+
+try:  # POSIX advisory lock for the cross-process state merge (vault_store pattern).
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:  # Windows fallback for the same lock.
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -196,8 +209,35 @@ def _reset_settings_cache_for_tests() -> None:
 
 # ── identity ────────────────────────────────────────────────────────────────
 
+_USERINFO_RE = re.compile(r"//[^/@\s]*@")
+
+
 def normalize_base_url(value: Any) -> str:
-    return value.strip().rstrip("/").lower() if isinstance(value, str) else ""
+    """Canonical identity for an endpoint, with any URL userinfo stripped.
+
+    The identity is persisted (as the JSON key *and* the ``base_url`` field) in
+    the breaker state file, so a credential embedded in a configured base_url —
+    ``https://user:supersecret@example.com/v1`` — must never survive this
+    function, or the supposedly secret-free state file leaks it.
+    """
+    if not isinstance(value, str):
+        return ""
+    raw = value.strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+    except ValueError:  # pragma: no cover - malformed URLs
+        return _USERINFO_RE.sub("//", raw).rstrip("/").lower()
+    if parts.scheme and parts.netloc:
+        # Rebuild without username/password: hostname + port only.
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return urlunsplit(parts._replace(netloc=host)).rstrip("/").lower()
+    # No authority to parse (bare host / path / placeholder): still drop anything
+    # shaped like ``//user:pass@`` before canonicalising.
+    return _USERINFO_RE.sub("//", raw).rstrip("/").lower()
 
 
 def _backend_key(provider: str, base_url: str = "") -> Tuple[str, str]:
@@ -236,49 +276,146 @@ def _load_state_locked() -> None:
         return
     _backends.clear()
     _loaded_from = path
+    _backends.update(_read_state_file(path))
+
+
+@contextmanager
+def _state_lock(path: str):
+    """Best-effort *cross-process* lock on a sibling ``.lock`` file.
+
+    Several CLI/gateway processes can share one profile; without this, a
+    read-modify-replace of the state file loses the other process's counters.
+    Mirrors the flock/msvcrt pattern already used by ``agent/vault_store.py``.
+    """
+    lock_path = f"{path}.lock"
+    handle = None
+    try:
+        directory = os.path.dirname(lock_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        handle = open(lock_path, "a+", encoding="utf-8")
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        elif msvcrt is not None:  # pragma: no cover - Windows
+            handle.seek(0)
+            handle.write(" ")
+            handle.flush()
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    except Exception as exc:  # pragma: no cover - lock is best-effort
+        logger.debug("circuit breaker: state lock unavailable: %s", exc)
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                elif msvcrt is not None:  # pragma: no cover - Windows
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:  # pragma: no cover
+                pass
+            try:
+                handle.close()
+            except Exception:  # pragma: no cover
+                pass
+
+
+def _read_state_file(path: str) -> Dict[str, Any]:
+    """Parse the state file into ``{skey: entry}``. Never raises."""
     if not os.path.exists(path):
-        return
+        return {}
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
         raw_backends = data.get("backends") if isinstance(data, dict) else None
         if not isinstance(raw_backends, dict):
-            return
+            return {}
+        out: Dict[str, Any] = {}
         for key, entry in raw_backends.items():
             if not isinstance(entry, dict):
                 continue
             failures = entry.get("failures")
             if not isinstance(failures, list):
                 failures = []
-            _backends[str(key)] = {
+            out[str(key)] = {
                 "provider": str(entry.get("provider") or ""),
                 "base_url": str(entry.get("base_url") or ""),
                 "failures": [float(t) for t in failures if isinstance(t, (int, float))],
                 "quiesced_until": float(entry.get("quiesced_until") or 0.0),
+                "reset_at": float(entry.get("reset_at") or 0.0),
                 "total_failures": int(entry.get("total_failures") or 0),
                 "total_successes": int(entry.get("total_successes") or 0),
             }
+        return out
     except Exception as exc:
         logger.warning("circuit breaker: failed to load state from %s: %s", path, exc)
-        _backends.clear()
+        return {}
+
+
+def _merge_entry(old: Optional[Dict[str, Any]], new: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two views of one backend without resurrecting a cleared window.
+
+    ``record_success`` (and a lazily expired cooldown) *clears* the window and
+    stamps ``reset_at``; failures at or before that stamp are dropped, so a
+    deliberate clear wins over a stale on-disk copy, while genuinely newer
+    failures written by another process are still unioned in.
+    """
+    if not old:
+        return dict(new)
+    if not new:
+        return dict(old)
+    old_reset = float(old.get("reset_at") or 0.0)
+    new_reset = float(new.get("reset_at") or 0.0)
+    base, other = (new, old) if new_reset >= old_reset else (old, new)
+    reset_at = max(old_reset, new_reset)
+    failures = {
+        float(t)
+        for t in (list(base.get("failures") or []) + list(other.get("failures") or []))
+        if float(t) > reset_at
+    }
+    # The side with the later reset owns the quiesce; equal stamps (the common
+    # case) take the longer cooldown so neither process loses a trip.
+    quiesced = float(base.get("quiesced_until") or 0.0)
+    if old_reset == new_reset:
+        quiesced = max(quiesced, float(other.get("quiesced_until") or 0.0))
+    return {
+        "provider": base.get("provider") or other.get("provider") or "",
+        "base_url": base.get("base_url") or other.get("base_url") or "",
+        "failures": sorted(failures),
+        "quiesced_until": quiesced,
+        "reset_at": reset_at,
+        "total_failures": max(int(base.get("total_failures") or 0), int(other.get("total_failures") or 0)),
+        "total_successes": max(int(base.get("total_successes") or 0), int(other.get("total_successes") or 0)),
+    }
 
 
 def _save_state_locked() -> None:
-    """Persist ``_backends`` atomically. Caller holds ``_lock``."""
+    """Persist ``_backends`` under a cross-process lock, merging foreign counters.
+
+    Caller holds ``_lock`` (in-process); the sibling lock file serialises the
+    read-merge-write against other processes sharing the profile, and
+    ``utils.atomic_json_write`` (mkstemp + fsync + replace) keeps the write
+    atomic without racing on a shared temp path.
+    """
     path = _state_path()
     try:
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        payload = {
-            "version": STATE_VERSION,
-            "updated_at": time.time(),
-            "backends": _backends,
-        }
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        os.replace(tmp, path)
+        with _state_lock(path):
+            merged = _read_state_file(path)
+            for key, entry in list(_backends.items()):
+                merged[key] = _merge_entry(merged.get(key), entry)
+            _backends.clear()
+            _backends.update(merged)
+            payload = {
+                "version": STATE_VERSION,
+                "updated_at": time.time(),
+                "backends": merged,
+            }
+            from utils import atomic_json_write
+
+            atomic_json_write(path, payload, mode=0o600)
     except Exception as exc:
         logger.warning("circuit breaker: failed to save state to %s: %s", path, exc)
 
@@ -299,14 +436,46 @@ def _clock_expiry(entry: Dict[str, Any], now: float) -> None:
     if entry.get("quiesced_until") and now >= float(entry["quiesced_until"]):
         entry["quiesced_until"] = 0.0
         entry["failures"] = []
+        # Stamp the clear so a cross-process merge cannot resurrect the window.
+        entry["reset_at"] = float(now)
 
 
-def record_failure(provider: str, base_url: str = "", *, now: Optional[float] = None) -> bool:
+# Only *backend-health* failures count against a provider endpoint. Model-,
+# request- and policy-specific failures are excluded on purpose: the breaker
+# identity is ``(provider, base_url)`` and does not include the model, so
+# counting (for example) a ``context_overflow`` would let five bad requests for
+# one model quiesce every model on that endpoint when it later appears as a
+# fallback.
+BACKEND_FAILURE_REASONS = frozenset({
+    "rate_limit",
+    "upstream_rate_limit",
+    "billing",
+    "overloaded",
+    "server_error",
+    "timeout",
+    "ssl_cert_verification",
+})
+
+
+def _reason_name(reason: Any) -> str:
+    if reason is None:
+        return ""
+    value = getattr(reason, "value", None)
+    return str(value if value is not None else reason).strip().lower()
+
+
+def record_failure(provider: str, base_url: str = "", *, reason: Any = None,
+                   now: Optional[float] = None) -> bool:
     """Record one failure for a backend.
+
+    ``reason`` (a ``FailoverReason`` or its string value) keeps model/request/
+    policy failures out of the rolling window; pass ``None`` to count
+    unconditionally.
 
     Returns True when this failure *tripped* the breaker (the backend is now
     quiesced). Returns False when the breaker is disabled, the provider is empty,
-    or the threshold has not been reached.
+    the failure is not a backend-health class, or the threshold has not been
+    reached.
 
     Failure timestamps are pruned to the rolling window first, so the count is
     always "failures within the last ``window_seconds``", not a lifetime total.
@@ -316,6 +485,12 @@ def record_failure(provider: str, base_url: str = "", *, now: Optional[float] = 
         return False
     key = _backend_key(provider, base_url)
     if not key[0]:
+        return False
+    if reason is not None and _reason_name(reason) not in BACKEND_FAILURE_REASONS:
+        logger.debug(
+            "circuit breaker: not counting %s for %s (not a backend-health failure)",
+            _reason_name(reason), key[0],
+        )
         return False
     now = time.time() if now is None else now
     window = float(settings["window_seconds"])
@@ -330,6 +505,7 @@ def record_failure(provider: str, base_url: str = "", *, now: Optional[float] = 
                 "base_url": key[1],
                 "failures": [],
                 "quiesced_until": 0.0,
+                "reset_at": 0.0,
                 "total_failures": 0,
                 "total_successes": 0,
             }
@@ -375,6 +551,9 @@ def record_success(provider: str, base_url: str = "") -> None:
         was_quiesced = bool(entry.get("quiesced_until"))
         entry["failures"] = []
         entry["quiesced_until"] = 0.0
+        # Stamp the clear: a cross-process merge drops failures at/before this
+        # instant instead of resurrecting the window we just cleared.
+        entry["reset_at"] = time.time()
         entry["total_successes"] = int(entry.get("total_successes") or 0) + 1
         _probe_inflight.discard(skey)
         if was_quiesced:

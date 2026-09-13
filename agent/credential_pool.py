@@ -2185,18 +2185,20 @@ class CredentialPool(CredentialPoolAdminMixin):
         every credential is at the soft cap, still return the least-leased
         one instead of blocking.
         """
-        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
+        # Advance the probe gate on the first attempt only: the retry below is a
+        # continuation of the same admission, not a second request.
+        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id, advance_probe=True)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Mirror select(): a pool whose entries all needed a deferred
             # refresh must retry once they are back in rotation, or the caller
             # sees "no credentials available" after a successful refresh.
             if chosen_id is None:
-                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
+                chosen_id, _ = self._acquire_lease_under_lock(credential_id, advance_probe=False)
         return chosen_id
 
     def _acquire_lease_under_lock(
-        self, credential_id: Optional[str],
+        self, credential_id: Optional[str], *, advance_probe: bool = False,
     ) -> Tuple[Optional[str], List[PooledCredential]]:
         with self._lock:
             if credential_id:
@@ -2204,7 +2206,13 @@ class CredentialPool(CredentialPoolAdminMixin):
                 self._current_id = credential_id
                 return credential_id, []
 
-            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
+            # A lease is a real admission, so it must advance the opt-in lenient
+            # probe gate exactly like select() does; advisory callers
+            # (has_available / next_available_at) and forced-refresh lookups
+            # never advance it, so they cannot consume the gate.
+            available, pending_refresh = self._available_entries(
+                clear_expired=True, refresh=True, advance_probe=advance_probe
+            )
             if not available:
                 return None, pending_refresh
 

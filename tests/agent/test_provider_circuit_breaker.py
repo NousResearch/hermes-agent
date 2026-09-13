@@ -233,7 +233,7 @@ class TestPersistence:
         entry = next(iter(payload["backends"].values()))
         assert set(entry) == {
             "provider", "base_url", "failures", "quiesced_until",
-            "total_failures", "total_successes",
+            "reset_at", "total_failures", "total_successes",
         }
 
 
@@ -392,3 +392,63 @@ class TestAutoProbe:
         # A fresh cooldown can still probe (slot not leaked).
         cb.record_failure("openrouter", "", now=now + 200)  # quiesced until now+300
         assert cb.is_quiesced("openrouter", "", now=now + 261) is False
+
+
+class TestReviewFollowUps:
+    """Regressions for the #109401 review (userinfo leak / failure attribution /
+    cross-process counters)."""
+
+    def test_normalize_base_url_strips_userinfo(self):
+        assert cb.normalize_base_url("https://user:supersecret@example.com/v1") == "https://example.com/v1"
+        # Case/trailing-slash canonicalisation still applies.
+        assert cb.normalize_base_url("HTTPS://Example.COM/v1/") == "https://example.com/v1"
+        # Port is kept, credentials are not.
+        assert cb.normalize_base_url("https://user:pw@example.com:8443/v1") == "https://example.com:8443/v1"
+
+    def test_state_file_never_persists_url_userinfo(self, tmp_path):
+        """The state file must not leak a credential embedded in a base_url."""
+        _write_config(tmp_path, {"fallback_circuit_breaker": {"enabled": True, "fail_threshold": 1}})
+        cb.record_failure("openrouter", "https://user:supersecret@example.com/v1")
+        text = (tmp_path / "state" / "fallback_circuit_breaker.json").read_text(encoding="utf-8")
+        assert "supersecret" not in text
+        assert "user:" not in text
+        assert "example.com/v1" in text  # the endpoint itself is still tracked
+
+    def test_model_and_policy_failures_do_not_trip(self, tmp_path):
+        """Model/request/policy failures must not quiesce a whole endpoint."""
+        from agent.error_classifier import FailoverReason
+
+        _write_config(tmp_path, {"fallback_circuit_breaker": {
+            "enabled": True, "fail_threshold": 1, "cooldown_seconds": 60}})
+        now = 20000.0
+        for reason in (
+            FailoverReason.context_overflow,
+            FailoverReason.payload_too_large,
+            FailoverReason.model_not_found,
+            FailoverReason.format_error,
+            FailoverReason.content_policy_blocked,
+        ):
+            assert cb.record_failure("openrouter", "", reason=reason, now=now) is False
+            assert cb.is_quiesced("openrouter", "", now=now) is False
+        # A backend-health reason still counts (threshold 1 -> trips).
+        assert cb.record_failure("openrouter", "", reason=FailoverReason.timeout, now=now) is True
+
+    def test_backend_failure_reason_accepts_plain_string(self, tmp_path):
+        _write_config(tmp_path, {"fallback_circuit_breaker": {
+            "enabled": True, "fail_threshold": 1, "cooldown_seconds": 60}})
+        assert cb.record_failure("openrouter", "", reason="rate_limit", now=1.0) is True
+
+    def test_save_merges_counters_written_by_another_process(self, tmp_path):
+        """A second process's counters must survive our read-modify-write."""
+        _write_config(tmp_path, {"fallback_circuit_breaker": {
+            "enabled": True, "window_seconds": 3600, "fail_threshold": 99, "cooldown_seconds": 60}})
+        now = 30000.0
+        cb.record_failure("openrouter", "", now=now)
+        state = tmp_path / "state" / "fallback_circuit_breaker.json"
+        data = json.loads(state.read_text(encoding="utf-8"))
+        entry = data["backends"]["openrouter|"]
+        entry["failures"].append(now + 1)  # another process recorded one
+        state.write_text(json.dumps(data), encoding="utf-8")
+        cb.record_failure("openrouter", "", now=now + 2)
+        merged = json.loads(state.read_text(encoding="utf-8"))["backends"]["openrouter|"]
+        assert len(merged["failures"]) == 3  # now, now+1 (foreign), now+2

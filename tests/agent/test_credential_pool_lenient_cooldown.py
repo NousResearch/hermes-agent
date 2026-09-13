@@ -259,3 +259,50 @@ class TestProbeGate:
             "probe_seen": 0, "probe_requests": 5,
         }
         assert _lenient_holds_probe(entry, advance=True, now=time.time()) is False
+
+
+class TestLeaseProbeGate:
+    """Regression (#109401 review): a lease is a real admission, so it must
+    advance the opt-in probe gate exactly like select() does."""
+
+    def test_acquire_lease_advances_the_probe_gate(self, tmp_path, monkeypatch):
+        _write_cooldown_config(tmp_path, monkeypatch, {
+            "mode": "lenient",
+            "billing": {"window_seconds": 3600, "fail_threshold": 1,
+                        "park_seconds": 30, "base_cooldown_seconds": 300,
+                        "backoff_multipliers": [3.0],
+                        "probe_requests": 2},
+        })
+        # Single-key pool: exactly the reviewer's repro (the benched key is the only
+        # one that could serve).
+        pool = _load(tmp_path, monkeypatch, [_entry("cred-1")])
+        # The auth-store shape these tests use does not hydrate a runtime key;
+        # without one the availability guard skips the entry *before* the probe
+        # gate is ever consulted, which would mask the regression.
+        entry = pool._adopt(pool.entries()[0], access_token="key-1")
+        pool._mark_exhausted(entry, 402, failure_reason="billing")
+        assert pc._read_state(pool.entries()[0].extra)["probe_seen"] == 0
+
+        # Jump past the bench (900s) so only the *selection* gate holds the key;
+        # the upstream time gate rides last_error_reset_at.
+        class _Clock:
+            def __init__(self, fixed):
+                self._fixed = fixed
+
+            def time(self):
+                return self._fixed
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        from agent import credential_pool as cp
+
+        monkeypatch.setattr(cp, "time", _Clock(time.time() + 3 * 24 * 3600))
+
+        # 1st selection: still held by the gate, but the counter advances (this is
+        # exactly what never happened before the fix — the key stayed dark).
+        assert pool.acquire_lease() is None
+        assert pc._read_state(pool.entries()[0].extra)["probe_seen"] == 1
+        # 2nd selection reaches probe_requests -> the key is leaseable again.
+        assert pool.acquire_lease() == "cred-1"
+        assert pc._read_state(pool.entries()[0].extra)["probe_seen"] == 2

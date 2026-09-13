@@ -69,6 +69,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "cron.model / model.default from config.yaml.")
     cron_create.add_argument("--provider", dest="model_provider",
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').")
+    cron_create.add_argument("--max-turns", type=int, help="Maximum model calls for each run of this job.")
+    cron_create.add_argument("--runtime-policy", help="Require an authoritative runtime policy for this job.")
     cron_create.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
@@ -132,6 +134,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "clear the pin and follow cron.model / model.default.")
     cron_edit.add_argument("--provider", dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.")
+    cron_edit.add_argument("--max-turns", type=int, help="Maximum model calls for each run of this job.")
+    cron_edit.add_argument("--runtime-policy", help="Require an authoritative runtime policy for this job.")
     cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "

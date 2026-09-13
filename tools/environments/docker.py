@@ -542,7 +542,7 @@ class DockerEnvironment(BaseEnvironment):
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
         volume_args.extend(_readonly_skill_mount_args())
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
-            self._egress_and_env_args(extra_args))
+            self._egress_and_env_args(extra_args, network=network))
         volume_args.extend(egress_volume_args)
         user_args = _host_user_args(run_as_host_user)
 
@@ -601,14 +601,17 @@ class DockerEnvironment(BaseEnvironment):
         self.init_session()
 
     # --- __init__ helpers ---
-    def _egress_and_env_args(self, extra_args) -> tuple[str, list[str], list[str], list[str], list[str]]:
+    def _egress_and_env_args(self, extra_args, *, network=True) -> tuple[str, list[str], list[str], list[str], list[str]]:
         """Egress credential-injection proxy plumbing (CA mount + HTTPS_PROXY/CA-bundle env so
         outbound traffic routes through the host-side proxy and the sandbox receives proxy tokens
         instead of real API keys), merged with docker_env into name-only ``-e`` args, plus the
         validated docker_extra_args. Returns ``(egress_label, volume_args, host_args, env_args,
         validated_extra)``; sets ``self._run_env_values`` (injected into the docker-client
         subprocess env at run time and reused verbatim by container-recreation recovery)."""
-        egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
+        if network:
+            egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
+        else:
+            egress_volume_args, egress_env_overrides, egress_host_args = [], {}, []
         egress_label = _egress_reuse_fingerprint(egress_volume_args, egress_env_overrides, egress_host_args)
         enforce_egress = _egress_enforce_on_docker() if egress_env_overrides else True
         critical_egress_names = _critical_egress_env_names(egress_env_overrides)

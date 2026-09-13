@@ -426,6 +426,12 @@ def delegate_task(
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
 
+    # ponytail: child leases need separate admission/budgets/settlement; refuse spawn until supported.
+    from agent.runtime_policy import is_authoritative
+    if is_authoritative(getattr(parent_agent, "runtime_policy", None)):
+        return tool_error("delegate_task cannot spawn under an authoritative runtime policy: "
+                          "a child agent would run without an authoritative run lease.")
+
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
         return tool_error(

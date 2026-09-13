@@ -711,6 +711,254 @@ class TestRunJobSessionPersistence:
             "memory toolset must not be policy-denied in cron"
         )
 
+    def test_run_job_enforces_per_job_turn_cap(self, tmp_path):
+        job = {
+            "id": "bounded-job",
+            "name": "bounded",
+            "prompt": "hello",
+            "max_turns": 12,
+        }
+        with self._run_job_patches(tmp_path) as (_, mock_agent_cls):
+            run_job(job)
+
+        agent = mock_agent_cls.return_value
+        assert mock_agent_cls.call_args.kwargs["max_iterations"] == 12
+        assert agent.strict_iteration_limit is True
+        assert agent.cron_max_turns == 12
+
+    @staticmethod
+    def _bound_receipt(**kwargs):
+        """What the authority finalizer returns: a receipt bound to run + final session."""
+        return [{"status": "finalized", "policy": kwargs["runtime_policy"],
+                 "run_id": kwargs["runtime_run_id"], "session_id": kwargs["session_id"]}]
+
+    def test_trusted_terminal_outcome_reaches_policy_finalizer(self, tmp_path):
+        from cron import executions
+
+        finalize = MagicMock(side_effect=self._bound_receipt)
+        with self._run_job_patches(
+            tmp_path,
+            extra=(
+                patch.object(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"),
+                patch("hermes_cli.lifecycle.finalize_session", finalize),
+            ),
+        ) as (fake_db, mock_agent_cls):
+            fake_db.get_compression_tip.return_value = None
+            execution_id = executions.create_execution("bounded", source="builtin")["id"]
+            outcome = {"reason": "max_items", "status": "success",
+                       "policy": "fleet-runtime", "run_id": f"cron:bounded:{execution_id}"}
+            mock_agent_cls.return_value.session_id = "cron_bounded"
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "completed": True, "failed": False, "final_response": None,
+                "turn_exit_reason": "runtime_stop(max_items)",
+                "trusted_terminal_outcome": outcome,
+            }
+            success, _output, final_response, error = run_job({
+                "id": "bounded", "name": "bounded", "prompt": "work",
+                "max_turns": 12, "runtime_policy": "fleet-runtime",
+                "execution_id": execution_id,
+            })
+
+        assert (success, final_response, error) == (True, "", None)
+        assert finalize.call_args.kwargs["terminal_outcome"] == outcome
+        assert finalize.call_args.kwargs["completed"] is True
+
+    @pytest.mark.parametrize("policy", [None, "observer", "fleet-runtime"])
+    def test_required_policy_finalizer_failure_fails_the_run(self, tmp_path, policy):
+        """A failed settlement fails the RUN; it must not make cleanup optional.
+
+        The settlement raise used to leave run_job's finally before the
+        ContextVar resets, the SessionDB title/end/close, and the agent
+        teardown — leaking the cron session state and the agent's
+        subprocess/sandbox/HTTP resources on exactly the runs an operator most
+        needs to trust.
+        """
+        from gateway.session_context import _VAR_MAP
+
+        _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("prior-platform")
+        cron_session_before = _VAR_MAP["HERMES_CRON_SESSION"].get()
+
+        with self._run_job_patches(
+            tmp_path,
+            extra=(patch("hermes_cli.lifecycle.finalize_session",
+                         side_effect=RuntimeError("no settlement receipt")),),
+        ) as (fake_db, mock_agent_cls):
+            job = {"id": "bounded", "name": "bounded", "prompt": "work", "runtime_policy": policy}
+            if policy == "fleet-runtime":
+                with pytest.raises(RuntimeError, match="no settlement receipt"):
+                    run_job(job)
+            else:
+                assert run_job(job)[0] is True
+
+            assert fake_db.end_session.called, "session store was not ended"
+            assert fake_db.close.called, "session store was not closed"
+            assert mock_agent_cls.return_value.close.called, (
+                "agent resources were not released"
+            )
+
+        assert _VAR_MAP["HERMES_CRON_SESSION"].get() == cron_session_before
+        assert _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].get() == ""
+
+    @pytest.mark.parametrize("status", ["success", "failure"])
+    def test_run_job_persists_trusted_settlement(self, tmp_path, status):
+        """The typed outcome becomes durable proof bound to fire + session.
+
+        Both directions are recorded verbatim: a trusted success stays success
+        and a trusted failure stays failure, so cron settlement and the runtime
+        policy can never disagree about the same fire.
+        """
+        from cron import executions
+        from cron.scheduler_settlement import trusted_terminal_status
+
+        with self._run_job_patches(
+            tmp_path,
+            extra=(
+                patch.object(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"),
+                patch("hermes_cli.lifecycle.finalize_session", side_effect=self._bound_receipt),
+            ),
+        ) as (fake_db, mock_agent_cls):
+            execution_id = executions.create_execution("bounded", source="builtin")["id"]
+            outcome = {"reason": "max_items", "status": status,
+                       "policy": "fleet-runtime", "run_id": f"cron:bounded:{execution_id}"}
+            # Compression rotated this run onto a continuation: the settlement
+            # must bind to the session the run actually ended on.
+            fake_db.get_compression_tip.return_value = "cron_bounded_child"
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": None,
+                "turn_exit_reason": "runtime_stop(max_items)",
+                "trusted_terminal_outcome": outcome,
+            }
+            job = {
+                "id": "bounded", "name": "bounded", "prompt": "work",
+                "runtime_policy": "fleet-runtime", "execution_id": execution_id,
+            }
+            run_job(job)
+
+            proof = executions.get_settlement_for_session("cron_bounded_child")
+            assert proof["execution_id"] == execution_id
+            assert proof["settlement"]["outcome"] == outcome
+            assert proof["settlement"]["settled"] is True
+            # Completion authority reads that durable row back, and only for the
+            # session the run actually ended on.
+            assert trusted_terminal_status(job, execution_id, "cron_bounded_child") == status
+            assert trusted_terminal_status(job, execution_id, "cron_bounded") is None
+
+    def _tick_one(self, job, fake_db, mark):
+        """Fire `job` through the real tick -> run_job -> completion path."""
+        from cron.scheduler import tick
+
+        fake_db.get_compression_tip.return_value = None
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.claim_job_for_fire", return_value=True), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.mark_job_run", mark):
+            tick(verbose=False)
+
+    def test_trusted_success_completes_the_real_fire(self, tmp_path):
+        """End-to-end: the producer's durable receipt is what completion reads back.
+
+        The whole chain is real — run_job settles through the ledger, and
+        _run_one_job_body classifies from that row — so a trusted stop with no
+        assistant payload reaches mark_job_run as a success.
+        """
+        from cron import executions
+
+        mark = MagicMock(return_value=True)
+        with self._run_job_patches(
+            tmp_path,
+            extra=(
+                patch.object(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db"),
+                patch("hermes_cli.lifecycle.finalize_session", side_effect=self._bound_receipt),
+            ),
+        ) as (fake_db, mock_agent_cls):
+            agent = mock_agent_cls.return_value
+            agent.session_id = "cron_trusted_final"
+            # The run id the runtime stamps into the directive is the fire's task id.
+            agent.run_conversation.side_effect = lambda *_a, **_kw: {
+                "completed": True, "failed": False, "final_response": None,
+                "turn_exit_reason": "runtime_stop(max_items)",
+                "trusted_terminal_outcome": {
+                    "reason": "max_items", "status": "success",
+                    "policy": "fleet-runtime", "run_id": agent.runtime_task_id,
+                },
+            }
+            self._tick_one({
+                "id": "trusted-job", "name": "trusted", "prompt": "work",
+                "schedule": "every 1h", "enabled": True, "deliver": "local",
+                "next_run_at": "2020-01-01T00:00:00", "last_status": None,
+                "runtime_policy": "fleet-runtime",
+            }, fake_db, mark)
+
+            proof = executions.get_settlement_for_session("cron_trusted_final")
+
+        assert proof is not None, "the fire recorded no durable settlement"
+        assert proof["settlement"]["outcome"]["status"] == "success"
+        mark.assert_called_once()
+        assert mark.call_args[0][:3] == ("trusted-job", True, None)
+
+    def test_untrusted_empty_response_fails_the_real_fire(self, tmp_path):
+        """The same path without a policy keeps main's empty-response soft failure."""
+        mark = MagicMock(return_value=True)
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.session_id = "cron_plain_final"
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "completed": True, "failed": False, "final_response": "",
+                "turn_exit_reason": "max_iterations_reached(12/12)",
+            }
+            self._tick_one({
+                "id": "plain-job", "name": "plain", "prompt": "work",
+                "schedule": "every 1h", "enabled": True, "deliver": "local",
+                "next_run_at": "2020-01-01T00:00:00", "last_status": None,
+            }, fake_db, mark)
+
+        mark.assert_called_once()
+        assert mark.call_args[0][0] == "plain-job"
+        assert mark.call_args[0][1] is False
+        assert "empty" in mark.call_args[0][2].lower()
+
+    def test_unprovable_trusted_success_fails_the_run(self, tmp_path):
+        """Trusted success with no durable settlement never passes as green."""
+        from cron import executions
+
+        with self._run_job_patches(
+            tmp_path,
+            extra=(
+                patch.object(
+                    executions, "record_execution_settlement", return_value=False,
+                ),
+                patch("hermes_cli.lifecycle.finalize_session", return_value=[]),
+            ),
+        ) as (fake_db, mock_agent_cls):
+            fake_db.get_compression_tip.return_value = None
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": None,
+                "turn_exit_reason": "runtime_stop(max_items)",
+                "trusted_terminal_outcome": {
+                    "reason": "max_items", "status": "success",
+                    "policy": "fleet-runtime",
+                },
+            }
+            with pytest.raises(RuntimeError, match="could not be settled durably"):
+                run_job({
+                    "id": "bounded", "name": "bounded", "prompt": "work",
+                    "runtime_policy": "fleet-runtime", "execution_id": "exec-1",
+                })
+
+    @pytest.mark.parametrize("bad_policy", [
+        {"id": "fleet-runtime"}, 123, "Fleet-Runtime", "not a policy id",
+    ])
+    def test_malformed_persisted_runtime_policy_fails_the_fire(self, tmp_path, bad_policy):
+        """A stored policy the normalizer rejects must not run as "no authority"."""
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            success, _output, _final, error = run_job({
+                "id": "bounded", "name": "bounded", "prompt": "work",
+                "runtime_policy": bad_policy,
+            })
+
+        assert success is False
+        assert "runtime_policy" in (error or "")
+        mock_agent_cls.assert_not_called()
+
     def test_run_job_keeps_per_job_memory_toolset(self, tmp_path):
         """A per-job enabled_toolsets naming memory keeps it."""
         job = {

@@ -552,6 +552,9 @@ _TURN_STATE: Dict[str, Any] = {
     "_iteration_budget_warning_injected": False,
     "_budget_exhausted_injected": False,
     "_budget_grace_call": False,
+    "_runtime_stop_reason": None,
+    "_runtime_terminal_outcome": None,
+    "runtime_policy": None,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
     # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and

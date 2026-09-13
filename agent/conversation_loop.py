@@ -29,6 +29,7 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.runtime_policy import is_authoritative
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
 )
@@ -760,14 +761,48 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # Persistence-disabled forks share their parent's session ID and are not real sessions.
     if not getattr(agent, "_persist_disabled", False):
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "on_session_start", session_id=agent.session_id, model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-        except Exception as exc:
-            logger.warning("on_session_start hook failed: %s", exc)
+        _start_payload = {
+            "model": agent.model,
+            "platform": getattr(agent, "platform", None) or "",
+            "cron_job_id": getattr(agent, "cron_job_id", None),
+            "cron_job_name": getattr(agent, "cron_job_name", None),
+            "cron_max_turns": getattr(agent, "cron_max_turns", None),
+        }
+        _runtime_policy = getattr(agent, "runtime_policy", None)
+        if is_authoritative(_runtime_policy):
+            from hermes_cli.plugins_authority import activate_authoritative_run
+
+            # Key the lease by the run's immutable fire identity, not by
+            # agent.session_id — compression rotates that id mid-run, and a lease
+            # keyed by it disappears at the rotation boundary. Falling back to the
+            # session id would silently restore that failure for any caller that
+            # sets a policy without a run id, so refuse the run instead.
+            _run_id = str(getattr(agent, "runtime_task_id", "") or "")
+            if not _run_id:
+                raise RuntimeError(
+                    "runtime policy requires an immutable run id: "
+                    "agent.runtime_task_id is unset"
+                )
+            _session_start_results = [activate_authoritative_run(
+                str(_runtime_policy),
+                _run_id,
+                str(agent.session_id or ""),
+                **_start_payload,
+            )]
+        else:
+            try:
+                from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+                _session_start_results = _invoke_hook(
+                    "on_session_start", session_id=agent.session_id, **_start_payload,
+                )
+            except Exception as exc:
+                logger.warning("on_session_start hook failed: %s", exc)
+                _session_start_results = []
+        for _decision in _session_start_results:
+            if isinstance(_decision, dict) and _decision.get("action") == "block":
+                raise RuntimeError(
+                    str(_decision.get("reason") or "Session blocked by runtime policy")
+                )
 
     # Cold-start credits seed (L3) fallback for the first-turn path; TUI/desktop seed at
     # session open, so this is idempotent (skips when _credits_state exists). Fail-open.
@@ -1449,6 +1484,8 @@ def _run_conversation_turn(
     # The gateway caches agents across turns; compression state is per-turn, or a stale
     # in-place boundary would make a later uncompressed result look compacted.
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False
+    agent._runtime_stop_reason = None
+    agent._runtime_terminal_outcome = None
     agent._last_compression_attempt_in_place = None
     begin_fast_mode_turn(agent, conversation_history)
 

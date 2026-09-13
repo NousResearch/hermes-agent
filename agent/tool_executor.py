@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.runtime_policy import is_authoritative
+
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -1533,7 +1535,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         import model_tools
 
         with model_tools.suppress_post_tool_call_hook():
-            return model_tools.handle_function_call(
+            result = model_tools.handle_function_call(
                 function_name,
                 next_args,
                 effective_task_id,
@@ -1549,6 +1551,9 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
             )
+            from agent.runtime_policy import apply_mcp_runtime_stop
+            apply_mcp_runtime_stop(agent)
+            return result
 
     return _SequentialDispatch(
         execute=_execute,
@@ -1659,6 +1664,14 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     return True
 
 
+def _drain_runtime_stopped_calls(agent, messages, calls, effective_task_id):
+    return _append_skipped_tool_results(
+        agent, messages, calls, effective_task_id,
+        content="[Tool execution stopped — {name} was not executed by runtime policy]",
+        hook_error_type="runtime_stop", flush_stage="stopped tool result",
+    )
+
+
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
@@ -1680,6 +1693,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 flush_stage="cancelled tool result",
             ):
                 return
+            break
+
+        if getattr(agent, "_runtime_stop_reason", None) is not None:
+            _drain_runtime_stopped_calls(agent, messages, tool_calls[i - 1:], effective_task_id)
             break
 
         pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
@@ -1727,11 +1744,16 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     if segments is None:
         _active_env = get_active_env(effective_task_id)
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
-        segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
+        segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd,
+                                            mcp_barrier=is_authoritative(getattr(agent, "runtime_policy", None)))
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        if getattr(agent, "_runtime_stop_reason", None) is not None:
+            remaining = [call for _kind, later in segments[segment_index:] for call in later]
+            _drain_runtime_stopped_calls(agent, messages, remaining, effective_task_id)
+            break
         segment_message = SimpleNamespace(tool_calls=list(calls))
         run_segment = execute_tool_calls_concurrent if kind == "parallel" else execute_tool_calls_sequential
         run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)

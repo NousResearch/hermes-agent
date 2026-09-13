@@ -158,6 +158,7 @@ def test_load_review_credentials_cfg_missing_section(monkeypatch):
 
 def _fake_parent():
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent._delegate_depth = 0
     parent.session_id = "review-parent-sess"
     parent._interrupt_requested = False
@@ -283,6 +284,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
     from agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent.ephemeral_system_prompt = (
         '[IMPORTANT: The user launched this CLI session with the '
         '"hermes-agent-dev" skill preloaded. Treat its instructions as '
@@ -314,6 +316,7 @@ def test_collect_skills_empty_when_none_loaded():
     from agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent.ephemeral_system_prompt = None
     assert collect_parent_loaded_skills(parent, [
         {"role": "user", "content": "hi"},
@@ -324,6 +327,7 @@ def test_collect_skills_caps_at_limit():
     from agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent.ephemeral_system_prompt = ""
     msgs = [
         {"role": "assistant", "content": "", "tool_calls": [

@@ -592,6 +592,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     import tools.delegate_tool as dt
 
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent._delegate_depth = 0
     parent.session_id = "sess"
     parent._interrupt_requested = False
@@ -662,6 +663,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     from tools.approval_context import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent._delegate_depth = 0
     parent.session_id = "post-compress-tip"
     parent._interrupt_requested = False

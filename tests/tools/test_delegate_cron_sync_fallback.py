@@ -104,6 +104,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
 
     child = _make_real_child()
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent._delegate_depth = 0
     parent.session_id = "cron_244ee2c8b9da"
     parent._interrupt_requested = False

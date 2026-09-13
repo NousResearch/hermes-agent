@@ -532,3 +532,50 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_trusted_settlement_binds_a_fire_to_its_final_session(monkeypatch, tmp_path):
+    """The durable settlement contract cron completion classification reads.
+
+    A trusted ``runtime_stop`` success deliberately writes no closing assistant
+    row, so the persisted transcript tail alone cannot distinguish it from an
+    incomplete run. This row is the proof that closes that gap.
+    """
+    executions = _point_ledger(monkeypatch, tmp_path)
+
+    claimed = executions.create_execution("job-1", source="builtin")
+    outcome = {"reason": "max_items", "status": "success", "policy": "fleet-runtime"}
+
+    assert executions.get_settlement_for_session("cron_job-1_child") is None
+    assert executions.record_execution_settlement(
+        claimed["id"], session_id="cron_job-1_child",
+        settlement={"outcome": outcome, "settled": True},
+    ) is True
+
+    found = executions.get_settlement_for_session("cron_job-1_child")
+    assert found["execution_id"] == claimed["id"]
+    assert found["job_id"] == "job-1"
+    assert found["settlement"]["outcome"] == outcome
+
+    # Terminal proof is written once; a re-record reports the existing proof
+    # rather than rewriting it.
+    assert executions.record_execution_settlement(
+        claimed["id"], session_id="cron_job-1_child",
+        settlement={"outcome": {"status": "failure"}, "settled": False},
+    ) is True
+    assert executions.get_settlement_for_session(
+        "cron_job-1_child"
+    )["settlement"]["outcome"] == outcome
+
+
+def test_settlement_is_never_recorded_without_a_binding(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    claimed = executions.create_execution("job-1", source="builtin")
+
+    assert executions.record_execution_settlement(
+        claimed["id"], session_id="", settlement={"outcome": {}},
+    ) is False
+    assert executions.record_execution_settlement(
+        "no-such-execution", session_id="s", settlement={"outcome": {}},
+    ) is False
+    assert executions.get_settlement_for_session("s") is None

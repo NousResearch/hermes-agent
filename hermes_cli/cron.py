@@ -550,7 +550,8 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
-                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
+                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
+                   ("max_turns", "max_turns"), ("runtime_policy", "runtime_policy"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:
@@ -559,6 +560,8 @@ def _job_api_kwargs(args) -> Dict[str, Any]:
 
 
 _JOB_DETAIL_LINES = (
+    ("max_turns", "  Max turns: {}"),
+    ("runtime_policy", "  Runtime policy: {}"),
     ("script", "  Script: {}"),
     ("monitor_script", "  Monitor: {} (agent runs only on output change)"),
     ("monitor_url", "  Monitor: {} (agent runs only on output change)"),

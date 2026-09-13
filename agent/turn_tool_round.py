@@ -159,6 +159,12 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
+    if getattr(agent, "_runtime_stop_reason", None) is not None:
+        _turn_exit_reason = f"runtime_stop({agent._runtime_stop_reason})"
+        final_response = None
+        failed = (agent._runtime_terminal_outcome or {}).get("status") == "failure"
+        return _verdict("break")
+
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"

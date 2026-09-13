@@ -11,6 +11,8 @@ from __future__ import annotations
 import concurrent.futures
 from typing import Optional
 
+from agent.runtime_policy import is_authoritative
+
 
 def defer_teardown_to_running_worker(
     future: Optional[concurrent.futures.Future], session_db, agent, job_id: str, job_name: str,
@@ -24,6 +26,28 @@ def defer_teardown_to_running_worker(
 
     def _finish(_future) -> None:
         try:
+            from cron.scheduler import logger
+            policy = getattr(agent, "runtime_policy", None)
+            final_session_id = getattr(agent, "session_id", None) or cron_session_id
+            if is_authoritative(policy):
+                from cron.scheduler_settlement import settle_run
+                agent._cron_settlement_failed = True
+                try:
+                    settle_run(agent, agent._cron_job, agent._cron_execution_id,
+                               final_session_id, {"failed": True})
+                except Exception:
+                    logger.warning("Job '%s': detached policy finalization failed", job_id, exc_info=True)
+            else:
+                from hermes_cli.lifecycle import finalize_session
+                try:
+                    finalize_session(
+                        session_id=final_session_id, runtime_run_id=agent.runtime_task_id,
+                        runtime_policy=policy, platform="cron", cron_job_id=job_id,
+                        cron_job_name=job_name, cron_max_turns=agent.cron_max_turns,
+                        completed=False, failed=True, terminal_outcome=None,
+                    )
+                except Exception:
+                    logger.warning("Job '%s': detached session finalization failed", job_id, exc_info=True)
             if session_db:
                 _finalize_cron_session(session_db, agent, job_id, job_name, cron_session_id)
         finally:

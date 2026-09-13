@@ -37,6 +37,7 @@ from hermes_state import SessionDB
 def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key="***"
     parent.provider = "openrouter"
@@ -1993,6 +1994,9 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 # so the nested delegate_task call succeeds.
                 m._delegate_depth = 1
                 m._delegate_role = "orchestrator"
+                # A real child inherits no policy (agent_init defaults it to
+                # None) — MagicMock would auto-vivify it truthy.
+                m.runtime_policy = None
                 m._active_children = []
                 m._active_children_lock = threading.Lock()
                 m._session_db = None

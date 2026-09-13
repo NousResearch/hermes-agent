@@ -23,6 +23,7 @@ from tools.delegate_tool import delegate_task
 
 def _make_mock_parent(depth=0):
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key = "test-key"
     parent.provider = "openrouter"

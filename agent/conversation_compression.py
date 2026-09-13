@@ -35,6 +35,8 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
 
+from agent.runtime_policy import _rebind_authoritative_run
+
 logger = logging.getLogger(__name__)
 
 
@@ -1408,6 +1410,7 @@ def _adopt_live_compression_child(
     if not confirmed or str(confirmed) != child_session_id:
         return None
     agent.session_id = child_session_id
+    _rebind_authoritative_run(agent)
     _rebind_session_context(child_session_id)
     agent._session_db_created = True
     if child.get("system_prompt"):
@@ -3011,6 +3014,7 @@ def _publish_rotated_compaction(
         if isinstance(_handoff_message, dict):
             _handoff_message[_DB_PERSISTED_MARKER] = True
     agent.session_id = new_session_id
+    _rebind_authoritative_run(agent)
     agent._db_flush_scan_prefix = None
     _rebind_session_context(agent.session_id)
     agent._session_db_created = True

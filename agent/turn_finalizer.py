@@ -140,7 +140,7 @@ def _resolve_budget_fallback(
             if _pending_verification_response_previewed:
                 agent._response_was_previewed = True
             preserved_verification_fallback = True
-        else:
+        elif not getattr(agent, "strict_iteration_limit", False):
             # _handle_max_iterations makes one extra toolless request for a summary.
             agent._emit_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
@@ -450,10 +450,22 @@ def finalize_turn(
         logger=logger,
     )
 
+    _runtime_terminal_outcome = getattr(agent, "_runtime_terminal_outcome", None)
+    trusted_runtime_success = (
+        isinstance(_runtime_terminal_outcome, dict)
+        and _runtime_terminal_outcome.get("status") == "success"
+        and _runtime_terminal_outcome.get("policy") not in {None, "", "observer"}
+    )
     completed = (
-        final_response is not None
+        (final_response is not None or trusted_runtime_success)
         and not failed
-        and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and (
+            api_call_count < agent.max_iterations
+            # A trusted stop is authoritative even when it lands on the last allowed call:
+            # the cap is an iteration count, not a verdict on a settled outcome.
+            or trusted_runtime_success
+            or str(_turn_exit_reason).startswith("text_response(")
+        )
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
@@ -497,7 +509,7 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
-    if not interrupted:
+    if not interrupted and not isinstance(_runtime_terminal_outcome, dict):
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
@@ -565,6 +577,8 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if isinstance(_runtime_terminal_outcome, dict):
+        result["trusted_terminal_outcome"] = dict(_runtime_terminal_outcome)
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True; also stamp `error` so the gateway

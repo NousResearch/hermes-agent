@@ -287,6 +287,7 @@ class PluginLedgerMixin:
         self._persistent_carryover.extend(r for r in self._active_persistent() if id(r) not in carryover_ids)
         for container in (
             self._ownership_ledger, self._plugins, self._hooks, self._middleware,
+            self._authoritative_policies,  # leases survive reload; absent callbacks fail closed
             self._plugin_tool_names, self._plugin_platform_names, self._cli_commands,
             self._plugin_commands, self._plugin_skills, self._portable_mcp_servers,
             self._aux_tasks, self._system_prompt_sections, self._approval_transports,

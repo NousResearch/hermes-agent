@@ -18,7 +18,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { deferred } from '../../test/deferred'
 import type * as DataModule from './data'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
@@ -26,6 +25,16 @@ import type { RosterRow } from './types'
 interface SkillsViewProps {
   fixedConnection?: string
   fixedProfile?: string
+}
+
+function deferred<T>() {
+  let resolve!: (value: PromiseLike<T> | T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
 }
 
 const mocks = vi.hoisted(() => ({

@@ -160,6 +160,22 @@ def test_iter_holders_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypa
         db.close()
 
 
+def test_iter_holders_ignores_descriptor_closed_during_scan(tmp_path, monkeypatch):
+    """A descriptor gone after ``readlink`` cannot hold a retired generation."""
+    path = tmp_path / "state.db"
+    wal = Path(str(path) + "-wal")
+    wal.write_bytes(b"current generation")
+    vanished_fd = tmp_path / "closed-writable-opener-fd"
+    monkeypatch.setattr(hermes_state_dbfile.sys, "platform", "linux")
+    monkeypatch.setattr(
+        hermes_state_dbfile,
+        "_iter_proc_fd_targets",
+        lambda: iter([(os.getpid(), str(wal) + " (deleted)", str(vanished_fd))]),
+    )
+
+    assert iter_deleted_sqlite_sidecar_holders(path) == []
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="deleted-WAL write halt uses Linux unlink semantics",

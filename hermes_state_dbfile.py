@@ -165,6 +165,10 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     names — the guard keeps failing closed."""
     try:
         fd_stat = os.stat(fd_path)
+    except FileNotFoundError:
+        # The descriptor was closed after /proc was read. It cannot keep a
+        # retired generation alive, so do not turn this scan race into a halt.
+        return False
     except OSError:
         return True
     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)

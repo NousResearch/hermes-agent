@@ -635,7 +635,7 @@ Three touchpoints:
 
 Six touchpoints:
 
-1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. The `_create_adapter()` wrapper binds every successful adapter to its gateway runner.
+1. **`_BUILTIN_ADAPTERS` table** (`gateway/run.py`) — Add a `Platform.NEWPLAT: (module, class, check_fn, error_msg)` entry; `_instantiate_adapter()` (`gateway/run_adapters.py`) consults the plugin registry, then this table — there is no `elif` chain to extend. Await `_create_adapter()` to prepare registered plugins and SDK dependencies off-loop, construct the adapter on the gateway loop, and bind it to its gateway runner. The registry retains synchronous `create_adapter()` for synchronous callers.
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
 3. **`_is_user_authorized()` allow_all map** — `Platform.NEWPLAT: "NEWPLAT_ALLOW_ALL_USERS"`
 4. **Startup access-policy check** (`gateway/run_startup.py`) — Add `"NEWPLAT"` to `_ALLOWLIST_ENV_PLATFORMS` (derives both `NEWPLAT_ALLOWED_USERS` and `NEWPLAT_ALLOW_ALL_USERS`)

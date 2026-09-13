@@ -427,6 +427,130 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+# ---------------------------------------------------------------------------
+# Pre-spawn gate (kanban.spawn_gate)
+# ---------------------------------------------------------------------------
+
+
+def _patch_spawn_gate_config(monkeypatch, cmd):
+    """Point ``kanban.spawn_gate`` at ``cmd`` via a stubbed config loader,
+    and stub ``read_board_metadata`` to return no per-board gate so the
+    global config fallback is exercised."""
+    import hermes_cli.config as _cfg
+    monkeypatch.setattr(
+        _cfg, "load_config_readonly",
+        lambda: {"kanban": {"spawn_gate": cmd}},
+    )
+    monkeypatch.setattr(kb, "read_board_metadata", lambda board=None: {})
+
+
+def test_spawn_gate_verdict_none_when_unconfigured(monkeypatch):
+    """No ``kanban.spawn_gate`` in config → no gate, spawning allowed."""
+    import hermes_cli.config as _cfg
+    monkeypatch.setattr(_cfg, "load_config_readonly", lambda: {})
+    monkeypatch.setattr(kb, "read_board_metadata", lambda board=None: {})
+    assert kbd._spawn_gate_verdict() is None
+
+
+def test_spawn_gate_verdict_board_json_wins_over_config(monkeypatch, tmp_path):
+    """A per-board ``spawn_gate`` in board.json overrides the global config."""
+    import hermes_cli.config as _cfg
+    board_script = tmp_path / "board_gate.sh"
+    board_script.write_text("#!/bin/sh\necho 'PAUSE: board gate'\nexit 1\n")
+    board_script.chmod(0o755)
+    global_script = tmp_path / "global_gate.sh"
+    global_script.write_text("#!/bin/sh\necho 'RUN: global gate'\nexit 0\n")
+    global_script.chmod(0o755)
+    monkeypatch.setattr(
+        _cfg, "load_config_readonly",
+        lambda: {"kanban": {"spawn_gate": str(global_script)}},
+    )
+    monkeypatch.setattr(
+        kb, "read_board_metadata",
+        lambda board=None: {"spawn_gate": str(board_script)},
+    )
+    assert kbd._spawn_gate_verdict() == "PAUSE: board gate"
+
+
+def test_spawn_gate_verdict_run_on_exit_zero(monkeypatch, tmp_path):
+    """A gate script that exits 0 (RUN) returns None → spawning allowed."""
+    script = tmp_path / "gate_run.sh"
+    script.write_text("#!/bin/sh\necho 'RUN: all good'\nexit 0\n")
+    script.chmod(0o755)
+    _patch_spawn_gate_config(monkeypatch, str(script))
+    assert kbd._spawn_gate_verdict() is None
+
+
+def test_spawn_gate_verdict_pause_on_nonzero(monkeypatch, tmp_path):
+    """A gate script that exits non-zero (PAUSE) returns its message."""
+    script = tmp_path / "gate_pause.sh"
+    script.write_text("#!/bin/sh\necho 'PAUSE: only 7% under pace'\nexit 1\n")
+    script.chmod(0o755)
+    _patch_spawn_gate_config(monkeypatch, str(script))
+    assert kbd._spawn_gate_verdict() == "PAUSE: only 7% under pace"
+
+
+def test_spawn_gate_verdict_fails_closed_on_missing_script(monkeypatch):
+    """A configured-but-missing gate script fails closed to PAUSE."""
+    _patch_spawn_gate_config(monkeypatch, "/nonexistent/gate.sh")
+    verdict = kbd._spawn_gate_verdict()
+    assert verdict is not None
+    assert "not found" in verdict
+
+
+def test_dispatch_spawn_gate_pause_defers_all_spawns(
+    kanban_home, all_assignees_spawnable, monkeypatch, tmp_path,
+):
+    """When the spawn gate PAUSEs, dispatch spawns nothing and reports
+    ``spawn_gated``; tasks stay in ``ready`` and are NOT blocked."""
+    script = tmp_path / "gate_pause.sh"
+    script.write_text("#!/bin/sh\necho 'PAUSE: only 7% under pace'\nexit 1\n")
+    script.chmod(0o755)
+    _patch_spawn_gate_config(monkeypatch, str(script))
+
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="gated", assignee="alice")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert not res.spawned
+    assert not spawns
+    assert res.spawn_gated == "PAUSE: only 7% under pace"
+    # Task stays ready (not blocked) so it auto-resumes when the gate clears.
+    assert task is not None
+    assert task.status == "ready"
+
+
+def test_dispatch_spawn_gate_run_allows_spawn(
+    kanban_home, all_assignees_spawnable, monkeypatch, tmp_path,
+):
+    """When the spawn gate RUNs (exit 0), dispatch spawns normally."""
+    script = tmp_path / "gate_run.sh"
+    script.write_text("#!/bin/sh\necho 'RUN: all good'\nexit 0\n")
+    script.chmod(0o755)
+    _patch_spawn_gate_config(monkeypatch, str(script))
+
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ungated", assignee="alice")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert res.spawned
+    assert spawns == [tid]
+    assert res.spawn_gated is None
+
+
 
 
 

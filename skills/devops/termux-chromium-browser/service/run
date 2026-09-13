@@ -1,0 +1,18 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Chromium headless CDP service for Termux — runit-managed.
+# Place at: $PREFIX/var/service/chromium-headless/run (chmod +x)
+#
+# Credits: @pjy010218
+# Android Fix: chromium's ELF is ET_DYN and needs Termux's LD_PRELOAD (termux-exec)
+# to exec, but LD_PRELOAD breaks Chromium's child processes.
+# --no-zygote --single-process runs with zero children and operates stably.
+
+termux-wake-lock 2>/dev/null || true
+
+exec "$PREFIX/lib/chromium/chromium-launcher.sh" \
+  --headless --no-sandbox --disable-gpu \
+  --no-zygote --single-process \
+  --remote-debugging-port=9222 --remote-allow-origins=* \
+  --disable-dev-shm-usage --disable-features=TranslateUI \
+  --lang=en-US --user-data-dir="$HOME/.chromium-cdp" \
+  2>&1

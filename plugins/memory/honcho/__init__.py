@@ -23,7 +23,7 @@ from agent.coding_context import INTERACTIVE_CODING_PLATFORMS as _LOCAL_PLATFORM
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
 from plugins.memory.honcho.client import _host_block, _HostLookup
-from plugins.memory.honcho.client import join_plugin_threads
+from plugins.memory.honcho.client import join_plugin_threads, spawn_context_thread
 from plugins.memory.honcho.dialectic import DialecticMixin
 from plugins.memory.honcho.session_peers import assistant_peer_id_for, sanitize_peer_id
 from plugins.memory.honcho.session_context import usable_honcho_summary

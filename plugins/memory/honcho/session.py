@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from agent.memory_provider import spawn_context_thread
+from plugins.memory.honcho.client import spawn_context_thread
 from plugins.memory.honcho.client import get_honcho_client
 from plugins.memory.honcho.session_auth import HonchoAuthError, SessionAuthMixin
 from plugins.memory.honcho.session_context import SessionContextMixin

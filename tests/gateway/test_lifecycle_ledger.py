@@ -214,3 +214,39 @@ def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("garbage", encoding="utf-8")
     assert read_prior_exit_label(tmp_path) == "unknown"
+
+
+def test_background_integrity_check_does_not_block_startup_or_rewrite_exit(tmp_path, monkeypatch):
+    import threading
+    import gateway.lifecycle_ledger as ledger
+
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    _write_sentinel(tmp_path, {"phase": "running", "pid": _DEAD_PID,
+                               "start_time": 1000.0, "started_at": "2026-07-11T04:30:00+00:00"})
+    original_report = ledger._report_unclean_exit
+
+    def slow_check(home=None):
+        started.set()
+        assert release.wait(5)
+        return "ok"
+
+    def report(evidence, home):
+        try:
+            original_report(evidence, home)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(ledger, "check_state_db_integrity", slow_check)
+    monkeypatch.setattr(ledger, "_report_unclean_exit", report)
+    try:
+        evidence = record_startup(home=tmp_path, background_integrity_check=True)
+        assert evidence["prior_pid"] == _DEAD_PID
+        assert started.wait(2)
+        assert not finished.is_set()
+        assert _read_sentinel(tmp_path)["pid"] == os.getpid()
+        mark_exited(home=tmp_path)
+    finally:
+        release.set()
+    assert finished.wait(2)
+    assert _read_sentinel(tmp_path)["phase"] == "exited"
+    assert _exit_diag_records(tmp_path)[0]["state_db_integrity"] == "ok"

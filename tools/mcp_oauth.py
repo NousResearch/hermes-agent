@@ -152,9 +152,12 @@ def _cached_client_info(storage: "HermesTokenStorage | None") -> dict | None:
 
 
 def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None, int | None]":
-    """``(https proxy URI, loopback callback port)`` from the cached client registration (None when
-    absent): a DCR ``client_id`` is bound to its registered redirect URI, so a new random port under
-    it gets ``redirect_uri does not match any registered URIs``."""
+    """``(registered non-generic URI, loopback callback port)`` from the cached
+    client registration. A DCR ``client_id`` is bound to the complete redirect
+    URI, not merely its port: dashboard callbacks such as
+    ``/api/mcp/oauth/callback/notion`` must be replayed verbatim. Legacy
+    loopback registrations using the generic ``/callback`` path retain the port
+    return so their existing listener behavior is unchanged."""
     uri = port = None
     for raw in (_cached_client_info(storage) or {}).get("redirect_uris") or []:
         try:
@@ -163,9 +166,15 @@ def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None,
             continue
         if uri is None and parsed.scheme == "https" and parsed.netloc:
             uri = str(raw)
-        is_loopback_callback = parsed.scheme == "http" and parsed.path == "/callback" and parsed.hostname in {"127.0.0.1", "localhost"}
-        if port is None and is_loopback_callback and parsed.port is not None:
+        is_loopback = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+        if not is_loopback or parsed.port is None:
+            continue
+        if port is None:
             port = int(parsed.port)
+        if parsed.path != "/callback" and uri is None:
+            # The registered path is part of the OAuth client contract. Keep
+            # it instead of silently deriving the generic /callback path.
+            uri = str(raw)
     return uri, port
 
 
@@ -794,14 +803,14 @@ def token_request_user_agent(cfg: dict) -> str | None:
 
 
 def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = None) -> int:
-    """Resolve the callback port into ``cfg['_resolved_port']`` (0 = non-loopback URI). Precedence:
-    dashboard flow / cached https redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →
-    ``oauth.redirect_port`` → cached registration port → fresh ephemeral port (the only parked one).
-    Also sets the legacy ``_oauth_port``.
+    """Resolve the callback endpoint from the complete OAuth registration. Precedence:
+    dashboard flow / cached redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →
+    ``oauth.redirect_port`` → cached registration port → fresh ephemeral port.
+    Cached loopback registrations preserve both their path and port; ``0`` means
+    a non-loopback URI. Also sets the legacy ``_oauth_port``.
 
-    NOTE: also sets the legacy module-level ``_oauth_port`` so existing calls to ``_wait_for_callback`` keep
-    working. The legacy global is the root cause of issue #5344 (port collision on concurrent OAuth flows);
-    replacing it with a ContextVar is out of scope for this consolidation PR.
+    NOTE: the legacy module-level value remains for compatibility with existing
+    callers; per-flow closures are the real concurrency mechanism.
     """
     global _oauth_port
     dashboard_flow = get_dashboard_oauth_flow()
@@ -812,6 +821,16 @@ def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = N
     cached_uri, cached_port = _cached_redirect(storage)
     if cached_uri and not cfg.get("redirect_uri"):
         cfg["redirect_uri"] = cached_uri
+        parsed_cached_uri = urlparse(cached_uri)
+        if (parsed_cached_uri.scheme == "http"
+                and parsed_cached_uri.hostname in {"127.0.0.1", "localhost"}
+                and cached_port is not None):
+            # A cached loopback URI still needs Hermes' local listener. Keep
+            # both the registered path and its registered port; treating it as
+            # a remote URI would bind an unrelated ephemeral port.
+            cfg["_resolved_port"] = cached_port
+            _oauth_port = cached_port
+            return cached_port
         cfg["_resolved_port"] = 0
         return 0
     cimd = _maybe_use_cimd(cfg, storage)

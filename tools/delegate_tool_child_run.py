@@ -710,28 +710,36 @@ class _ChildRun:
         before_first_call = is_timeout and child_api_calls == 0
         diagnostic_path: Optional[str] = None
         if before_first_call:
+            effective_timeout = heartbeat.stale_after_seconds if stale_watchdog else child_timeout
+            assert effective_timeout is not None
             diagnostic_path = _dump_subagent_timeout_diagnostic(
                 child=child, task_index=task_index,
-                # is_timeout implies a cap was configured (result(timeout=None)
-                # never raises FuturesTimeoutError); guard for the type checker.
-                timeout_seconds=float(child_timeout or 0.0), duration_seconds=float(duration),
+                timeout_seconds=float(effective_timeout), duration_seconds=float(duration),
                 worker_thread=worker_thread_holder.get("t"), goal=self.goal,
             )
             if diagnostic_path:
                 logger.warning("Subagent %d 0-API-call timeout — diagnostic written to %s", task_index, diagnostic_path)
         if not is_timeout:
             _err = str(exc)
+        elif before_first_call:
+            if stale_watchdog:
+                stale_after = heartbeat.stale_after_seconds
+                _err = (
+                    "Subagent stopped making progress"
+                    + (f" for {stale_after:g}s" if stale_after is not None else "")
+                    + " before making any API call; the pending worker was abandoned."
+                )
+            else:
+                _err = (
+                    f"Subagent timed out after {child_timeout}s without making any API call — the child never reached "
+                    f"its first LLM request (prompt construction, credential resolution, or transport may be stuck)."
+                )
         elif stale_watchdog:
             stale_after = heartbeat.stale_after_seconds
             _err = (
                 "Subagent stopped making progress"
                 + (f" for {stale_after:g}s" if stale_after is not None else "")
                 + f" after {child_api_calls} API call(s); the pending worker was abandoned."
-            )
-        elif before_first_call:
-            _err = (
-                f"Subagent timed out after {child_timeout}s without making any API call — the child never reached its "
-                f"first LLM request (prompt construction, credential resolution, or transport may be stuck)."
             )
         else:
             _err = (
@@ -747,8 +755,8 @@ class _ChildRun:
             "timeout_seconds": child_timeout if is_timeout and not stale_watchdog else None,
             "timed_out_after_seconds": duration if is_timeout else None,
             "timeout_phase": (
-                "stale_after_llm_calls" if stale_watchdog else
-                "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None
+                "before_first_llm_call" if before_first_call else
+                "stale_after_llm_calls" if stale_watchdog else "after_llm_calls" if is_timeout else None
             ),
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,

@@ -1491,6 +1491,49 @@ class TestDelegateHeartbeat(unittest.TestCase):
         finally:
             release.set()
 
+    def test_stale_heartbeat_before_first_api_call_preserves_diagnostic_contract(self):
+        """A zero-API stale wait is a pre-request timeout and reports the watchdog threshold."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        parent._touch_activity = lambda _desc: None
+        release = threading.Event()
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 0,
+            "max_iterations": 50,
+            "last_activity_desc": "building prompt",
+            "last_activity_ts": 1000.0,
+        }
+
+        def wedged_before_first_request(**_kwargs):
+            release.wait(5)
+            return {"final_response": "done", "completed": True, "api_calls": 0}
+
+        child.run_conversation.side_effect = wedged_before_first_request
+        dump_diagnostic = MagicMock(return_value=None)
+        try:
+            with (
+                patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.01),
+                patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+                patch("tools.delegate_tool._get_child_timeout", return_value=None),
+                patch("tools.delegate_tool_child_run._dump_subagent_timeout_diagnostic", dump_diagnostic),
+            ):
+                entry = _run_single_child(
+                    task_index=0,
+                    goal="Test pre-request stall",
+                    child=child,
+                    parent_agent=parent,
+                )
+
+            self.assertEqual(entry["status"], "timeout")
+            self.assertEqual(entry["timeout_phase"], "before_first_llm_call")
+            self.assertIn("before making any API call", entry["error"])
+            self.assertEqual(dump_diagnostic.call_args.kwargs["timeout_seconds"], 0.02)
+        finally:
+            release.set()
+
     def test_heartbeat_does_not_trip_idle_stale_while_inside_tool(self):
         """A long-running tool (no iteration advance, but current_tool set)
         must not be flagged stale at the idle threshold.

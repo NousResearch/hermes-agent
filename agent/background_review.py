@@ -789,6 +789,30 @@ def _same_model_parity_kwargs(agent: Any) -> Dict[str, Any]:
     return kwargs
 
 
+def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> None:
+    """One-shot user-visible notice: ``auxiliary.background_review.reasoning_effort`` is IGNORED on
+    the same-model path (#104116). The fork inherits the parent's ``reasoning_config`` verbatim so
+    its request bytes keep the parent's prompt-cache prefix (#30532: a diverged ``thinking`` field
+    on the fork-birth request re-created a large share of the cache); the no-op used to be silent,
+    so a user who set the key saw no feedback at all. Gated on the parent so a nudge-per-turn
+    session warns once, not per fork."""
+    effort = str(_background_review_task_config(task_cfg).get("reasoning_effort") or "").strip()
+    if not effort or getattr(agent, "_warned_bg_review_reasoning_effort", False):
+        return
+    agent._warned_bg_review_reasoning_effort = True
+    message = (
+        f"⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review "
+        "runs on the main model: the fork inherits the conversation's reasoning effort to keep the "
+        "parent's prompt-cache prefix (see memory docs, same-model review reasoning). Route the "
+        "review elsewhere via auxiliary.background_review.provider/model to use a different effort."
+    )
+    emit = getattr(agent, "_emit_warning", None)
+    if callable(emit):
+        with suppress(Exception):
+            emit(message)
+    logger.warning("%s", message)
+
+
 def _detach_fork_compression(review_agent: Any) -> None:
     """Detached in-memory compaction for a fork sharing the parent's session_id. Disabling
     compression (the old guard against compacting the parent's live session) removed the only
@@ -877,6 +901,11 @@ def build_cache_parity_fork(
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
     _routed = bool(_rt.get("routed"))
+    # A configured effort is silently dropped on the same-model path (cache parity) — say so once,
+    # visible, instead of leaving the set-but-ignored key invisible (#104116). Routed forks are a
+    # separate, tracked issue (#94825) and are left alone.
+    if not _routed and write_origin == "background_review":
+        _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     review_agent._memory_store = agent._memory_store

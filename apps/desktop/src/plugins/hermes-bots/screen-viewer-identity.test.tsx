@@ -35,6 +35,8 @@ vi.mock('./i18n', () => ({
       otherControls: 'Other controls',
       agentControls: 'Bot controls',
       handBack: 'Hand back',
+      handBackForce: 'Hand back (force)',
+      handBackForceHint: 'Force',
       takeOver: 'Take over',
       reconnect: 'Reconnect',
       streamLost: 'Stream lost'
@@ -131,5 +133,21 @@ it('hands back with the minted id, never a client-generated one', async () => {
     view.getByText('Hand back').click()
   })
   expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { viewer_id: MINTED })
+  view.unmount()
+})
+
+it('offers a forced hand-back for a human lease this window does not hold, sending {force: true} and no viewer id', async () => {
+  const view = render(<BotScreenPane bot={bot} />)
+  await waitFor(() => expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.observe'))
+  await act(async () => {})
+
+  emitLease(await viewerHash(MINTED))
+  expect(view.queryByText('Hand back (force)')).toBeNull()
+
+  emitLease(await viewerHash('viewer-from-before-the-reload'))
+  await act(async () => {
+    view.getByText('Hand back (force)').click()
+  })
+  expect(vi.mocked(displayRequest)).toHaveBeenCalledWith(bot, 'display.lease.release', { force: true })
   view.unmount()
 })

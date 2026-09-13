@@ -2621,6 +2621,27 @@ def test_protected_provider_route_splits_without_dispatcher_marker(
     assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
 
 
+def test_operator_config_can_temporarily_disable_egress_enforcement(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("HERMES_LLM_EGRESS_ENFORCEMENT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: disabled\n", encoding="utf-8"
+    )
+
+    import agent.llm_egress_runtime as runtime
+
+    assert runtime.egress_enforcement_enabled() is False
+    assert runtime.provider_uses_egress_firewall("nous") is False
+
+    monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "enabled")
+    assert runtime.egress_enforcement_enabled() is True
+    assert runtime.provider_uses_egress_firewall("nous") is True
+
+
 def test_reconstructed_kanban_worker_redacts_paths_without_marker(
     tmp_path, monkeypatch
 ):

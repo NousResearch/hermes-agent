@@ -683,6 +683,10 @@ _EGRESS_PROTECTED_PROVIDERS = frozenset(
 def _destination_requires_egress_firewall(agent) -> bool:
     """Return whether this route is under the protected egress contract."""
 
+    from agent.llm_egress_runtime import egress_enforcement_enabled
+
+    if not egress_enforcement_enabled():
+        return False
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
     return provider in _EGRESS_PROTECTED_PROVIDERS or (
         os.environ.get("HERMES_KANBAN_PROTECTED_REMOTE") == "1"

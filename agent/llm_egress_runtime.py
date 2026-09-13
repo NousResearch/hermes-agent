@@ -191,7 +191,28 @@ def _sanitize_protected_kanban_body(value: Any) -> Any:
 def provider_uses_egress_firewall(provider: Any) -> bool:
     """Return whether an exact configured provider owns a protected remote lane."""
 
-    return str(provider or "").strip().lower() in _PROTECTED_REMOTE_PROVIDERS
+    return egress_enforcement_enabled() and str(provider or "").strip().lower() in _PROTECTED_REMOTE_PROVIDERS
+
+
+def egress_enforcement_enabled() -> bool:
+    """Return the operator-controlled LLM egress enforcement posture.
+
+    Enforcement remains enabled by default.  The explicit temporary disable
+    switch preserves the firewall and its diagnostics while allowing operator
+    testing to continue until the false-positive cases are repaired.
+    """
+    raw = os.environ.get("HERMES_LLM_EGRESS_ENFORCEMENT", "").strip().lower()
+    if raw:
+        return raw not in {"0", "false", "off", "disabled", "disable", "monitor"}
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        runtime = load_config_readonly().get("runtime") or {}
+        posture = str(runtime.get("llm_egress_enforcement", "enabled") or "enabled")
+        return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
+    except Exception:
+        # A malformed or unavailable config must not silently weaken the boundary.
+        return True
 
 
 # Benchmark-backed per-profile model route table, installed at startup by

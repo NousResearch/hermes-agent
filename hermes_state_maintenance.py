@@ -21,6 +21,7 @@ _LAST_ACTIVE_SQL = """COALESCE(
                    )"""
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
+_SESSION_STATE_META_NAMESPACES = ("goal", "loop", "heartbeat")
 
 
 def _like(value: str) -> str:
@@ -296,6 +297,139 @@ class SessionMaintenanceMixin:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    def prune_exact_selection(self, session_ids: List[str], *, sessions_dir: Optional[Path] = None,
+                              include_pinned: bool = False) -> Dict[str, Any]:
+        """Delete exactly the caller-supplied physical session IDs, atomically, or none of them.
+
+        Unlike :meth:`prune_sessions` (filter-driven -- re-evaluating the filter at delete time can
+        match a different set than a caller last reviewed), this takes an explicit frozen ID list so
+        an external reviewer (e.g. a Store/Verify pipeline) can hand back precisely the rows it
+        already inspected. Every ID must currently exist, be ended, and be archived; unlisted children
+        referencing any selected row fail the whole batch closed rather than silently orphaning something the
+        caller never reviewed. ``include_pinned`` opts a pinned row into deletion explicitly (pin is
+        otherwise a durable keep flag). Returns ``{"count": int, "deleted": list[str]}``; raises
+        ``ValueError`` and deletes nothing on any failed precondition."""
+        ids = list(session_ids)
+        if not ids:
+            raise ValueError("prune_exact_selection: session_ids must not be empty")
+        if any(not isinstance(session_id, str) or not session_id for session_id in ids):
+            raise ValueError("prune_exact_selection: session_ids must contain non-empty strings")
+        if len(set(ids)) != len(ids):
+            raise ValueError("prune_exact_selection: session_ids must not contain duplicates")
+        def _do(conn) -> Dict[str, Any]:
+            found = {}
+            for chunk in _id_chunks(ids):
+                placeholders = _placeholders(chunk)
+                rows = conn.execute(
+                    f"SELECT id, ended_at, archived, pinned FROM sessions WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                found.update({row["id"]: row for row in rows})
+            missing = [sid for sid in ids if sid not in found]
+            if missing:
+                raise ValueError(f"prune_exact_selection: session does not exist: {missing[0]!r}")
+            not_ended = [sid for sid in ids if found[sid]["ended_at"] is None]
+            if not_ended:
+                raise ValueError("prune_exact_selection: session is not ended, refusing to delete: "
+                                 f"{not_ended[0]!r}")
+            not_archived = [sid for sid in ids if not found[sid]["archived"]]
+            if not_archived:
+                raise ValueError("prune_exact_selection: session is not archived, refusing to delete: "
+                                 f"{not_archived[0]!r}")
+            if not include_pinned:
+                pinned = [sid for sid in ids if found[sid]["pinned"]]
+                if pinned:
+                    raise ValueError("prune_exact_selection: session is pinned (pass "
+                                     f"include_pinned=True to delete anyway): {pinned[0]!r}")
+            covered = set(ids)
+            for chunk in _id_chunks(ids):
+                placeholders = _placeholders(chunk)
+                children = conn.execute(
+                    f"SELECT id FROM sessions WHERE parent_session_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                uncovered = [str(row["id"]) for row in children if str(row["id"]) not in covered]
+                if uncovered:
+                    raise ValueError("prune_exact_selection: refuses an uncovered child session "
+                                     f"referencing the selection: {uncovered[0]!r}")
+            unverifiable = conn.execute(
+                "SELECT scope, session_key FROM gateway_routing "
+                "WHERE json_valid(entry_json) = 0 "
+                "OR json_type(entry_json) IS NOT 'object' "
+                "OR json_type(entry_json, '$.session_id') IS NOT 'text'"
+            ).fetchone()
+            if unverifiable is not None:
+                raise ValueError(
+                    "prune_exact_selection: cannot verify gateway_routing row "
+                    f"{unverifiable['scope']!r}/{unverifiable['session_key']!r}"
+                )
+            for chunk in _id_chunks(ids):
+                placeholders = _placeholders(chunk)
+                route = conn.execute(
+                    "SELECT scope, session_key, "
+                    "json_extract(entry_json, '$.session_id') AS session_id "
+                    "FROM gateway_routing "
+                    f"WHERE json_extract(entry_json, '$.session_id') IN ({placeholders})",
+                    chunk,
+                ).fetchone()
+                if route is not None:
+                    raise ValueError(
+                        "prune_exact_selection: refuses gateway_routing reference "
+                        f"to selected session: {route['session_id']!r}"
+                    )
+            for namespace in _SESSION_STATE_META_NAMESPACES:
+                for chunk in _id_chunks(ids):
+                    state_keys = [f"{namespace}:{session_id}" for session_id in chunk]
+                    state_ref = conn.execute(
+                        f"SELECT key FROM state_meta WHERE key IN ({_placeholders(state_keys)})",
+                        state_keys,
+                    ).fetchone()
+                    if state_ref is not None:
+                        raise ValueError(
+                            "prune_exact_selection: refuses state_meta reference "
+                            f"to selected session: {state_ref['key']!r}"
+                        )
+            for chunk in _id_chunks(ids):
+                placeholders = _placeholders(chunk)
+                lock = conn.execute(
+                    f"SELECT session_id FROM compression_locks WHERE session_id IN ({placeholders})",
+                    chunk,
+                ).fetchone()
+                if lock is not None:
+                    raise ValueError("prune_exact_selection: refuses compression_locks reference "
+                                     f"to selected session: {lock['session_id']!r}")
+                lease = conn.execute(
+                    f"SELECT conversation_id FROM session_turn_leases WHERE conversation_id "
+                    f"IN ({placeholders})", chunk,
+                ).fetchone()
+                if lease is not None:
+                    raise ValueError("prune_exact_selection: refuses session_turn_leases reference "
+                                     f"to selected session: {lease['conversation_id']!r}")
+            for chunk in _id_chunks(ids, size=450):
+                placeholders = _placeholders(chunk)
+                delegation = conn.execute(
+                    f"SELECT delegation_id, origin_session FROM async_delegations "
+                    f"WHERE origin_session IN ({placeholders}) "
+                    f"OR parent_session_id IN ({placeholders})", chunk + chunk,
+                ).fetchone()
+                if delegation is not None:
+                    raise ValueError("prune_exact_selection: refuses async_delegations reference "
+                                     f"to selected session: delegation_id={delegation['delegation_id']!r}")
+            for chunk in _id_chunks(ids):
+                placeholders = _placeholders(chunk)
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({placeholders})",
+                    chunk,
+                )
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", chunk)
+            self._delete_unreferenced_system_prompts(conn)
+            return {"count": len(ids), "deleted": list(ids)}
+        result = self._execute_write(_do)
+        for sid in result["deleted"]:
+            self._remove_session_files(sessions_dir, sid)
+        return result
 
     def _page_pragmas(self, names: Tuple[str, ...], fail_msg: str) -> Optional[list]:
         """Integer PRAGMAs over the existing connection (never a byte probe); None + debug log on failure."""

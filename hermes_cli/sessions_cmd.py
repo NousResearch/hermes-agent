@@ -607,8 +607,57 @@ def _note_pinned_skipped(db, filters, action):
           f"(pin is a keep flag). {optin}")
 
 
+def _cmd_prune_exact_selection(db, args):
+    """Prune the physical IDs frozen in one verified private-helper plan."""
+    conflicting = _any_filter_args(args) or any(
+        getattr(args, name, False)
+        for name in ("include_archived", "include_pinned", "never_active")
+    )
+    if conflicting:
+        print("Error: --selection-file cannot be combined with prune filters or include flags.")
+        return 1
+    from hermes_cli.session_prune_selection import load_exact_prune_selection
+    try:
+        selection = load_exact_prune_selection(
+            args.selection_file,
+            expected_database=db.db_path,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(
+        f"Exact selection plan {selection.plan_identity} names "
+        f"{len(selection.session_ids)} physical session(s):"
+    )
+    for session_id in selection.session_ids:
+        print(f"  {session_id}")
+    if args.dry_run:
+        print("Dry run — nothing deleted. The exact selection will be rechecked during Prune.")
+        return
+    if not args.yes and not _confirm_prompt(
+        f"Delete exactly these {len(selection.session_ids)} physical session(s)? [y/N] "
+    ):
+        print("Cancelled.")
+        return
+    try:
+        result = db.prune_exact_selection(
+            list(selection.session_ids),
+            sessions_dir=_sessions_dir(),
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(
+        f"Pruned {result['count']} session(s) from exact selection plan "
+        f"{selection.plan_identity}."
+    )
+
+
 def _cmd_prune_or_archive(db, args, action):
     prune = action == "prune"
+    if prune and getattr(args, "selection_file", None):
+        return _cmd_prune_exact_selection(db, args)
     if prune and getattr(args, "never_active", False):
         return _prune_never_active_keyed(db, args)
     from hermes_cli.session_filters import build_prune_filters, describe_filters, format_epoch

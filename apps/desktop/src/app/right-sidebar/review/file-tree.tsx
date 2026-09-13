@@ -299,9 +299,11 @@ function ReviewDirRow({
           name={open ? 'folder-opened' : 'folder'}
           size="0.8rem"
         />
-        <span className="min-w-0 flex-1 truncate" title={node.name}>
-          {node.name}
-        </span>
+        <Tip label={node.name}>
+          <span className="min-w-0 flex-1 truncate">
+            {node.name}
+          </span>
+        </Tip>
         {!open && <DiffCount added={node.added} className="text-[0.64rem] leading-4" removed={node.removed} />}
       </div>
       {!leaf && open && node.children && <ReviewNodeList animate={animate} depth={depth + 1} nodes={node.children} />}
@@ -386,6 +388,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
       onOpenChanges={() => void selectReviewFile(file)}
       onOpenFile={openInPreview}
     >
+    <Tip label={displayPath(dragPath)}>
       <div
         aria-selected={selected}
         className={cn(
@@ -404,19 +407,18 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
           event.dataTransfer.setData('text/plain', dragPath)
         }}
         style={rowStyle(depth)}
-        title={displayPath(dragPath)}
       >
         <Codicon className={cn('shrink-0', glyph.tone)} name={glyph.icon} size="0.8rem" />
         {/* Dir collapses first (huge shrink); the name only ellipsizes once the
             dir is gone — either way neither runs into the diff count. */}
         <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-          <span className="min-w-0 shrink truncate" title={node.name}>
-            {node.name}
-          </span>
+          <span className="min-w-0 shrink truncate">{node.name}</span>
           {node.dir && (
-            <span className="min-w-0 shrink-[9999] truncate text-[0.68rem] text-(--ui-text-tertiary)" title={node.dir}>
-              {node.dir}
-            </span>
+            <Tip label={node.dir}>
+              <span className="min-w-0 shrink-[9999] truncate text-[0.68rem] text-(--ui-text-tertiary)">
+                {node.dir}
+              </span>
+            </Tip>
           )}
         </span>
 
@@ -457,9 +459,10 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
           removed={node.removed}
         />
         {file.staged && (
-          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--ui-green)/70" title={c.staged} />
+          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--ui-green)/70" />
         )}
       </div>
+    </Tip>
     </ReviewFileContextMenu>
   )
 }

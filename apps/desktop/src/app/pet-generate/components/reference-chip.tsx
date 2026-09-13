@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { ImageLightbox } from '@/components/chat/zoomable-image'
+import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
@@ -20,9 +21,11 @@ export function ReferenceChip({ name, onRemove, src }: ReferenceChipProps) {
 
   return (
     <div className="ml-auto flex h-6 items-center gap-2 self-start rounded-lg border border-border/60 bg-background/50 pl-1 pr-2">
-      <button className="shrink-0" onClick={() => setViewing(true)} title={t.desktop.openImage} type="button">
-        <img alt={name} className="size-4 rounded-md object-cover" src={src} />
-      </button>
+      <Tip label={t.desktop.openImage}>
+        <button className="shrink-0" onClick={() => setViewing(true)} type="button">
+          <img alt={name} className="size-4 rounded-md object-cover" src={src} />
+        </button>
+      </Tip>
 
       <span className="max-w-40 truncate text-[0.64rem] font-medium text-foreground/50">{name || 'Reference'}</span>
       <button

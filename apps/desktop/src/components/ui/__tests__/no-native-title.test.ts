@@ -11,6 +11,11 @@ import { describe, expect, it } from 'vitest'
 //
 // This is a source-text scan, not a behavior test — it's the same category as
 // an ESLint rule, expressed as a vitest so it runs with the rest of the suite.
+//
+// Scans `src/components` (the desktop component library). The Command Center
+// daily-token bar lives under `src/app` and was fixed separately in
+// index.tsx by wrapping the bar in `<Tip>`; that surface is outside this
+// guard's scope by design (the guard targets the shared component library).
 
 // Recursively walk a directory and collect all .tsx file paths.
 function collectTsxFiles(dir: string): string[] {
@@ -36,9 +41,9 @@ function collectTsxFiles(dir: string): string[] {
 }
 
 describe('no native title= on button elements', () => {
-  // Scan every .tsx file under src/ for <button or <Button opening tags that
-  // also carry a title= attribute (anywhere in the opening tag, which may span
-  // multiple lines).
+  // Scan every .tsx file under src/components for <button or <Button opening
+  // tags that also carry a title= attribute (anywhere in the opening tag, which
+  // may span multiple lines).
   it('uses <Tip> instead of native title= on all button elements', () => {
     const violations: string[] = []
     const srcDir = resolve(__dirname, '../..')

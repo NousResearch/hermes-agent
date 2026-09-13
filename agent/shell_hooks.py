@@ -1,7 +1,8 @@
 """Shell-script hooks bridge: ``hooks:`` config → first-use consent per ``(event, command)`` →
 callbacks on the plugin hook manager, so every ``invoke_hook()`` site dispatches to the scripts.
 Wire: stdin JSON ``{hook_event_name, tool_name, tool_input, session_id, cwd, extra}``; optional stdout
-JSON ``{"decision"|"action": "block"|"modify", ...}`` / ``{"context": ...}`` via ``_parse_response``.
+JSON ``{"decision"|"action": "block"|"modify", ...}``, Hermes-only ``{"action": "approve", "message"?, "rule_key"?}``
+(escalates to the human-approval gate) / ``{"context": ...}`` via ``_parse_response``.
 Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor). Fail open unless ``fail_closed``."""
 
 from __future__ import annotations
@@ -400,6 +401,16 @@ def _block_message(primary: Any, secondary: Any) -> str:
     return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
+def _approve_directive(message: Any, rule_key: Any) -> Dict[str, Any]:
+    """Canonical approve directive: only a request for the human gate, never an allow. Optional fields
+    are kept only as non-empty stripped strings (``rule_key`` scopes ``[a]lways``, it grants nothing)."""
+    directive: Dict[str, Any] = {"action": "approve"}
+    for key, value in (("message", message), ("rule_key", rule_key)):
+        if isinstance(value, str) and value.strip():
+            directive[key] = value.strip()
+    return directive
+
+
 # pre_tool_call dialects in check order — Hermes ``action`` then Claude-Code ``decision`` — as (verb key,
 # block-message primary, secondary, modify payload key); both translate to the canonical Hermes shape.
 _PRE_TOOL_DIALECTS = (("action", "message", "reason", "args"), ("decision", "reason", "message", "tool_input"))
@@ -409,6 +420,9 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "block":
             return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
+    # Hermes-only: Claude-Code's legacy ``"decision": "approve"`` means auto-allow, not escalation.
+    if data.get("action") == "approve":
+        return _approve_directive(data.get("message"), data.get("rule_key"))
     for verb, _, _, payload in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "modify" and isinstance(data.get(payload), dict):
             return {"action": "modify", "args": data[payload]}

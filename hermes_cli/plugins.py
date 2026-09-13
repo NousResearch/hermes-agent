@@ -1873,7 +1873,8 @@ def _resolve_block_from_details(
             approval_tokens = set_current_observability_context(
                 turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id)
         try:
-            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or tool_name)
+            # No explicit rule_key → pass "" so request_tool_approval derives tool_name + hash(reason).
+            result = request_tool_approval(tool_name, details.message or "", rule_key=details.rule_key or "")
         finally:
             if approval_tokens is not None:
                 with suppress(Exception):

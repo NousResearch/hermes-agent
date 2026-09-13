@@ -51,6 +51,59 @@ class TestParseResponse:
 
 
 
+    def test_approve_with_message_and_rule_key(self):
+        r = shell_hooks._parse_response(
+            "pre_tool_call",
+            '{"action": "approve", "message": "  why  ", "rule_key": " terminal:rm "}',
+        )
+        assert r == {"action": "approve", "message": "why", "rule_key": "terminal:rm"}
+
+    def test_approve_without_optional_fields(self):
+        r = shell_hooks._parse_response("pre_tool_call", '{"action": "approve"}')
+        assert r == {"action": "approve"}
+
+    @pytest.mark.parametrize("bad", ['""', '"   "', "null", "1", "true", '["x"]', '{"k": "v"}'])
+    def test_approve_drops_empty_or_non_string_fields(self, bad):
+        r = shell_hooks._parse_response(
+            "pre_tool_call",
+            f'{{"action": "approve", "message": {bad}, "rule_key": {bad}}}',
+        )
+        assert r == {"action": "approve"}
+
+    def test_approve_drops_unknown_keys(self):
+        r = shell_hooks._parse_response(
+            "pre_tool_call",
+            '{"action": "approve", "approved": true, "args": {"x": 1}}',
+        )
+        assert r == {"action": "approve"}
+
+    @pytest.mark.parametrize("payload", [
+        '{"decision": "approve", "reason": "ok"}',  # Claude-Code legacy auto-allow: not mapped
+        '{"action": "APPROVE"}',
+        '{"action": "allow"}',
+        '{"action": "ask"}',
+        '{"rule_key": "terminal"}',
+    ])
+    def test_non_hermes_or_unknown_verbs_ignored(self, payload):
+        assert shell_hooks._parse_response("pre_tool_call", payload) is None
+
+    def test_block_wins_over_approve(self):
+        r = shell_hooks._parse_response(
+            "pre_tool_call",
+            '{"action": "approve", "decision": "block", "reason": "no"}',
+        )
+        assert r == {"action": "block", "message": "no"}
+
+    def test_approve_only_for_pre_tool_call(self):
+        assert shell_hooks._parse_response("post_tool_call", '{"action": "approve"}') is None
+
+    def test_block_and_modify_unchanged(self):
+        parse = shell_hooks._parse_response
+        assert parse("pre_tool_call", '{"action": "block", "message": "m"}') == {"action": "block", "message": "m"}
+        assert parse("pre_tool_call", '{"action": "modify", "args": {"a": 1}}') == {"action": "modify", "args": {"a": 1}}
+        assert parse("pre_tool_call", '{"decision": "modify", "tool_input": {"a": 1}}') == {"action": "modify", "args": {"a": 1}}
+        assert parse("pre_tool_call", '{"action": "modify", "args": "x"}') is None
+
     def test_empty_stdout_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "") is None
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
@@ -200,6 +253,97 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    @pytest.mark.parametrize("gate_approved", [True, False])
+    def test_approve_reaches_human_gate_through_plugin_manager(self, tmp_path, monkeypatch, gate_approved):
+        """A shell approve directive runs the existing human-approval gate; the gate alone decides."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "approve.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "approve", "message": "risky", "rule_key": "terminal:rm"}\\n\'\n',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+        cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        details = plugins._get_pre_tool_call_directive_details("terminal", {"command": "rm"})
+        assert (details.action, details.message, details.rule_key) == ("approve", "risky", "terminal:rm")
+
+        seen = []
+
+        def _gate(tool_name, reason, **kwargs):
+            seen.append((tool_name, reason, kwargs.get("rule_key")))
+            return {"approved": gate_approved, "message": None if gate_approved else "denied by human"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _gate)
+        msg = plugins.resolve_pre_tool_block("terminal", {"command": "rm"})
+        assert seen == [("terminal", "risky", "terminal:rm")]
+        assert msg == (None if gate_approved else "denied by human")
+
+    def test_approve_without_rule_key_derives_distinct_gate_keys_per_reason(self, tmp_path, monkeypatch):
+        """Regression: two keyless approve directives on the SAME tool must reach the real
+        request_tool_approval derivation (tool_name + hash(reason)), not collapse onto
+        ``plugin_rule:terminal``; an explicit rule_key is still used verbatim."""
+        from hermes_cli import plugins
+        import tools.approval as approval
+
+        script = _write_script(
+            tmp_path, "approve_by_command.sh",
+            "#!/usr/bin/env bash\n"
+            "input=$(cat)\n"
+            'case "$input" in\n'
+            "  *'explicit rm'*) printf '{\"action\": \"approve\", \"message\": \"scoped\", \"rule_key\": \"terminal:rm\"}\\n' ;;\n"
+            "  *'rm -rf build'*) printf '{\"action\": \"approve\", \"message\": \"deletes files\"}\\n' ;;\n"
+            "  *) printf '{\"action\": \"approve\", \"message\": \"sends email\"}\\n' ;;\n"
+            "esac\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+        cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        # Deterministic no-human context: the real gate fails closed after forming its key.
+        monkeypatch.setattr(approval, "_yolo_active", lambda: False)
+        monkeypatch.setattr(approval, "is_approved", lambda sk, pk: False)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "_unattended_contexts", lambda: [])
+
+        gate_keys = []
+        real_gate = approval._run_approval_gate
+
+        def _recording_gate(**kwargs):
+            gate_keys.append(kwargs["pattern_key"])
+            return real_gate(**kwargs)
+
+        monkeypatch.setattr(approval, "_run_approval_gate", _recording_gate)
+
+        msgs = [plugins.resolve_pre_tool_block("terminal", {"command": c})
+                for c in ("rm -rf build", "mail boss", "explicit rm")]
+
+        assert all(m and m.startswith("BLOCKED:") for m in msgs)
+        k_rm, k_mail, k_explicit = gate_keys
+        assert k_rm != k_mail
+        assert k_rm.startswith("plugin_rule:terminal:") and k_mail.startswith("plugin_rule:terminal:")
+        assert "plugin_rule:terminal" not in (k_rm, k_mail)
+        assert k_explicit == "plugin_rule:terminal:rm"
+
+    def test_exit_2_with_approve_json_still_blocks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "approve_exit2.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "approve", "message": "x"}\\n\'\n'
+            'echo "stop" >&2\n'
+            "exit 2\n",
+        )
+        spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+        result = shell_hooks._make_callback(spec)(tool_name="terminal", args={"command": "ls"})
+        assert result == {"action": "block", "message": "stop"}
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""

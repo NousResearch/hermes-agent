@@ -122,8 +122,12 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
     except OSError:
         pass
     try:
-        if _drain_until(proc, on_line, time.monotonic() + timeout_seconds):
-            return proc.wait()
+        try:
+            if _drain_until(proc, on_line, time.monotonic() + timeout_seconds):
+                return proc.wait()
+        except BaseException:
+            _kill_group(proc)
+            raise
         _kill_group(proc)
         on_line(f"install timed out after {timeout_seconds:.0f}s; the package manager may still be running as root")
         return proc.returncode if proc.returncode is not None else -9
@@ -166,9 +170,12 @@ def _kill_group(proc: subprocess.Popen) -> None:
     apt/dnf running as root with the dpkg lock while the slot is released, so the whole group goes: TERM
     first so dpkg can finish its transaction, KILL after the grace. Best effort — as non-root neither
     signal reaches a root-owned child, which is why the caller never waits on EOF."""
-    for sig, grace in ((signal.SIGTERM, _TERM_GRACE_SECONDS), (signal.SIGKILL, 1.0)):  # windows-footgun: ok — Linux-only (is_supported_host)
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, sig)  # windows-footgun: ok — Linux-only (is_supported_host)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=grace)
-            return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGTERM)  # windows-footgun: ok — Linux-only (is_supported_host)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=_TERM_GRACE_SECONDS)
+    # Leader exit is not group exit: sudo may terminate while apt/dnf survives in the same process group.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — Linux-only (is_supported_host)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=1.0)

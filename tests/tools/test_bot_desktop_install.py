@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 
@@ -204,3 +205,75 @@ def test_no_sudo_binary_returns_the_host_command_instead_of_a_password_card(monk
                                     on_line=lines.append)
     assert code == install.NO_SUDO
     assert any("apt-get install" in line for line in lines), lines
+
+
+@pytest.mark.linux_only
+def test_output_callback_interrupt_kills_the_installer_process_group(monkeypatch):
+    """Ctrl-C or a renderer callback failure must not return while a privileged package transaction
+    continues after the profile's install slot has been released."""
+    import subprocess
+    import time
+
+    monkeypatch.setattr(install, "_sudo_nopasswd", lambda: True)
+    real_popen = subprocess.Popen
+    spawned = []
+
+    def popen(_argv, **kw):
+        proc = real_popen(["bash", "-c", "echo started; sleep 30"], **kw)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(install.subprocess, "Popen", popen)
+
+    def interrupt(line: str) -> None:
+        if line == "started":
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        install._run("sudo apt-get install -y x", ask_password=lambda: "", on_line=interrupt, timeout_seconds=30)
+
+    proc = spawned[0]
+    for _ in range(20):
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    if proc.poll() is None:
+        os.killpg(proc.pid, 9)
+        pytest.fail("installer process group survived an interrupted output callback")
+
+
+@pytest.mark.linux_only
+def test_group_kill_escalates_when_leader_exits_but_descendant_survives(monkeypatch):
+    """A sudo leader may exit on TERM while apt/dnf ignores or outlives it; cleanup must still send KILL
+    to the original group rather than treating leader exit as proof that the transaction ended."""
+    import subprocess
+    import time
+    from pathlib import Path
+
+    monkeypatch.setattr(install, "_TERM_GRACE_SECONDS", 0.1)
+    proc = subprocess.Popen(
+        ["bash", "-c", "trap 'exit 0' TERM; bash -c \"trap '' TERM; sleep 30\" & echo $!; wait"],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    child = int(proc.stdout.readline().strip())
+
+    def alive(pid: int) -> bool:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+            return state != "Z"
+        except OSError:
+            return False
+
+    try:
+        install._kill_group(proc)
+        for _ in range(20):
+            if not alive(child):
+                break
+            time.sleep(0.05)
+        assert not alive(child), "installer descendant survived group cleanup after its leader exited"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, 9)

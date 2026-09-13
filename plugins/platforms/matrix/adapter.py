@@ -482,7 +482,9 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
 
 
 def _recovery_key_output_path() -> Optional[Path]:
-    output_file = os.getenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "").strip()
+    """MATRIX_RECOVERY_KEY_OUTPUT_FILE via the profile-scoped reader: a bare os.getenv under
+    multiplex resolves the default profile's path, writing/finding the wrong profile's file."""
+    output_file = _get_scoped_secret("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "").strip()
     return Path(output_file).expanduser() if output_file else None
 
 

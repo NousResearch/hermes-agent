@@ -634,6 +634,13 @@ DELEGATE_TASK_SCHEMA = {
                             "schema_valid, plus schema_errors on failure). Keep it forgiving — require only "
                             "fields you will read.",
                         ),
+                        "result_delivery": _p(
+                            "string",
+                            "How the exact final answer returns. 'inline' is the default. 'path' stores it in "
+                            "the delegation cache and returns only that path; use it when another tool will "
+                            "consume a large structured result.",
+                            enum=["inline", "path"],
+                        ),
                         "group": _p(
                             "string",
                             "Optional result-delivery bucket within this call (only when delegation.independent_completions "

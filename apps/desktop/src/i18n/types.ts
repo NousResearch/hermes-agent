@@ -1060,6 +1060,12 @@ export interface Translations {
       reloadFailed: string
       savedTitle: string
       savedMessage: (name: string) => string
+      discoveryTitle: string
+      discoveryFind: string
+      discoveryHint: string
+      discoverySearching: string
+      discoveryEmpty: string
+      discoveryTarget: (name: string) => string
       newServer: string
       reload: string
       reloading: string

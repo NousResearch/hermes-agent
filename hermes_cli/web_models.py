@@ -327,6 +327,9 @@ class MCPEnabledToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
 
+class MCPDiscoveryConnect(BaseModel):
+    candidate_id: str
+
 class MCPCatalogInstall(BaseModel):
     name: str
     env: Dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars

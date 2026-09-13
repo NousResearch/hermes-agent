@@ -20,7 +20,9 @@ from fastapi.responses import HTMLResponse
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
-from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
+from hermes_cli.web_models import (
+    MCPCatalogInstall, MCPDiscoveryConnect, MCPEnabledToggle, MCPServerCreate, MCPServersReplace,
+)
 from hermes_cli.web_routers._common import (
     _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
     log as _log, scoped_to_thread,
@@ -104,6 +106,41 @@ def _mcp_install_action_name(name: str) -> str:
     action = f"mcp-install-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
     return action
+
+
+@router.post("/api/mcp/discovery")
+async def discover_mcp_servers(profile: Optional[str] = None):
+    from hermes_cli.mcp_discovery import DiscoveryNotFound, discover_candidates
+
+    try:
+        return await asyncio.to_thread(discover_candidates, profile)
+    except DiscoveryNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("POST /api/mcp/discovery failed")
+        raise HTTPException(status_code=500, detail="MCP discovery failed") from exc
+
+
+@router.post("/api/mcp/discovery/connect")
+async def connect_discovered_mcp_server(body: MCPDiscoveryConnect, profile: Optional[str] = None):
+    from hermes_cli.mcp_discovery import DiscoveryConflict, DiscoveryNotFound, connect_candidate
+
+    def _run():
+        with config_write_scope(profile):
+            return connect_candidate(body.candidate_id)
+
+    try:
+        name = await asyncio.to_thread(_run)
+    except DiscoveryNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DiscoveryConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("POST /api/mcp/discovery/connect failed")
+        raise HTTPException(status_code=400, detail="Could not connect MCP discovery candidate") from exc
+    return {"ok": True, "name": name}
 
 
 @router.get("/api/mcp/servers")

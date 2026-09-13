@@ -52,6 +52,8 @@ import { PanelAddButton, PanelEmpty } from '../overlays/panel'
 import { prettyName } from '../settings/helpers'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
 
+import { McpDiscovery } from './mcp-discovery'
+
 // The editor always speaks the ecosystem's mcp.json document format — names
 // are the JSON keys, transport is inferred from `command` vs `url` — so any
 // README's "add this to your mcp.json" snippet pastes verbatim. Storage stays
@@ -761,8 +763,14 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // clean one the seed never refreshes) would omit the new server, and the next
   // whole-map Save would silently drop it.
   const onCatalogInstalled = async () => {
+    const epoch = profileEpoch.current
     void catalogQuery.refetch()
     const { data } = await refetchConfig()
+
+    if (profileEpoch.current !== epoch) {
+      return
+    }
+
     const nextServers = getServers(data ?? null)
 
     if (dirty) {
@@ -1125,6 +1133,12 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                   <PanelAddButton label={m.newServer} onClick={addServer} />
                 </>
               )}
+              <McpDiscovery
+                configuredNames={names}
+                disabled={profilePending || saving || dirty}
+                onConnected={onCatalogInstalled}
+                profile={profile ?? appProfile}
+              />
               {(catalogQuery.isLoading || availableCatalog.length > 0) && (
                 <>
                   <div className="mb-1 mt-3 flex h-6 shrink-0 items-center border-t border-(--ui-stroke-quaternary) pl-2 pr-1 pt-2">

@@ -206,6 +206,30 @@ rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a
 more capable integration. On Desktop, GitHub mentions instead offer the
 `github-auth` skill when `gh` isn't signed in yet.
 
+## Find existing servers in Desktop
+
+Open **Capabilities → MCP → Find MCP servers** (or **Refresh** after a scan).
+The selected gateway searches its Hermes profiles, known Claude Code / Cursor /
+Claude Desktop config locations, and local TCP listeners. Switch on a discovered
+entry to copy its configuration into the selected profile; the existing MCP
+reload flow applies it. Configured entries keep their normal on/off switches.
+Profiles remain independent: later changes to the source are not inherited.
+
+Discovery does not launch stdio programs or install packages. Turning an entry on
+is explicit permission to use its configured command through the normal MCP
+connection flow. Inline credentials are not copied: credential-bearing entries
+are shown as unavailable. `${ENV_VAR}` references remain references and must be
+available to the destination profile; secret files and token stores are not read.
+Existing server names are never overwritten, and changed sources require a new
+scan.
+
+HTTP discovery sends bounded MCP `initialize` requests to loopback listeners at
+`/mcp` and `/sse`; an open port alone is not an MCP match. This is not an exhaustive
+scan: custom paths, HTTPS-only or authenticated endpoints, legacy GET-only SSE,
+non-loopback bindings, and listeners outside the gateway's OS/network namespace
+(such as a Windows host when the gateway runs inside WSL) may require manual setup.
+When using a remote gateway, discovery runs there—not on the Desktop computer.
+
 ## Two kinds of MCP servers
 
 ### Stdio servers

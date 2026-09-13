@@ -110,6 +110,18 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-dispatch", [
+        _SLUG,
+        _arg("state", choices=("on", "off"), help="Enable or disable dispatcher sweeps for this board"),
+    ], help="Toggle this board's override of the global kanban dispatcher"),
+    _cmd("set-auto-decompose", [
+        _SLUG,
+        _arg("state", choices=("on", "off"), help="Enable or disable auto-decompose for this board"),
+    ], help="Toggle this board's override of the global kanban auto-decompose"),
+    _cmd("set-review-dispatch", [
+        _SLUG,
+        _arg("state", choices=("on", "off"), help="Enable or disable review-lane dispatch for this board"),
+    ], help="Toggle this board's override of the global kanban review-dispatch"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),
@@ -329,9 +341,12 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Audit-trail reason (recorded on the task_events row)"),
         _bulk_ids("promote"),
+        _arg("--force", action="store_true", help="Promote even if parent dependencies are not yet done/archived"),
+        _arg("--readiness", action="store_true",
+             help="Explicitly move a triage task to ready for a bounded readiness canary; requires an audit reason"),
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
-    ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
+    ], help="Manually move tasks to ready (todo/blocked recovery or explicit triage readiness canary)"),
     _cmd("archive", [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
         _arg("--rm", dest="purge_ids", nargs="+",

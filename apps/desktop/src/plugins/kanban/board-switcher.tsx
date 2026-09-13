@@ -26,6 +26,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
   useI18n,
   useMutation,
   useQuery,
@@ -56,7 +57,7 @@ const DEFAULT_BOARD = 'default'
 /** Board scope = a first-class Hermes project. Its primary repo becomes the
  *  board's default workspace root; new tasks inherit it as a worktree with a
  *  deterministic branch. "No project" falls back to scratch sandboxes. */
-function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
+export function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
   const k = useKanban()
   const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
   const projects = data?.projects ?? []
@@ -247,37 +248,6 @@ function RenameBoardDialog({ board, onClose }: { board: BoardMeta | null; onClos
   )
 }
 
-function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
-  const k = useKanban()
-  const [project, setProject] = useState('')
-  // Null while closed — see RenameBoardDialog on why this can't live inside
-  // the mutation callback.
-  const slug = board?.slug ?? ''
-
-  useEffect(() => {
-    if (board) {
-      setProject(board.project_id || '')
-    }
-  }, [board])
-
-  // The name lives in the rename dialog; '' clears the scope, which also
-  // drops the mirrored default_workdir on the backend.
-  const save = useBoardWrite(() => updateBoard(slug, { project_id: project }), onClose)
-
-  return (
-    <BoardDialog
-      confirmLabel={k.save}
-      disabled={save.isPending}
-      onClose={onClose}
-      onConfirm={() => save.mutate()}
-      open={Boolean(board)}
-      title={board ? k.boardSettingsFor(board.name || board.slug) : k.settingsDots}
-    >
-      <ProjectPicker onChange={setProject} value={project} />
-    </BoardDialog>
-  )
-}
-
 export function BoardSwitcher() {
   const k = useKanban()
   // Delete reuses the app-wide label, the way sessions and profiles do.
@@ -286,7 +256,6 @@ export function BoardSwitcher() {
   const slug = useValue($boardSlug)
   const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
-  const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
   const [renameFor, setRenameFor] = useState<BoardMeta | null>(null)
   const [deleteFor, setDeleteFor] = useState<BoardMeta | null>(null)
 
@@ -365,10 +334,6 @@ export function BoardSwitcher() {
                 <Codicon name="edit" size="0.8rem" />
                 {k.renameDots}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
-                <Codicon name="settings-gear" size="0.8rem" />
-                {k.settingsDots}
-              </DropdownMenuItem>
             </>
           )}
           <DropdownMenuItem onSelect={() => setAdding(true)}>
@@ -401,7 +366,6 @@ export function BoardSwitcher() {
       </DropdownMenu>
       <NewBoardDialog onClose={() => setAdding(false)} open={adding} />
       <RenameBoardDialog board={renameFor} onClose={() => setRenameFor(null)} />
-      <BoardSettingsDialog board={settingsFor} onClose={() => setSettingsFor(null)} />
       <ConfirmDialog
         confirmLabel={t.common.delete}
         description={k.deleteBoardConfirm}

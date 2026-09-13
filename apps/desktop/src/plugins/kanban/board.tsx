@@ -75,13 +75,14 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  PROFILES_KEY,
+  updateBoard
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { columnMeta, type BoardsResponse, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   ago,
@@ -1093,6 +1094,27 @@ export function KanbanBoardPage() {
     refetchInterval: 60_000
   })
 
+  // Fetch board metadata for the toggle switches
+  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const currentBoard = boards?.boards?.find(b => b.slug === slug)
+
+  // Toggle mutation for per-board settings
+  const toggleBoardSetting = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => updateBoard(slug, patch),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: (_, patch) => {
+      // Optimistically update via an immutable cache write (never mutate the
+      // cached board object in place) so react-query's reference-identity
+      // and reconciliation stay correct.
+      qc.setQueryData<BoardsResponse>(BOARDS_KEY, prev =>
+        prev
+          ? { ...prev, boards: prev.boards.map(b => (b.slug === slug ? { ...b, ...patch } : b)) }
+          : prev
+      )
+      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    }
+  })
+
   const [openId, setOpenId] = useState<null | string>(null)
   const [addStatus, setAddStatus] = useState<null | string>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1344,7 +1366,42 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-2">
+          {currentBoard && (
+            <>
+              <Tip label={k.boardDispatchEnabled}>
+                <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
+                  <Switch
+                    aria-label={k.boardDispatchEnabled}
+                    checked={currentBoard.dispatch_enabled ?? true}
+                    onCheckedChange={enabled => toggleBoardSetting.mutate({ dispatch_enabled: enabled })}
+                  />
+                  <span>Dispatch</span>
+                </label>
+              </Tip>
+              <Tip label={k.boardAutoDecomposeEnabled}>
+                <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
+                  <Switch
+                    aria-label={k.boardAutoDecomposeEnabled}
+                    checked={currentBoard.auto_decompose_enabled ?? true}
+                    onCheckedChange={enabled => toggleBoardSetting.mutate({ auto_decompose_enabled: enabled })}
+                  />
+                  <span>Decompose</span>
+                </label>
+              </Tip>
+              <Tip label={k.boardReviewDispatchEnabled}>
+                <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
+                  <Switch
+                    aria-label={k.boardReviewDispatchEnabled}
+                    checked={currentBoard.review_dispatch_enabled ?? true}
+                    onCheckedChange={enabled => toggleBoardSetting.mutate({ review_dispatch_enabled: enabled })}
+                  />
+                  <span>Review</span>
+                </label>
+              </Tip>
+              <div className="h-4 w-px bg-(--ui-border)" />
+            </>
+          )}
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1363,7 +1420,7 @@ export function KanbanBoardPage() {
         </div>
       </header>
 
-      {settingsOpen && <OrchestrationPanel />}
+      {settingsOpen && <OrchestrationPanel board={currentBoard} />}
 
       {board && <Intro />}
 

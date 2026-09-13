@@ -1256,15 +1256,28 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return _has_spawnable(conn, "review")
 
 
-def review_dispatch_enabled() -> bool:
+def review_dispatch_enabled(board: Optional[str] = None) -> bool:
     """Whether review tasks dispatch automatically. Default true (Hermes ships
     ``sdlc-review``); operators disable it for human-only review boards.
+
+    ``board`` applies a per-board override on top of the global switch
+    (narrowing-only, same semantics as ``dispatch_enabled``/
+    ``auto_decompose_enabled`` in board.json): a disabled global switch
+    always wins; an enabled global switch defers to the board's own flag
+    when the caller supplies one.
     """
     try:
         from hermes_cli.config import load_config
-        return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
+        global_enabled = bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
     except Exception:
-        return True
+        global_enabled = True
+    if not global_enabled or board is None:
+        return global_enabled
+    try:
+        from hermes_cli import kanban_db
+        return bool(kanban_db.read_board_metadata(board).get("review_dispatch_enabled", True))
+    except Exception:
+        return global_enabled
 
 
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
@@ -1781,7 +1794,7 @@ def _dispatch_once_locked(
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
-    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    review_rows = _lane_rows(conn, "review") if review_dispatch_enabled(board=board) else []
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold

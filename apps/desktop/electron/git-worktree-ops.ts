@@ -211,6 +211,8 @@ async function ensureGitRepo(gitBin, dir) {
         'user.email=hermes@localhost',
         '-c',
         'user.name=Hermes',
+        '-c',
+        'commit.gpgSign=false',
         'commit',
         '--allow-empty',
         '-m',

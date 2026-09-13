@@ -514,6 +514,88 @@ def board_db_path_unpinned(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "kanban.db"
 
 
+class BoardPinConflict(ValueError):
+    """An explicit ``board=`` that contradicts the caller's own board pin.
+
+    Raised instead of silently resolving the pinned ``HERMES_KANBAN_DB`` when a
+    board-scoped process (dispatcher worker / delegate child) asks for a
+    DIFFERENT board: resolving through the pin would create or read the task on
+    the caller's own board — a silent mis-delivery that reports success.
+    """
+
+
+def _pinned_db_override() -> Optional[Path]:
+    """``HERMES_KANBAN_DB`` as a path — the caller's OWN board — or ``None``."""
+    raw = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def _is_board_scoped_process() -> bool:
+    """True when this process acts for ONE board, not as a board-agnostic owner.
+
+    Dispatcher-spawned workers (``HERMES_KANBAN_TASK``), ``delegate_task``
+    children and cron jobs fired in-process from a worker are all scoped: the
+    pin the dispatcher injects identifies THEIR board, so it can never be used
+    to reach a sibling board. Gateways, the dashboard, an interactive session
+    and top-level cron runs are owners and may route across boards.
+    """
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        owned = is_dispatcher_owned_worker_context()
+    except Exception:
+        owned = not os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+    return (not owned) or bool(os.environ.get("HERMES_KANBAN_TASK"))
+
+
+def _same_db_file(a: Path, b: Path) -> bool:
+    """Whether two DB paths name the same file (symlinks/relative paths resolved)."""
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
+
+
+def connection_db_path(board: Optional[str] = None, db_path: Optional[Path] = None) -> Path:
+    """DB path for a connection opened with an OPTIONAL explicit board.
+
+    ``db_path`` wins outright; ``board=None`` keeps the whole legacy chain
+    (:func:`kanban_db_path`). An explicit ``board`` is a request for THAT board,
+    so the caller's ``HERMES_KANBAN_DB`` pin is honoured only while it already IS
+    that board's canonical file (:func:`board_db_path_unpinned`) — i.e. the
+    caller's own board. When the pin names something else:
+
+    * a board-scoped process (:func:`_is_board_scoped_process`) raises
+      :class:`BoardPinConflict` — resolving through the pin would create or read
+      the task on the WRONG board while reporting success;
+    * any other caller (gateway, dashboard, interactive session, top-level cron)
+      gets the board's canonical file, which is what ``board=`` promises.
+
+    Connector-side counterpart of ``_other_board_db_paths()``: both must ignore
+    the pin for any board that is not the caller's own.
+    """
+    if db_path is not None:
+        return Path(db_path)
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        return kanban_db_path(None)
+    pinned = _pinned_db_override()
+    if pinned is None:
+        return kanban_db_path(slug)
+    canonical = board_db_path_unpinned(slug)
+    if _same_db_file(pinned, canonical):
+        return pinned
+    if _is_board_scoped_process():
+        raise BoardPinConflict(
+            f"board {slug!r} is out of scope for this process: HERMES_KANBAN_DB pins it "
+            f"to {pinned}, which is the caller's own board, not {slug!r}. A dispatcher "
+            f"worker (or a descendant of one) cannot read or write another board — route "
+            f"cross-board work from a non-pinned context (dashboard or interactive "
+            f"session) instead."
+        )
+    return canonical
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""

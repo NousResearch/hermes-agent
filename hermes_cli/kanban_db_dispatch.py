@@ -691,6 +691,15 @@ _PROTOCOL_VIOLATION_SCAN_LIMIT = 50
 # trailing route failures the card is released streak-free (no
 # ``_record_task_failure`` call at all); at or above it, it trips the breaker
 # so a persistently unreachable route still blocks and surfaces.
+#
+# DELIBERATE OVERRIDE, not read from per-task ``max_retries`` (unlike the
+# protocol-violation streak in ``_account_crashes``, which does honor it): a
+# route failure means the worker never reached the model at all, so a task's
+# retry budget for its own agent work says nothing about how many times to
+# re-attempt routing/credentials before surfacing a persistently unreachable
+# route. A task configured with ``max_retries=1`` still gets exactly two
+# route-failure attempts. See
+# ``test_route_failure_budget_ignores_task_max_retries``.
 _ROUTE_FAILURE_FAILURE_LIMIT = 2
 
 

@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1509,6 +1510,45 @@ def test_two_trailing_route_failures_trip_the_breaker(kanban_home):
         conn.close()
 
 
+def test_route_failure_budget_ignores_task_max_retries(kanban_home):
+    """``_ROUTE_FAILURE_FAILURE_LIMIT`` is a DELIBERATE fixed budget that does
+    NOT read the task's ``max_retries`` override -- unlike the protocol-violation
+    streak (see ``_account_crashes``), which does. A route failure means the
+    worker never reached the model at all, so per-task retry tuning (aimed at
+    how many times to re-run the AGENT's work) says nothing useful about how
+    many times to re-attempt routing/credentials before surfacing a
+    persistently unreachable route; reusing ``max_retries`` here would let a
+    task configured with ``max_retries=1`` for its real work also cut short
+    route retries that have nothing to do with that setting. A task configured
+    with ``max_retries=1`` must still get exactly two route-failure attempts
+    before the breaker trips, proving the override is independent."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="route-trip-max-retries-1", assignee="worker", max_retries=1,
+        )
+
+        _drive_route_failure(conn, tid, 994101)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            "max_retries=1 must not shrink the route-failure budget below 2"
+        )
+
+        _drive_route_failure(conn, tid, 994102)
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            "second trailing route failure must still trip the breaker "
+            "at the fixed limit, ignoring max_retries=1"
+        )
+        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        payload = gave_up[0].payload or {}
+        assert payload.get("route_failures") == 2
+        assert payload.get("route_failure_limit") == kbd._ROUTE_FAILURE_FAILURE_LIMIT
+    finally:
+        conn.close()
+
+
 @pytest.mark.linux_only  # reads Linux-only /proc/<pid>/stat to observe zombie state
 def test_reap_ordering_classifies_real_exit_status_not_unknown(kanban_home):
     """A child that exits between two reaper passes must be classified from
@@ -1577,6 +1617,63 @@ def test_reap_ordering_classifies_real_exit_status_not_unknown(kanban_home):
         conn.close()
 
 
+def test_route_failure_classified_from_real_worker_exit(kanban_home):
+    """Real-subprocess proof of the classifier's core premise (review ask 4):
+    a worker that exits rc=0 with no turn-start heartbeat is classified as a
+    route failure, not a protocol violation. Unlike the tests above, this
+    spawns a genuine child process and drives it through the REAL reaper
+    (``reap_worker_zombies`` -> ``os.waitpid``) and the REAL liveness check
+    (``_pid_alive``) with no wait-status injection and no monkeypatching —
+    only ``sys.executable`` is used (no POSIX-only command), and the process
+    is fully reaped before the liveness check runs, so no platform-specific
+    zombie-state probe (``/proc``, ``ps``) is needed either: this test needs
+    no Linux-only marker.
+    """
+    conn = kbc.connect()
+    proc = None
+    try:
+        tid = kb.create_task(conn, title="real-route-failure", assignee="worker")
+        host_prefix = kb._claimer_id().split(":", 1)[0]
+        claimed = kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        assert claimed is not None
+
+        # A real child that exits immediately and cleanly (rc=0) with zero
+        # heartbeats ever recorded for this claim — the real-world shape of a
+        # routing/credential failure before the model ever ran. Deliberately
+        # never polled/waited on directly (that would reap it through
+        # CPython's own child-reaping, bypassing ``reap_worker_zombies``), so
+        # ``detect_crashed_workers`` performs the actual first reap.
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        kbd._set_worker_pid(conn, tid, proc.pid)
+
+        deadline = time.time() + 10
+        while time.time() < deadline and kbd._recent_worker_exits.get(proc.pid) is None:
+            kbd.reap_worker_zombies()
+            if kbd._recent_worker_exits.get(proc.pid) is not None:
+                break
+            time.sleep(0.05)
+        assert kbd._recent_worker_exits.get(proc.pid) is not None, (
+            f"child pid {proc.pid} did not exit and get reaped in time"
+        )
+
+        crashed = kbd.detect_crashed_workers(conn)
+        assert tid in crashed
+
+        run = kb.list_runs(conn, tid)[-1]
+        metadata = run.metadata or {}
+        assert metadata.get("exit_code") == 0
+        assert metadata.get("route_failure") is True
+
+        events = kb.list_events(conn, tid)
+        assert any(e.kind == "route_failure" for e in events)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        if proc is not None:
+            proc.wait()
+        conn.close()
+
+
 def test_route_failure_respects_crash_grace_window():
     """A clean exit with zero heartbeats INSIDE the crash-grace window must
     NOT be classified as a route failure — a freshly spawned worker whose
@@ -1640,3 +1737,4 @@ def test_reap_status_recorded_on_both_clean_exit_branches():
     finally:
         kbd._recent_worker_exits.pop(route_pid, None)
         kbd._recent_worker_exits.pop(pv_pid, None)
+

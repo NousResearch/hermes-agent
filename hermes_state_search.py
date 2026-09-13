@@ -996,7 +996,8 @@ class SessionSearchMixin:
                 for match in batch:
                     try:
                         match["context"] = [
-                            {"role": row["role"], "content": _flatten_text(self._decode_content(row["content"]))[:200]}
+                            {"role": self._public_cell(row["role"]),
+                             "content": _flatten_text(self._decode_content(row["content"]))[:200]}
                             for row in contexts.get(match["id"], [])]
                     except Exception:
                         match["context"] = []

@@ -519,14 +519,14 @@ class SessionMessagesMixin:
         row = self._read_one(
             "SELECT role FROM messages WHERE session_id = ? AND active = 1 "
             "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
-        return row[0] if row else None
+        return self._public_cell(row[0]) if row else None
 
     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
         """Role of the active message at *row_id* in *session_id*, or ``None``."""
         if not session_id:
             return None
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
-        return row[0] if row else None
+        return self._public_cell(row[0]) if row else None
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.

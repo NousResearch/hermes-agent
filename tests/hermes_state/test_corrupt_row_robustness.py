@@ -476,3 +476,107 @@ def test_partial_projection_apis_normalize_blob_stored_cells(tmp_path):
         assert json.dumps(scaffolded)
     finally:
         db.close()
+
+
+def _assert_no_bytes(node):
+    """Recursively fail on any bytes that escaped a public projection."""
+    if isinstance(node, bytes):
+        raise AssertionError(f"bytes escaped a public projection: {node!r}")
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _assert_no_bytes(key)
+            _assert_no_bytes(value)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _assert_no_bytes(item)
+
+
+def test_public_projection_contract_table_serializes_blob_cells(tmp_path):
+    """Table-driven public API contract (#109465 review, gap 4): every public read surface —
+    the scalar single-column projections and manually assembled dicts named in review, plus
+    the dict(row) projections converted earlier in this PR — degrades a corrupt BLOB-stored
+    cell to str, so json.dumps(result) never raises TypeError. Each case seeds a malformed
+    (undecodable) BLOB in a column the API projects, then asserts the serialized payload
+    carries U+FFFD and no raw bytes anywhere."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hello needle")
+        db.append_message("s", "assistant", "answer")
+        db.append_message("s", "tool", "tool needle", tool_name="terminal")
+        # Second tool row so the two BLOB targets don't fight: the LIKE fallback's
+        # role_filter matches on TEXT role, so row A keeps role='tool' (its tool_name is
+        # corrupted instead) while the newest row B carries the BLOB role.
+        db.append_message("s", "tool", "tail needle", tool_name="browser")
+        search_row_id = db._read_one("SELECT id FROM messages WHERE session_id = 's' AND role = 'tool'")[0]
+        blob_row_id = db._read_one(
+            "SELECT id FROM messages WHERE session_id = 's' AND role = 'tool' ORDER BY id DESC")[0]
+        db.set_session_title("s", "placeholder title")
+        db.request_handoff("s", "telegram")
+        db.bind_telegram_topic(chat_id="chat-1", thread_id="77", user_id="user-1",
+                               session_key="agent:main:telegram:dm:chat-1_77", session_id="s")
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+            "VALUES ('', 'agent:main:routed', '{}', 1.0)"))
+        db._execute_write(lambda conn: conn.execute(
+            "INSERT INTO gateway_heartbeats (backend_id, pid, started_at, last_heartbeat, profile, host) "
+            "VALUES ('srv-1', 42, 1.0, 1.0, 'default', 'box')"))
+        old_ts = time.time() - 45 * 86400.0
+        db._conn.execute(
+            "INSERT INTO sessions (id, source, title, started_at, ended_at, message_count, "
+            "tool_call_count, api_call_count, input_tokens, output_tokens, archived, pinned) "
+            "VALUES ('old', 'cli', 'placeholder old title', ?, ?, 0, 0, 0, 0, 0, 0, 0)",
+            (old_ts, old_ts))
+        db._conn.commit()
+
+        undecodable = b"corrupt \xe2\x9c"
+
+        def _store_blobs(conn):
+            # sessions: feeds get_session*, get_handoff_state, prune candidates, cwd rollup
+            conn.execute("UPDATE sessions SET title = ?, title_source = ?, handoff_error = ?, cwd = ? "
+                         "WHERE id = 's'", (undecodable, undecodable, undecodable, undecodable))
+            conn.execute("UPDATE sessions SET title = ? WHERE id = 'old'", (b"old corrupt \xe2\x9c",))
+            # messages: the newest row's role feeds latest_conversation_role/get_message_role;
+            # row A's tool_name feeds the LIKE-fallback search projection (content and role
+            # must stay TEXT so the search's WHERE still matches).
+            conn.execute("UPDATE messages SET role = ? WHERE id = ?", (undecodable, blob_row_id))
+            conn.execute("UPDATE messages SET tool_name = ? WHERE id = ?", (undecodable, search_row_id))
+            # gateway_routing / heartbeats / telegram bindings: manual dict assemblies
+            conn.execute("UPDATE gateway_routing SET session_key = ?, entry_json = ? "
+                         "WHERE session_key = 'agent:main:routed'", (undecodable, undecodable))
+            conn.execute("UPDATE gateway_heartbeats SET profile = ? WHERE backend_id = 'srv-1'",
+                         (undecodable,))
+            conn.execute("UPDATE telegram_dm_topic_bindings SET session_key = ? "
+                         "WHERE session_id = 's'", (undecodable,))
+
+        db._execute_write(_store_blobs)
+
+        cases = [
+            # Scalar projections named in review.
+            ("get_session_title", lambda: db.get_session_title("s")),
+            ("get_session_title_source", lambda: db.get_session_title_source("s")),
+            ("get_handoff_state", lambda: db.get_handoff_state("s")),
+            ("load_gateway_routing_entries", lambda: db.load_gateway_routing_entries()),
+            ("latest_conversation_role", lambda: db.latest_conversation_role("s")),
+            ("get_message_role", lambda: db.get_message_role("s", blob_row_id)),
+            ("distinct_session_cwds", lambda: db.distinct_session_cwds()),
+            # Dict(row) projections converted earlier in this PR.
+            ("get_session", lambda: db.get_session("s")),
+            ("list_prune_candidates", lambda: db.list_prune_candidates(older_than_days=30)),
+            ("list_backend_heartbeats", lambda: db.list_backend_heartbeats()),
+            ("list_telegram_topic_bindings_for_chat",
+             lambda: db.list_telegram_topic_bindings_for_chat(chat_id="chat-1")),
+            ("get_telegram_topic_binding_by_session",
+             lambda: db.get_telegram_topic_binding_by_session(session_id="s")),
+            # LIKE-fallback search rows (role_filter=['tool'] bypasses the trigram index).
+            ("search_messages_like_fallback",
+             lambda: db.search_messages("needle", role_filter=["tool"])),
+        ]
+        for name, factory in cases:
+            payload = factory()
+            assert payload, f"{name} lost its seeded row"
+            _assert_no_bytes(payload)
+            serialized = json.dumps(payload, ensure_ascii=False)
+            assert "\ufffd" in serialized, f"{name} did not degrade the BLOB cell"
+    finally:
+        db.close()

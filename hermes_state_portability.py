@@ -164,7 +164,8 @@ class SessionPortabilityMixin:
             "SELECT cwd AS cwd, COUNT(*) AS sessions, MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
             f"FROM sessions WHERE {where} GROUP BY cwd"
         )
-        return [{"cwd": r["cwd"], "sessions": int(r["sessions"] or 0), "last_active": float(r["last_active"] or 0)}
+        return [{"cwd": self._public_cell(r["cwd"]), "sessions": int(r["sessions"] or 0),
+                 "last_active": float(r["last_active"] or 0)}
                 for r in rows]
 
     def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:

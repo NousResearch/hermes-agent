@@ -438,6 +438,14 @@ class SessionDB(
         return data
 
     @staticmethod
+    def _public_cell(value: Any) -> Any:
+        """Scalar twin of ``_session_row_dict``: a corrupt BLOB-stored cell crossing a public
+        scalar or manually assembled projection (single-column reads like titles/roles, or
+        hand-built dicts like handoff/routing/cwd rollups) degrades to str here, so both
+        storage classes stay JSON-serializable on every read surface (#109465 review)."""
+        return _tolerant_decode_bytes(value) if isinstance(value, bytes) else value
+
+    @staticmethod
     def _close_connection_quietly(conn: Optional[sqlite3.Connection]) -> None:
         """Close a partially initialized connection without masking its error."""
         if conn is None:

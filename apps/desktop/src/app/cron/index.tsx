@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ProfileTag } from '@/app/chat/profile-tag'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -770,6 +771,11 @@ function CronJobListRow({
       dotClassName={STATE_DOT[state] ?? 'bg-muted-foreground'}
       menuItems={menuItems}
       menuLabel={menuLabel}
+      meta={
+        // Owning-profile chip — same tag the sidebar session rows wear, so a
+        // cross-profile list reads as many owners at a glance.
+        job.profile ? <ProfileTag profile={job.profile} /> : undefined
+      }
       onSelect={onSelect}
       rowKey={job.id}
       title={jobTitle(job)}

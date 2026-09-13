@@ -4119,8 +4119,23 @@ class BasePlatformAdapter(ABC):
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
+                # TTS plays before text only when the audio can carry the text: Telegram's
+                # first voice file rides the reply as its caption, but only within the
+                # 1024-char caption limit. Everywhere else the text is sent BEFORE the
+                # playback so the user reads the answer while it is spoken instead of
+                # waiting out the whole synthesis+playback (#109996).
+                _caption_eligible = (
+                    self.platform == Platform.TELEGRAM
+                    and bool(text_content)
+                    and text_content[:1024] == text_content
+                )
+                _text_first = bool(text_content) and not _caption_eligible
+                # Generated TTS files are removed after playback either way.
                 _tts_caption_delivered = False
+                if _text_first:
+                    await self._send_final_text(
+                        event, session_key, text_content, _final_thread_metadata,
+                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 for _tts_index, _tts_path in enumerate(_tts_paths):
                     try:
                         _tts_caption_delivered |= await self._play_tts_file(
@@ -4132,7 +4147,7 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
+                if text_content and not _tts_caption_delivered and not _text_first:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)

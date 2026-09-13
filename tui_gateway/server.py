@@ -478,7 +478,7 @@ def _response_profile_name(profile: str | None = None) -> str:
         return _current_profile_name()
     try:
         return name if _profile_home(name) is not None else _current_profile_name()
-    except FileNotFoundError:
+    except ProfileUnavailableError:
         return _current_profile_name()
 
 
@@ -489,6 +489,12 @@ def _db_unavailable_error(rid, *, code: int):
 # ── Per-session profile scoping: the desktop's app-global remote mode points every profile at this
 # backend, so calls carry ``profile`` → open that profile's db and bind its HERMES_HOME (ContextVar
 # override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
+class ProfileUnavailableError(FileNotFoundError):
+    """An explicit ``profile`` param names no live profile on this host. Raised out of the method
+    (never a silent fall-back to the launch profile); ``handle_request`` turns it into JSON-RPC 4064
+    so a client holding a deleted profile gets a typed error instead of a ws dispatch crash (#107829)."""
+
+
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
@@ -499,7 +505,7 @@ def _profile_home(profile: str | None) -> Path | None:
     except ValueError:
         home = None
     if home is None or not home.is_dir():
-        raise FileNotFoundError(f"Profile '{name}' does not exist.")
+        raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)
     if home not in _served_profile_homes:
@@ -769,6 +775,8 @@ def handle_request(req: dict) -> dict | None:
     token = _current_rpc_method.set(method)
     try:
         return fn(rid, params)
+    except ProfileUnavailableError as exc:
+        return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
 

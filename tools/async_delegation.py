@@ -16,7 +16,9 @@ import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from enum import Enum
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
@@ -36,6 +38,25 @@ _executor_max_workers: int = 0
 _records_lock = threading.Lock()
 # delegation_id -> record dict; kept for the run plus a short completed tail.
 _records: Dict[str, Dict[str, Any]] = {}
+
+
+class _DispatchPhase(Enum):
+    REGISTERED = "registered"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class _DispatchLifecycle:
+    phase: _DispatchPhase = _DispatchPhase.REGISTERED
+    future: Optional[Future] = None
+    error: Optional[str] = None
+
+
+def _dispatch_phase(record):
+    lifecycle = record.get("_dispatch")
+    # Legacy records supplied by callers predate native registration tracking.
+    return lifecycle.phase if lifecycle is not None else _DispatchPhase.SUBMITTED
 
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # Completed records retained (in memory and in the ledger) for status queries.
@@ -159,7 +180,7 @@ def _capture_routing_origin() -> Dict[str, Any]:
         return {}
 
 
-def _persist_dispatch(record: Dict[str, Any]) -> None:
+def _persist_dispatch(record: Dict[str, Any], *, prune: bool = True) -> None:
     now = time.time()
     try:
         from gateway.status import get_process_start_time
@@ -180,7 +201,8 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
             (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
              json.dumps(task_payload), record.get("origin_session_id", "")))
-    _prune_durable_records()
+    if prune:
+        _prune_durable_records()
 
 
 def _prune_durable_records() -> None:
@@ -263,8 +285,12 @@ def recover_abandoned_delegations() -> int:
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
         for row in rows:
             delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json = row
-            if pid and _pid_exists(int(pid)) and (started is None or get_process_start_time(int(pid)) == int(started)):
-                continue
+            if pid and _pid_exists(int(pid)):
+                live_started = get_process_start_time(int(pid))
+                # Only a known mismatch proves PID reuse; unavailable identity
+                # is not evidence that a live process lost ownership.
+                if started is None or live_started is None or int(live_started) == int(started):
+                    continue
             task = json.loads(task_json or "{}")
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
             recovered_results = _recovered_results(task, result_json, error)
@@ -447,6 +473,8 @@ def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
+    # A status read can be the first touchpoint after the owning process exits.
+    recover_abandoned_delegations()
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute("""SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts,
@@ -515,7 +543,7 @@ def _new_delegation_id() -> str:
 
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
-    completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]
+    completed = [(rid, r) for rid, r in _records.items() if r.get("status") not in _LIVE_STATES]
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
     for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
         _records.pop(rid, None)
@@ -582,26 +610,31 @@ def _dispatch(
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
-        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
+        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None,
+        "_dispatch": _DispatchLifecycle()}
     with _records_lock:
+        if _oneshot_state is not None:
+            return {"status": "rejected", "error": "Async delegation admission is closed for one-shot shutdown."}
         active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
-    _persist_dispatch(record)
-    # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
-    # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
-    executor = _get_executor(max(max_async_children, live_units))
-
     def _worker() -> None:
+        # CPython queues before starting a thread: submit can raise with work
+        # already queued. Only a returned Future authorizes child side effects.
+        while _dispatch_phase(record) is _DispatchPhase.REGISTERED:
+            time.sleep(0.001)
+        if _dispatch_phase(record) is _DispatchPhase.FAILED:
+            return
         result: Dict[str, Any] = {}
         status = "error"
         with _records_lock:
             rec = _records.get(delegation_id)
-            if rec is not None:
-                # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
-                rec.update(_started=True, _progress_ts=time.time())
+            if rec is None or rec.get("status") not in _ACTIVE_STATES:
+                return
+            # The stall clock starts when the runner starts, not while queued.
+            rec.update(_started=True, _progress_ts=time.time())
         try:
             result = runner() or {}
             status = classify(result)
@@ -611,17 +644,32 @@ def _dispatch(
         finally:
             _finalize(delegation_id, result, status)
 
+    future = None
+    error = "Dispatch exited before submission"
     try:
-        # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
-        executor.submit(propagate_context_to_thread(_worker))
-    except Exception as exc:  # pragma: no cover — pool submit failure is rare
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        with _DB_LOCK, _transaction() as conn:
-            conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
-        return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
+        _persist_dispatch(record)
+        # Units sharing one slot still require independent executor capacity.
+        executor = _get_executor(max(max_async_children, live_units))
+        future = executor.submit(propagate_context_to_thread(_worker))
+    except Exception as exc:
+        error = f"Failed to schedule async delegation{label}: {exc}"
+        return {"status": "rejected", "error": error}
+    finally:
+        # One immutable publication: no exit (including rollback/monitor errors)
+        # leaves a registration waiting for a submit that can never happen.
+        record["_dispatch"] = _DispatchLifecycle(
+            _DispatchPhase.SUBMITTED if future is not None else _DispatchPhase.FAILED,
+            future, None if future is not None else error)
+        if future is None:
+            try:
+                _finalize(delegation_id, crash_result(error, 0), "error")
+            except Exception:
+                logger.warning("Failed dispatch terminal write unfinished; ownership retained", exc_info=True)
     if progress_fn is not None:
-        _ensure_stale_monitor()
+        try:
+            _ensure_stale_monitor()
+        except Exception:
+            logger.warning("Submitted delegation could not start stale monitor", exc_info=True)
     return {"status": "dispatched", "delegation_id": delegation_id}
 
 
@@ -704,6 +752,10 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
+    if _dispatch_phase(snapshot) is _DispatchPhase.FAILED:
+        # Persistence may have failed before INSERT or after commit in pruning.
+        # Repair under the exclusive finalizer claim; never delete accepted work.
+        _persist_dispatch(snapshot, prune=False)
     _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
     with _records_lock:
         if delegation_id in _records:
@@ -984,6 +1036,102 @@ def interrupt_all(reason: str = "shutdown") -> int:
     return _interrupt_records(targets, "interrupt_all", reason, "Interrupted %d async delegation(s) (%s)")
 
 
+# One pair per process shutdown, never one thread per delegation. Retained so
+# repeated cleanup cannot enqueue another finalizer or another blocking callback.
+_oneshot_lock = threading.Lock()
+_oneshot_state = None
+
+
+def finalize_for_oneshot_shutdown(*, grace_seconds: float = 2.0) -> dict[str, int]:
+    """Bound caller latency to grace + 100ms for terminal writes (including locks).
+
+    Arbitrary callbacks and filesystem calls cannot be cancelled in Python. Two
+    daemon coordinators isolate those effects from the exiting thread. A timed-out
+    write keeps its exclusive finalizing claim; the dispatch ledger still carries
+    process ownership for restart recovery. ``pending`` is NOT a persisted unknown.
+    """
+    global _oneshot_state
+    grace = max(0.0, float(grace_seconds))
+    deadline = time.monotonic() + grace + 0.1
+    if not _oneshot_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise TimeoutError("One-shot shutdown coordinator is busy; ownership retained")
+    try:
+        if _oneshot_state is None:
+            if not _records_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                raise TimeoutError("Delegation registry busy; ownership retained")
+            try:
+                # Close under the registration lock BEFORE taking the retained snapshot.
+                state = {"targets": [], "signaled": 0, "done": threading.Event()}
+                _oneshot_state = state
+                targets = [r for r in _records.values() if r.get("status") in _LIVE_STATES]
+                signals = [(r, r.get("interrupt_fn")) for r in targets if r.get("status") in _ACTIVE_STATES]
+                state["targets"] = targets
+            finally:
+                _records_lock.release()
+
+            def interrupt():
+                pending = list(signals)
+                while pending:
+                    deferred = []
+                    for record, callback in pending:
+                        phase = _dispatch_phase(record)
+                        if phase is _DispatchPhase.REGISTERED:
+                            deferred.append((record, callback))
+                        elif phase is _DispatchPhase.SUBMITTED:
+                            state["signaled"] += _call_interrupt(
+                                callback, "oneshot interrupt failed: %s", record["delegation_id"])
+                    pending = deferred
+                    if pending:
+                        time.sleep(0.01)
+
+            def finish():
+                try:
+                    unwind_until = deadline - 0.1
+                    while any(r.get("status") in _LIVE_STATES for r in targets):
+                        remaining = unwind_until - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        time.sleep(min(0.01, remaining))
+                    reason = "One-shot shutdown grace period elapsed; outcome unknown."
+                    pending = list(targets)
+                    while pending:
+                        deferred = []
+                        for record in pending:
+                            phase = _dispatch_phase(record)
+                            if phase is _DispatchPhase.REGISTERED:
+                                deferred.append(record)
+                                continue
+                            status = "error" if phase is _DispatchPhase.FAILED else "unknown"
+                            error = record["_dispatch"].error if phase is _DispatchPhase.FAILED else reason
+                            result = {"status": status, "summary": None, "error": error}
+                            if record.get("is_batch"):
+                                result = _batch_crash(error, round(time.time() - record["dispatched_at"], 2))
+                            try:
+                                _finalize(record["delegation_id"], result, status)
+                            except Exception:
+                                logger.warning("One-shot terminal write unfinished; ownership retained", exc_info=True)
+                        pending = deferred
+                        if pending:
+                            time.sleep(0.01)
+                except Exception:
+                    logger.warning("One-shot terminal write unfinished; ownership retained", exc_info=True)
+                finally:
+                    state["done"].set()
+
+            threading.Thread(target=interrupt, name="oneshot-interrupt", daemon=True).start()
+            threading.Thread(target=finish, name="oneshot-finalize", daemon=True).start()
+        state = _oneshot_state
+    finally:
+        _oneshot_lock.release()
+    state["done"].wait(max(0.0, deadline - time.monotonic()))
+    # References survive pruning; terminal status is published only after commit
+    # and event publication. No blocking lock or I/O remains on the caller path.
+    statuses = [r.get("status") for r in state["targets"]]
+    return {"signaled": state["signaled"], "interrupted": statuses.count("interrupted"),
+            "unknown": statuses.count("unknown"),
+            "pending": sum(s in _LIVE_STATES for s in statuses)}
+
+
 def interrupt_for_session(
     session_key: str = "", origin_ui_session_id: str = "", parent_session_id: str = "", reason: str = "session_end",
 ) -> int:
@@ -996,7 +1144,10 @@ def interrupt_for_session(
 
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor + monitor."""
-    global _executor, _executor_max_workers, _monitor_thread
+    global _executor, _executor_max_workers, _monitor_thread, _oneshot_state
+    if _oneshot_state is not None:
+        _oneshot_state["done"].wait(2)
+        _oneshot_state = None
     with _executor_lock:
         if _executor is not None:
             _executor.shutdown(wait=False)

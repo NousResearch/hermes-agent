@@ -208,6 +208,11 @@ scripts/run_tests.sh
 # Alternative (activate the venv first). The wrapper is still recommended
 # for parity with GitHub Actions before you open a PR:
 pytest tests/ -v
+
+# Native TUI crate (opt-in ratatui client at crates/tui/)
+cargo fmt --all -- --check --manifest-path crates/tui/Cargo.toml
+cargo clippy --all-targets --locked --manifest-path crates/tui/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path crates/tui/Cargo.toml
 ```
 
 ---

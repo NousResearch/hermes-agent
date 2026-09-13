@@ -1,13 +1,19 @@
 """OpenAI image generation — ChatGPT/Codex OAuth variant.
 
-Same catalog/tiers as the ``openai`` plugin (``gpt-image-2`` low/medium/high), routed
-through the Codex Responses API ``image_generation`` tool, so no ``OPENAI_API_KEY`` is
-needed. Output is PNG; source images travel as Responses ``input_image`` parts.
+Same catalog/tiers as the ``openai`` plugin (``gpt-image-2`` low/medium/high plus
+optional GPT Image 2.5 Flare/Sunburst quality variants), routed through the Codex
+Responses API ``image_generation`` tool, so no ``OPENAI_API_KEY`` is needed. Output
+is PNG; source images travel as Responses ``input_image`` parts. Selected catalog
+ids are sent as ``tools[0].model`` (quality from catalog meta) and are never rewritten
+to ``gpt-image-2`` by Hermes. Codex may normalize the model even on HTTP success;
+server-reported tool metadata is preserved separately, not treated as engine identity.
 
 Do NOT reintroduce an "account capability" classifier keyed on ``Tool choice
 'image_generation' not found in 'tools' parameter``: that 400 is a request-shape
 rejection for every account, fixed by omitting tool_choice (``_build_responses_payload``);
-any remaining HTTP error must surface verbatim.
+any remaining HTTP error must surface verbatim as ``api_error`` and must not
+silently fall through to another provider. Error text alone does not identify
+whether the host model, image model, or another parameter was rejected.
 """
 
 from __future__ import annotations
@@ -38,7 +44,27 @@ logger = logging.getLogger(__name__)
 # so it stays diagnosable. See issues #19505, #49008 and #31335.
 _MAX_ERROR_BODY_CHARS = 500
 
-# Hosts the ``image_generation`` tool call; ``API_MODEL`` does the image work.
+# Same picker catalog as the API-key OpenAI plugin: GPT Image 2 quality tiers plus
+# GPT Image 2.5 Flare/Sunburst (``auto`` has no suffix; other qualities are suffixed).
+MODELS = {
+    **{key: {**meta, "api_model": API_MODEL} for key, meta in GPT_IMAGE_2_TIERS.items()},
+    **{
+        model if quality == "auto" else f"{model}-{quality}": {
+            "display": f"GPT Image 2.5 {name} ({quality.title()})",
+            "speed": speed,
+            "strengths": strengths,
+            "api_model": model,
+            "quality": quality,
+        }
+        for model, name, speed, strengths in (
+            ("gpt-image-2.5-flare", "Flare", "Fast", "Everyday image generation and editing"),
+            ("gpt-image-2.5-sunburst", "Sunburst", "Slower", "Precision generation and editing"),
+        )
+        for quality in ("auto", "low", "medium", "high", "xhigh", "max")
+    },
+}
+
+# Hosts ``image_generation``; catalog ``api_model`` requests (not verifies) an image model.
 _CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
@@ -76,7 +102,7 @@ def _summarize_error_body(body: str) -> str:
 
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return resolve_static_model(
-        GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+        MODELS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -174,11 +200,12 @@ def _normalize_input_images(
 
 
 def _build_responses_payload(
-    *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    *, prompt: str, size: str, quality: str, api_model: str = API_MODEL,
+    input_images: Optional[List[Dict[str, str]]] = None
 ) -> Dict[str, Any]:
     """Responses body for an image_generation call. No ``tool_choice``: Codex rejects every shape
     for forcing the hosted tool (looks it up as a *function* name), so the host model decides,
-    nudged by ``instructions``."""
+    nudged by ``instructions``. ``api_model`` is the catalog's image-tool model id (never rewritten)."""
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}, *(input_images or [])]
     return {
         "model": _CODEX_CHAT_MODEL,
@@ -187,7 +214,7 @@ def _build_responses_payload(
         "input": [{"type": "message", "role": "user", "content": content}],
         "tools": [{
             "type": "image_generation",
-            "model": API_MODEL,
+            "model": api_model,
             "size": size,
             "quality": quality,
             "output_format": "png",
@@ -278,11 +305,29 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
+def _extract_reported_image_model(event: Dict[str, Any]) -> Optional[str]:
+    """Read only image-tool metadata, never the host model or arbitrary output text."""
+    response = event.get("response")
+    tools = response.get("tools") if isinstance(response, dict) else None
+    if not isinstance(tools, list):
+        return None
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("type") == "image_generation":
+            model = tool.get("model")
+            if isinstance(model, str) and model.strip():
+                return model
+    return None
+
+
 def _collect_image_b64(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    token: str, *, prompt: str, size: str, quality: str, api_model: str = API_MODEL,
+    input_images: Optional[List[Dict[str, str]]] = None
 ) -> Optional[Dict[str, str]]:
-    """Stream a Codex Responses image_generation call → ``{"b64", "source": "final"|"partial"}`` or
-    ``None``. A partial is kept only when no final arrives; callers must not treat it as success."""
+    """Collect image bytes and optional ``reported_model`` from the same response stream.
+
+    A partial is kept only when no final arrives; callers must not treat it as success.
+    Reported tool configuration is not verified image-engine identity.
+    """
     import httpx
     from agent.codex_headers import codex_cloudflare_headers
 
@@ -293,11 +338,12 @@ def _collect_image_b64(
         "Content-Type": "application/json",
     })
     payload = _build_responses_payload(
-        prompt=prompt, size=size, quality=quality, input_images=input_images)
+        prompt=prompt, size=size, quality=quality, api_model=api_model, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
     final_b64: Optional[str] = None
     partial_b64: Optional[str] = None
+    reported_model: Optional[str] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
         with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
             try:
@@ -309,20 +355,24 @@ def _collect_image_b64(
                     f"{_summarize_error_body(exc.response.text)}"
                 ) from exc
             for event in _iter_sse_json(response):
+                reported_model = _extract_reported_image_model(event) or reported_model
                 result_b64, event_partial = _extract_image_candidates(event)
                 final_b64 = result_b64 or final_b64
                 partial_b64 = event_partial or partial_b64
     if final_b64:
-        return {"b64": final_b64, "source": "final"}
+        result = {"b64": final_b64, "source": "final"}
+        if reported_model is not None:
+            result["reported_model"] = reported_model
+        return result
     return {"b64": partial_b64, "source": "partial"} if partial_b64 else None
 
 
 class OpenAICodexImageGenProvider(StaticImageGenProvider):
-    """gpt-image-2 routed through ChatGPT/Codex OAuth instead of an API key."""
+    """gpt-image-2 / 2.5 routed through ChatGPT/Codex OAuth instead of an API key."""
 
     provider_id = "openai-codex"
     label = "OpenAI (Codex auth)"
-    models = GPT_IMAGE_2_TIERS
+    models = MODELS
     default_model_id = DEFAULT_MODEL
     price = "varies"
 
@@ -333,11 +383,15 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
-            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
+            "tag": (
+                "GPT Image 2 / 2.5 Flare / Sunburst via ChatGPT/Codex OAuth — "
+                "no API key required; supports text and image inputs"
+            ),
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
-                "if you haven't already. No API key needed."),
+                "if you haven't already. No API key needed. The selected image model "
+                "is a request; Hermes cannot confirm the exact image variant on Codex."),
         }
 
     def capabilities(self) -> Dict[str, Any]:
@@ -368,12 +422,13 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         except Exception as exc:
             return fail(f"Invalid image input for Codex image editing: {exc}", "invalid_image_input")
 
+        api_model = meta.get("api_model", API_MODEL)
         try:
             collected: Optional[Dict[str, str]] = None
             for attempt in range(attempts):
                 collected = _collect_image_b64(
                     token, prompt=prompt, size=size, quality=meta["quality"],
-                    input_images=input_images or None)
+                    api_model=api_model, input_images=input_images or None)
                 if collected and collected.get("source") == "final" and collected.get("b64"):
                     break
                 if attempt < _NONFINAL_RETRIES:
@@ -420,6 +475,12 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             extra={
                 "size": size, "quality": meta["quality"], "input_image_count": len(input_images),
                 "image_source": image_source, "requested_size": size, "pixel_size": pixel_size,
+                "requested_model": api_model, "reported_model": collected.get("reported_model"),
+                "model_selection_verified": False,
+                "model_selection_note": (
+                    "Exact image model unverified. 'model' is the configured selection; "
+                    "'requested_model' is the sent image-tool model; 'reported_model' is "
+                    "server-reported tool configuration, not proof of the image engine."),
             })
 
 

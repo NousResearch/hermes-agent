@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -61,7 +62,8 @@ class TestMetadata:
 
     def test_list_models_three_tiers(self, provider):
         ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        # GPT Image 2 three-tier catalog remains the leading entries; 2.5 variants follow.
+        assert ids[:3] == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
         schema = provider.get_setup_schema()
@@ -127,13 +129,13 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
-            captured.update(codex_plugin._build_responses_payload(
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                input_images=input_images,
-            ))
+        def _collect(token, **kwargs):
+            payload_kwargs = {
+                k: kwargs[k]
+                for k in ("prompt", "size", "quality", "input_images", "api_model")
+                if k in kwargs
+            }
+            captured.update(codex_plugin._build_responses_payload(**payload_kwargs))
             return {"b64": _b64_png(), "source": "final"}
 
         monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
@@ -397,6 +399,8 @@ class TestGenerate:
         # The account-entitlement misdiagnosis must not come back.
         assert "not enabled for the current Codex account" not in result["error"]
         assert result["error_type"] != "capability_unsupported"
+        # Do not infer account entitlement or image-model rejection from error prose.
+        assert "compatibility" not in result["error"].lower()
 
 
 class TestRequestShape:
@@ -449,6 +453,320 @@ class TestRequestShape:
         # Body is capped, but the actionable wire message still reaches the user.
         assert "tools' parameter" in message
         assert len(message) < len(body)
+
+
+# ── GPT Image 2.5 Flare / Sunburst (issue #106708) ──────────────────────────
+
+
+_GPT_IMAGE_25_MODELS = ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
+_GPT_IMAGE_25_QUALITIES = ("auto", "low", "medium", "high", "xhigh", "max")
+_GPT_IMAGE_25_IDS = tuple(
+    model if quality == "auto" else f"{model}-{quality}"
+    for model in _GPT_IMAGE_25_MODELS
+    for quality in _GPT_IMAGE_25_QUALITIES
+)
+
+
+def _catalog_id(api_model: str, quality: str) -> str:
+    return api_model if quality == "auto" else f"{api_model}-{quality}"
+
+
+def _set_codex_model(tmp_path, model_id: str) -> None:
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"image_gen": {"openai-codex": {"model": model_id}}})
+    )
+
+
+def _capture_payload(captured: dict):
+    """Record ``_collect_image_b64`` kwargs and the Responses payload they produce."""
+
+    def _collect(token, **kwargs):
+        captured["collect_kwargs"] = kwargs
+        payload_kwargs = {
+            "prompt": kwargs["prompt"],
+            "size": kwargs["size"],
+            "quality": kwargs["quality"],
+            "input_images": kwargs.get("input_images"),
+        }
+        import inspect
+
+        params = inspect.signature(codex_plugin._build_responses_payload).parameters
+        if "api_model" in params and kwargs.get("api_model"):
+            payload_kwargs["api_model"] = kwargs["api_model"]
+        captured.update(codex_plugin._build_responses_payload(**payload_kwargs))
+        return {"b64": _b64_png(), "source": "final"}
+
+    return _collect
+
+
+class TestGptImage25Catalog:
+    def test_list_models_includes_flare_and_sunburst_quality_variants(self, provider):
+        ids = [m["id"] for m in provider.list_models()]
+        for model_id in _GPT_IMAGE_25_IDS:
+            assert model_id in ids
+        # GPT Image 2 three-tier catalog is retained (CONTROL).
+        assert "gpt-image-2-low" in ids
+        assert "gpt-image-2-medium" in ids
+        assert "gpt-image-2-high" in ids
+
+    def test_picker_ids_match_resolvable_catalog(self, provider):
+        ids = [m["id"] for m in provider.list_models()]
+        assert set(ids) == set(provider.models)
+        assert provider.default_model() in ids
+        assert provider.default_model() == "gpt-image-2-medium"
+
+
+class TestGptImage25Payload:
+    def test_flare_text_to_image_sends_api_model_not_gpt_image_2(
+        self, provider, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        _set_codex_model(tmp_path, "gpt-image-2.5-flare")
+        captured = {}
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _capture_payload(captured))
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-flare"
+        assert captured["tools"][0]["model"] == "gpt-image-2.5-flare"
+        assert captured["tools"][0]["quality"] == "auto"
+        assert captured["collect_kwargs"].get("api_model") == "gpt-image-2.5-flare"
+        # Must not silently rewrite to GPT Image 2.
+        assert captured["tools"][0]["model"] != "gpt-image-2"
+
+    def test_sunburst_edit_with_reference_image_sends_api_model(
+        self, provider, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        _set_codex_model(tmp_path, "gpt-image-2.5-sunburst")
+        source = tmp_path / "ref.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = {}
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _capture_payload(captured))
+
+        result = provider.generate(
+            "edit this", image_url=str(source), reference_image_urls=[str(source)]
+        )
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2.5-sunburst"
+        assert captured["tools"][0]["model"] == "gpt-image-2.5-sunburst"
+        assert captured["tools"][0]["quality"] == "auto"
+        content = captured["input"][0]["content"]
+        image_parts = [part for part in content if part.get("type") == "input_image"]
+        assert len(image_parts) >= 1
+        assert captured["tools"][0]["model"] != "gpt-image-2"
+
+    def test_gpt_image_2_medium_default_payload_still_gpt_image_2(
+        self, provider, monkeypatch
+    ):
+        """CONTROL: default catalog selection must keep sending gpt-image-2."""
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _capture_payload(captured))
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-medium"
+        assert captured["tools"][0]["model"] == "gpt-image-2"
+        assert captured["tools"][0]["quality"] == "medium"
+
+    @pytest.mark.parametrize("api_model,quality", [
+        (model, quality)
+        for model in _GPT_IMAGE_25_MODELS
+        for quality in _GPT_IMAGE_25_QUALITIES
+    ])
+    def test_quality_variant_reaches_image_generation_tool(
+        self, provider, monkeypatch, tmp_path, api_model, quality
+    ):
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        tier = _catalog_id(api_model, quality)
+        _set_codex_model(tmp_path, tier)
+        captured = {}
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _capture_payload(captured))
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert result["model"] == tier
+        assert result["quality"] == quality
+        assert captured["tools"][0]["model"] == api_model
+        assert captured["tools"][0]["quality"] == quality
+
+    def test_unknown_model_id_falls_through_to_gpt_image_2_medium(
+        self, provider, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        _set_codex_model(tmp_path, "not-a-real-image-model")
+        captured = {}
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _capture_payload(captured))
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-medium"
+        assert captured["tools"][0]["model"] == "gpt-image-2"
+
+    def test_unsupported_model_http_error_is_preserved_as_api_error_not_fallback(
+        self, provider, monkeypatch, tmp_path
+    ):
+        """Unknown/unsupported model from Codex must surface; never silently switch providers."""
+        import httpx
+
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        _set_codex_model(tmp_path, "gpt-image-2.5-flare")
+
+        body = json.dumps({
+            "error": {
+                "message": "Unknown model: gpt-image-2.5-flare is not supported",
+                "type": "invalid_request_error",
+            }
+        })
+
+        seen = {}
+
+        def _handler(request):
+            seen["json"] = json.loads(request.content)
+            return httpx.Response(400, text=body, request=request)
+
+        real_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *args, **kwargs: real_client(
+                transport=httpx.MockTransport(_handler),
+                headers=kwargs.get("headers"),
+                timeout=kwargs.get("timeout"),
+            ),
+        )
+
+        result = provider.generate("a cat")
+        assert seen["json"]["tools"][0]["model"] == "gpt-image-2.5-flare"
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        err = result["error"].lower()
+        assert "Unknown model: gpt-image-2.5-flare is not supported" in result["error"]
+        assert "gpt-image-2.5-flare" in result["error"]
+        assert "unknown model" in err or "not supported" in err
+        assert "not enabled for the current Codex account" not in result["error"]
+        # Must not silently retarget OPENAI_API_KEY or FAL.
+        assert "OPENAI_API_KEY" not in result["error"]
+        assert " fal" not in err
+
+
+def _mock_codex_stream(monkeypatch, responses, requests):
+    """Replace only HTTP transport; keep request construction, SSE parsing and saving real."""
+    import httpx
+
+    streams = iter(responses)
+
+    def respond(request):
+        assert str(request.url) == f"{codex_plugin._CODEX_BASE_URL}/responses"
+        requests.append(json.loads(request.content))
+        wire = "".join(f"data: {json.dumps(event)}\n\n" for event in next(streams))
+        return httpx.Response(200, text=wire, headers={"content-type": "text/event-stream"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: real_client(
+        transport=httpx.MockTransport(respond), **kwargs,
+    ))
+
+
+@pytest.mark.parametrize("model_id", [
+    "gpt-image-2-medium", *[f"{model}-low" for model in _GPT_IMAGE_25_MODELS],
+])
+@pytest.mark.parametrize("with_reference", [False, True], ids=["generate", "edit"])
+@pytest.mark.parametrize("report", ["alias", "echo", "missing"])
+@pytest.mark.parametrize("metadata_event", ["response.created", "response.completed"])
+def test_success_separates_requested_model_from_unverified_server_report(
+    provider, monkeypatch, tmp_path, model_id, with_reference, report, metadata_event,
+):
+    monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    _set_codex_model(tmp_path, model_id)
+    original_config = (tmp_path / "config.yaml").read_bytes()
+    api_model = codex_plugin.MODELS[model_id]["api_model"]
+    reported = {"alias": "gpt-image-2-codex", "echo": api_model, "missing": None}[report]
+    tools = [{"type": "function", "name": "unrelated", "model": "not-the-image-model"}]
+    if reported is not None:
+        tools.append({"type": "image_generation", "model": reported})
+    events: list[dict[str, Any]] = [
+        {"type": "response.created", "response": {"model": "host-model"}},
+        {"type": "response.completed", "response": {
+            "model": "host-model", "output": [{
+                "type": "image_generation_call", "status": "completed", "result": _b64_png(),
+            }],
+        }},
+    ]
+    for event in events:
+        if event["type"] == metadata_event:
+            event["response"]["tools"] = tools
+    requests = []
+    _mock_codex_stream(monkeypatch, [events], requests)
+    kwargs = {}
+    if with_reference:
+        source = tmp_path / "reference.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        kwargs["image_url"] = str(source)
+
+    result = provider.generate("A blue circle on white.", **kwargs)
+
+    assert len(requests) == 1  # A model label must not cause retries or a provider switch.
+    assert requests[0]["tools"][0]["model"] == api_model
+    content = requests[0]["input"][0]["content"]
+    assert any(part["type"] == "input_image" for part in content) == with_reference
+    assert result["success"] is True
+    assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
+    assert result["provider"] == "openai-codex"
+    assert result["model"] == model_id  # Preserve the existing catalog-selection field.
+    assert result["requested_model"] == api_model
+    assert result["reported_model"] == reported
+    # Even an echoed tool configuration is not verified image-engine identity.
+    assert result["model_selection_verified"] is False
+    assert "unverified" in result["model_selection_note"].lower()
+    assert not result.get("error")
+    assert (tmp_path / "config.yaml").read_bytes() == original_config
+
+
+@pytest.mark.parametrize("created_tools,completed_tools,expected", [
+    ([{"type": "image_generation", "model": "initial-label"}],
+     [{"type": "image_generation", "model": "final-label"}], "final-label"),
+    ([{"type": "image_generation", "model": "initial-label"}], None, "initial-label"),
+    (None, None, None),
+    (None, {"type": "image_generation", "model": "not-a-tools-list"}, None),
+    (None, [None, {"type": "image_generation", "model": {"unexpected": "object"}}], None),
+    (None, [{"type": "image_generation", "model": "   "}], None),
+])
+def test_reported_model_belongs_to_successful_attempt_not_a_previous_partial(
+    provider, monkeypatch, created_tools, completed_tools, expected,
+):
+    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    partial_attempt = [{"type": "response.created", "response": {"tools": [
+        {"type": "image_generation", "model": "discarded-attempt-label"},
+    ]}}, {"type": "response.image_generation_call.partial_image", "partial_image_b64": _b64_png()}]
+    final_attempt = [
+        {"type": "response.created", "response": {"tools": created_tools}},
+        {"type": "response.completed", "response": {
+            "model": "host-model", "tools": completed_tools,
+            "output": [{"type": "image_generation_call", "result": _b64_png()}],
+        }},
+    ]
+    requests = []
+    _mock_codex_stream(monkeypatch, [partial_attempt, final_attempt], requests)
+
+    result = provider.generate("A blue circle on white.")
+
+    assert len(requests) == 2
+    assert result["success"] is True
+    assert result["image_source"] == "final"
+    assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
+    assert result["reported_model"] == expected
+    assert result["model_selection_verified"] is False
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

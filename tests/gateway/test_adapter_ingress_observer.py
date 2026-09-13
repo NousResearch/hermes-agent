@@ -2,6 +2,8 @@
 
 import asyncio
 import dataclasses
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -387,12 +389,137 @@ async def test_runner_wiring_has_no_auth_or_routing_effect_without_registered_pl
     async def busy_handler(_event, _session_key):
         return True
 
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager), patch(
+        "gateway.platforms.base._ingress_snapshot",
+        side_effect=AssertionError("snapshot must stay cold"),
+    ) as snapshot_builder, patch(
+        "gateway.platforms.base.uuid.uuid4",
+        side_effect=AssertionError("uuid must stay cold"),
+    ) as uuid_builder:
         runner = _runner_with_adapter(adapter, message_handler, busy_handler)
+        assert adapter._ingress_observer is None
         await adapter.handle_message(_event())
         await asyncio.wait_for(idle_processed.wait(), timeout=1)
 
     runner._is_user_authorized_for_source.assert_not_called()
+    snapshot_builder.assert_not_called()
+    uuid_builder.assert_not_called()
+
+
+def test_reconnect_wiring_rechecks_registry_and_clears_stale_observer():
+    populated = PluginManager()
+    populated_context = PluginContext(
+        PluginManifest(name="temporary-ingress-fixture", source="user"), populated
+    )
+    populated_context.register_hook("gateway_ingress_observed", lambda **_kwargs: None)
+    populated._discovered = True
+    empty = PluginManager()
+    empty._discovered = True
+    adapter = _ObserverAdapter()
+
+    async def handler(_event):
+        return None
+
+    async def busy_handler(_event, _session_key):
+        return True
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=populated):
+        runner = _runner_with_adapter(adapter, handler, busy_handler)
+    assert callable(adapter._ingress_observer)
+
+    async def platform_event_handler(_event, _source):
+        return None
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=empty):
+        runner._wire_adapter_handlers(
+            adapter,
+            message_handler=handler,
+            fatal_error_handler=lambda _adapter: None,
+            busy_session_handler=busy_handler,
+            authorization_check=lambda *_args, **_kwargs: True,
+            platform_event_handler=platform_event_handler,
+        )
+    assert adapter._ingress_observer is None
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=populated):
+        runner._wire_adapter_handlers(
+            adapter,
+            message_handler=handler,
+            fatal_error_handler=lambda _adapter: None,
+            busy_session_handler=busy_handler,
+            authorization_check=lambda *_args, **_kwargs: True,
+            platform_event_handler=platform_event_handler,
+        )
+    assert callable(adapter._ingress_observer)
+
+
+def test_profile_wiring_rechecks_empty_hook_and_empty_registry_transitions():
+    populated = PluginManager()
+    populated_context = PluginContext(
+        PluginManifest(name="profile-ingress-fixture", source="user"), populated
+    )
+    populated_context.register_hook("gateway_ingress_observed", lambda **_kwargs: None)
+    populated._discovered = True
+    empty = PluginManager()
+    empty._discovered = True
+    adapter = _ObserverAdapter()
+
+    async def handler(_event):
+        return None
+
+    async def busy_handler(_event, _session_key):
+        return True
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=empty):
+        runner = _runner_with_adapter(adapter, handler, busy_handler)
+        runner._configure_profile_adapter(adapter, "team", Platform.TELEGRAM)
+    assert adapter._ingress_observer is None
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=populated):
+        runner._configure_profile_adapter(adapter, "team", Platform.TELEGRAM)
+    assert callable(adapter._ingress_observer)
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=empty):
+        runner._configure_profile_adapter(adapter, "team", Platform.TELEGRAM)
+    assert adapter._ingress_observer is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_internal_observer_is_preserved_with_empty_plugin_registry():
+    empty = PluginManager()
+    empty._discovered = True
+    adapter = _ObserverAdapter()
+    processed = asyncio.Event()
+    observed = []
+
+    async def handler(_event):
+        processed.set()
+        return None
+
+    async def busy_handler(_event, _session_key):
+        return True
+
+    async def platform_event_handler(_event, _source):
+        return None
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=empty):
+        runner = _runner_with_adapter(adapter, handler, busy_handler)
+        runner._wire_adapter_handlers(
+            adapter,
+            message_handler=handler,
+            fatal_error_handler=lambda _adapter: None,
+            busy_session_handler=busy_handler,
+            authorization_check=lambda *_args, **_kwargs: True,
+            platform_event_handler=platform_event_handler,
+            ingress_observer=lambda snapshot, key, _facts: observed.append(
+                (snapshot.message_id, key)
+            ),
+        )
+        event = _event()
+        await adapter.handle_message(event)
+        await asyncio.wait_for(processed.wait(), timeout=1)
+
+    assert observed == [(event.message_id, adapter._event_session_key(event))]
 
 
 def test_async_gateway_ingress_plugin_callback_is_rejected_without_registration():
@@ -461,3 +588,35 @@ def test_runner_closes_awaitable_hook_result_without_executing_or_leaking(caplog
     assert returned[0].cr_frame is None
     assert "coroutine" in caplog.text
     assert "private-session-key" not in caplog.text
+
+
+def test_slow_plugin_observer_is_tightly_bounded_and_fail_open(caplog):
+    runner = object.__new__(GatewayRunner)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def slow_observer(**_kwargs):
+        entered.set()
+        release.wait(timeout=1)
+        finished.set()
+
+    manager = PluginManager()
+    context = PluginContext(
+        PluginManifest(name="slow-ingress-fixture", source="user"), manager
+    )
+    context.register_hook("gateway_ingress_observed", slow_observer)
+    manager._discovered = True
+    snapshot = _ingress_snapshot(_event())
+
+    started = time.monotonic()
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        runner._handle_gateway_ingress_observed(snapshot, "private-session-key", True)
+    elapsed = time.monotonic() - started
+
+    assert entered.is_set()
+    assert elapsed < 0.25
+    assert "timed out" in caplog.text
+    assert "private-session-key" not in caplog.text
+    release.set()
+    assert finished.wait(timeout=1)

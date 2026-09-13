@@ -5,6 +5,7 @@ exercises the real resolvers (no patched predicates).
 """
 
 import asyncio
+import dataclasses
 import threading
 import weakref
 from types import SimpleNamespace
@@ -14,7 +15,12 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.pairing import PairingStore
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    _IngressAuthorizationFacts,
+    _ingress_snapshot,
+)
+from gateway.platforms.event import MessageEvent
 from gateway.profile_routing import parse_profile_routes
 from gateway.session import SessionSource
 
@@ -116,6 +122,169 @@ def test_mid_turn_authorization_reads_admitting_transport_allowlist(mux):
     stranger._transport_adapter_ref = weakref.ref(mux.primary)
     with _profile_runtime_scope(mux.home / "profiles" / "ops"):
         assert mux.runner._is_user_authorized_for_source(stranger) is False
+
+
+def test_ingress_auth_matches_routed_primary_and_dedicated_secondary_scopes(mux):
+    """Detached observation reproduces route, transport allowlist, and pairing scope."""
+    from gateway.run import _profile_runtime_scope
+
+    ops_store = PairingStore(profile="ops")
+    team_store = PairingStore(profile="team_b")
+    ops_store._save_json(
+        ops_store._approved_path("telegram"),
+        {"paired-ops": {"user_name": "", "approved_at": 1}},
+    )
+    team_store._save_json(
+        team_store._approved_path("telegram"),
+        {"paired-team": {"user_name": "", "approved_at": 1}},
+    )
+    mux.runner.pairing_stores = {"ops": ops_store, "team_b": team_store}
+    pending_before = {
+        "default": mux.runner.pairing_store.list_pending(),
+        "ops": ops_store.list_pending(),
+        "team_b": team_store.list_pending(),
+    }
+    mux.runner._sessions = {}
+    mux.runner._hm_offer_pairing_code = lambda *_a, **_kw: pytest.fail(
+        "authorization peek must not offer pairing"
+    )
+
+    def primary_result(user_id: str):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="72719239",
+            chat_type="dm",
+            user_id=user_id,
+        )
+        event = MessageEvent(text="private", message_id=user_id, source=source)
+        snapshot, runtime_home, verdict = mux.runner._default_profile_ingress_result(
+            _ingress_snapshot(event),
+            _IngressAuthorizationFacts(user_name=None),
+            mux.primary,
+            mux.home,
+        )
+        actual_source = dataclasses.replace(source)
+        actual_home = mux.runner._admit_primary_source(actual_source, mux.home)
+        assert actual_home is not None
+        with _profile_runtime_scope(actual_home):
+            actual = mux.runner._is_user_authorized_for_source(actual_source)
+        assert source.profile is None
+        assert not hasattr(source, "_authorization_profile_home")
+        assert snapshot.source.profile == actual_source.profile == "ops"
+        assert runtime_home == actual_home == mux.home / "profiles" / "ops"
+        assert verdict is actual
+        return verdict
+
+    assert primary_result("777") is True  # default transport allowlist
+    assert primary_result("paired-ops") is True  # routed-profile pairing store
+
+    def secondary_verdict(user_id: str):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=user_id,
+            chat_type="dm",
+            user_id=user_id,
+            profile="team_b",
+        )
+        source._transport_adapter_ref = weakref.ref(mux.team_b)
+        event = MessageEvent(text="private", message_id=user_id, source=source)
+        with _profile_runtime_scope(mux.home / "profiles" / "team_b"):
+            actual = mux.runner._is_user_authorized_for_source(source)
+            observed = mux.runner._ingress_authorization_verdict(
+                _ingress_snapshot(event),
+                authorization_facts=_IngressAuthorizationFacts(user_name=None),
+                adapter=mux.team_b,
+                authorization_home=mux.home / "profiles" / "team_b",
+            )
+        assert observed is actual
+        return observed
+
+    assert secondary_verdict("72719239") is True  # team_b allowlist
+    assert secondary_verdict("paired-team") is True  # team_b pairing
+    assert secondary_verdict("777") is False  # default grant cannot bleed
+    assert {
+        "default": mux.runner.pairing_store.list_pending(),
+        "ops": ops_store.list_pending(),
+        "team_b": team_store.list_pending(),
+    } == pending_before
+    assert mux.runner._sessions == {}
+
+
+def test_ingress_auth_matches_unserved_primary_route_rejection(mux):
+    original_routes = mux.runner.config.profile_routes
+    mux.runner.config.profile_routes = parse_profile_routes(
+        [{
+            "name": "missing-route",
+            "platform": "telegram",
+            "profile": "missing",
+            "chat_id": "999",
+        }]
+    )
+    try:
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="999",
+            chat_type="dm",
+            user_id="777",
+        )
+        event = MessageEvent(text="private", message_id="missing-1", source=source)
+        snapshot, runtime_home, verdict = mux.runner._default_profile_ingress_result(
+            _ingress_snapshot(event),
+            _IngressAuthorizationFacts(user_name=None),
+            mux.primary,
+            mux.home,
+        )
+        actual_source = dataclasses.replace(source)
+        assert mux.runner._admit_primary_source(actual_source, mux.home) is None
+
+        assert verdict is False
+        assert runtime_home == mux.home
+        assert snapshot.source.profile_route_rejected is True
+        assert actual_source.profile_route_rejected is True
+        assert source.profile_route_rejected is False
+        assert source.profile is None
+    finally:
+        mux.runner.config.profile_routes = original_routes
+
+
+def test_relay_direct_source_is_routed_on_detached_copy_before_observation(mux):
+    original_routes = mux.runner.config.profile_routes
+    relay = _stub(Platform.RELAY, mux.runner, "RELAY")
+    mux.runner.adapters[Platform.RELAY] = relay
+    mux.runner.config.profile_routes = parse_profile_routes(
+        [{
+            "name": "relay-discord-to-ops",
+            "platform": "discord",
+            "profile": "ops",
+            "chat_id": "relay-chat",
+        }]
+    )
+    try:
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="relay-chat",
+            chat_type="dm",
+            user_id="relay-user",
+            delivered_via_upstream_relay=True,
+        )
+        event = MessageEvent(text="private", message_id="relay-direct-1", source=source)
+        snapshot, runtime_home, verdict = mux.runner._default_profile_ingress_result(
+            _ingress_snapshot(event),
+            _IngressAuthorizationFacts(user_name=None),
+            relay,
+            mux.home,
+        )
+        actual_source = dataclasses.replace(source)
+        actual_home = mux.runner._admit_primary_source(actual_source, mux.home)
+
+        assert snapshot.source.profile == actual_source.profile == "ops"
+        assert runtime_home == actual_home == mux.home / "profiles" / "ops"
+        assert verdict is mux.runner._is_user_authorized_for_source(actual_source) is True
+        assert source.profile is None
+        assert not hasattr(source, "_authorization_profile_home")
+    finally:
+        mux.runner.config.profile_routes = original_routes
+        mux.runner.adapters.pop(Platform.RELAY, None)
 
 
 def test_shared_bot_satellite_resolves_primary_transport_for_restored_sources(mux):

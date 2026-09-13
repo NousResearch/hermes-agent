@@ -74,8 +74,12 @@ shared normalized-message boundary. It is intended for infrastructure that must 
 both idle and active-session traffic before the adapter queues, dispatches, or drops
 the event:
 
-The runner installs this boundary on every primary, reconnect, and multiplex-profile
-adapter path and publishes the observer-only `gateway_ingress_observed` plugin hook:
+The runner rechecks hook registration on every primary, reconnect, and
+multiplex-profile wiring pass. It installs this boundary only when
+`gateway_ingress_observed` has a consumer; otherwise the adapter observer is `None`
+and ingress pays no snapshot, UUID, auth-peek, or callback cost. An explicitly
+supplied internal observer remains supported independently of plugin registration.
+The installed boundary publishes the observer-only plugin hook:
 
 ```python
 def observe(snapshot, session_key, authorized, **kwargs):
@@ -99,9 +103,11 @@ Core also supplies `authorized`: `True` or `False` from the canonical
 malformed snapshots, non-boolean predicates, and authorization errors. The peek reads
 allowlists and pairing approvals and checks `BotLoopGuard.blocked()`; it does not create
 pairing codes, send messages, call bot-loop `admit()`, or mutate the live event/session.
-Multiplex auth is evaluated against the transport-owning profile on a private rebuilt
-source; an already-marked rejected profile route yields `False`. Persistence consumers
-must require `authorized is True`.
+Multiplex primary ingress first runs the same route-resolution/admission transform as
+normal dispatch on the private rebuilt source. The resulting effective profile and
+route-rejection flag are copied into the immutable plugin snapshot; authorization still
+reads the transport-owning profile. A rejected/unserved profile route yields `False`.
+Persistence consumers must require `authorized is True`.
 
 Return values are always ignored, and failures are logged by exception class only and
 treated as fail-open, so a callback cannot block, rewrite, authorize, or otherwise steer
@@ -114,7 +120,10 @@ display-name alias) and the runner never forwards that fact to plugins. Sync/asy
 support applies to those internal direct callers. The
 runner's `gateway_ingress_observed` plugin surface is intentionally synchronous:
 plugins must register a fast regular function, and `async def` callbacks are rejected
-at registration so no coroutine can leak or block adapter routing unexpectedly.
+at registration. Each callback runs on a worker with a 50 ms ingress bound; a timeout
+is abandoned fail-open and the same still-running callback is suppressed on later
+events, so it cannot freeze or pile up work on the adapter path. A coroutine returned
+from a regular function is closed without execution.
 
 Platform adapters that override `handle_message()` must delegate to the base method.
 If an override has a custom branch that intentionally bypasses the base method, that

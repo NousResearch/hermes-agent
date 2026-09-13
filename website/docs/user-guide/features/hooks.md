@@ -1201,8 +1201,15 @@ Fires synchronously once for every normalized message entering a configured adap
 including internal events and active-session follow-ups, before any queue/drop
 decision. Return values are ignored and callback failures fail open. Plugin callbacks
 must be fast synchronous functions; `async def` callbacks are rejected at registration,
-and awaitables returned by regular callbacks are discarded safely. Direct users of
-`BasePlatformAdapter.set_ingress_observer()` may install sync or async callbacks.
+and awaitables returned by regular callbacks are discarded safely. Each callback has
+a 50 ms fail-open ingress bound; a timed-out worker is abandoned and suppressed while
+still running so it cannot freeze the adapter or create a thread pileup. Direct users
+of `BasePlatformAdapter.set_ingress_observer()` may install sync or async callbacks.
+
+When no plugin or built-in consumer registers this hook, the runner installs no
+adapter observer at all: messages incur no snapshot, UUID, authorization-peek, or
+callback overhead. Startup, reconnect, and multiplex-profile rewiring each recheck the
+registry.
 
 The callback receives a detached, frozen `snapshot`, never the live `MessageEvent` or
 `GatewayRunner`. Its nested source is frozen; `media_types` is a tuple. The snapshot

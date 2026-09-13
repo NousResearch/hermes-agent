@@ -44,6 +44,11 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "pre_verify", "on_session_start", "on_session_end",
 }
 
+# Adapter ingress is before queue/drop and must never wait on an untrusted plugin
+# for the general 30-second hook timeout. Snapshot immutability makes abandoning a
+# timed-out worker routing-safe; the running-callback guard prevents thread pileup.
+_GATEWAY_INGRESS_OBSERVER_TIMEOUT_SECS = 0.05
+
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
@@ -186,7 +191,11 @@ class PluginDispatchMixin:
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
-        use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
+        if hook_name == "gateway_ingress_observed":
+            timeout = _GATEWAY_INGRESS_OBSERVER_TIMEOUT_SECS
+            use_timeout = True
+        else:
+            use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
@@ -231,7 +240,11 @@ class PluginDispatchMixin:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
         suppressed, still running, timed out (worker abandoned, never joined), or the worker
         could not be started. Exceptions propagate."""
-        callback_name = getattr(cb, "__name__", repr(cb))
+        callback_name = (
+            getattr(cb, "__name__", type(cb).__name__)
+            if hook_name == "gateway_ingress_observed"
+            else getattr(cb, "__name__", repr(cb))
+        )
         callback_key = (hook_name, id(cb))
         token = object()
         with self._hook_timeout_lock:
@@ -258,7 +271,12 @@ class PluginDispatchMixin:
 
         def _runner() -> None:
             try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                invoke = (
+                    self._call_hook_callback
+                    if hook_name == "gateway_ingress_observed"
+                    else self._invoke_hook_callback
+                )
+                outcome["value"] = context.run(invoke, cb, kwargs)
             except Exception as exc:
                 failure["exc"] = exc
             finally:

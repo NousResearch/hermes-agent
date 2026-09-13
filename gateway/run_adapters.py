@@ -36,6 +36,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+_INGRESS_OBSERVER_DEFAULT = object()
 
 
 class GatewayAdapterLifecycleMixin:
@@ -1031,7 +1032,7 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        ingress_observer=None, busy_text_mode: Optional[str] = None,
+        ingress_observer=_INGRESS_OBSERVER_DEFAULT, busy_text_mode: Optional[str] = None,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
@@ -1049,7 +1050,18 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
         _set_ingress_observer = getattr(adapter, "set_ingress_observer", None)
         if callable(_set_ingress_observer):
-            _set_ingress_observer(ingress_observer or self._primary_ingress_observer(adapter))
+            # Re-evaluate on every startup/reconnect/profile wiring pass. With no
+            # registered consumer the adapter retains the original zero-cost path:
+            # no snapshot, UUID, auth peek, or observer call per event.
+            _set_ingress_observer(
+                ingress_observer
+                if ingress_observer is not _INGRESS_OBSERVER_DEFAULT
+                else (
+                    self._primary_ingress_observer(adapter)
+                    if self._gateway_ingress_observer_present()
+                    else None
+                )
+            )
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
 
     def _configure_profile_adapter(
@@ -1073,7 +1085,11 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
-            ingress_observer=self._make_profile_ingress_observer(profile_name, adapter),
+            ingress_observer=(
+                self._make_profile_ingress_observer(profile_name, adapter)
+                if self._gateway_ingress_observer_present()
+                else None
+            ),
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)
@@ -1432,6 +1448,7 @@ class GatewayAdapterLifecycleMixin:
         authorization_facts: Optional[_IngressAuthorizationFacts] = None,
         adapter: Optional[BasePlatformAdapter] = None,
         authorization_home: Optional[Path] = None,
+        detached_source: Optional[SessionSource] = None,
     ) -> Optional[bool]:
         """Return the canonical, non-admitting user-auth verdict for an ingress snapshot.
 
@@ -1443,14 +1460,14 @@ class GatewayAdapterLifecycleMixin:
         """
         if snapshot.internal:
             return None
-        if snapshot.source.profile_route_rejected:
-            return False
         try:
-            source = self._detached_ingress_source(
+            source = detached_source or self._detached_ingress_source(
                 snapshot.source,
                 authorization_facts or _IngressAuthorizationFacts(user_name=None),
                 adapter,
             )
+            if source.profile_route_rejected:
+                return False
             if authorization_home is not None:
                 # Private state exists only on this detached copy; the live event/source
                 # remains byte-for-byte untouched by observation.
@@ -1527,8 +1544,6 @@ class GatewayAdapterLifecycleMixin:
         profile_home = self._profile_home_or_none(profile_name)
 
         def _observer(snapshot, session_key, authorization_facts):
-            if not self._gateway_ingress_observer_present():
-                return
             if snapshot.source.profile is None:
                 snapshot = dataclasses.replace(
                     snapshot,
@@ -1552,24 +1567,55 @@ class GatewayAdapterLifecycleMixin:
         default_home = Path(get_hermes_home())
 
         def _observer(snapshot, session_key, authorization_facts):
-            if not self._gateway_ingress_observer_present():
-                return
-            with _profile_runtime_scope(default_home):
-                authorized = self._ingress_authorization_verdict(
-                    snapshot,
-                    authorization_facts=authorization_facts,
-                    adapter=adapter,
-                    authorization_home=default_home,
-                )
+            snapshot, profile_home, authorized = self._default_profile_ingress_result(
+                snapshot, authorization_facts, adapter, default_home
+            )
+            with _profile_runtime_scope(profile_home):
                 self._handle_gateway_ingress_observed(snapshot, session_key, authorized)
 
         return _observer
 
+    def _default_profile_ingress_result(
+        self,
+        snapshot: IngressEventSnapshot,
+        authorization_facts: _IngressAuthorizationFacts,
+        adapter: BasePlatformAdapter,
+        default_home: Path,
+    ) -> tuple[IngressEventSnapshot, Path, Optional[bool]]:
+        """Resolve primary multiplex routing/auth on a detached source only."""
+        try:
+            source = self._detached_ingress_source(
+                snapshot.source, authorization_facts, adapter
+            )
+            profile_home = self._admit_primary_source(source, default_home)
+            snapshot = dataclasses.replace(
+                snapshot,
+                source=dataclasses.replace(
+                    snapshot.source,
+                    profile=source.profile,
+                    profile_route_rejected=source.profile_route_rejected,
+                ),
+            )
+        except Exception as exc:
+            logger.debug(
+                "gateway_ingress_observed route resolution unavailable (%s)",
+                type(exc).__name__,
+            )
+            return snapshot, default_home, None
+        if profile_home is None:
+            return snapshot, default_home, False
+        authorized = self._ingress_authorization_verdict(
+            snapshot,
+            authorization_facts=authorization_facts,
+            adapter=adapter,
+            authorization_home=default_home,
+            detached_source=source,
+        )
+        return snapshot, profile_home, authorized
+
     def _make_primary_ingress_observer(self, adapter: BasePlatformAdapter):
         """Observe a non-multiplexed primary adapter under its active profile."""
         def _observer(snapshot, session_key, authorization_facts):
-            if not self._gateway_ingress_observer_present():
-                return
             authorized = self._ingress_authorization_verdict(
                 snapshot,
                 authorization_facts=authorization_facts,

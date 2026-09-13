@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings, load_settings, settings_from_config
+from gateway.platforms.base import _IngressAuthorizationFacts, _ingress_snapshot
+from gateway.platforms.event import MessageEvent
 from gateway.session import Platform, SessionSource
 
 GROUP_CHAT = "-1001234567890"
@@ -88,6 +90,54 @@ def test_one_inbound_is_counted_once_however_often_the_verdict_is_asked(monkeypa
     assert runner._is_user_authorized(_bot(BOT_B)) is True
     assert runner._admit_bot_message(_bot(BOT_B)) is False
     assert runner._is_user_authorized(_bot(BOT_B)) is False
+
+
+def test_ingress_authorization_is_real_cooldown_peek_and_never_admits(
+    monkeypatch, runner, settings, clock
+):
+    _incident_config(monkeypatch)
+    settings["value"] = BotLoopGuardSettings(
+        max_events=1, window_seconds=60, cooldown_seconds=60
+    )
+    source = _bot(BOT_A)
+    snapshot = _ingress_snapshot(
+        MessageEvent(text="private", message_id="bot-observer-1", source=source)
+    )
+    facts = _IngressAuthorizationFacts(user_name=source.user_name)
+    runner._sessions = {}
+    runner._hm_offer_pairing_code = lambda *_a, **_kw: pytest.fail(
+        "authorization peek must not offer pairing"
+    )
+
+    assert runner._is_user_authorized_for_source(source) is True
+    for _ in range(5):
+        assert runner._ingress_authorization_verdict(
+            snapshot, authorization_facts=facts
+        ) is True
+    assert runner._bot_loop_guard.tracked_conversations == 0
+
+    assert runner._admit_bot_message_for_source(source) is True
+    assert runner._admit_bot_message_for_source(source) is False
+    before = (
+        {key: tuple(values) for key, values in runner._bot_loop_guard._events.items()},
+        dict(runner._bot_loop_guard._cooldown_until),
+    )
+    assert runner._is_user_authorized_for_source(source) is False
+    for _ in range(5):
+        assert runner._ingress_authorization_verdict(
+            snapshot, authorization_facts=facts
+        ) is False
+    after = (
+        {key: tuple(values) for key, values in runner._bot_loop_guard._events.items()},
+        dict(runner._bot_loop_guard._cooldown_until),
+    )
+    assert after == before
+    assert runner._sessions == {}
+
+    clock.advance(61)
+    assert runner._ingress_authorization_verdict(
+        snapshot, authorization_facts=facts
+    ) is True
 
 
 @pytest.mark.asyncio

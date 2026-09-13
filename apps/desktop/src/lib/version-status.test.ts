@@ -80,11 +80,33 @@ describe('resolveVersionStatus', () => {
     expect(status.tooltip).toBe('Backend v0.4.2')
   })
 
+  // Pure-function fallback, still reachable via the client shallow-install
+  // path. The backend mapper no longer produces this input: an uncountable
+  // backend distance arrives as (behind: 0, updateAvailable: false) instead.
   it('falls back to (update) for a backend that cannot count commits', () => {
     const status = backend({ updateAvailable: true, version: '0.4.2' })
 
     expect(status.label).toBe('backend v0.4.2 (update)')
     expect(status.hasUpdate).toBe(true)
+  })
+
+  it('renders a plain backend label when it is definitely current', () => {
+    const status = backend({ behind: 0, version: '0.4.2' })
+
+    expect(status.label).toBe('backend v0.4.2')
+    expect(status.hasUpdate).toBe(false)
+  })
+
+  // Unknown backend distance (backend RPC sentinel behind=-1, normalized by
+  // the mapper to behind:null + updateAvailable:false, which call sites
+  // coalesce to behind: 0) must never render as an update — e.g. same
+  // release version pinned to a local deployment branch.
+  it('never renders (update) for a backend with unknown git distance', () => {
+    const status = backend({ behind: 0, updateAvailable: false, version: '0.21.1' })
+
+    expect(status.label).toBe('backend v0.21.1')
+    expect(status.label).not.toContain(copy.update)
+    expect(status.hasUpdate).toBe(false)
   })
 
   it('prefers the exact commit diff over the generic (update) hint', () => {

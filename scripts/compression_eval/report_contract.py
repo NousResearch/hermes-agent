@@ -8,7 +8,7 @@ import re
 REQUIRED_KEYS = {
     "schema_version", "source_sha", "fixture_digest", "compressed_tokens",
     "baseline_tokens", "probe_scores", "artifact_trail_preserved",
-    "continuity_preserved", "model_provenance", "status",
+    "continuity_preserved", "probe_manifest", "model_provenance", "status",
 }
 _FIXTURE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_HOME_PATH = re.compile(
@@ -19,7 +19,7 @@ _CREDENTIAL_ASSIGNMENT = re.compile(
     r"(?i)\b(?:[a-z0-9]+[_-])*"
     r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
     r"secret(?:[_-]access[_-]?key)?|password|authorization|credential|token)"
-    r"\s*=\s*[^\s,;}\]]+"
+    r"\s*(?:=|:)\s*(?:bearer\s+)?[^\s,;}\]]+"
 )
 _CREDENTIAL_KEY = re.compile(
     r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
@@ -80,6 +80,17 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
         errors.append("probe_scores_must_be_mapping")
     else:
         errors.extend(_nonfinite_errors(report["probe_scores"], "probe_scores"))
+    probe_manifest = report.get("probe_manifest")
+    if not isinstance(probe_manifest, (list, tuple)) or not probe_manifest:
+        errors.append("probe_manifest_must_be_nonempty_list")
+    elif any(not isinstance(name, str) or not name.strip() for name in probe_manifest):
+        errors.append("probe_manifest_entries_must_be_nonempty_strings")
+    elif len(set(probe_manifest)) != len(probe_manifest):
+        errors.append("probe_manifest_entries_must_be_unique")
+    elif report.get("status") == "pass" and isinstance(report.get("probe_scores"), Mapping):
+        missing = sorted(set(probe_manifest) - set(report["probe_scores"]))
+        if missing:
+            errors.append("missing_probe_scores:" + ",".join(missing))
     if not isinstance(report.get("artifact_trail_preserved"), bool):
         errors.append("artifact_trail_preserved_must_be_boolean")
     if not isinstance(report.get("continuity_preserved"), bool):

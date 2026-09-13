@@ -30,7 +30,8 @@ def _report(source_sha: str) -> dict[str, object]:
         "fixture_digest": "b" * 64,
         "compressed_tokens": 1,
         "baseline_tokens": 2,
-        "probe_scores": {},
+        "probe_manifest": ["accuracy"],
+        "probe_scores": {"accuracy": 1},
         "artifact_trail_preserved": True,
         "continuity_preserved": True,
         "model_provenance": {

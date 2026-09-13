@@ -47,8 +47,8 @@ HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
 _BATTERY_MANIFEST = "manifest.json"
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _CREDENTIAL_KEY = re.compile(
-    r"(?i)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|"
-    r"authorization|credential|token)"
+    r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"client[_-]?secret|secret|password|authorization|credential|token)(?:$|[_-])"
 )
 
 TASKS = {
@@ -193,6 +193,14 @@ def _model_provenance(model: str) -> dict[str, str]:
     return {"model": model, "provider": provider, "config_digest": digest}
 
 
+def _evaluator_provenance() -> dict[str, str]:
+    evaluator_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    battery_digest = hashlib.sha256(
+        json.dumps(TASKS, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {"evaluator_digest": evaluator_digest, "battery_digest": battery_digest}
+
+
 def _resolve_clean_source(pythonpath: str) -> tuple[Path, str]:
     source_root = Path(pythonpath).expanduser().resolve()
     if not source_root.is_dir():
@@ -228,13 +236,22 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     meta_path = resdir / "meta.jsonl"
     source_root, source_sha = _resolve_clean_source(pythonpath)
+    model_provenance = _model_provenance(model)
+    evaluator_provenance = _evaluator_provenance()
     done = set()
     if meta_path.exists():
+        existing_rows = []
         for line in meta_path.read_text(encoding="utf-8").splitlines():
             try:
-                done.add(json.loads(line)["run_id"])
+                existing_rows.append(json.loads(line))
             except (ValueError, KeyError):
                 continue
+        existing_shas = {row.get("source_sha") for row in existing_rows}
+        if existing_shas != {source_sha}:
+            raise SystemExit(
+                f"evaluation results are bound to another or unknown source revision: {meta_path}"
+            )
+        done = {row["run_id"] for row in existing_rows}
     for rep in range(reps):
         for name in TASKS:
             if only and name not in only:
@@ -297,6 +314,8 @@ mode = "overwrite"
             rec = {"run_id": run_id, "task": name, "rep": rep, "arm": arm,
                    "model": model, "wall_s": round(dt, 1), "exit": rc,
                    "source_sha": source_sha,
+                   "model_provenance": model_provenance,
+                   "evaluator_provenance": evaluator_provenance,
                    "tail": "\n".join(out.splitlines()[-12:])}
             with open(meta_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
@@ -413,6 +432,8 @@ def report(models):
             if isinstance(repetitions, int) and repetitions > 0 else set()
         )
         provenance = {arm: "unavailable" for arm in ("baseline", "fixes")}
+        arm_model_provenance = {}
+        evaluator_provenance = None
         provenance_errors = []
         for arm in ("baseline", "fixes"):
             meta_path = mdir / arm / "meta.jsonl"
@@ -424,6 +445,26 @@ def report(models):
                         provenance_errors.append(f"{arm}: mixed or unavailable source_sha values")
                     else:
                         provenance[arm] = next(iter(shas))
+                    model_values = {
+                        json.dumps(row.get("model_provenance"), sort_keys=True)
+                        for row in rows
+                    }
+                    if len(model_values) != 1 or any(
+                        not isinstance(row.get("model_provenance"), Mapping) for row in rows
+                    ):
+                        provenance_errors.append(f"{arm}: mixed or unavailable model provenance")
+                    else:
+                        arm_model_provenance[arm] = json.loads(next(iter(model_values)))
+                    evaluator_values = {
+                        json.dumps(row.get("evaluator_provenance"), sort_keys=True)
+                        for row in rows
+                    }
+                    if len(evaluator_values) != 1:
+                        provenance_errors.append(f"{arm}: mixed evaluator provenance")
+                    elif evaluator_provenance is None:
+                        evaluator_provenance = json.loads(next(iter(evaluator_values)))
+                    elif evaluator_provenance != json.loads(next(iter(evaluator_values))):
+                        provenance_errors.append("baseline and fixes use different evaluator provenance")
         if provenance_errors:
             raise SystemExit("invalid tool-performance provenance: " + "; ".join(provenance_errors))
         observed = {}
@@ -437,6 +478,8 @@ def report(models):
             "fixes_sha": provenance.get("fixes", "unavailable"),
             "model": model,
             "model_provenance": _model_provenance(model),
+            "arm_model_provenance": arm_model_provenance,
+            "evaluator_provenance": evaluator_provenance or {},
             "concurrency": 1,
             "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
             "status": "pass" if complete else "fail",

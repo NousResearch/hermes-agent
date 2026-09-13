@@ -8,6 +8,7 @@ def report() -> dict[str, object]:
         "fixture_digest": "b" * 64,
         "compressed_tokens": 100,
         "baseline_tokens": 200,
+        "probe_manifest": ["accuracy"],
         "probe_scores": {"accuracy": 5},
         "artifact_trail_preserved": True,
         "continuity_preserved": True,
@@ -42,6 +43,9 @@ def test_secret_or_local_path_is_rejected() -> None:
     value["probe_scores"] = {"detail": "OPENROUTER_API_KEY=secret"}
     assert "forbidden_credential_assignment" in validate_report(value)
 
+    value["probe_scores"] = {"detail": "Authorization: Bearer sk-secret"}
+    assert "forbidden_credential_assignment" in validate_report(value)
+
 
 def test_pass_requires_preservation_and_rejects_nested_credentials() -> None:
     value = report()
@@ -72,3 +76,10 @@ def test_report_rejects_invalid_fixture_scores_and_home_paths() -> None:
     assert "fixture_digest_must_be_sha256" in errors
     assert "nonfinite_number:probe_scores.accuracy" in errors
     assert "forbidden_home_path" in errors
+
+
+def test_pass_requires_every_declared_probe() -> None:
+    value = report()
+    value["probe_manifest"] = ["accuracy", "continuity"]
+    errors = validate_report(value)
+    assert "missing_probe_scores:continuity" in errors

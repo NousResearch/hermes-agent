@@ -10,6 +10,7 @@ disk on the server); mismatched tokens are rejected before dispatch.
 
 from __future__ import annotations
 
+import hmac
 import json
 import uuid
 from typing import Any, Dict, Tuple
@@ -78,6 +79,8 @@ def validate_request(msg: Dict[str, Any], expected_token: str) -> Tuple[bool, st
         (lambda: t in VALID_REQUEST_TYPES, f"unknown request type: {t!r}"),
         (lambda: _nonempty_str(msg.get("id")), "missing or non-string 'id'"),
         (lambda: _nonempty_str(token), "missing token"),
-        (lambda: token == expected_token, "token mismatch"),
+        # Timing-safe compare as UTF-8 bytes (compare_digest raises on non-ASCII
+        # str, and the supplied token is attacker-controlled).
+        (lambda: hmac.compare_digest(str(token).encode(), str(expected_token).encode()), "token mismatch"),
         (lambda: isinstance(msg.get("payload"), dict), "payload must be a dict"))
     return next(((False, reason) for ok, reason in checks if not ok()), (True, ""))

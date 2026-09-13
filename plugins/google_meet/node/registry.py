@@ -33,7 +33,8 @@ class NodeRegistry:
         return nodes if isinstance(nodes, dict) else {}
 
     def _save(self, nodes: Dict[str, Dict[str, Any]]) -> None:
-        write_json_atomic(self.path, {"nodes": nodes})
+        # Owner-only: the tokens grant full RPC access to remote meet nodes.
+        write_json_atomic(self.path, {"nodes": nodes}, mode=0o600)
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         entry = self._load().get(name)

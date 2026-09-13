@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,32 @@ def test_registry_add_get_roundtrip_persists(tmp_path):
     assert entry["url"] == "ws://mac.local:18789"
     assert entry["token"] == "deadbeef"
     assert "added_at" in entry
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_registry_saves_nodes_json_owner_only(tmp_path):
+    import stat
+
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    p = tmp_path / "nodes.json"
+    NodeRegistry(path=p).add("mac", "ws://mac.local:18789", "deadbeef")
+    # The registry holds bearer tokens for every approved node.
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+def test_validate_request_accepts_and_rejects_token():
+    from plugins.google_meet.node import protocol
+
+    good = protocol.make_request("ping", "tok-abc", {})
+    assert protocol.validate_request(good, "tok-abc") == (True, "")
+    bad = protocol.make_request("ping", "tok-xyz", {})
+    ok, reason = protocol.validate_request(bad, "tok-abc")
+    assert not ok and reason == "token mismatch"
+    # Non-ASCII attacker input must fail closed, not raise.
+    weird = protocol.make_request("ping", "tok-é", {})
+    ok, _ = protocol.validate_request(weird, "tok-abc")
+    assert not ok
 
 
 # ---------------------------------------------------------------------------

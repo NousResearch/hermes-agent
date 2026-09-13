@@ -98,3 +98,49 @@ def test_wrapped_sudo_does_not_hit_kernel_no_new_privs_latch(monkeypatch):
         capture_output=True,
         timeout=5,
     )
+
+
+def test_trusted_helper_stat_rejects_group_or_world_writable():
+    class _St:
+        st_mode = 0o100755 | 0o022
+        st_uid = 0
+
+    assert terminal_tool._is_trusted_helper_stat(_St()) is False
+
+
+def test_trusted_helper_stat_accepts_root_owned_0755():
+    class _St:
+        st_mode = 0o100755
+        st_uid = 0
+
+    assert terminal_tool._is_trusted_helper_stat(_St()) is True
+
+
+def test_wrap_passes_environment_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(terminal_tool, "_process_has_no_new_privs", lambda: True)
+    env_file = tmp_path / "nnp.env"
+    env_file.write_text("HERMES_NNP_PROBE=from-profile\n")
+    wrapped = terminal_tool._wrap_local_command_for_no_new_privs(
+        "sudo -n true", cwd="/tmp", env_file=str(env_file)
+    )
+    assert f"EnvironmentFile={env_file}" in wrapped
+
+
+def test_write_nnp_env_file_is_owner_only(tmp_path):
+    path = terminal_tool._write_nnp_env_file({"HERMES_NNP_PROBE": "xyz", "EMPTY": ""}, str(tmp_path))
+    text = open(path, encoding="utf-8").read()
+    assert "HERMES_NNP_PROBE=xyz" in text
+    assert "EMPTY=" not in text
+    assert (os.stat(path).st_mode & 0o077) == 0
+
+
+def test_unit_for_kill_comes_from_proc_not_environment():
+    class _Proc:
+        pass
+
+    proc_a = _Proc()
+    proc_b = _Proc()
+    proc_a._nnp_sudo_unit = "hermes-nnp-sudo-1-aaaaaaaa.service"
+    proc_b._nnp_sudo_unit = "hermes-nnp-sudo-2-bbbbbbbb.service"
+    assert terminal_tool._nnp_sudo_unit_from_proc(proc_a) == "hermes-nnp-sudo-1-aaaaaaaa.service"
+    assert terminal_tool._nnp_sudo_unit_from_proc(proc_b) == "hermes-nnp-sudo-2-bbbbbbbb.service"

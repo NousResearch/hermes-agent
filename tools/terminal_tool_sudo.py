@@ -12,6 +12,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -442,14 +443,23 @@ _TRUSTED_SYSTEMD_RUN = "/usr/bin/systemd-run"
 _NNP_SUDO_UNIT_RE = re.compile(r"--unit=(hermes-nnp-sudo-[0-9]+-[0-9a-f]+\.service)")
 
 
+def _is_trusted_helper_stat(st) -> bool:
+    """Root-owned regular file, not group/world-writable."""
+    return (
+        stat.S_ISREG(st.st_mode)
+        and st.st_uid == 0
+        and (st.st_mode & 0o022) == 0
+    )
+
+
 def _trusted_systemd_run_binary() -> str | None:
-    """``/usr/bin/systemd-run`` only — never PATH. Must be a root-owned regular file."""
+    """``/usr/bin/systemd-run`` only — never PATH."""
     path = _TRUSTED_SYSTEMD_RUN
     try:
         st = os.stat(path)
     except OSError:
         return None
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0:
+    if not _is_trusted_helper_stat(st):
         return None
     if not os.access(path, os.X_OK):
         return None
@@ -461,6 +471,31 @@ def _nnp_sudo_unit_from_command(command: str | None) -> str | None:
         return None
     match = _NNP_SUDO_UNIT_RE.search(command)
     return match.group(1) if match else None
+
+
+def _nnp_sudo_unit_from_proc(proc) -> str | None:
+    unit = getattr(proc, "_nnp_sudo_unit", None)
+    if isinstance(unit, str) and unit.startswith("hermes-nnp-sudo-"):
+        return unit
+    return None
+
+
+def _write_nnp_env_file(env: dict, directory: str | None = None) -> str:
+    """Owner-only systemd EnvironmentFile for the NNP sudo unit."""
+    fd, path = tempfile.mkstemp(prefix="hermes-nnp-env-", suffix=".env", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        lines: list[str] = []
+        for key, value in env.items():
+            if not isinstance(key, str) or not key or not isinstance(value, str) or not value:
+                continue
+            if "\n" in key or "\n" in value:
+                continue
+            lines.append(f"{key}={value}")
+        os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+    return path
 
 
 def _stop_nnp_sudo_unit(unit: str | None) -> None:
@@ -479,7 +514,9 @@ def _stop_nnp_sudo_unit(unit: str | None) -> None:
             return
 
 
-def _wrap_local_command_for_no_new_privs(command: str, *, cwd: str | None = None) -> str:
+def _wrap_local_command_for_no_new_privs(
+    command: str, *, cwd: str | None = None, env_file: str | None = None
+) -> str:
     """Run a local sudo-bearing command in a fresh systemd user unit.
 
     ``systemd-run --user --pipe`` is a sibling of the user manager, not a child
@@ -496,7 +533,7 @@ def _wrap_local_command_for_no_new_privs(command: str, *, cwd: str | None = None
     if not binary:
         logger.warning(
             "NoNewPrivs is set; local sudo cannot escape without /usr/bin/systemd-run "
-            "(root-owned). Command will fail with the kernel latch."
+            "(root-owned, not group/world-writable). Command will fail with the kernel latch."
         )
         return command
     unit = f"hermes-nnp-sudo-{os.getpid()}-{uuid.uuid4().hex[:8]}.service"
@@ -511,6 +548,8 @@ def _wrap_local_command_for_no_new_privs(command: str, *, cwd: str | None = None
     ]
     if cwd and os.path.isabs(cwd) and os.path.isdir(cwd):
         parts.append(f"--working-directory={shlex.quote(cwd)}")
+    if env_file and os.path.isfile(env_file):
+        parts.append(f"--property=EnvironmentFile={shlex.quote(env_file)}")
     parts.extend(["--", "/bin/bash", "-lc", shlex.quote(command)])
     return " ".join(parts)
 

@@ -1096,6 +1096,15 @@ export const zh = defineLocale({
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）'
     },
+    quitConfirmation: {
+      title: '退出前确认',
+      description: '在此电脑上退出 Hermes 前询问。默认仅在智能体工作时询问。适用于所有配置档案。',
+      never: '从不',
+      whileWorking: '智能体工作时',
+      always: '始终',
+      loadFailed: '无法加载退出确认偏好。',
+      saveFailed: '无法保存退出确认偏好。之前的选择仍然有效。'
+    },
     quickEntry: {
       enabledTitle: '快速输入',
       enabledDesc: '用全局快捷键在任何地方唤出一个小输入框，无需打开 Hermes 即可发送提示。',

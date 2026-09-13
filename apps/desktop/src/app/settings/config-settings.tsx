@@ -49,6 +49,7 @@ import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
+import { QuitConfirmationSetting } from './quit-confirmation-setting'
 
 export function ConfigSettings({
   activeSectionId,
@@ -408,6 +409,7 @@ function ConfigSettingsInner({
           />
           <PoolLimitsSetting />
           <QuickEntrySettings />
+          <QuitConfirmationSetting />
         </>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is

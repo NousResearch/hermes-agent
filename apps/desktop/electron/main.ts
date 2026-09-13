@@ -13463,6 +13463,7 @@ function spawnSecondaryWindow({
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
+  quitConfirmation.trackWindow(win)
 
   // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
   // renderer used to log nothing and stay black; now it logs with its window
@@ -13549,6 +13550,7 @@ function spawnBrowserWindow(tabId) {
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'browser-window', rememberLog)
+  quitConfirmation.trackWindow(win)
 
   installWindowRendererLifecycle(win, {
     kind: 'browser',
@@ -13628,6 +13630,7 @@ function createInstanceWindow() {
   })
 
   instanceWindows.add(win)
+  quitConfirmation.trackWindow(win)
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(win)
@@ -14718,6 +14721,7 @@ function createWindow() {
 
   streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
+  quitConfirmation.trackWindow(mainWindow)
 
   // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
   // policy (crashed/oom → bounded reload via the shared rolling budget, then
@@ -18191,7 +18195,8 @@ function configureSpellChecker() {
 const quitConfirmation = createQuitConfirmation({
   getWork: () => mergeActiveWork(activeWorkByWebContents.values()),
   isQuittingForHandoff: () => isQuittingForHandoff,
-  skipConfirmation: SKIP_QUIT_CONFIRM
+  skipConfirmation: SKIP_QUIT_CONFIRM,
+  writeFile: writeFileAtomic
 })
 
 app.on('before-quit', event => {

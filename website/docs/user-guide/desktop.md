@@ -186,6 +186,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
 - **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). This is a per-computer setting.
+- **Confirm before quitting** — **Settings → Advanced → Confirm before quitting** controls the prompt when you quit Hermes. Choose **Never**, **When agents are working** (the default), or **Always**. This preference applies to this computer, across profiles, and takes effect immediately. On macOS, closing a window keeps Hermes running in the Dock; use **Quit Hermes** to exit. On Windows and Linux, closing the last app window quits Hermes.
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
 

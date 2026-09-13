@@ -325,6 +325,22 @@ def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
     return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
 
 
+def desktop_surface_registry() -> dict[str, str]:
+    """``/name`` (and every alias) -> ``desktop`` disposition, for each command that has one.
+
+    The desktop app reads this live from ``commands.catalog``; the copy committed at
+    ``apps/desktop/src/lib/desktop-slash-registry.json`` (``scripts/dump_desktop_slash_registry.py``)
+    is its offline fallback before the catalog answers, so the registry stays the ONLY place a
+    command's desktop disposition is authored. A test on each side fails when the two drift.
+    """
+    return {
+        f"/{key}": cmd.desktop
+        for cmd in COMMAND_REGISTRY
+        if cmd.desktop
+        for key in (cmd.name, *cmd.aliases)
+    }
+
+
 # Every name and alias -> its CommandDef.
 _COMMAND_LOOKUP: dict[str, CommandDef] = {
     key: cmd for cmd in COMMAND_REGISTRY for key in (cmd.name, *cmd.aliases)}

@@ -867,15 +867,18 @@ def _handle_create(args: dict, **kw) -> str:
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
-    those are cleared but the subprocess inherits ``HERMES_SESSION_KEY`` -> ``platform="tui"``
-    for the TUI poller. ``HERMES_SESSION_ID`` is deliberately NOT a fallback: it is set for
-    every CLI/ACP invocation and would auto-subscribe every CLI run."""
+    use the live ``HERMES_SESSION_ID`` when the turn context identifies that surface, falling
+    back to ``HERMES_SESSION_KEY`` for the slash-worker subprocess. ``HERMES_SESSION_ID`` must
+    not be a general fallback: every CLI/ACP invocation sets it and would auto-subscribe."""
     from gateway.session_context import get_session_env as env
     platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
     if not platform or not chat_id:
         session_key = env("HERMES_SESSION_KEY", "") or os.environ.get("HERMES_SESSION_KEY", "")
         if not session_key:
             return None
+        source = env("HERMES_SESSION_SOURCE", "").strip().lower()
+        if source in {"desktop", "tui"}:
+            session_key = env("HERMES_SESSION_ID", "") or session_key
         platform, chat_id = "tui", session_key
     chat_type = env("HERMES_SESSION_CHAT_TYPE", "") or None
     thread_id = env("HERMES_SESSION_THREAD_ID", "") or None

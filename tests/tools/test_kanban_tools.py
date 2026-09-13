@@ -994,6 +994,32 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert subs[0]["delivery_mode"] == "notify"
 
 
+def test_create_subscribes_live_tui_session_after_compression_rotation(monkeypatch, worker_env):
+    """A mid-turn compression rotation updates the session-id ContextVar before the TUI
+    host can replace its session key; a task created in that window must follow the live id."""
+    from gateway.session_context import clear_session_vars, set_current_session_id, set_session_vars
+    from tools import kanban_tools as kt
+
+    tokens = set_session_vars(
+        source="desktop", session_key="superseded-session", session_id="superseded-session")
+    try:
+        set_current_session_id("live-session")
+        out = kt._handle_create({
+            "title": "auto-sub compressed tui",
+            "assignee": "peer",
+        })
+    finally:
+        clear_session_vars(tokens)
+
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is True, d
+    subs = _sub_index(_list_subs_for_task(d["task_id"]))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "tui"
+    assert subs[0]["chat_id"] == "live-session"
+
+
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     """CLI / cron / test sessions have no persistent delivery channel.
     _maybe_auto_subscribe returns False and no row is written."""

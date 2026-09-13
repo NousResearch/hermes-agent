@@ -145,8 +145,20 @@ deployments:
 Gateway unreachable from hop 1 (scale-to-zero wake still booting, restart
 window, api_server disabled) → the dashboard returns **503** and NAS retries
 (non-2xx = retryable, below); the store CAS de-dupes the eventual double fire.
+Named-profile callbacks can be the first activity after a cold start, including
+jobs armed by an older gateway. The dashboard discovers the **current profiles'
+configured verifiers** in one background build, independently of scheduler
+reconciliation. While initial discovery or a required refresh is in progress it
+returns **503** with `Retry-After`. JWT issuer/audience claims only select local
+verifier candidates; signature verification and the actual job owner's current
+configuration remain mandatory before forwarding. Unknown selectors and failed
+candidates check profile/config file signatures and the loader's environment
+dependencies before returning 401, so a newly created profile, changed issuer,
+or audience resolved after dotenv loads does not wait for a cache TTL. No per-job routing hints or
+cancelled-job history are retained; valid late callbacks still receive `gone`.
+
 There is deliberately no in-dashboard execution fallback. The verifier is
-`plugins/cron/chronos/verify.py`.
+`plugins/cron_providers/chronos/verify.py`.
 
 - **Auth:** `Authorization: Bearer <NAS-minted JWT>`. The agent verifies:
   - signature against the NAS JWKS (`cron.chronos.nas_jwks_url`),

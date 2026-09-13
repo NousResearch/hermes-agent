@@ -214,6 +214,81 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+def _load_cron_config_for_profile(profile: Optional[str]) -> Dict[str, Any]:
+    """Load Chronos settings from the resolved cron profile home."""
+    from hermes_cli.config import load_config
+
+    if not profile:
+        return load_config()
+
+    _profile_name, home = _cron_profile_home(profile)
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = set_hermes_home_override(str(home))
+    try:
+        return load_config()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _authenticate_cron_fire(token: str, job_id: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """Authenticate with current profile config, then revalidate the actual job owner.
+
+    Catalog claims select candidates, never authority. Config, JWT/JWKS and store reads
+    belong in this worker, off the event loop. Identical verifier settings run only once.
+    """
+    from cron.chronos_fire_profiles import (
+        _MAX_FIRE_TOKEN_BYTES, cron_fire_token_selectors, get_cron_fire_catalog,
+    )
+    from plugins.cron_providers.chronos.verify import get_fire_verifier
+
+    if len(token) > _MAX_FIRE_TOKEN_BYTES:
+        return False, None
+    verifier = get_fire_verifier()
+    verified_settings = {}
+
+    def verify_profile(profile):
+        try:
+            cfg = _load_cron_config_for_profile(profile)
+        except (HTTPException, OSError, ValueError):
+            return False
+        settings = (
+            cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
+            cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
+            cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
+        )
+        if any(value is not None and not isinstance(value, str) for value in settings):
+            return False
+        if settings not in verified_settings:
+            verified_settings[settings] = verifier(
+                token=token, expected_audience=settings[0], jwks_or_key=settings[1],
+                issuer=settings[2],
+            ) is not None
+        return verified_settings[settings]
+
+    # Preserve the process-profile verifier, including the pluggable non-JWT seam.
+    if not verify_profile(None):
+        selectors = cron_fire_token_selectors(token)
+        if not selectors:
+            return False, None
+        catalog = get_cron_fire_catalog()
+        snapshot, candidates = catalog.candidates(selectors)
+        if not any(verify_profile(profile) for profile in candidates):
+            catalog.require_current(snapshot)
+            return False, None
+    if not job_id:
+        return True, None
+    profile = _find_cron_job_profile(job_id)
+    if profile is None:
+        return True, None
+    if not verify_profile(profile):
+        return False, None
+    return True, profile
+
+
 async def _run_cron_dashboard_io(func, *args, **kwargs):
     """Run cron dashboard profile/job I/O outside the FastAPI event loop."""
     from starlette.concurrency import run_in_threadpool

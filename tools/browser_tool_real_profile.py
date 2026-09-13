@@ -112,6 +112,19 @@ def _agent_browser_close_session(session_name: str) -> None:
     _agent_browser_session_cmd(session_name, "close", log_label="session close")
 
 
+def _agent_browser_daemon_alive(session_name: str) -> bool:
+    """True when the session's agent-browser daemon process is still running.
+
+    A daemon whose browser died answers ``get cdp-url`` with no URL, so ``_agent_browser_get_cdp``
+    alone cannot tell "no daemon" from "daemon bound to a dead port" (#101029).
+    """
+    import psutil
+
+    socket_dir = _session._prepare_session_socket_dir(session_name)
+    pid = _session._read_browser_daemon_pid(socket_dir, session_name)
+    return pid is not None and psutil.pid_exists(pid)
+
+
 _REAL_PROFILE_CHROME_FLAGS = (
     "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check",
     "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
@@ -270,7 +283,10 @@ def _real_profile_cdp() -> tuple:
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
             return existing, None
-        if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
+        # Stale/wrong-dir session: close it so nothing holds the dir open. A daemon left behind by a
+        # dead Chrome reports no endpoint but keeps the session name, and silently ignores the next
+        # ``--cdp <port>`` attach, so it must be closed too (#101029).
+        if existing or _agent_browser_daemon_alive(_bt._REAL_PROFILE_SESSION):
             _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
         # A Chrome from an earlier hermes process can still hold the copy dir after its attach
         # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;

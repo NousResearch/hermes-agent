@@ -869,6 +869,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
       const markReplacementInput = (ev: Event) => {
         const input = ev as InputEvent;
+        compositionForwarder.onBeforeInput(
+          input.inputType,
+          input.data,
+          isMobileLike,
+        );
         if (
           shouldTreatInputAsMobileReplacement(
             input.inputType,

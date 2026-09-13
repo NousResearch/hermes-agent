@@ -1396,6 +1396,9 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     if _stale_serve_rows is not None
                     else None
                 ),
+                # A root-home service label can serve the sticky named profile, so
+                # label matching alone cannot identify the restarted incarnation.
+                fleet_snapshot=_fleet_snapshot,
             )
             if report_unaccounted_runtimes(_runtime_outcomes):
                 restart.incomplete = True

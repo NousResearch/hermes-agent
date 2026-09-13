@@ -312,7 +312,7 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
-    stale_serve_pids: "set | None" = None,
+    stale_serve_pids: "set | None" = None, fleet_snapshot: "list | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
@@ -323,6 +323,11 @@ def match_runtime_outcomes(
     reconciled in their OWN vocabulary and never borrow the gateway's outcome: with
     ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as ``restarted``, one
     still alive is ``unaccounted``; without the probe an untouched serve stays ``unaccounted``.
+
+    Gateway service names describe an install root, not necessarily the profile served by
+    that process. When the post-restart fleet snapshot has a live successor for the same
+    profile, a changed PID is therefore authoritative restart evidence. ``down`` rows are
+    excluded, and an unchanged PID never receives incarnation credit.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
@@ -335,6 +340,17 @@ def match_runtime_outcomes(
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        live_gateway_pids: dict[str, set[int]] = {}
+        for row in fleet_snapshot or []:
+            if not isinstance(row, dict) or row.get("state") == "down":
+                continue
+            profile = row.get("profile")
+            try:
+                pid = int(row.get("pid"))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(profile, str) and profile and pid > 0:
+                live_gateway_pids.setdefault(profile, set()).add(pid)
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -354,6 +370,9 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
+            successors = live_gateway_pids.get(r.profile, set())
+            if r.pid is not None and successors and r.pid not in successors:
+                return "restarted"
             return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
 
         for r in plan.runtimes:

@@ -33,10 +33,12 @@ class _RecordingProvider:
         raise AssertionError("fire_claimed must not run when claim declined")
 
 
-def _job(jid, kind, run_at_dt):
+def _job(jid, kind, run_at_dt, *, date_window=False):
     schedule = {"kind": kind}
     if kind == "once":
         schedule["run_at"] = run_at_dt.isoformat()
+        if date_window:
+            schedule["fire_window_days"] = 1
     else:
         schedule["expr"] = "*/5 * * * *"
     return {
@@ -77,6 +79,19 @@ class TestMisfireBackstopOneShotGrace:
         overdue = _job("overdue-cron", "cron", now - timedelta(hours=2))
         provider, fired = _run_backstop(monkeypatch, [overdue])
         assert provider.claimed == ["overdue-cron"]
+
+    def test_date_window_oneshot_fires_late_within_declared_day(self, monkeypatch):
+        now = _hermes_now()
+        overdue = _job("date-once", "once", now - timedelta(hours=12), date_window=True)
+        provider, fired = _run_backstop(monkeypatch, [overdue])
+        assert provider.claimed == ["date-once"]
+
+    def test_date_window_oneshot_expires_after_declared_day(self, monkeypatch):
+        now = _hermes_now()
+        expired = _job("expired-date-once", "once", now - timedelta(days=2), date_window=True)
+        provider, fired = _run_backstop(monkeypatch, [expired])
+        assert fired == 0
+        assert provider.claimed == []
 
     def test_oneshot_within_oneshot_grace_but_past_misfire_grace(
         self, monkeypatch

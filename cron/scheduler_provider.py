@@ -285,7 +285,7 @@ def fire_overdue_jobs(
         if _estop_check_paused("cron-misfire", logger):
             return 0
 
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     if isinstance(provider, InProcessCronScheduler):
         return 0
@@ -316,12 +316,15 @@ def fire_overdue_jobs(
         if overdue_seconds < grace_minutes * 60:
             continue
         job_id = str(job.get("id") or "")
-        # One-shots past ONESHOT_GRACE_SECONDS "will never fire"; don't resurrect them hours late.
-        # One-shot jobs share the module-wide policy: more than ONESHOT_GRACE_SECONDS past their run time
-        # means "will never fire" (create/update/resume/recovery and, since #89571, the due-scan all enforce
-        # it). The misfire backstop must not resurrect them hours late after downtime — that's #93526.
+        # Explicit date-only one-shots have a declared one-day window. Other one-shots keep
+        # the existing two-minute grace and must not be resurrected after downtime (#93526).
         schedule = job.get("schedule") or {}
-        if str(schedule.get("kind") or "") == "once" and overdue_seconds > ONESHOT_GRACE_SECONDS:
+        is_date_window = bool(schedule.get("fire_window_days"))
+        if (
+            str(schedule.get("kind") or "") == "once"
+            and not is_date_window
+            and overdue_seconds > ONESHOT_GRACE_SECONDS
+        ):
             logger.warning(
                 "Misfire catch-up: one-shot job %s (%s) was due %s "
                 "(%.0f min overdue) — outside the %ss one-shot grace "
@@ -333,6 +336,16 @@ def fire_overdue_jobs(
                 ONESHOT_GRACE_SECONDS,
             )
             continue
+        if is_date_window:
+            window_end = due_dt + timedelta(days=schedule["fire_window_days"])
+            if now >= window_end:
+                logger.warning(
+                    "Misfire catch-up: date-window one-shot %s (%s) expired at %s, not firing.",
+                    job_id,
+                    job.get("name") or "unnamed",
+                    window_end.isoformat(),
+                )
+                continue
         logger.warning(
             "Misfire catch-up: job %s (%s) was due %s (%.0f min overdue) and "
             "no external fire arrived — firing locally.",

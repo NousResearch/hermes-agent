@@ -130,7 +130,7 @@ def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
-    pty_disabled_reason: Optional[str],
+    pty_disabled_reason: Optional[str], wait_on_oneshot_exit: bool = False,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -153,6 +153,9 @@ def spawn_background_process(
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        # Internal delivery work can require the finite CLI parent to retain its
+        # stdout pipes even when that channel cannot route a later notification.
+        proc_session.wait_on_oneshot_exit = wait_on_oneshot_exit
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:

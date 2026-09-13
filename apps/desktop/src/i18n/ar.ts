@@ -2593,6 +2593,8 @@ export const ar = defineLocale({
     changeCwdTitle: 'تغيير مجلد العمل',
     remotePickerTitle: 'اختر مجلدا بعيدا',
     remotePickerDescription: 'استعرض المجلدات على الخادم الخلفي المتصل.',
+    remotePickerPathLabel: 'مسار المجلد',
+    remotePickerPathPlaceholder: 'أدخل مسارا أو اسم مجلد',
     remotePickerSelect: 'تحديد المجلد',
     folderTip: cwd => cwd,
     openFolder: 'فتح مجلد',

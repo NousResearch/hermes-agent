@@ -3583,6 +3583,8 @@ export const en: Translations = {
     changeCwdTitle: 'Change working directory',
     remotePickerTitle: 'Choose remote folder',
     remotePickerDescription: 'Browse folders on the connected backend.',
+    remotePickerPathLabel: 'Folder path',
+    remotePickerPathPlaceholder: 'Type a path or folder name',
     remotePickerSelect: 'Select folder',
     folderTip: cwd => cwd,
     openFolder: 'Open folder',

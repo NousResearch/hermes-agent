@@ -218,6 +218,26 @@ def nous_rate_limit_guard(
             compression_attempts=compression_attempts, result=result,
         )
 
+    if agent.provider == "openai-codex":
+        try:
+            from agent.codex_quota_guard import check_daily_budget
+            _codex_msg = check_daily_budget(
+                base_url=getattr(agent, "base_url", "") or "",
+                api_key=getattr(agent, "api_key", "") or "",
+            )
+            if _codex_msg:
+                agent._persist_session(messages, conversation_history)
+                return _verdict("return", {
+                    "final_response": _codex_msg,
+                    "messages": messages,
+                    "api_calls": api_call_count,
+                    "completed": False,
+                    "failed": True,
+                    "error": _codex_msg,
+                })
+        except Exception:
+            pass
+
     if agent.provider == "nous":
         # A gateway ``x-nous-model-switch`` recorded on the previous response moves this session
         # (and the config default, when it still names the free tier's model) before the next call.

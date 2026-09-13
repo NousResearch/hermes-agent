@@ -116,7 +116,7 @@ def _install_example_plugin(_isolate_hermes_home):
     # list dynamically per request, so the rescan alone is enough for
     # the static-asset tests; the API auth tests additionally need the
     # route reorder below.
-    web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache = {}
     web_server._get_dashboard_plugins(force_rescan=True)
     _web_server_dashboard._mount_plugin_api_routes()
 
@@ -142,7 +142,7 @@ def _install_example_plugin(_isolate_hermes_home):
         # routes so the next test sees a clean app — and clear the
         # cache for the same reason.
         app.router.routes[:] = original_routes
-        web_server._dashboard_plugins_cache = None
+        web_server._dashboard_plugins_cache = {}
 
 
 # ---------------------------------------------------------------------------
@@ -4425,7 +4425,7 @@ class TestDashboardPluginManifestExtensions:
         })
         from hermes_cli import web_server
         # Bust the process-level cache so the test plugin is picked up.
-        web_server._dashboard_plugins_cache = None
+        web_server._dashboard_plugins_cache = {}
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         entry = next(p for p in plugins if p["name"] == "skin-home")
         assert entry["tab"]["override"] == "/"

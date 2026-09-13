@@ -25,9 +25,9 @@ from hermes_cli import web_server
 @pytest.fixture(autouse=True)
 def _reset_plugin_cache():
     """Bust the plugin cache before and after each test."""
-    web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache = {}
     yield
-    web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache = {}
 
 
 @pytest.fixture

@@ -88,6 +88,13 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  // Dashboard plugin discovery/management state is profile-owned: the plugin
+  // list gate, hub/catalog, install/enable/disable/update/remove, visibility,
+  // and memory-provider/context-engine selection must all follow the selected
+  // management profile rather than the dashboard process's own (issue #46408).
+  "/api/dashboard/plugins",
+  "/api/dashboard/agent-plugins",
+  "/api/dashboard/plugin-providers",
   // A named profile keeps its own pairing whitelist, and its gateway only
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.

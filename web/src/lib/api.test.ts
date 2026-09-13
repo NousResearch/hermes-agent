@@ -200,3 +200,48 @@ describe("api OAuth helpers", () => {
     ]);
   });
 });
+
+describe("api dashboard-plugin endpoints follow the selected management profile", () => {
+  it("appends ?profile= to every dashboard-plugin operation", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.getPlugins();
+    await api.rescanPlugins();
+    await api.getPluginsHub();
+    await api.getPluginsCatalog();
+    await api.installAgentPlugin({ identifier: "gh:owner/repo" });
+    await api.enableAgentPlugin("hot");
+    await api.disableAgentPlugin("hot");
+    await api.updateAgentPlugin("hot");
+    await api.removeAgentPlugin("hot");
+    await api.savePluginProviders({ memory_provider: "honcho" });
+    await api.setPluginVisibility("hot", true);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/dashboard/plugins?profile=worker",
+      "/api/dashboard/plugins/rescan?profile=worker",
+      "/api/dashboard/plugins/hub?profile=worker",
+      "/api/dashboard/plugins/catalog?profile=worker",
+      "/api/dashboard/agent-plugins/install?profile=worker",
+      "/api/dashboard/agent-plugins/hot/enable?profile=worker",
+      "/api/dashboard/agent-plugins/hot/disable?profile=worker",
+      "/api/dashboard/agent-plugins/hot/update?profile=worker",
+      "/api/dashboard/agent-plugins/hot?profile=worker",
+      "/api/dashboard/plugin-providers?profile=worker",
+      "/api/dashboard/plugins/hot/visibility?profile=worker",
+    ]);
+  });
+
+  it("leaves plugin URLs untouched when no management profile is selected", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getPlugins();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/dashboard/plugins"]);
+  });
+});

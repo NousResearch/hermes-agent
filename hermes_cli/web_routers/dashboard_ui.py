@@ -7,12 +7,13 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import asyncio
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_routers._common import scoped_to_thread
 from hermes_cli.config import cfg_get
 from hermes_cli.web_server_dashboard import (
     _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
@@ -124,14 +125,19 @@ def _plugin_activated(plugin: dict, enabled_set: set, disabled_set: set) -> bool
 
 
 @router.get("/api/dashboard/plugins")
-async def get_dashboard_plugins():
-    """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
+async def get_dashboard_plugins(profile: Optional[str] = None):
+    """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones).
+
+    Scoped to ``profile`` (the dashboard's selected management profile) so the
+    enabled/disabled gate and ``dashboard.hidden_plugins`` resolve against the
+    requested profile, not the dashboard process's own (issue #46408).
+    """
     def _run():
         plugins = _get_dashboard_plugins()
         hidden: list = cfg_get(load_config(), "dashboard", "hidden_plugins", default=[]) or []
         return plugins, hidden, *_plugin_enable_sets()
 
-    plugins, hidden, enabled_set, disabled_set = await asyncio.to_thread(_run)
+    plugins, hidden, enabled_set, disabled_set = await scoped_to_thread(profile, _run)
 
     # Strip internal fields before sending to frontend.
     return [
@@ -142,18 +148,22 @@ async def get_dashboard_plugins():
 
 
 @router.get("/api/dashboard/plugins/rescan")
-async def rescan_dashboard_plugins():
+async def rescan_dashboard_plugins(profile: Optional[str] = None):
     """Force re-scan of dashboard plugins."""
-    plugins = _get_dashboard_plugins(force_rescan=True)
+    def _run():
+        return _get_dashboard_plugins(force_rescan=True)
+    plugins = await scoped_to_thread(profile, _run)
     return {"ok": True, "count": len(plugins)}
 
 
 @router.get("/api/dashboard/plugins/hub")
-async def get_plugins_hub(request: Request):
+async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return _merged_plugins_hub()
+        def _run():
+            return _merged_plugins_hub()
+        return await scoped_to_thread(profile, _run)
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
@@ -171,7 +181,7 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
 
 
 @router.get("/api/dashboard/plugins/catalog")
-async def get_plugins_catalog(request: Request):
+async def get_plugins_catalog(request: Request, profile: Optional[str] = None):
     """Curated plugin catalog merged with installed state (session protected)."""
     _require_token(request)
 
@@ -188,14 +198,14 @@ async def get_plugins_catalog(request: Request):
         return installed_catalog_state(installed)
 
     try:
-        return await asyncio.to_thread(_run)
+        return await scoped_to_thread(profile, _run)
     except Exception as exc:
         _log.warning("plugins/catalog failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins catalog.") from exc
 
 
 @router.post("/api/dashboard/agent-plugins/install")
-async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
+async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody, profile: Optional[str] = None):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
@@ -203,9 +213,13 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
     identifier = body.identifier.strip()
     if not identifier and not catalog_name:
         raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
-    result = dashboard_install_plugin(
-        identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None, ref=body.ref)
-    result = _plugin_action(result, "Install failed.", rescan=True)
+    def _run():
+        result = dashboard_install_plugin(
+            identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,
+            ref=body.ref)
+        return _plugin_action(result, "Install failed.", rescan=True)
+
+    result = await scoped_to_thread(profile, _run)
     # Strip internal paths from the response
     result.pop("after_install_path", None)
     return result
@@ -219,39 +233,41 @@ def _validate_plugin_name(name: str) -> str:
     return name
 
 
-def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
+async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool, profile: Optional[str] = None) -> dict:
     _require_token(request)
-    return _plugin_action(action(_validate_plugin_name(name)), fallback_error, rescan=rescan)
+    def _run():
+        return _plugin_action(action(_validate_plugin_name(name)), fallback_error, rescan=rescan)
+    return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
-async def post_agent_plugin_enable(request: Request, name: str):
+async def post_agent_plugin_enable(request: Request, name: str, profile: Optional[str] = None):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
-                                "Enable failed.", rescan=False)
+    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
+                                "Enable failed.", rescan=False, profile=profile)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/disable")
-async def post_agent_plugin_disable(request: Request, name: str):
+async def post_agent_plugin_disable(request: Request, name: str, profile: Optional[str] = None):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
-                                "Disable failed.", rescan=False)
+    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
+                                "Disable failed.", rescan=False, profile=profile)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
-async def post_agent_plugin_update(request: Request, name: str):
+async def post_agent_plugin_update(request: Request, name: str, profile: Optional[str] = None):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    return _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
+    return await _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True, profile=profile)
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")
-async def delete_agent_plugin(request: Request, name: str):
+async def delete_agent_plugin(request: Request, name: str, profile: Optional[str] = None):
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
-    return _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
+    return await _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True, profile=profile)
 
 
 @router.put("/api/dashboard/plugin-providers")
-async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
+async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody, profile: Optional[str] = None):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
     from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
@@ -267,11 +283,11 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
         _invalidate_plugins_hub_cache()
         return {"ok": True}
 
-    return await asyncio.to_thread(_run)
+    return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/dashboard/plugins/{name:path}/visibility")
-async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
+async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody, profile: Optional[str] = None):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -293,7 +309,7 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
         _invalidate_plugins_hub_cache()
         return {"ok": True, "name": name, "hidden": body.hidden}
 
-    return await asyncio.to_thread(_run)
+    return await scoped_to_thread(profile, _run)
 
 
 # Browser-asset suffix allowlist. Everything else is 404'd so we never leak ``.py`` backend
@@ -308,32 +324,39 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 
 
 @router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
-async def serve_plugin_asset(plugin_name: str, file_path: str):
+async def serve_plugin_asset(plugin_name: str, file_path: str, profile: Optional[str] = None):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
 
     Unauthenticated on purpose: the SPA loads plugin JS via ``<script src>`` and CSS
-    via ``<link href>``, which cannot attach an auth header. Hence the suffix
+    via ``<link href>``, which cannot attach an auth header; the SPA passes the selected
+    management profile as ``?profile=<name>`` instead. Hence the suffix
     allowlist — user plugins ship a ``plugin_api.py`` backend the browser never
     fetches, and without it anyone on the loopback port could curl a private
     plugin's source. Path traversal is blocked via ``resolve().is_relative_to()``;
     user plugins must be enabled (bundled ones not disabled) (GHSA-mcfc-hp25-cjv7).
 
+    Scoped to ``profile`` so a plugin installed under the selected profile resolves
+    there rather than 404ing against the process home (#46408).
+
     See #46435.
     """
-    plugins = _get_dashboard_plugins()
-    plugin = next((p for p in plugins if p["name"] == plugin_name), None)
-    if not plugin or not _plugin_activated(plugin, *_plugin_enable_sets()):
-        raise HTTPException(status_code=404, detail="Plugin not found")
+    def _run():
+        plugins = _get_dashboard_plugins()
+        plugin = next((p for p in plugins if p["name"] == plugin_name), None)
+        if not plugin or not _plugin_activated(plugin, *_plugin_enable_sets()):
+            raise HTTPException(status_code=404, detail="Plugin not found")
 
-    base = Path(plugin["_dir"])
-    target = (base / file_path).resolve()
+        base = Path(plugin["_dir"])
+        target = (base / file_path).resolve()
 
-    if not target.is_relative_to(base.resolve()):
-        raise HTTPException(status_code=403, detail="Path traversal blocked")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        if not target.is_relative_to(base.resolve()):
+            raise HTTPException(status_code=403, detail="Path traversal blocked")
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
 
-    media_type = _PLUGIN_ASSET_CONTENT_TYPES.get(target.suffix.lower())
-    if media_type is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target, media_type=media_type, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+        media_type = _PLUGIN_ASSET_CONTENT_TYPES.get(target.suffix.lower())
+        if media_type is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(target, media_type=media_type, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+    return await scoped_to_thread(profile, _run)

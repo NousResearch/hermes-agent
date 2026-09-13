@@ -1570,8 +1570,29 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
 
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
-    background discovery instead of racing a second scan."""
+    background discovery instead of racing a second scan.
+
+    A REQUEST scoped to another profile (``is_request_scoped_hermes_home()`` — the dashboard's
+    ``?profile=<name>`` handling) must NOT load that profile's plugin modules. Plugin registration
+    has PROCESS-GLOBAL side effects: dashboard-auth providers are upserted by name into a
+    process-global registry, so loading another profile's manager would replace the provider
+    validating the running dashboard's sessions and 401 every live cookie (#106608). The process's
+    own plugins are discovered by its startup path, not by a request, so the skip changes nothing
+    for the launch profile.
+
+    A plain override is NOT a request: the cron external worker and a multiplexed gateway turn each
+    scope the profile the process is acting AS, and both need that profile's plugin tools
+    (``agent/agent_init.py::_load_tools`` calls this under those scopes) — so they still load.
+    """
     _join_background_discovery()
+    from hermes_constants import is_request_scoped_hermes_home
+    if is_request_scoped_hermes_home():
+        logger.debug(
+            "Skipping plugin discovery for a request scoped to another profile: plugin "
+            "registration has process-global side effects and would replace this process's own "
+            "registrations (#106608)",
+        )
+        return
     get_plugin_manager().discover_and_load(force=force)
 
 

@@ -462,6 +462,7 @@ def _dashboard_plugin_search_dirs() -> List[tuple]:
     a bare non-empty check let ``=0``/``=false`` silently enable it (GHSA-5qr3-c538-wm9j).
     """
     from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_cli.config import get_hermes_home
     from hermes_constants import get_default_hermes_root
 
     bundled_root = get_bundled_plugins_dir()
@@ -475,10 +476,16 @@ def _dashboard_plugin_search_dirs() -> List[tuple]:
     # *is* the root), mirroring how ``hermes_cli.plugins`` resolves plugin install locations. The
     # ``seen_names`` dedupe below keeps profile-local plugins (if any) authoritative over same-named root
     # plugins.
-    user_plugin_roots = [get_process_hermes_home() / "plugins"]
-    root_plugins = get_default_hermes_root() / "plugins"
-    if root_plugins.resolve(strict=False) != user_plugin_roots[0].resolve(strict=False):
-        user_plugin_roots.append(root_plugins)
+    #
+    # Scan the task-local home (the selected management profile, ``?profile=<name>``) FIRST so the
+    # selected profile's own plugins win over same-named process/root ones; a profile-scoped
+    # ``install`` writes there, so without it the plugin is also orphaned from discovery (#46408).
+    # Then the process launch home + default root, so #87197 still holds (process-home plugins stay
+    # visible under a scope). Deduped by resolved path.
+    user_plugin_roots = [get_hermes_home() / "plugins"]
+    for candidate in (get_process_hermes_home() / "plugins", get_default_hermes_root() / "plugins"):
+        if all(candidate.resolve(strict=False) != existing.resolve(strict=False) for existing in user_plugin_roots):
+            user_plugin_roots.append(candidate)
     search_dirs = [(d, "user") for d in user_plugin_roots]
     search_dirs += [(bundled_root / "memory", "bundled"), (bundled_root, "bundled")]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)`` check treated *any* non-empty
@@ -566,16 +573,17 @@ def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _PLUGINS_HUB_CACHE_TTL_SECONDS = 5.0
-_plugins_hub_cache: Optional[Dict[str, Any]] = None
-_plugins_hub_cache_expires_at = 0.0
+# Payloads keyed by resolved home: the hub reflects per-profile plugin state
+# (enabled/disabled, hidden, plugins root), so on a multiplex dashboard a
+# profile-scoped request must not be served another profile's cached hub (#46408).
+_plugins_hub_cache: Dict[str, tuple] = {}
 _plugins_hub_cache_lock = threading.Lock()
 
 
 def _invalidate_plugins_hub_cache() -> None:
-    global _plugins_hub_cache, _plugins_hub_cache_expires_at
+    global _plugins_hub_cache
     with _plugins_hub_cache_lock:
-        _plugins_hub_cache = None
-        _plugins_hub_cache_expires_at = 0.0
+        _plugins_hub_cache = {}
 
 
 _plugins_hub_probe_inflight: set = set()
@@ -650,12 +658,14 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     from hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
     from hermes_cli.web_server import _get_dashboard_plugins
     from hermes_cli.config import get_hermes_home, load_config
-    global _plugins_hub_cache, _plugins_hub_cache_expires_at
+    global _plugins_hub_cache
+    home = str(get_hermes_home())
     now = time.monotonic()
     if not force_refresh:
         with _plugins_hub_cache_lock:
-            if _plugins_hub_cache is not None and now < _plugins_hub_cache_expires_at:
-                return _plugins_hub_cache
+            cached = _plugins_hub_cache.get(home)
+            if cached is not None and now < cached[1]:
+                return cached[0]
 
     started_at = time.monotonic()
     from hermes_cli.plugins_cmd import (
@@ -736,8 +746,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "plugins/hub rebuilt in %.3fs (plugins=%d memory_options=%d)", duration, len(rows), len(memory_providers)
         )
     with _plugins_hub_cache_lock:
-        _plugins_hub_cache = payload
-        _plugins_hub_cache_expires_at = time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS
+        _plugins_hub_cache[home] = (payload, time.monotonic() + _PLUGINS_HUB_CACHE_TTL_SECONDS)
     return payload
 
 

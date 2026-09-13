@@ -190,7 +190,12 @@ def _cd_target(executable: str, args: list[str], cwd: Path) -> Path | None:
     if index >= len(args) or args[index] == "-":
         return None
     target = _resolve(args[index], cwd)
-    return target if target.is_dir() else None
+    # Use os.path.isdir (not Path.is_dir) — Path.is_dir() raises PermissionError
+    # when the path's parent directory is not traversable (e.g. a root-owned
+    # dir referenced mid-command: /root/...), which aborts the whole terminal
+    # command with a spurious error. os.path.isdir suppresses PermissionError
+    # and returns False, treating the target as "not a cd target".
+    return target if os.path.isdir(str(target)) else None
 
 
 def _shell_script_arg(args: list[str]) -> str | None:

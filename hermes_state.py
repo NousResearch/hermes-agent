@@ -7,6 +7,7 @@ splits sessions via parent_session_id chains; sessions are source-tagged
 
 import asyncio
 import atexit
+import errno
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import queue
 import random
 import re
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -237,6 +239,29 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
             db_path.with_name(db_path.name + "-shm"),
         )
     ):
+        if sys.platform == "darwin":
+            # Closing any ordinary descriptor cancels this process's POSIX
+            # locks, including SQLite's WAL locks on sibling descriptors.
+            # Darwin supports no-follow chmod directly, without opening one.
+            if index == 0 and create_main:
+                try:
+                    created = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                except FileExistsError:
+                    pass
+                else:
+                    os.close(created)  # A new inode, before SQLite opens it.
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(mode):
+                continue  # Preserve SQLite's canonical directory error.
+            if stat.S_ISLNK(mode):
+                raise OSError(errno.ELOOP, "Refusing a symlink database file", str(path))
+            if not stat.S_ISREG(mode):
+                raise OSError(errno.EINVAL, "Database file is not regular", str(path))
+            os.chmod(path, 0o600, follow_symlinks=False)
+            continue
         flags = os.O_RDONLY
         if index == 0 and create_main:
             flags = os.O_WRONLY | os.O_CREAT

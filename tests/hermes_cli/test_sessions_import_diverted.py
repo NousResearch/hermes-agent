@@ -82,3 +82,106 @@ def test_import_diverted_appends_jsonl_into_session(capsys):
         assert len(db.get_messages(session_id)) == before
     finally:
         db.close()
+
+
+def test_reimport_after_session_continues_does_not_duplicate():
+    """JSONL prefix must not re-append after the live session grew past it."""
+    from hermes_cli.foreign_sessions import run_sessions_import
+
+    home = get_hermes_home()
+    session_id = "sess-diverted-continue"
+    db = SessionDB()
+    try:
+        db.create_session(session_id, "cli")
+    finally:
+        db.close()
+
+    jsonl = _write_diverted(
+        home / "sessions" / f"{session_id}.jsonl",
+        [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "B"},
+        ],
+    )
+    apply_args = Namespace(
+        from_source="diverted",
+        path=str(jsonl),
+        session_id=session_id,
+        inspect_only=False,
+    )
+    assert run_sessions_import(apply_args) == session_id
+
+    db = SessionDB()
+    try:
+        db.append_message(session_id, "user", "C")
+        db.append_message(session_id, "assistant", "D")
+    finally:
+        db.close()
+
+    assert run_sessions_import(apply_args) == session_id
+    db = SessionDB()
+    try:
+        pairs = [(m.get("role"), m.get("content")) for m in db.get_messages(session_id)]
+        assert pairs == [
+            ("user", "A"),
+            ("assistant", "B"),
+            ("user", "C"),
+            ("assistant", "D"),
+        ]
+    finally:
+        db.close()
+
+
+def test_import_preserves_null_content_tool_call_rows():
+    """Assistant tool_calls with null content and tool results keep native fields."""
+    from hermes_cli.foreign_sessions import run_sessions_import
+    from hermes_state import divert_session_transcript_jsonl
+
+    home = get_hermes_home()
+    session_id = "sess-diverted-tools"
+    db = SessionDB()
+    try:
+        db.create_session(session_id, "cli")
+    finally:
+        db.close()
+
+    jsonl = divert_session_transcript_jsonl(
+        session_id,
+        [
+            {"role": "user", "content": "calculate"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "add", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "42", "tool_call_id": "call_1", "tool_name": "add"},
+        ],
+    )
+    assert jsonl is not None
+    apply_args = Namespace(
+        from_source="diverted",
+        path=str(jsonl),
+        session_id=session_id,
+        inspect_only=False,
+    )
+    assert run_sessions_import(apply_args) == session_id
+
+    db = SessionDB()
+    try:
+        convo = db.get_messages_as_conversation(session_id)
+        roles = [m.get("role") for m in convo]
+        assert roles == ["user", "assistant", "tool"]
+        tool_call = convo[1]
+        assert tool_call.get("tool_calls")
+        assert tool_call["tool_calls"][0]["id"] == "call_1"
+        result = convo[2]
+        assert result.get("tool_call_id") == "call_1"
+        assert result.get("content") == "42"
+    finally:
+        db.close()

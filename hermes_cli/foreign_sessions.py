@@ -298,22 +298,88 @@ def pick_foreign_session(source: Optional[str] = None, *, limit: int = 25) -> Op
     return None
 
 
-def _diverted_jsonl_records(path: Path) -> List[Dict[str, str]]:
-    """Parse diverted transcript JSONL into appendable ``role``/``content`` pairs."""
-    records: List[Dict[str, str]] = []
-    for obj in _read_json_lines(path):
-        role = obj.get("role")
-        content = obj.get("content")
-        if not isinstance(role, str) or not role.strip():
-            continue
-        if content is None:
-            continue
-        if not isinstance(content, str):
-            content = json.dumps(content, ensure_ascii=False, default=str)
-        if not content.strip():
-            continue
-        records.append({"role": role, "content": content})
-    return records
+def _diverted_has_tool_graph(obj: Dict[str, Any]) -> bool:
+    calls = obj.get("tool_calls")
+    return bool((isinstance(calls, list) and calls) or obj.get("tool_call_id") or obj.get("tool_name"))
+
+
+def _diverted_jsonl_record(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One diverted JSON object → appendable row, including null-content tool-call turns."""
+    role = obj.get("role")
+    if not isinstance(role, str) or not role.strip():
+        return None
+    content = obj.get("content")
+    if content is not None and not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False, default=str)
+    has_tools = _diverted_has_tool_graph(obj)
+    if content is None:
+        if not has_tools:
+            return None
+    elif not str(content).strip() and not has_tools:
+        return None
+    record: Dict[str, Any] = {"role": role, "content": content}
+    if isinstance(obj.get("tool_calls"), list):
+        record["tool_calls"] = obj["tool_calls"]
+    for key in ("tool_name", "tool_call_id"):
+        if obj.get(key):
+            record[key] = obj[key]
+    return record
+
+
+def _diverted_record_identity(record: Dict[str, Any]) -> Tuple[Any, ...]:
+    calls = record.get("tool_calls")
+    calls_key = json.dumps(calls, sort_keys=True, default=str) if isinstance(calls, list) else None
+    return (
+        record.get("role"),
+        record.get("content"),
+        record.get("tool_call_id"),
+        record.get("tool_name"),
+        calls_key,
+    )
+
+
+def _longest_prefix_subsequence(haystack: List[Tuple[Any, ...]], needle: List[Tuple[Any, ...]]) -> int:
+    """How much of *needle*'s prefix already appears as a contiguous run in *haystack*."""
+    if not needle:
+        return 0
+    n, m = len(haystack), len(needle)
+    for k in range(m, 0, -1):
+        prefix = needle[:k]
+        plen = len(prefix)
+        for i in range(0, n - plen + 1):
+            if haystack[i : i + plen] == prefix:
+                return k
+    return 0
+
+
+def _imported_watermark_path(jsonl: Path) -> Path:
+    return jsonl.with_name(jsonl.name + ".imported")
+
+
+def _read_imported_object_count(jsonl: Path) -> Optional[int]:
+    path = _imported_watermark_path(jsonl)
+    if not path.is_file():
+        return None
+    try:
+        n = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def _write_imported_object_count(jsonl: Path, n: int) -> None:
+    _imported_watermark_path(jsonl).write_text(f"{n}\n", encoding="utf-8")
+
+
+def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None:
+    db.append_message(
+        session_id,
+        record["role"],
+        record.get("content"),
+        tool_name=record.get("tool_name"),
+        tool_calls=record.get("tool_calls"),
+        tool_call_id=record.get("tool_call_id"),
+    )
 
 
 def _diverted_jsonl_path(session_id: Optional[str], path) -> Optional[Path]:
@@ -330,8 +396,11 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
     """Replay diverted JSONL into an existing (or newly created) Hermes session.
 
     Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
-    prints the path and non-empty line count. Idempotent: a suffix already stored
-    is not appended again. Empty or unusable lines are skipped.
+    prints the path and non-empty line count. Progress is a sidecar watermark
+    (``<jsonl>.imported``) so a later recovery cannot replay rows after the live
+    session has continued. Missing watermark falls back to skipping a prefix that
+    already appears as a contiguous run in the store. Native tool_calls /
+    tool_call_id rows are preserved. Empty unusable lines are skipped.
     """
     sid = (session_id or "").strip()
     jsonl = Path(path).expanduser()
@@ -358,16 +427,19 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
     try:
         if db.get_session(sid) is None:
             db.create_session(sid, "cli")
-        incoming = _diverted_jsonl_records(jsonl)
-        existing = [(m.get("role"), m.get("content")) for m in db.get_messages(sid)]
-        incoming_pairs = [(r["role"], r["content"]) for r in incoming]
-        skip = 0
-        for k in range(min(len(existing), len(incoming_pairs)), 0, -1):
-            if existing[-k:] == incoming_pairs[:k]:
-                skip = k
-                break
-        for record in incoming[skip:]:
-            db.append_message(sid, record["role"], record["content"])
+        objs = list(_read_json_lines(jsonl))
+        start = _read_imported_object_count(jsonl)
+        if start is None:
+            incoming = [rec for obj in objs if (rec := _diverted_jsonl_record(obj))]
+            existing_ids = [_diverted_record_identity(m) for m in db.get_messages(sid)]
+            incoming_ids = [_diverted_record_identity(r) for r in incoming]
+            skip = _longest_prefix_subsequence(existing_ids, incoming_ids)
+            to_apply = incoming[skip:]
+        else:
+            to_apply = [rec for obj in objs[start:] if (rec := _diverted_jsonl_record(obj))]
+        for record in to_apply:
+            _append_diverted_record(db, sid, record)
+        _write_imported_object_count(jsonl, len(objs))
         print(f"✓ Replayed diverted transcript into {sid}")
         print(f"  Source: {jsonl}")
         print(f"  Continue it with:  hermes --resume {sid}")

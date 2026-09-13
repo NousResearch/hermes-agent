@@ -67,7 +67,7 @@ class TestDelegatedChildNeverPrompts:
         monkeypatch.setattr(
             tts,
             "_prompt_for_sudo_password",
-            lambda timeout_seconds=45: calls.append(1) or "hunter2",
+            lambda timeout_seconds=45, command=None: calls.append(1) or "hunter2",
         )
 
         transformed, sudo_stdin = _transform_in_child("sudo apt-get update")
@@ -100,7 +100,7 @@ class TestDelegatedChildNeverPrompts:
         """The fix must not break interactive prompting outside children."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setattr(
-            tts, "_prompt_for_sudo_password", lambda timeout_seconds=45: "hunter2"
+            tts, "_prompt_for_sudo_password", lambda timeout_seconds=45, command=None: "hunter2"
         )
 
         transformed, sudo_stdin = tts._transform_sudo_command("sudo whoami")

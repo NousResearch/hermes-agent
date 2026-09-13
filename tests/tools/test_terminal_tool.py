@@ -91,6 +91,91 @@ def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
         "sudo true", None)
 
 
+def test_sudo_prompt_callback_receives_command(monkeypatch):
+    """A command-aware sudo callback sees the command so the UI can show what the password authorizes (#79874)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    seen = {}
+
+    def _cb(command=None):
+        seen["command"] = command
+        return "pw"
+
+    monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: _cb)
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command("sudo pacman -S task")
+
+    assert seen.get("command") == "sudo pacman -S task"
+    assert transformed == "sudo -S -p '' pacman -S task"
+    assert sudo_stdin == "pw\n"
+
+
+def test_sudo_prompt_zero_arg_callback_still_works(monkeypatch):
+    """Legacy zero-arg callbacks (CLI prompt_toolkit) keep working (#79874)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    calls = []
+
+    def _cb():
+        calls.append(1)
+        return "pw"
+
+    monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: _cb)
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command("sudo apt update")
+
+    assert calls == [1]
+    assert sudo_stdin == "pw\n"
+
+
+def test_sudo_prompt_redacts_display_command_only(monkeypatch):
+    """The command shown at the prompt is redacted; the executed command is not (#79874)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    import agent.redact as redact_mod
+
+    calls = []
+
+    def _redact(text, *, force=False, **kwargs):
+        calls.append((text, force))
+        return "[REDACTED]"
+
+    raw = ("sudo curl -H 'Authorization: Bearer "
+           "ghp_abcdef1234567890ABCDEF1234567890abcdef' https://example.test")
+    seen = {}
+
+    def _cb(command=None):
+        seen["command"] = command
+        return "pw"
+
+    monkeypatch.setattr(redact_mod, "redact_sensitive_text", _redact)
+    monkeypatch.setattr(terminal_tool, "_get_sudo_password_callback", lambda: _cb)
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(raw)
+
+    assert seen["command"] == "[REDACTED]"
+    assert calls == [(raw, True)]
+    assert transformed.startswith("sudo -S -p '' curl")
+    assert "ghp_abcdef1234567890ABCDEF1234567890abcdef" in transformed
+
+
+def test_sudo_prompt_dev_tty_shows_command(monkeypatch, capsys):
+    """The /dev/tty fallback prints the command being authorized (#79874)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    terminal_tool.set_sudo_password_callback(None)
+
+    def _fake_read(result):
+        result["password"] = ""
+        result["done"] = True
+
+    monkeypatch.setattr(terminal_tool_sudo, "_read_hidden_password", _fake_read)
+
+    assert terminal_tool_sudo._prompt_for_sudo_password(
+        timeout_seconds=1, command="sudo whoami") == ""
+    assert "sudo whoami" in capsys.readouterr().out
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")

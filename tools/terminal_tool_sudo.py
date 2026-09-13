@@ -4,6 +4,7 @@ password cache, /dev/tty prompt, the quote-aware shell scanner behind the real-s
 Split out of ``tools/terminal_tool.py``; every public/patched name is re-imported there so
 ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before."""
 
+import inspect
 import logging
 import os
 import platform
@@ -11,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -173,16 +175,41 @@ def _read_hidden_password(result: dict) -> None:
         result["done"] = True
 
 
-def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
+def _prompt_for_sudo_password(timeout_seconds: int = 45, command: str | None = None) -> str:
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
     CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
-    Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
+    Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``).
+
+    ``command`` is the sudo command being authorized. It is redacted for display and handed to
+    the registered callback when that callback accepts a positional argument (the gateway/desktop
+    dialog shows what the password is for, #79874); legacy zero-arg callbacks are called bare.
+    The executed command is never redacted — only this display copy."""
+    display_command = ""
+    if command:
+        try:
+            from agent.redact import redact_sensitive_text
+            display_command = redact_sensitive_text(command, force=True)
+        except Exception:
+            display_command = command
+
     from tools.terminal_tool import _get_sudo_password_callback
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
             from tools.approval_human_wait import human_wait_window
             with human_wait_window():
+                if display_command:
+                    try:
+                        _sig = inspect.signature(_sudo_cb)
+                    except (TypeError, ValueError):
+                        _sig = None
+                    _accepts_arg = _sig is not None and any(
+                        p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                   inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                        for p in _sig.parameters.values()
+                    )
+                    if _accepts_arg:
+                        return _sudo_cb(display_command) or ""
                 return _sudo_cb() or ""
         except Exception:
             return ""
@@ -191,6 +218,11 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     try:
         os.environ["HERMES_SPINNER_PAUSE"] = "1"
         time.sleep(0.2)
+        if display_command:
+            print("")
+            print("  Command requiring sudo:")
+            for _line in (textwrap.wrap(display_command, width=72) or [""]):
+                print(f"    {_line}")
         print("\n".join((
             "",
             "┌" + "─" * 58 + "┐",
@@ -462,7 +494,7 @@ def _transform_sudo_command(
         # way. Re-probed every call so an expired sudo timestamp cannot silently block.
         if sudo_nopasswd_check is not None and sudo_nopasswd_check():
             return command, None
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
 

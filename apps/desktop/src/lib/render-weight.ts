@@ -1,3 +1,4 @@
+import { TOOL_IMAGE_PAGE_SIZE, toolImageSources } from '@/lib/tool-images'
 import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 
 /**
@@ -171,9 +172,17 @@ function partPaintWeight(part: unknown, measure: (parts: readonly unknown[]) => 
     return COLLAPSED_ROW_WEIGHT
   }
 
-  // A diff is the one card that scales: `FileDiffPanel` mounts a row per line,
-  // and a big patch really is the expensive thing in the turn.
-  return isFileEditTool(toolName) ? measure([part]) : CARD_WEIGHT
+  // A diff still scales with its payload, even if the tool also mentions images.
+  if (isFileEditTool(toolName)) {
+    return measure([part])
+  }
+
+  const imageCount = toolImageSources(part.args, part.result).length
+  // One main image plus a thumbnail strip only for galleries. Budget the largest
+  // visible page, not the full array or whichever page happens to be selected.
+  const visibleImages = imageCount > 1 ? 1 + Math.min(imageCount, TOOL_IMAGE_PAGE_SIZE) : 1
+
+  return CARD_WEIGHT * visibleImages
 }
 
 /**

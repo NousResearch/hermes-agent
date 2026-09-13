@@ -1,6 +1,6 @@
 'use client'
 
-import { type ComponentProps, useState } from 'react'
+import { type ComponentProps, type KeyboardEventHandler, type ReactNode, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useImageDownload } from '@/hooks/use-image-download'
@@ -66,7 +66,10 @@ export function ImageLightbox({
   onOpenChange,
   open,
   saving,
-  src
+  src,
+  placeholder,
+  navigation,
+  onKeyDown
 }: {
   alt?: string
   copy: ImageActionCopy
@@ -75,27 +78,39 @@ export function ImageLightbox({
   open: boolean
   saving: boolean
   src: string
+  placeholder?: ReactNode
+  navigation?: ReactNode
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>
 }) {
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
+        aria-label={alt}
         bodyClassName="block overflow-visible p-0"
         className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        onKeyDown={onKeyDown}
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
-          <img
-            alt={alt ?? ''}
-            className="block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] cursor-zoom-out select-auto rounded-lg object-contain shadow-2xl"
-            onClick={() => onOpenChange(false)}
-            src={src}
-          />
-          <ImageActionButton
-            className="group-hover/lightbox:opacity-100"
-            copy={copy}
-            onClick={onClick}
-            saving={saving}
-          />
+          {src ? (
+            <img
+              alt={alt ?? ''}
+              className="block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] cursor-zoom-out select-auto rounded-lg object-contain shadow-2xl"
+              onClick={() => onOpenChange(false)}
+              src={src}
+            />
+          ) : (
+            placeholder
+          )}
+          {src && (
+            <ImageActionButton
+              className="group-hover/lightbox:opacity-100"
+              copy={copy}
+              onClick={onClick}
+              saving={saving}
+            />
+          )}
+          {navigation}
         </div>
       </DialogContent>
     </Dialog>

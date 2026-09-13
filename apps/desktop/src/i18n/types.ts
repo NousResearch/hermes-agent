@@ -3590,6 +3590,10 @@ export interface Translations {
     restartToSaveImages: string
     imageDownloadFailed: string
     openImage: string
+    imageGallery: string
+    previousImage: string
+    nextImage: string
+    imagePosition: (current: number, total: number) => string
     downloadImage: string
     savingImage: string
     imagePreviewFailed: string

@@ -135,6 +135,13 @@ _cfg_path = None
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 
+
+def _session_prompt_submit_lock(session: dict):
+    """Return the per-session admission lock, including records created by older clients."""
+    history_lock = session.setdefault("history_lock", threading.Lock())
+    with history_lock:
+        return session.setdefault("prompt_submit_lock", threading.Lock())
+
 def _ws_orphan_setting(env_var: str, cfg_key: str, default: float) -> float:
     """``dashboard.<cfg_key>`` seconds; the env var is an internal override that wins when set."""
     raw = os.environ.get(env_var)

@@ -2254,7 +2254,7 @@ class LLMEgressFirewall:
                     expected_content = "\n".join(
                         f"{line_number}|{line}"
                         for line_number, line in enumerate(
-                            raw_text.split("\n"),
+                            raw_text.splitlines(),
                             start=grant_and_content[0].line_start,
                         )
                     )

@@ -270,38 +270,11 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
             record["pending_title"] = None
-            # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
-            record["_branch_seed_persisted"] = True
+            return True
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
-
-
-def _seed_row(record: dict) -> None:
-    """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
-    intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
-    lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
-    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
-    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
-    key = record.get("session_key")
-    try:
-        if _ensure_session_db_row(record) is False:
-            return
-        _persist_branch_seed(record)
-    except Exception:
-        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
-    if not record.get("_branch_seed_persisted"):
-        with contextlib.suppress(Exception), _session_db(record) as db:
-            if db is not None:
-                db.delete_session(key)
-        return
-    try:
-        if title := record.get("pending_title"):
-            with _session_db(record) as db:
-                if db is not None and db.set_session_title(key, title):
-                    record["pending_title"] = None
-    except Exception:
-        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
+    return False
 
 
 def _create_overrides(params: dict) -> tuple:
@@ -337,17 +310,21 @@ def _(rid, params: dict) -> dict:
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    conversation_worktree = {}
+    conversation_root_lease = None
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
-            "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
+            "cols": _int_param(params, "cols", 80), "created_at": now, "edit_snapshots": {},
+            "conversation_worktree": conversation_worktree,
+            "conversation_root_lease": conversation_root_lease,
             "explicit_cwd": explicit_cwd,
-            "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
-            "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
-            "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
+            "history": history, "history_lock": threading.Lock(), "prompt_submit_lock": threading.Lock(),
+            "history_version": 0, "image_counter": 0,
+            "cwd": raw_cwd if conversation_worktree else _completion_cwd(params), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
@@ -359,7 +336,7 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
-    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
+    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
     # empty session behind for every launch the user never typed into. The row is now created lazily on the
@@ -372,27 +349,35 @@ def _(rid, params: dict) -> dict:
     # optimistic row vanishes on restart. Persisting up front also means a restart keeps the branch (both
     # reports lost it) and the title lands in the parent's lineage instead of falling back to a
     # message-preview name. Title mirrors the TUI /branch naming.
-    # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
-    # already written): the transcript exists only in memory, so a restart before the first prompt lost it
-    # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
-        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
-    elif history:
-        _seed_row(_sessions[sid])
+        # Create the durable child first so the binding's Git metadata update targets an existing
+        # row. If persistence is unavailable, retain the lazy fallback and bind on first submit.
+        seeded = _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        try:
+            if seeded and source in {"desktop", "tui"}:
+                _bind_conversation_worktree_on_submit(_sessions[sid])
+        except Exception:
+            # Binding can create a lease and then fail while recording metadata.
+            # Never leave an unreachable live draft (or its lease) in the registry.
+            _close_session_by_id(sid, end_reason="branch_create_failed")
+            raise
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
+    # Worktree creation remains lazy, but preserve the existing agent pre-warm so
+    # ordinary session.create latency and the ready-event contract are unchanged.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
-    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
-        "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
+        "session_id": sid, "stored_session_id": key, "message_count": len(history),
+        "messages": _history_to_messages(history),
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                 "profile_name": _response_profile_name(profile)}})
+                 "profile_name": _response_profile_name(profile),
+                 **({"conversation_worktree": conversation_worktree} if conversation_worktree else {})}})
 
 
 def _session_list_by_title(rid, db, title_lookup: str) -> dict:
@@ -484,6 +469,10 @@ class _Resume:
     def __init__(self, rid, params: dict, target: str) -> None:
         self.rid, self.params, self.target = rid, params, target
         self.db, self.owns_db, self.found, self.profile_resume_cwd = None, False, None, ""
+        self.recorded_cwd = ""
+        self.conversation_worktree = {}
+        self.conversation_worktree_historical = False
+        self.conversation_root_lease = None
         self.cols = _int_param(params, "cols", 80)
         # ``profile`` (app-global remote mode): resume from another local profile's state.db.
         self.profile = (params.get("profile") or "").strip() or None
@@ -504,15 +493,22 @@ class _Resume:
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-        return _deferred_session_record(
+        record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        record.update(conversation_worktree=self.conversation_worktree,
+                      conversation_worktree_historical=self.conversation_worktree_historical,
+                      conversation_root_lease=self.conversation_root_lease)
+        return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
         live = _claim_or_reuse_live(sid, self.target, record, None)
-        return None if live is None else _resume_reuse_live(self, *live)
+        if live is None:
+            self.conversation_root_lease = None  # the registered runtime owns it now
+            return None
+        return _resume_reuse_live(self, *live)
 
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""
@@ -567,10 +563,10 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
                 _rebind_live_transport(live_sid, live, transport)
         else:
             _cancel_ws_orphan_reap(live_sid)
-    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
+    history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(messages), "messages": messages,
+        "message_count": len(history), "messages": ctx.messages(history),
         "info": {"model": _resolve_model(), "lazy": True, "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 
@@ -781,9 +777,10 @@ def _resume_eager(ctx: _Resume) -> dict:
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-                **stored_runtime_overrides)
+                conversation_worktree=ctx.conversation_worktree, **stored_runtime_overrides)
         except Exception as e:
             return _err(ctx.rid, 5000, f"resume failed: {e}")
+    resume_error = None
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -793,7 +790,10 @@ def _resume_eager(ctx: _Resume) -> dict:
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd),
+                              conversation_worktree=ctx.conversation_worktree,
+                              conversation_worktree_historical=ctx.conversation_worktree_historical,
+                              conversation_root_lease=ctx.conversation_root_lease)
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -801,6 +801,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if ctx.owns_db:
                     _transfer_db_to_agent(agent, ctx.db)
                 ctx.owns_db = False
+                ctx.conversation_root_lease = None
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
@@ -811,11 +812,18 @@ def _resume_eager(ctx: _Resume) -> dict:
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
-            if ctx.owns_db:
-                with _sessions_lock:
-                    _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
-        session = _sessions.get(sid) or {}
+            resume_error = e
+        if resume_error is None:
+            session = _sessions.get(sid) or {}
+    if resume_error is not None:
+        if ctx.owns_db or ctx.conversation_worktree:
+            if _close_session_by_id(sid, end_reason="resume_failed"):
+                # The live record owned the lease; prevent the outer scope from releasing it twice.
+                ctx.conversation_root_lease = None
+            else:
+                with contextlib.suppress(Exception):
+                    agent.close()
+        return _err(ctx.rid, 5000, f"resume failed: {resume_error}")
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
@@ -837,18 +845,45 @@ def _(rid, params: dict) -> dict:
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
-        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        ctx.recorded_cwd = _str_param(ctx.found, "cwd")
+        ctx.profile_resume_cwd = ctx.recorded_cwd or _profile_configured_cwd(ctx.profile_home)
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
+        if (_resolve_session_source(_str_param(params, "source") or None) in {"desktop", "tui"}
+                and (ctx.found or {}).get("source") not in {"tool", "kanban"}):
+            try:
+                manager, _, _ = _conversation_worktree_manager(profile_home=ctx.profile_home, db=ctx.db)
+                binding = (_resolve_conversation_worktree_for_resume(
+                    ctx.target, profile_home=ctx.profile_home, db=ctx.db) if manager is not None else None)
+                if binding is not None:
+                    ctx.conversation_worktree = _conversation_worktree_metadata(binding)
+                    ctx.conversation_root_lease = _acquire_conversation_root_lease(
+                        binding, surface=_resolve_session_source(_str_param(params, "source") or None))
+                    ctx.profile_resume_cwd = ctx.conversation_worktree["path"]
+                elif manager is not None and ctx.recorded_cwd and os.path.isdir(
+                        os.path.expanduser(ctx.recorded_cwd)):
+                    # Rows written before isolation was enabled are historical:
+                    # preserve their recorded workspace, but never turn the first
+                    # resumed submit into a new root claim.
+                    ctx.conversation_worktree_historical = True
+                elif manager is not None:
+                    return _err(
+                        rid, 5000,
+                        "no ready conversation worktree for resumed session; refusing profile checkout fallback")
+            except Exception as exc:
+                return _err(rid, 5000, f"conversation worktree setup failed: {exc}")
         if ctx.lazy:
             return _resume_lazy(ctx)
         if ctx.eager_build:
             return _resume_eager(ctx)
         return _resume_deferred(ctx) if ctx.defer_history else _resume_cold(ctx)
     finally:
+        if ctx.conversation_root_lease is not None:
+            with contextlib.suppress(Exception):
+                ctx.conversation_root_lease.release()
         # Refcounting alone does not release the sqlite fds: SessionDB pins ITSELF (atexit.register) once its
         # background token writer starts; only close() unregisters.
         if ctx.owns_db and ctx.db is not None:
@@ -861,6 +896,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     if session.get("running"):
         return _err(rid, 4009, "session busy")
+    if session.get("conversation_worktree"):
+        return _err(rid, 4018, "workspace is managed by conversation worktree")
     if not (raw := _str_param(params, "cwd")):
         return _err(rid, 4016, "cwd required")
     try:
@@ -889,12 +926,24 @@ def _(rid, params: dict) -> dict:
     with _sessions_lock:
         live_sid, live = next(
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
+    if live is not None and live.get("conversation_worktree"):
+        return _err(rid, 4018, "workspace is managed by conversation worktree")
     branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
     with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         # A draft has no row yet; the live re-home still applies (row inherits cwd on write).
-        if not db.get_session(target):
+        row = db.get_session(target)
+        if row and hasattr(db, "get_conversation_worktree"):
+            current, seen = target, set()
+            while current and current not in seen:
+                seen.add(current)
+                if db.get_conversation_worktree(current) is not None:
+                    return _err(rid, 4018, "workspace is managed by conversation worktree")
+                if hasattr(db, "is_explicit_fork_child") and db.is_explicit_fork_child(current):
+                    break
+                current = str((db.get_session(current) or {}).get("parent_session_id") or "").strip()
+        if not row:
             if live is None:
                 return _err(rid, 4007, "session not found")
         else:
@@ -981,6 +1030,124 @@ def _title_read(session: dict, db, key: str) -> str:
     return resolved_title
 
 
+def _conversation_cleanup_status(
+    verdict,
+    record,
+    *,
+    removed: bool,
+    failure_phase: str | None = None,
+    failure_message: str | None = None,
+) -> dict:
+    """Project a cleanup decision into the stable JSON-RPC response shape."""
+    result = {
+        "allowed": bool(verdict.allowed),
+        "reasons": list(verdict.reasons),
+        "removed": bool(removed),
+        "root_session_id": str(record.root_session_id),
+        "path": str(record.worktree_path),
+        "branch": str(record.branch),
+        "base_commit": str(record.base_commit),
+        "state": str(record.state),
+    }
+    if failure_phase is not None:
+        result["failure_phase"] = str(failure_phase)
+    if failure_message is not None:
+        result["failure_message"] = str(failure_message)
+    return result
+
+
+@method("session.worktree_cleanup")
+def _(rid, params: dict) -> dict:
+    """Inspect or explicitly remove one exact managed conversation worktree."""
+    target = str(params.get("session_id") or "").strip()
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    action = str(params.get("action") or "inspect").strip()
+    if action not in {"inspect", "remove"}:
+        return _err(rid, 4006, "action must be 'inspect' or 'remove'")
+
+    profile = str(params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5036)
+        try:
+            current = target
+            seen: set[str] = set()
+            root_session_id = None
+            while current and current not in seen:
+                seen.add(current)
+                if db.get_conversation_worktree(current) is not None:
+                    root_session_id = current
+                    break
+                if db.is_explicit_fork_child(current):
+                    break
+                row = db.get_session(current) or {}
+                current = str(row.get("parent_session_id") or "").strip()
+            if root_session_id is None:
+                return _err(rid, 4007, "conversation worktree binding not found")
+            manager, _owned_db, owns_db = _conversation_worktree_manager(
+                profile_home=profile_home,
+                db=db,
+            )
+            if owns_db:
+                return _err(rid, 5036, "conversation worktree database ownership mismatch")
+            if manager is None:
+                return _err(rid, 4007, "conversation worktree isolation is disabled")
+
+            # Keep the live-root decision stable through inspect/remove. Session
+            # close/archive/delete do not enter this handler and therefore never
+            # imply cleanup.
+            with _sessions_lock:
+                active = any(
+                    not session.get("_finalized")
+                    and str(
+                        (session.get("conversation_worktree") or {}).get(
+                            "root_session_id"
+                        )
+                        or ""
+                    )
+                    == root_session_id
+                    for session in _sessions.values()
+                )
+            # Cleanup performs bounded Git subprocesses; do not hold the global
+            # session registry lock while it runs. Root-lease fencing governs the
+            # destructive race after the active-state snapshot above.
+            if action == "inspect":
+                verdict = manager.inspect_cleanup(
+                    root_session_id,
+                    active_session_bound=active,
+                )
+                removed = False
+                failure_phase = None
+                failure_message = None
+            else:
+                result = manager.remove_after_explicit_request(
+                    root_session_id,
+                    active_session_bound=active,
+                )
+                verdict = result.verdict
+                removed = result.removed
+                failure_phase = result.failure_phase
+                failure_message = result.failure_message
+
+            record = db.get_conversation_worktree(root_session_id)
+            if record is None:
+                return _err(rid, 5036, "conversation worktree binding disappeared")
+            return _ok(
+                rid,
+                _conversation_cleanup_status(
+                    verdict,
+                    record,
+                    removed=removed,
+                    failure_phase=failure_phase,
+                    failure_message=failure_message,
+                ),
+            )
+        except Exception as exc:
+            return _err(rid, 5036, f"conversation worktree cleanup failed: {exc}")
+
+
 @method("session.title")
 @_with_db(5007, session_scoped=True)
 def _(rid, params: dict, session: dict, db) -> dict:
@@ -1038,10 +1205,24 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5007, str(e))
 
 
-@_session_method("message.react")
-def _(rid, params: dict, session: dict) -> dict:
+@method("message.react")
+def _(rid, params: dict) -> dict:
     """Set/clear one author's emoji reaction (Tapback semantics: one per author, same emoji retracts, null
-    clears). ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead."""
+    clears). ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead.
+
+    Like ``approval.respond``, accepts a STORED session_key even after the live runtime id has been
+    re-minted (multi-agent UI actions retain the durable key across a reconnect) -- unlike most
+    session-scoped RPCs, this is a lightweight action on already-persisted data, not a conversational
+    turn that needs the live agent."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        if (err.get("error") or {}).get("code") != 4001:
+            return err
+        target = str(params.get("session_id") or "")
+        live = _find_live_session_by_key(target) if target else None
+        if live is None:
+            return err
+        session = live[1]
     newest_role = _str_param(params, "newest_role")
     row_id = params.get("row_id")
     if row_id is None and newest_role not in {"user", "assistant"}:
@@ -1541,21 +1722,8 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
             return _ok(rid, dict(fallback))
 
 
-@method("billing.state")
-def _(rid, params: dict) -> dict:
-    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
-    bill, so its state is answered locally (``free_tier`` set, ``logged_in`` false) without a portal
-    round-trip that could only fail."""
-    try:
-        from agent.billing_view import BillingState, build_billing_state
-        from hermes_cli.anon_auth import guest_carries_inference
-        if guest_carries_inference():
-            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier=True))
-        return _ok(rid, _serialize_billing_state(build_billing_state()))
-    except Exception:
-        return _ok(rid, {"ok": True, "logged_in": False, "free_tier": False, "error": "could not load billing state"})
-
-
+_billing_view("billing.state", "agent.billing_view", "build_billing_state", "_serialize_billing_state",
+              {"ok": True, "logged_in": False, "error": "could not load billing state"})
 _billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
               {"ok": True, "available": False})
 _billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",
@@ -1892,8 +2060,15 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @method("session.close")
 def _(rid, params: dict) -> dict:
-    with _session_resume_lock:  # lock only the ownership claim; finalization must not block resumes
-        session = _pop_session_by_id(params.get("session_id", ""))
+    sid = params.get("session_id", "")
+    with _sessions_lock:
+        candidate = _sessions.get(sid)
+    if candidate is None:
+        return _ok(rid, {"closed": False})
+    # Prompt admission claims active/root leases and persists the draft. Take its lock first so close
+    # cannot pop a session between those steps; then take the resume lock in the same order as prompt.submit.
+    with _session_prompt_submit_lock(candidate), _session_resume_lock:
+        session = _pop_session_by_id(sid)
     return _ok(rid, {"closed": _teardown_popped_session(session, end_reason="tui_close")})
 
 
@@ -1905,18 +2080,25 @@ def _visible_branch_history(messages) -> list:
             and _coerce_message_text(message.get("content")).strip()]
 
 
-def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str):
+def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str,
+                        *, conversation_worktree=None, conversation_root_lease=None):
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
+    branch_cwd = (conversation_worktree or {}).get("path") or _session_cwd(session)
     branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
-                                           context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
+                                           context_cwd_is_launch_artifact=(
+                                               False if conversation_worktree
+                                               else _context_cwd_is_launch_artifact(session)),
+                                           conversation_worktree=conversation_worktree)
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
-                          cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
-                          explicit_cwd=bool(session.get("explicit_cwd")))
+                          cwd=branch_cwd, session_db=branch_db, source=source, profile_home=parent_home,
+                          explicit_cwd=bool(conversation_worktree or session.get("explicit_cwd")),
+                          conversation_worktree=conversation_worktree,
+                          conversation_root_lease=conversation_root_lease)
             _transfer_db_to_agent(agent, branch_db)
             branch_owns_db = False
         if new_sid in _sessions:
@@ -1966,17 +2148,31 @@ def _(rid, params: dict, session: dict) -> dict:
         if isinstance(count := params.get("count"), int) and count > 0:
             history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        conversation_worktree, conversation_root_lease = {}, None
         try:
+            if source in {"desktop", "tui"}:
+                binding = _bind_conversation_worktree_for_new_root(
+                    new_key, profile_home=session.get("profile_home"), db=db)
+                if binding is not None:
+                    conversation_worktree = _conversation_worktree_metadata(binding)
+                    conversation_root_lease = _acquire_conversation_root_lease(binding, surface=source)
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
-            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+            _persist_branch(db, new_key, old_key, title, history, source=source,
+                            cwd=conversation_worktree.get("path") or _session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             copy_fields=_BRANCH_COPY_FIELDS)
         except Exception as e:
+            if conversation_root_lease is not None:
+                conversation_root_lease.release()
             return _err(rid, 5008, f"branch failed: {e}")
     try:
-        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+        agent = _build_branch_agent(session, new_sid, new_key, history, source,
+                                    conversation_worktree=conversation_worktree,
+                                    conversation_root_lease=conversation_root_lease)
     except Exception as e:
+        if not _close_session_by_id(new_sid, end_reason="branch_create_failed") and conversation_root_lease is not None:
+            conversation_root_lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
                      "message_count": len(history), "messages": _history_to_messages(history),

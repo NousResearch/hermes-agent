@@ -2094,6 +2094,14 @@ updates:
 #   # Optional explicit ordering of enabled sources.
 #   # sources: [onepassword, bitwarden]
 #
+#   # Tool-facing credentials (GitHub / AWS) default to the same environ
+#   # hydration as every other secret. ``handles`` withholds that explicit
+#   # set from the process and records name+source on the apply report
+#   # instead; Hermes provider / bootstrap keys still hydrate. Default off.
+#   # tool_credentials: env          # default; all legal names write environ
+#   # tool_credentials: handles      # withhold GitHub/AWS tool creds from environ
+#   # process_plaintext: []          # optional; listed names still hydrate in handles mode
+#
 #   # ---- Bitwarden Secrets Manager (bws CLI) --------------------------------
 #   bitwarden:
 #     enabled: false

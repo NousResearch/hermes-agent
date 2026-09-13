@@ -15,8 +15,8 @@ export function registerNativeNotifications({ getMainWindow, focusWindow }: Noti
   const dedupeIntervalMs = 1000
   const isDuplicateNotification = createEventDeduper(dedupeIntervalMs)
   const deliveries = new Map<string, Promise<boolean>>()
-  const notifications = createNotificationRegistry()
   const linux = process.platform === 'linux' ? createLinuxNotifications() : undefined
+  const notifications = createNotificationRegistry({ releaseOnClose: Boolean(linux) })
 
   ipcMain.handle('hermes:notify', async (event, payload: HermesNotification) => {
     // The source renderer owns runtime bindings and plugin callbacks.

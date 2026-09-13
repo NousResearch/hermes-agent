@@ -240,6 +240,31 @@ it.skipIf(process.platform !== 'linux')(
 )
 
 it.skipIf(process.platform !== 'linux')(
+  'releases naturally closed notifications while retaining other click targets',
+  async () => {
+    const h = setup(true)
+    expect(await h.notify({ tag: 'closed', focusSessionId: 'closed-session' })).toBe(true)
+    const closedId = h.lastId()
+    expect(await h.notify({ tag: 'active', focusSessionId: 'active-session' })).toBe(true)
+    const activeId = h.lastId()
+    await vi.advanceTimersByTimeAsync(1100)
+    const timersBeforeClose = vi.getTimerCount()
+
+    h.signal('NotificationClosed', [closedId, 2], ':1.666')
+    expect(vi.getTimerCount()).toBe(timersBeforeClose)
+    h.signal('NotificationClosed', [closedId, 2])
+    expect(vi.getTimerCount()).toBe(timersBeforeClose - 1)
+    h.signal('ActionInvoked', [closedId, 'default'])
+    expect(h.source.webContents.send).not.toHaveBeenCalled()
+
+    h.signal('ActionInvoked', [activeId, 'default'])
+    expect(h.source.webContents.send).toHaveBeenCalledWith('hermes:focus-session', 'active-session')
+    expect(vi.getTimerCount()).toBe(0)
+    h.connection.emit('close')
+  }
+)
+
+it.skipIf(process.platform !== 'linux')(
   'preserves activation, dedupe and source ownership while fencing daemon ID reuse',
   async () => {
     const race = setup(true)

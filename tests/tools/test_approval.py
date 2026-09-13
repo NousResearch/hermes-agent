@@ -430,8 +430,16 @@ class TestHermesHomeHardline:
             "find $HERMES_HOME -exec cp {} /tmp/backup \\;",
             "busybox sqlite3 $HERMES_HOME/state.db 'select 1'",
             "sqlite3 $HERMES_HOME/state.db '.backup /tmp/state.db.bak'",
+            f"cd {tmp_path} && rm scratch.txt",
+            f"cd {tmp_path} && : > scratch.txt",
+            "rm ../scratch.txt",
+            f"cp -t {tmp_path} ./a $HERMES_HOME/SOUL.md",
+            f"cp --target-directory={tmp_path} $HERMES_HOME/SOUL.md ./a",
+            f"install -t {tmp_path} ./a $HERMES_HOME/SOUL.md",
+            "printf hello | xargs echo rm",
+            f"printf ./a | xargs cp -t {tmp_path}",
         ):
-            assert detect_hardline_command(command) == (False, None), command
+            assert detect_hardline_command(command, cwd=str(home)) == (False, None), command
 
         # Heredoc bodies may feed an executable consumer, so the security floor
         # deliberately does not exempt command-looking lines based on the producer.
@@ -460,6 +468,34 @@ class TestHermesHomeHardline:
         assert detect_hardline_command("find . -delete", cwd=str(home))[0] is True
         assert detect_hardline_command("rm ../state.db", cwd=str(home / "sub"))[0] is True
         assert detect_hardline_command("cd /missing || rm state.db", cwd=str(home))[0] is True
+
+    def test_terminal_replay_uses_the_executed_session_cwd(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        workspace = tmp_path / "workspace"
+        home.mkdir()
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(terminal_module, "_task_env_overrides", {})
+        monkeypatch.setattr(terminal_module, "_session_cwd", {})
+        monkeypatch.setattr(terminal_module, "_active_environments", {})
+
+        for mode, force in (("ordinary", False), ("yolo", False), ("force", True)):
+            task_id = f"managed-cwd-{mode}"
+            target = home / f"{mode}.db"
+            target.write_text("keep", encoding="utf-8")
+            terminal_module.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+            cd_result = json.loads(terminal_module.terminal_tool(
+                command=f'cd "{home}"', task_id=task_id,
+            ))
+            assert cd_result["exit_code"] == 0
+            monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", mode == "yolo")
+
+            result = json.loads(terminal_module.terminal_tool(
+                command=f'rm "{target.name}"', task_id=task_id, force=force,
+            ))
+
+            assert result["status"] == "blocked"
+            assert target.read_text(encoding="utf-8") == "keep"
 
 
 class TestFindExecFullPathRm:

@@ -1072,7 +1072,8 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
-    workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    workdir: Optional[str], command_cwd: str,
+    approval_note: Optional[str], clear_interrupt: bool,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize."""
     max_retries = 3
@@ -1089,9 +1090,6 @@ def _run_foreground(
 
     for retry_count in range(max_retries + 1):
         try:
-            command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
-            )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
@@ -1222,12 +1220,21 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        command_cwd = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=cwd,
+            session_key=session_key,
+            env_type=env_type,
+        )
 
-        _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
+        _pre_exec_block(
+            command, env=env, env_type=env_type, cwd=command_cwd,
+            workdir=workdir, session_key=session_key,
+        )
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(
-            command, env_type, plan.config, force=force, cwd=workdir or cwd,
+            command, env_type, plan.config, force=force, cwd=command_cwd,
         )
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
@@ -1238,7 +1245,7 @@ def terminal_tool(
         if background:
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                task_id=task_id, session_key=session_key, cwd=command_cwd,
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
@@ -1249,7 +1256,8 @@ def terminal_tool(
         return _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
-            workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+            workdir=workdir, command_cwd=command_cwd,
+            approval_note=verdict.note, clear_interrupt=verdict.approved_run,
         )
     except _Rejected as r:
         return r.result_json

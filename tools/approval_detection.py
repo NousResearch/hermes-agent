@@ -1244,38 +1244,94 @@ def _is_hermes_managed_path(word: str) -> bool:
     )
 
 
-def _cwd_is_in_hermes_home(cwd: str | None) -> bool:
-    if not cwd:
+def _resolved_hermes_operand(word: str, cwd: str | None) -> str | None:
+    """Resolve a shell path spelling enough to compare it with HERMES_HOME."""
+    if not word:
+        return None
+    try:
+        from hermes_constants import get_hermes_home
+        home = os.path.abspath(str(get_hermes_home().expanduser()))
+    except Exception:
+        return None
+    path = word.replace("\\", "/")
+    lowered = path.lower()
+    for root in _HERMES_HOME_ROOTS:
+        if lowered == root or lowered.startswith(root + "/"):
+            return os.path.normpath(home + path[len(root):].replace("/", os.sep))
+    if (len(path) > 1 and path[1] == ":") or path.startswith("/"):
+        return os.path.normpath(os.path.abspath(path))
+    if path.startswith("~"):
+        return os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    if cwd:
+        return os.path.normpath(os.path.abspath(os.path.join(cwd, path)))
+    return None
+
+
+def _resolved_path_is_managed(path: str | None) -> bool:
+    if not path:
         return False
     try:
         from hermes_constants import get_hermes_home
         home = os.path.normcase(os.path.abspath(str(get_hermes_home().expanduser())))
-        candidate = os.path.normcase(os.path.abspath(os.path.expanduser(cwd)))
-        return candidate == home or candidate.startswith(home + os.sep)
-    except Exception:
+        candidate = os.path.normcase(os.path.abspath(path))
+        return os.path.commonpath((home, candidate)) == home
+    except (OSError, ValueError):
         return False
 
 
-def _relative_operand_is_managed(word: str, managed_cwd: bool) -> bool:
-    if not managed_cwd or not word or word.startswith(("/", "~", "$")):
-        return False
-    if len(word) > 1 and word[1] == ":":
-        return False
-    return True
+def _operand_is_managed(word: str, cwd_candidates: set[str | None]) -> bool:
+    if _is_hermes_managed_path(word):
+        return True
+    return any(
+        _resolved_path_is_managed(_resolved_hermes_operand(word, candidate))
+        for candidate in cwd_candidates
+    )
 
 
-def _managed_cwd_before(command: str, start: int, cwd: str | None) -> bool:
-    managed = _cwd_is_in_hermes_home(cwd)
-    for command_start, _, word in _iter_shell_command_word_spans(command[:start]):
+def _connector_after(command: str, command_start: int, limit: int) -> str:
+    for kind, index, _, quote in _scan_shell(command, command_start, subst="uq"):
+        if index >= limit:
+            break
+        if kind != "char" or quote is not None:
+            continue
+        if command.startswith(("&&", "||"), index):
+            return command[index:index + 2]
+        if command[index] in ";\n|":
+            return command[index]
+    return ""
+
+
+def _cwd_candidates_before(command: str, start: int, cwd: str | None) -> set[str | None]:
+    """Track cwd possibilities through preceding shell `cd` commands."""
+    candidates: set[str | None] = {
+        os.path.normpath(os.path.abspath(os.path.expanduser(cwd))) if cwd else None
+    }
+    spans = list(_iter_shell_command_word_spans(command[:start]))
+    for index, (command_start, _, word) in enumerate(spans):
         if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "cd":
             continue
         try:
             argv = shlex.split(_shell_command_segment(command, command_start), posix=True)
         except ValueError:
             continue
-        if len(argv) >= 2 and _is_hermes_managed_path(argv[1]):
-            managed = True
-    return managed
+        if len(argv) < 2 or argv[1] == "-":
+            continue
+        resolved = {
+            _resolved_hermes_operand(argv[1], candidate)
+            for candidate in candidates
+        }
+        connector = _connector_after(command, command_start, start)
+        next_start = spans[index + 1][0] if index + 1 < len(spans) else start
+        immediate = next_start == start
+        if connector == "&&" and immediate:
+            candidates = resolved
+        elif connector == "||" and immediate:
+            pass
+        elif connector == "|":
+            pass  # A pipeline component's cwd does not change its parent shell.
+        else:
+            candidates |= resolved
+    return candidates
 
 
 def _command_operands(argv: list[str], command_name: str) -> tuple[list[str], dict[str, list[str]]]:
@@ -1331,8 +1387,7 @@ def _has_hermes_redirect(command: str, cwd: str | None = None) -> bool:
         target = _deobfuscate_shell_word_for_detection(target)
         if descriptor_form and (target == "-" or target.isdigit()):
             continue
-        if (_is_hermes_managed_path(target)
-                or _relative_operand_is_managed(target, _managed_cwd_before(command, index, cwd))):
+        if _operand_is_managed(target, _cwd_candidates_before(command, index, cwd)):
             return True
     return False
 
@@ -1344,8 +1399,10 @@ def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> boo
     for word_start, _, word in _iter_shell_command_word_spans(command):
         name = _hermes_destructive_executable_name(word)
         segment = _shell_command_segment(command, word_start)
-        managed_cwd = _managed_cwd_before(command, word_start, cwd)
-        if name in _HERMES_COMMAND_DISPATCHERS and _dispatcher_targets_hermes(segment, managed_cwd=managed_cwd):
+        cwd_candidates = _cwd_candidates_before(command, word_start, cwd)
+        if name in _HERMES_COMMAND_DISPATCHERS and _dispatcher_targets_hermes(
+            segment, cwd_candidates=cwd_candidates,
+        ):
             return True
         if name not in _HERMES_DESTRUCTIVE_NAMES:
             continue
@@ -1354,22 +1411,23 @@ def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> boo
         except ValueError:
             continue
         operands, option_values = _command_operands(argv, name)
-        is_managed = lambda arg: (_is_hermes_managed_path(arg)
-                                  or _relative_operand_is_managed(arg, managed_cwd))
+        is_managed = lambda arg: _operand_is_managed(arg, cwd_candidates)
         if name in {"rm", "truncate", "shred", "unlink", "tee"}:
             if any(is_managed(arg) for arg in operands):
                 return True
         elif name == "mv":
-            sources = operands if len(operands) == 1 else operands[:-1]
             targets = option_values.get("-t", []) + option_values.get("--target-directory", [])
+            sources = operands if targets or len(operands) == 1 else operands[:-1]
+            positional_targets = [] if targets or len(operands) < 2 else operands[-1:]
             if (any(is_managed(arg) for arg in sources)
                     or any(is_managed(arg) for arg in targets)
-                    or (len(operands) >= 2 and is_managed(operands[-1]))):
+                    or any(is_managed(arg) for arg in positional_targets)):
                 return True
         elif name in {"cp", "install"}:
             targets = option_values.get("-t", []) + option_values.get("--target-directory", [])
+            positional_targets = [] if targets or len(operands) < 2 else operands[-1:]
             if (any(is_managed(arg) for arg in targets)
-                    or (len(operands) >= 2 and is_managed(operands[-1]))):
+                    or any(is_managed(arg) for arg in positional_targets)):
                 return True
         elif name == "rsync" and len(operands) >= 2 and is_managed(operands[-1]):
             return True
@@ -1409,7 +1467,9 @@ def _hermes_destructive_executable_name(word: str) -> str:
 _HERMES_COMMAND_DISPATCHERS = frozenset({"busybox", "cmd", "find", "powershell", "pwsh", "xargs"})
 
 
-def _dispatcher_targets_hermes(segment: str, *, managed_cwd: bool = False) -> bool:
+def _dispatcher_targets_hermes(
+    segment: str, *, cwd_candidates: set[str | None] | None = None,
+) -> bool:
     """Detect managed paths passed to destructive applets/dispatcher payloads."""
     try:
         argv = shlex.split(segment, posix=True)
@@ -1418,20 +1478,29 @@ def _dispatcher_targets_hermes(segment: str, *, managed_cwd: bool = False) -> bo
     if not argv or _hermes_destructive_executable_name(argv[0]) not in _HERMES_COMMAND_DISPATCHERS:
         return False
     dispatcher = _hermes_destructive_executable_name(argv[0])
+    cwd_candidates = cwd_candidates or {None}
     if dispatcher == "busybox" and len(argv) > 1:
-        return _detect_hermes_home_destruction(
-            " ".join(shlex.quote(arg) for arg in argv[1:]),
-            cwd=os.environ.get("HERMES_HOME") if managed_cwd else None,
+        return any(
+            _detect_hermes_home_destruction(
+                " ".join(shlex.quote(arg) for arg in argv[1:]), cwd=candidate,
+            )
+            for candidate in cwd_candidates
         )
     if dispatcher == "xargs":
-        for arg in argv[1:]:
-            if _hermes_destructive_executable_name(arg) in _HERMES_DESTRUCTIVE_NAMES:
-                # xargs receives paths dynamically; an explicitly destructive
-                # payload is never safe to replay through the hardline floor.
-                return True
-        return False
+        payload = _xargs_payload(argv)
+        if not payload:
+            return False
+        return any(
+            _detect_hermes_home_destruction(
+                " ".join(shlex.quote(arg) for arg in payload), cwd=candidate,
+            )
+            for candidate in cwd_candidates
+        )
     if dispatcher == "find":
-        roots_managed = managed_cwd or any(_is_hermes_managed_path(arg) for arg in argv[1:])
+        roots_managed = any(
+            _operand_is_managed(arg, cwd_candidates) for arg in argv[1:]
+            if not arg.startswith("-")
+        )
         if roots_managed and "-delete" in argv:
             return True
         for marker in ("-exec", "-execdir"):
@@ -1449,6 +1518,31 @@ def _dispatcher_targets_hermes(segment: str, *, managed_cwd: bool = False) -> bo
     destructive = any(re.search(destructive_re, arg, re.IGNORECASE) for arg in argv[1:])
     path_words = [word for arg in argv[1:] for word in re.split(r"\s+", arg)]
     return destructive and any(_is_hermes_managed_path(arg.strip("'\"")) for arg in path_words)
+
+
+_XARGS_OPTIONS_WITH_ARG = frozenset({
+    "-a", "--arg-file", "-d", "--delimiter", "-E", "--eof", "-I", "--replace",
+    "-L", "--max-lines", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars",
+    "--process-slot-var",
+})
+
+
+def _xargs_payload(argv: list[str]) -> list[str]:
+    """Return xargs' fixed command and arguments, excluding xargs options."""
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            index += 1
+            break
+        if not arg.startswith("-") or arg == "-":
+            break
+        option = arg.partition("=")[0]
+        if option in _XARGS_OPTIONS_WITH_ARG and "=" not in arg:
+            index += 2
+        else:
+            index += 1
+    return argv[index:]
 
 
 _SQLITE_READ_ONLY_PREFIXES = frozenset({"select", "explain", "values"})

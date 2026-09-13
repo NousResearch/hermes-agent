@@ -112,3 +112,23 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_external_source_toggle_persists_and_changes_reported_state(home):
+    fake_bw = home / "bin" / "bw"
+    fake_bw.parent.mkdir()
+    fake_bw.touch()
+    (home / "config.yaml").write_text(
+        f"vault:\n  bitwarden:\n    enabled: false\n    binary_path: {fake_bw}\n",
+        encoding="utf-8",
+    )
+
+    enabled = _result(srv._methods["vault.source.set"](1, {"name": "bitwarden", "enabled": True}))
+    assert enabled == {"name": "bitwarden", "enabled": True}
+    enabled_sources = _result(srv._methods["vault.sources"](2, {}))["sources"]
+    assert next(source for source in enabled_sources if source["name"] == "bitwarden")["enabled"] is True
+
+    disabled = _result(srv._methods["vault.source.set"](3, {"name": "bitwarden", "enabled": False}))
+    assert disabled == {"name": "bitwarden", "enabled": False}
+    disabled_sources = _result(srv._methods["vault.sources"](4, {}))["sources"]
+    assert next(source for source in disabled_sources if source["name"] == "bitwarden")["enabled"] is False

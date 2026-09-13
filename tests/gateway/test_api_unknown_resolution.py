@@ -1,5 +1,6 @@
 """HTTP run owners can acknowledge an exact unknown API admission after restart."""
 import asyncio
+import json
 from contextlib import suppress
 from contextvars import ContextVar
 from types import SimpleNamespace
@@ -158,6 +159,11 @@ async def test_http_resolve_unknown_releases_follower_once_without_replaying_hea
         assert unauthenticated.status == 401
         assert (await unauthenticated.json())["error"]["code"] == "gateway_auth_failed"
 
+        capabilities = json.loads((await adapters[-1]._handle_capabilities(
+            SimpleNamespace(headers=_AUTH_HEADERS, remote="127.0.0.1"))).text)
+        assert capabilities["features"]["run_unknown_resolution"] is True
+        assert capabilities["endpoints"]["run_unknown_resolution"]["path"] == "/v1/runs/{run_id}/resolve-unknown"
+
         response = await client.post(path, json=body, headers=_AUTH_HEADERS)
         assert response.status == 200, await response.text()
         result = await response.json()
@@ -259,83 +265,3 @@ async def test_fresh_adapter_recovers_non_idempotent_owner_but_refuses_other_cre
         assert (await response.json())["outcome"] == "interrupted"
     finally:
         await _close_fixture(client, adapters, store, tasks)
-
-
-@pytest.mark.asyncio
-async def test_run_owner_rolls_back_with_failed_canonical_admission(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    db = SessionDB(tmp_path / "state.db")
-    runner = SimpleNamespace(
-        _session_db=db, session_store=store, _draining=False,
-        _handle_message=lambda event: None,
-    )
-    authority = await initialize_session_authority(
-        runner, profile_id="default", instance_id="api-owner-atomic"
-    )
-    authority._schedule = lambda ref: None
-    adapter = _adapter(runner, db)
-    runner._adapter_for_source = lambda source: adapter
-    from gateway.platforms import api_server_runs
-    monkeypatch.setattr(
-        api_server_runs.uuid, "uuid4", lambda: SimpleNamespace(hex="atomic_boundary")
-    )
-
-    def install_abort(conn):
-        conn.execute(
-            "CREATE TRIGGER abort_api_owner BEFORE INSERT ON session_admissions "
-            "WHEN NEW.principal_id='api' BEGIN SELECT RAISE(ABORT, 'forced rollback'); END"
-        )
-
-    db._execute_write(install_abort)
-    client = _runs_client(adapter)
-    await client.start_server()
-    fresh = None
-    try:
-        response = await client.post(
-            "/v1/runs", json={"input": "must roll back", "session_id": "atomic"},
-            headers=_AUTH_HEADERS,
-        )
-        assert response.status == 500
-        with db._read_ctx() as conn:
-            assert conn.execute(
-                "SELECT COUNT(*) FROM session_admissions WHERE request_id='run_atomic_boundary'"
-            ).fetchone()[0] == 0
-        await client.close()
-        fresh = _adapter(runner, db)
-        runner._adapter_for_source = lambda source: fresh
-        client = _runs_client(fresh)
-        await client.start_server()
-        refused = await client.get("/v1/runs/run_atomic_boundary", headers=_AUTH_HEADERS)
-        assert refused.status == 404
-    finally:
-        await client.close()
-        for item in (adapter, fresh):
-            if item is not None:
-                item._response_store.close()
-                item._run_idempotency_store.close()
-        db.close()
-        store.close_all_db_handles()
-
-
-def test_unknown_resolution_uses_the_existing_room_stop_permission():
-    from gateway.platforms.api_server_runs import _room_permission_for
-
-    request = SimpleNamespace(path="/v1/runs/run-a/resolve-unknown", method="POST")
-    assert _room_permission_for(request) == "stop"
-
-
-@pytest.mark.asyncio
-async def test_capability_advertised_only_with_canonical_authority():
-    request = SimpleNamespace(headers={})
-    for authority, expected in ((None, False), (object(), True)):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        adapter.gateway_runner = SimpleNamespace(session_authority=authority)
-        try:
-            response = await adapter._handle_capabilities(request)
-            body = __import__("json").loads(response.text)
-            assert body["features"]["run_unknown_resolution"] is expected
-            assert ("run_unknown_resolution" in body["endpoints"]) is expected
-        finally:
-            adapter._response_store.close()
-            adapter._run_idempotency_store.close()

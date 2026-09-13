@@ -246,6 +246,28 @@ def test_resolve_accepts_exact_owned_ready_worktree_after_branch_rename(
     assert resolved.base_commit == first.base_commit
 
 
+def test_existing_binding_uses_durable_repository_identity(repo, db, tmp_path):
+    first = manager(repo, db, tmp_path).bind_new_root_session(
+        "durable-root", conversation_kind="interactive"
+    )
+    assert first is not None
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    git(unrelated, "init")
+    git(unrelated, "config", "user.email", "test@example.invalid")
+    git(unrelated, "config", "user.name", "Hermes Test")
+    (unrelated / "other.txt").write_text("other\n", encoding="utf-8")
+    git(unrelated, "add", "other.txt")
+    git(unrelated, "commit", "-m", "unrelated")
+
+    resolved = manager(unrelated, db, tmp_path / "other-worktrees").resolve_existing_session(
+        "durable-root"
+    )
+
+    assert resolved == first
+
+
 def test_resolve_rejects_branch_rename_when_exact_owner_marker_is_missing(
     repo, db, tmp_path
 ):

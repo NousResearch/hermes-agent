@@ -1451,8 +1451,8 @@ def main(
                               Multiple toolsets can be combined: "web,vision"
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
-        save_trajectories (bool): Save conversation trajectories to JSONL files (appends to
-        trajectory_samples.jsonl). Defaults to False.
+        save_trajectories (bool): Save conversation trajectories to gzip-compressed JSONL files
+        (appends to trajectory_samples.jsonl.gz). Defaults to False.
         save_sample (bool): Save a single trajectory sample to a UUID-named JSONL file for inspection.
         Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
@@ -1471,8 +1471,8 @@ def main(
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")
     if save_trajectories:
         print("💾 Trajectory saving: ENABLED")
-        print("   - Successful conversations → trajectory_samples.jsonl")
-        print("   - Failed conversations → failed_trajectories.jsonl")
+        print("   - Successful conversations → trajectory_samples.jsonl.gz")
+        print("   - Failed conversations → failed_trajectories.jsonl.gz")
 
     try:
         agent = AIAgent(

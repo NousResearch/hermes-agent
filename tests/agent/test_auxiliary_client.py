@@ -41,6 +41,7 @@ from agent.auxiliary_client import (
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
     _auxiliary_egress_binding,
+    _dispatch_auxiliary_request,
     _RELAY_AUX_CALL_CONTEXT,
 )
 
@@ -230,6 +231,33 @@ def test_auxiliary_binding_protects_every_firewall_provider_not_just_three(provi
         client, provider=provider, model="some-model", api_mode="chat_completions",
     )
     assert binding is not None
+
+
+def test_auxiliary_dispatch_honors_disabled_egress_posture(monkeypatch, tmp_path):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: disabled\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_LLM_EGRESS_ENFORCEMENT", raising=False)
+
+    client = SimpleNamespace(base_url="https://inference-api.nousresearch.com/v1")
+    request = {
+        "model": "some-model",
+        "messages": [{"role": "user", "content": "SECRET_TOKEN=operator-test"}],
+    }
+    callback = MagicMock(return_value="sent")
+
+    assert _dispatch_auxiliary_request(
+        client,
+        request,
+        callback,
+        provider="nous",
+        model="some-model",
+        api_mode="chat_completions",
+    ) == "sent"
+    callback.assert_called_once_with(request)
 
 
 def test_auxiliary_binding_protects_every_provider_under_kanban_protected_remote_marker(monkeypatch):

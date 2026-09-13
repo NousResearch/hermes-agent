@@ -194,6 +194,34 @@ def provider_uses_egress_firewall(provider: Any) -> bool:
     return str(provider or "").strip().lower() in _PROTECTED_REMOTE_PROVIDERS
 
 
+def egress_enforcement_enabled() -> bool:
+    """Return the operator-controlled LLM egress enforcement posture.
+
+    Enforcement remains enabled by default.  The explicit temporary disable
+    switch preserves the firewall and its diagnostics while allowing operator
+    testing to continue until the false-positive cases are repaired.
+    """
+    try:
+        from hermes_cli import managed_scope
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        if managed_scope.is_key_managed("runtime.llm_egress_enforcement"):
+            posture = str((config.get("runtime") or {}).get("llm_egress_enforcement", "enabled") or "enabled")
+            return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        runtime = load_config_readonly().get("runtime") or {}
+        posture = str(runtime.get("llm_egress_enforcement", "enabled") or "enabled")
+        return posture.strip().lower() not in {"0", "false", "off", "disabled", "disable", "monitor"}
+    except Exception:
+        # A malformed or unavailable config must not silently weaken the boundary.
+        return True
+
+
 # Benchmark-backed per-profile model route table, installed at startup by
 # install_performance_route_table() when a route artifact is configured.
 _PERFORMANCE_ROUTE_TABLE: "Any | None" = None
@@ -881,6 +909,8 @@ def dispatch_authorized_agent_request(
     sdk_control_keys: Sequence[str] = _SDK_CONTROL_KEYS,
 ) -> Any:
     resolved_route = _route_for_agent(agent, route)
+    if not egress_enforcement_enabled():
+        return callback({key: value for key, value in kwargs.items() if key not in _INTERNAL_EGRESS_KEYS})
     destination = classify_destination(
         str(_route_field(resolved_route, "provider", "") or ""),
         _route_field(resolved_route, "base_url"),

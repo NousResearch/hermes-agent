@@ -227,7 +227,11 @@ def _validate_model_config(config_path, issues: list) -> None:
         except Exception:
             continue
     runtime_provider = catalog_provider = provider
+    user_provider_disabled = False
     if provider and provider not in {"auto", "custom"}:
+        provider_entry = (cfg.get("providers") or {}).get(provider)
+        from hermes_cli.config import is_provider_enabled
+        user_provider_disabled = isinstance(provider_entry, dict) and not is_provider_enabled(provider_entry)
         if resolve_auth is not None:
             try:
                 runtime_provider = resolve_auth(provider)
@@ -238,7 +242,14 @@ def _validate_model_config(config_path, issues: list) -> None:
             provider_def = resolve_full(provider, cfg.get("providers"), custom_providers)
             catalog_provider = provider_def.id if provider_def is not None else None
             accept.update({catalog_provider} - {None})
-    if provider and provider != "auto" and (catalog_provider is None or (known_providers and not (accept & valid_provider_ids))):
+    # ``resolve_provider`` is the runtime authority for aliases such as ``llamacpp``.  A
+    # local provider can be valid even when ``resolve_provider_full`` cannot return a
+    # ProviderDef yet (for example, before a managed llama.cpp endpoint is running).
+    # Requiring a catalog definition here made doctor disagree with the actual boot path.
+    provider_is_known = not user_provider_disabled and (
+        bool(accept & valid_provider_ids) or catalog_provider is not None
+    )
+    if provider and provider != "auto" and not provider_is_known:
         known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
         _fail_and_issue(f"model.provider '{provider_raw}' is not a recognised provider", f"(known: {known_list})",
                         f"model.provider '{provider_raw}' is unknown. Valid providers: {known_list}. "

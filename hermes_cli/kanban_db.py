@@ -473,15 +473,35 @@ def _dir_holds_board(d: Path) -> bool:
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
-        override = os.environ.get(env_var, "").strip()
-        if override:
-            return Path(override).expanduser()
+    """Shared resolver: an explicit ``board`` argument that names a real board
+    ALWAYS wins — a caller that names a specific differently-named board (e.g.
+    an isolated scratch/test board) must actually reach it, never be silently
+    redirected to the env-pinned path. (Fixed 2026-08-17: previously the env
+    var pre-empted even an explicit ``board``, so code that opened a
+    differently-named board inside a dispatched worker was silently redirected
+    to the worker's own real board — a data-loss incident on the flightdeck
+    board traced to exactly this.)
+
+    The special ``default`` board is NOT a different board: it IS the active
+    board the env pin points at, so ``board="default"`` and an omitted board
+    are the same call and continue to honour the ``env_var`` override
+    (back-compat + dispatcher→worker handoff; the dispatcher injects it into
+    worker env so workers are immune to any path-resolution disagreement).
+    Still none → the active board via :func:`get_current_board`. ``default``
+    → legacy ``<root>/<default_parts>``; other boards → ``board_dir(slug)/leaf``.
+    """
     slug = _normalize_board_slug(board)
-    if slug is None:
-        slug = get_current_board()
+    if slug is None or slug == DEFAULT_BOARD:
+        # No explicit non-default board: honour the env pin. The env pin and
+        # the `default` board are the same conceptual thing; the explicit-
+        # board-wins rule only applies to differently-named boards (a caller
+        # naming one must actually reach it).
+        if env_var:
+            override = os.environ.get(env_var, "").strip()
+            if override:
+                return Path(override).expanduser()
+        if slug is None:
+            slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)
     return board_dir(slug) / leaf

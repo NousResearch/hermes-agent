@@ -101,11 +101,22 @@ class TestPathResolution:
 
 
     def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+        """``HERMES_KANBAN_DB`` pins the file for the active/default board.
+
+        A caller that names a DIFFERENTLY-named board (``board=\"ignored\"``)
+        must reach that board's own file — the env pin no longer hijacks an
+        explicit non-default board (see ``test_explicit_board_beats_hermes_kanban_db_pin``
+        in tests/hermes_cli/test_kanban_db.py for the data-loss incident this
+        prevents). Omitting the board, or passing ``board=\"default\"`` — the
+        same active board the pin points at — keeps the pin.
+        """
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board="default") == forced
+        assert kb.kanban_db_path(board="ignored") == (
+            fresh_home / "kanban" / "boards" / "ignored" / "kanban.db"
+        )
 
 
 # ---------------------------------------------------------------------------

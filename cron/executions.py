@@ -66,6 +66,13 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(
         conn, "executions", "handoff_started_at", "handoff_started_at REAL"
     )
+    add_column_if_missing(
+        conn, "executions", "handoff_worker_pid", "handoff_worker_pid INTEGER"
+    )
+    add_column_if_missing(
+        conn, "executions", "handoff_worker_started_at",
+        "handoff_worker_started_at INTEGER",
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"
@@ -191,6 +198,25 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]
     return record
 
 
+def record_handoff_worker(
+    execution_id: str, pid: int, process_started_at: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """Record the spawned successor's pid so recovery can tell a live, still-starting
+    handoff from one that is genuinely abandoned, instead of trusting the fixed grace
+    window alone."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions
+               SET handoff_worker_pid=?, handoff_worker_started_at=?
+               WHERE id=? AND status='claimed' AND handoff_pending=1""",
+            (pid, process_started_at, execution_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        record = _fetch(conn, execution_id)
+    return record
+
+
 def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Atomically transfer and start an attempt in its worker process.
 
@@ -269,7 +295,8 @@ def recover_interrupted_executions() -> int:
     with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at
+                      handoff_pending, handoff_started_at,
+                      handoff_worker_pid, handoff_worker_started_at
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
@@ -286,18 +313,34 @@ def recover_interrupted_executions() -> int:
                 < HANDOFF_ADOPTION_GRACE_SECONDS
             ):
                 continue
+            # The original owner is dead and the grace window has passed, but a
+            # restart-safe successor recorded its pid before it died: as long as
+            # that successor is still starting up, terminalizing now would strand
+            # its later adopt_claimed_execution() call with nothing left to adopt.
+            if (
+                row["handoff_pending"]
+                and row["handoff_worker_pid"] is not None
+                and _owner_is_live(
+                    int(row["handoff_worker_pid"]), row["handoff_worker_started_at"]
+                )
+            ):
+                continue
             cur = conn.execute(
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
-                       handoff_pending=0, handoff_started_at=NULL
+                       handoff_pending=0, handoff_started_at=NULL,
+                       handoff_worker_pid=NULL, handoff_worker_started_at=NULL
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
-                     AND handoff_started_at IS ?""",
+                     AND handoff_started_at IS ?
+                     AND handoff_worker_pid IS ?
+                     AND handoff_worker_started_at IS ?""",
                 (now,
                  "Scheduler restarted after this execution's owner exited before a durable "
                  "terminal state; whether side effects ran is unknown.",
                  row["id"], row["status"], row["process_id"], row["pid"],
-                 row["handoff_pending"], row["handoff_started_at"]),
+                 row["handoff_pending"], row["handoff_started_at"],
+                 row["handoff_worker_pid"], row["handoff_worker_started_at"]),
             )
             changed += cur.rowcount
             if cur.rowcount:

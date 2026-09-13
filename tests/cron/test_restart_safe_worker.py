@@ -221,6 +221,7 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
 
     class FakeProcess:
         returncode = None
+        pid = 4321
 
         def poll(self):
             return self.returncode
@@ -246,7 +247,10 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
 
     handoff = Mock(return_value={"id": "exec-1", "handoff_pending": 1})
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", handoff)
+    record_worker = Mock(return_value={"id": "exec-1", "handoff_worker_pid": 4321})
+    monkeypatch.setattr(scheduler, "record_handoff_worker", record_worker)
     monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: None)
     observed_statuses = iter(
         [
             {"id": "exec-1", "status": "running"},
@@ -298,6 +302,7 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
     assert spawned[0][1]["env"]["SERVICE_TOKEN"] == "target-profile-token"
     handoff.assert_called_once_with("exec-1")
+    record_worker.assert_called_once_with("exec-1", 4321, None)
     assert get.call_count == 2
     assert payloads[0]["multiplex_active"] is True
     # Once the attempt is terminal the parent reaps its own handoff artifacts.

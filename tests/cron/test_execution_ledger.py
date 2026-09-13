@@ -87,6 +87,34 @@ def test_stale_external_handoff_is_recovered_unknown(monkeypatch, tmp_path):
     assert recovered["handoff_pending"] == 0
 
 
+def test_live_handoff_worker_survives_stale_owner_recovery(monkeypatch, tmp_path):
+    """Recovery must not terminalize a handoff whose recorded successor is still alive,
+    even after the fixed grace window has elapsed — otherwise a slow-starting but valid
+    restart-safe worker loses the execution to a race it could not have won."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("handoff-job", source="builtin")
+    pending = executions.mark_execution_handoff_pending(record["id"])
+    assert pending is not None
+    assert executions.record_handoff_worker(record["id"], 4242, 9876) is not None
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(executions, "_owner_is_live", lambda pid, _started: pid == 4242)
+    monkeypatch.setattr(
+        executions.time,
+        "time",
+        lambda: pending["handoff_started_at"]
+        + executions.HANDOFF_ADOPTION_GRACE_SECONDS
+        + 1,
+    )
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.get_execution(record["id"])["status"] == "claimed"
+
+    adopted = executions.adopt_claimed_execution(record["id"])
+    assert adopted is not None
+    assert adopted["status"] == "running"
+
+
 def test_recovery_does_not_overwrite_concurrent_worker_adoption(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("adoption-race", source="builtin")

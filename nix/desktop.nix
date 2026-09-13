@@ -68,6 +68,8 @@ let
     dirs = [
       "apps/desktop"
       "apps/shared"
+      # Unified bundled desktop plugins import their canonical package source.
+      "plugins"
     ];
     pname = "hermes-desktop-renderer";
 

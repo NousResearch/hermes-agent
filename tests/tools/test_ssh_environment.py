@@ -251,8 +251,14 @@ def _mock_ssh_runtime(monkeypatch, tmp_path):
 
 
 class TestSSHProbeOnly:
-    def test_probe_only_skips_state_sync_and_session_setup(self, _mock_ssh_runtime):
-        env = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+    @pytest.mark.parametrize("via_factory", [False, True], ids=["direct", "terminal-factory"])
+    def test_probe_only_skips_state_sync_and_session_setup(self, _mock_ssh_runtime, via_factory):
+        if via_factory:
+            from tools.terminal_tool_backends import _create_environment
+            env = _create_environment("ssh", "", "/tmp", 30,
+                                      ssh_config={"host": "example.com", "user": "alice"}, probe_only=True)
+        else:
+            env = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
         env._before_execute()
         env.cleanup()
 

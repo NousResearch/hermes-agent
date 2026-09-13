@@ -102,8 +102,12 @@ class _EmbeddedCuaDaemon:
 
     _START_TIMEOUT_SECONDS = 15.0
 
-    def __init__(self, driver_cmd: str, permission_mode: str, capability_manifest: Optional[str] = None) -> None:
-        if permission_mode not in {"unrestricted", "bounded"}:
+    def __init__(self, driver_cmd: str, permission_mode: str, capability_manifest: Optional[str] = None,
+                 *, execution_context=None) -> None:
+        self.execution_context = execution_context
+        self.launch_context = execution_context.context.computer_use if execution_context else None
+        private_standard = bool(self.launch_context and self.launch_context.private_daemon and permission_mode == "standard")
+        if permission_mode not in {"unrestricted", "bounded"} and not private_standard:
             raise ValueError("embedded permission override supports unrestricted or bounded only")
         manifest = str(capability_manifest or "").strip()
         if not manifest and permission_mode == "bounded":
@@ -122,25 +126,40 @@ class _EmbeddedCuaDaemon:
         self.permission_mode, self._driver_cmd, self._command = permission_mode, driver_cmd, driver_cmd
         self._mcp_args: List[str] = list(_driver._CUA_DRIVER_ARGS)
         self._process: Any = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._launch_env = None
+        self._stop_argv = None
+        self._staged_manifest = None
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
         self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
+        if self.launch_context and self.launch_context.runtime_dir:
+            self.execution_context.check()
+            self.socket_path = os.path.join(self.launch_context.runtime_dir, f"hc-{token}.sock")
+            if len(os.fsencode(self.socket_path)) >= 104:
+                raise ValueError("runtime_dir path is too long for a private Unix socket")
 
     def child_env(self) -> Dict[str, str]:
-        env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
+        env = {**_cb().cua_driver_child_env(**({"execution_context": self.execution_context} if self.execution_context else {})),
+               "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
         if self.permission_mode == "unrestricted":
             env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env
 
     def _sanitized_env(self) -> Dict[str, str]:
         from tools.environments.local import _sanitize_subprocess_env
+        if self.execution_context is not None:
+            return _cb().sanitize_cua_child_env(self.child_env(), self.execution_context)
         return _sanitize_subprocess_env(self.child_env())
 
     def _drain_stderr(self, process: Any) -> None:
-        with contextlib.suppress(Exception):
-            for line in getattr(process, "stderr", None) or ():
+        stream = getattr(process, "stderr", None)
+        if stream is None:
+            return
+        with contextlib.suppress(Exception), contextlib.closing(stream):
+            for line in stream:
                 text = str(line).strip()
                 if text:
                     self._stderr_tail.append(text)
@@ -150,11 +169,29 @@ class _EmbeddedCuaDaemon:
         serve_args = ["serve", "--embedded", "--socket", self.socket_path, "--no-permissions-gate", "--permission-mode",
                       self.permission_mode, *(["--dangerously-bypass-approvals"] if self.permission_mode == "unrestricted" else [])]
         if self.manifest_applies:
-            serve_args += ["--capability-manifest", str(self.capability_manifest), "--approve-capability-manifest"]
+            manifest = self.capability_manifest
+            if self.launch_context and self.launch_context.runtime_dir:
+                self.execution_context.check()
+                if self._staged_manifest is None:
+                    with open(manifest, "rb") as source:
+                        contents = source.read()
+                    fd, path = tempfile.mkstemp(prefix="hc-manifest-", suffix=".json", dir=self.launch_context.runtime_dir)
+                    try:
+                        with os.fdopen(fd, "wb") as destination:
+                            destination.write(contents)
+                    except BaseException:
+                        os.unlink(path)
+                        raise
+                    self._staged_manifest = path
+                manifest = self._staged_manifest
+            serve_args += ["--capability-manifest", str(manifest), "--approve-capability-manifest"]
         # The private daemon owns the cursor overlay, so the overlay policy must apply to this long-lived serve
         # process, not only its MCP proxy. Appended BEFORE the macOS app-launch wrapping so the flag travels inside
         # `open ... --args` with the rest of the serve args.
-        return _driver._mcp_args_with_overlay_flag(serve_args, driver_cmd=self._command)
+        if self.launch_context and self.launch_context.theme:
+            serve_args += ["--cursor-theme", self.launch_context.theme]
+        return _driver._mcp_args_with_overlay_flag(serve_args, driver_cmd=self._command,
+                    **({"execution_context": self.execution_context} if self.execution_context else {}))
 
     def start(self) -> None:
         if self._running:
@@ -162,32 +199,55 @@ class _EmbeddedCuaDaemon:
         self._driver_cmd = self._driver_cmd or _driver.resolve_cua_driver_cmd() or ""
         if not self._driver_cmd:
             raise RuntimeError(_driver.cua_driver_install_hint())
-        self._command, self._mcp_args = _driver._resolve_mcp_invocation(self._driver_cmd)
+        self._command, self._mcp_args = _driver._resolve_mcp_invocation(self._driver_cmd,
+                    **({"execution_context": self.execution_context} if self.execution_context else {}))
         env = self._sanitized_env()
-        command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
-        self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.PIPE, text=True, env=env)
-        self._owns_runtime = True
-        threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
-        deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            return_code = self._process.poll()
-            # `open` exits 0 once LaunchServices took the request: on macOS only a non-zero exit means the daemon died.
-            if return_code is not None and (sys.platform != "darwin" or return_code != 0):
-                self._startup_failure("embedded cua-driver exited during startup", "no diagnostic output")
-            if self._socket_ready(env):
-                self._running = True
-                return
-            time.sleep(0.1)
-        self.stop()
-        self._startup_failure("embedded cua-driver startup timed out", "daemon did not become ready")
+        self._launch_env = env
+        try:
+            command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
+            stop_argv = [self._command, "stop", "--socket", self.socket_path]
+            if self.execution_context is not None:
+                command = self.execution_context.wrap_argv(command, computer_use=True)
+                stop_argv = self.execution_context.wrap_argv(stop_argv, computer_use=True)
+            self._stop_argv = stop_argv
+            self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.PIPE, text=True, env=env)
+            self._owns_runtime = True
+            self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(self._process,),
+                                                   name="hermes-cua-daemon-stderr", daemon=True)
+            self._stderr_thread.start()
+            deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                return_code = self._process.poll()
+                # `open` exits 0 once LaunchServices took the request: on macOS only a non-zero exit means the daemon died.
+                if return_code is not None and (sys.platform != "darwin" or return_code != 0):
+                    self._startup_failure("embedded cua-driver exited during startup", "no diagnostic output")
+                if self._socket_ready(env):
+                    self._running = True
+                    return
+                time.sleep(0.1)
+            self._startup_failure("embedded cua-driver startup timed out", "daemon did not become ready")
+        except BaseException:
+            # Lease checks and thread launch can fail after we already own the child.
+            try:
+                self.stop()
+            except Exception:
+                logger.exception("failed to clean up embedded cua-driver startup")
+            raise
 
     def _startup_failure(self, what: str, fallback: str) -> None:
+        try:
+            self.stop()  # reap and finish reading diagnostics before formatting the error
+        except Exception:
+            logger.exception("failed to clean up embedded cua-driver startup")
         raise RuntimeError(f"{what}: {'; '.join(self._stderr_tail) or fallback}")
 
     def _socket_ready(self, env: Dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
-        probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=2.0, env=env, swallow=_QUIET_ERRORS)
+        argv = [self._command, "status", "--socket", self.socket_path]
+        if self.execution_context is not None:
+            argv = self.execution_context.wrap_argv(argv, computer_use=True)
+        probe = _cb()._run_quiet(argv, timeout=2.0, env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
 
     def proxy_invocation(self) -> Tuple[str, List[str]]:
@@ -198,11 +258,27 @@ class _EmbeddedCuaDaemon:
     def stop(self) -> None:
         process, self._process = self._process, None
         owns_runtime, self._owns_runtime, self._running = self._owns_runtime, False, False
-        if owns_runtime:
-            _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
-        if process is not None:
-            _wait_or_kill(process)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
-            with contextlib.suppress(OSError):
-                os.remove(self.socket_path)
+        try:
+            if owns_runtime:
+                _cb()._run_quiet(self._stop_argv or [self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, env=self._launch_env or self._sanitized_env(), swallow=_QUIET_ERRORS)
+        finally:
+            try:
+                if process is not None:
+                    _wait_or_kill(process)
+            finally:
+                reader, self._stderr_thread = self._stderr_thread, None
+                if reader is not None and reader.ident is not None:
+                    # A descendant may retain stderr. Never block shutdown on its EOF, or
+                    # close a TextIOWrapper concurrently with a reader holding its lock.
+                    if reader is not threading.current_thread():
+                        reader.join(timeout=2.0)
+                elif process is not None and process.stderr is not None:
+                    process.stderr.close()  # thread.start() failed; nobody else owns the pipe
+                if sys.platform != "win32" and os.path.exists(self.socket_path):
+                    with contextlib.suppress(OSError):
+                        os.remove(self.socket_path)
+                if self._staged_manifest is not None:
+                    with contextlib.suppress(OSError):
+                        os.remove(self._staged_manifest)
+                    self._staged_manifest = None

@@ -1,0 +1,8 @@
+{
+  "name": "hermes-realms",
+  "label": "Realms",
+  "version": "0.1.0",
+  "description": "Authenticated conversation-scoped private desktop API",
+  "api": "plugin_api.py",
+  "tab": {"hidden": true}
+}

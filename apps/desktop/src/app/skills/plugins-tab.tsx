@@ -30,17 +30,18 @@ import {
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
-  toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { PanelEmpty } from '../overlays/panel'
 import { Pill } from '../settings/primitives'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
 
+import { AgentPluginToggle } from './agent-plugin-toggle'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
@@ -219,14 +220,14 @@ function PackageRow({
   scope,
   scopeLabel,
   busy,
-  onAgentToggle,
+  actionsBusy,
   onAgentUpdate
 }: {
   pkg: PluginPackage
   scope: null | string
   scopeLabel: string
   busy: boolean
-  onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
+  actionsBusy: boolean
   onAgentUpdate: (row: AgentPluginRow) => void
 }) {
   const { t } = useI18n()
@@ -308,7 +309,7 @@ function PackageRow({
             {agent.update_available && (
               <Button
                 className="h-5 px-1.5 text-[0.65rem]"
-                disabled={busy}
+                disabled={actionsBusy}
                 onClick={() => onAgentUpdate(agent)}
                 size="xs"
                 variant="outline"
@@ -318,12 +319,7 @@ function PackageRow({
             )}
             {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
             {agentToggleable ? (
-              <Switch
-                aria-label={`${p.halfAgent}: ${pkg.name}`}
-                checked={agentOn}
-                disabled={busy}
-                onCheckedChange={on => onAgentToggle(agent, on)}
-              />
+              <AgentPluginToggle busy={actionsBusy} label={`${p.halfAgent}: ${pkg.name}`} profile={scope} row={agent} />
             ) : (
               <Tip label={p.legacyBackend}>
                 <span>
@@ -380,6 +376,7 @@ export const PluginsTab = memo(function PluginsTab({
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
+  const activeProfile = useStore($activeGatewayProfile)
 
   const scope = profileParam(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
@@ -559,15 +556,9 @@ export const PluginsTab = memo(function PluginsTab({
             </div>
             {packages.map(pkg => (
               <PackageRow
+                actionsBusy={busyKey !== null}
                 busy={pkg.agent ? agentBusy(pkg.agent) : false}
-                key={pkg.key}
-                onAgentToggle={(row, enable) => {
-                  if (!row.key) {
-                    return
-                  }
-
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-                }}
+                key={`${scope ?? activeProfile}:${pkg.key}`}
                 onAgentUpdate={row => {
                   void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
                     if (applied) {

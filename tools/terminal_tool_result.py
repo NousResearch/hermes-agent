@@ -212,7 +212,7 @@ def finalize_foreground_result(
     if (result or {}).get("cwd_observed"):
         observed_cwd = (result or {}).get("cwd") or getattr(env, "cwd", None)
     if not workdir and observed_cwd:
-        record_session_cwd(session_key, observed_cwd)
+        record_session_cwd(session_key, observed_cwd, observed=True)
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)

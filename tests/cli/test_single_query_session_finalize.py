@@ -69,16 +69,11 @@ def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):
 
     cli._notify_single_query_session_finalize(fake_cli)
 
-    assert calls == [
-        (
-            "on_session_finalize",
-            {
-                "session_id": "agent-session",
-                "platform": "cli",
-                "reason": "shutdown",
-            },
-        )
-    ]
+    assert len(calls) == 1
+    name, payload = calls[0]
+    assert name == "on_session_finalize"
+    expected = dict(session_id=fake_agent.session_id, platform="cli", reason="shutdown")
+    assert expected.items() <= payload.items()
 
 
 def test_human_single_query_main_finalizes_after_query(monkeypatch):

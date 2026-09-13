@@ -237,6 +237,9 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 # class). Written after every completed command and on cwd-override
 # registration; readers resolve against it before any env-side cwd.
 _session_cwd: Dict[str, str] = {}
+# Provenance for each entry above: True once the running shell REPORTED the
+# directory. A routed backend must not adopt a merely-requested (host) cwd.
+_session_cwd_observed: Dict[str, bool] = {}
 _session_cwd_lock = threading.Lock()
 
 # Subagent → parent container aliasing. delegate_task children have their own
@@ -247,16 +250,30 @@ _container_aliases: Dict[str, str] = {}
 _container_alias_lock = threading.Lock()
 
 
-def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
+def record_session_cwd(session_key: Optional[str], cwd: Optional[str],
+                       *, observed: bool = False) -> None:
     """Record *cwd* as *session_key*'s working directory (after a completed
     command, or on workspace-override registration). None/empty keys collapse
-    to ``"default"``; non-string / empty cwds are ignored."""
+    to ``"default"``; non-string / empty cwds are ignored.
+
+    ``observed=True`` means the running shell REPORTED this directory, so it is
+    a path on whatever filesystem that shell runs in. A workspace override is
+    only a request and stays unobserved — it may name a host directory that a
+    routed backend (VM guest, remote host) cannot enter.
+    """
     if not isinstance(cwd, str) or not cwd.strip():
         return
     key = str(session_key or "default")
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
+        _session_cwd_observed[key] = observed
+
+
+def session_cwd_observed(session_key: Optional[str]) -> bool:
+    """Whether *session_key*'s recorded cwd was reported by the running shell."""
+    with _session_cwd_lock:
+        return _session_cwd_observed.get(str(session_key or "default"), False)
 
 
 def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
@@ -270,6 +287,7 @@ def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
         _session_cwd.pop(session_key, None)
+        _session_cwd_observed.pop(session_key, None)
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -397,6 +415,13 @@ def _docker_session_isolation_enabled() -> bool:
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
+    """Resolve a registered execution lease before ordinary container scoping."""
+    from hermes_cli.session_execution import resolve_session_execution_context
+    execution = resolve_session_execution_context(task_id=task_id)
+    return execution.cache_key if execution is not None else _resolve_unbound_container_task_id(task_id)
+
+
+def _resolve_unbound_container_task_id(task_id: Optional[str]) -> str:
     """Map a tool-call ``task_id`` to the ``_active_environments`` key. Order matters —
     earlier branches are authoritative where they apply:
 
@@ -443,7 +468,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     return "default" if profile == "default" else f"profile:{profile}"
 
 
-def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
+def resolve_task_overrides(task_id: Optional[str], *, container_task_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the env overrides for *task_id*, raw key first then collapsed.
 
     ``register_task_env_overrides`` writes under the *raw* task/session id, but
@@ -452,11 +477,13 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     FIRST and only fall back to the collapsed container id, or the originating
     session's override is silently dropped. Single source of that lookup so
     the terminal and file layers can't drift apart.
+
+    A pre-resolved container key avoids lease lookup for host-local control-plane calls.
     """
     raw = task_id or "default"
     return (
         _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
+        or _task_env_overrides.get(container_task_id if container_task_id is not None else _resolve_container_task_id(raw))
         or {}
     )
 
@@ -772,6 +799,7 @@ def _resolve_command_cwd(
     default_cwd: str,
     session_key: Optional[str] = None,
     env_type: Optional[str] = None,
+    routed: bool = False,
 ) -> str:
     """cwd for a command: explicit ``workdir`` > the session's own cwd record >
     ``default_cwd``.
@@ -780,7 +808,10 @@ def _resolve_command_cwd(
     it is the session's ``cd`` state with no shared-env ambiguity. On
     container backends a recorded HOST path (a desktop/TUI surface registering
     its workspace) is unusable in the sandbox — ``cd <host path>`` fails with
-    exit 126 — so it is discarded in favor of ``default_cwd``.
+    exit 126 — so it is discarded in favor of ``default_cwd``. A routed session
+    (``command_prefix`` into a VM guest or remote host) has the same problem
+    from the same cause, but no path shape reveals it: the record is only
+    trustworthy there once the far side itself reported it.
 
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
@@ -792,6 +823,13 @@ def _resolve_command_cwd(
             "Ignoring recorded session cwd %r for %s backend "
             "(host/relative path won't work in sandbox). Using %r instead.",
             recorded, env_type, default_cwd,
+        )
+        return default_cwd
+    if recorded and routed and not session_cwd_observed(session_key):
+        logger.info(
+            "Ignoring recorded session cwd %r for a routed session "
+            "(never observed on the far side). Using %r instead.",
+            recorded, default_cwd,
         )
         return default_cwd
     return recorded or default_cwd
@@ -892,9 +930,16 @@ class _ExecPlan:
     cwd: str
     host_cwd: Optional[str]
     effective_timeout: int
+    execution_context: Any = None
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+
+
+def _plan_is_routed(plan: "_ExecPlan") -> bool:
+    """Whether *plan*'s commands run on another filesystem via ``command_prefix``."""
+    context = getattr(plan.execution_context, "context", None)
+    return bool(getattr(context, "command_prefix", None))
 
 
 _PROMOTED_NOTE = (
@@ -907,7 +952,7 @@ _PROMOTED_NOTE = (
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],
-    background: bool, _host_local: bool,
+    background: bool, _host_local: bool, session_id: Optional[str] = None,
 ) -> _ExecPlan:
     """Resolve backend, env-cache key, image, cwd and timeout for one call.
 
@@ -933,20 +978,40 @@ def _plan_execution(
 
         enforce_no_refusal()
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    from hermes_cli.session_execution import resolve_session_execution_context, SessionExecutionError
+    execution = None if _host_local else resolve_session_execution_context(session_id=session_id, task_id=task_id)
+    if execution is not None and env_type != "local":
+        raise SessionExecutionError("session execution contexts require the local terminal backend")
     if _host_local:
         # Control-plane children run beside this interpreter, never inside
-        # the configured Docker/SSH backend; keep their env cache separate.
-        effective_task_id = f"host-local-{effective_task_id}"
+        # a session lease or Docker/SSH backend. Neither cache nor override
+        # lookup may re-enter lease validation through the task alias.
+        container_task_id = _resolve_unbound_container_task_id(task_id)
+        effective_task_id = f"host-local-{container_task_id}"
+        overrides = resolve_task_overrides(task_id, container_task_id=container_task_id)
+    else:
+        effective_task_id = execution.cache_key if execution else _resolve_container_task_id(task_id)
+        overrides = resolve_task_overrides(task_id)
 
     # Per-task overrides (RL/benchmark envs, ACP workspace cwd) win over
     # the global env-var config; ``resolve_task_overrides`` reads the raw
     # task id first, then the collapsed container id.
-    overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
 
     cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-    host_cwd = _resolve_task_host_cwd(config, task_id)
+    host_cwd = None if _host_local else _resolve_task_host_cwd(config, task_id)
+    # A routed execution context whose commands land in another filesystem
+    # declares where a session starts there. Every host-derived candidate —
+    # the configured ``terminal.cwd``, the gateway/TUI per-task override, and
+    # the cwd record that override seeds (``register_task_env_overrides``
+    # writes one, so "recorded" does NOT imply "seen on the far side") — names
+    # a directory the routed shell cannot enter. Only a cwd the far side
+    # actually reported (``cwd_observed``, recorded after a command ran there)
+    # may win, and it is recognised by being inside the declared root.
+    if execution is not None and (
+            routed_cwd := getattr(execution.context, "backend_cwd", None)):
+        recorded = get_session_cwd(task_id)
+        cwd = recorded if recorded and session_cwd_observed(task_id) else routed_cwd
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
     # `docker run -w` and fail with exit 125. Re-apply the guard to the
@@ -984,6 +1049,7 @@ def _plan_execution(
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
+        execution_context=execution,
         promoted_from_foreground_timeout=promoted,
     )
 
@@ -1020,6 +1086,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     """
     _start_cleanup_thread()
     env_type, eff = plan.env_type, plan.effective_task_id
+    if plan.execution_context is not None:
+        plan.execution_context.check()
+        task_id = None  # never reuse a raw/shared host environment for this generation
 
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
@@ -1043,7 +1112,8 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
                 local_config=(
-                    {"persistent": plan.config.get("local_persistent", False)}
+                    {"persistent": plan.config.get("local_persistent", False),
+                     "execution_context": plan.execution_context}
                     if env_type == "local" else None
                 ),
             )
@@ -1088,6 +1158,7 @@ def _run_foreground(
         try:
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                routed=_plan_is_routed(plan),
             )
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
@@ -1209,8 +1280,10 @@ def terminal_tool(
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
+            session_id=session_id,
         )
-        env = _acquire_env(plan, task_id)
+        # Host-local calls must not reuse a raw task's session/container cache.
+        env = _acquire_env(plan, None if _host_local else task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
         # Session key for cwd records: the contextvar doesn't cross tool-worker
@@ -1237,6 +1310,7 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                routed=_plan_is_routed(plan),
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)

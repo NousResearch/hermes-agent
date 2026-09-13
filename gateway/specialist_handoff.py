@@ -133,12 +133,20 @@ def _candidate_fallback(
 
 
 def _is_candidate_orchestration_fallback(
-    decision: SpecialistRouteDecision, resolution: RegistryResolution | None
+    decision: SpecialistRouteDecision,
+    resolution: RegistryResolution | None,
+    registry: CapabilityRegistry | None = None,
 ) -> bool:
     """Allow an explicit missing-scope handoff to reach the inert candidate queue."""
     return (
         decision.dispatches
-        and decision.profile not in SPECIALIST_PROFILES
+        and (
+            decision.profile not in SPECIALIST_PROFILES
+            or (
+                registry is not None
+                and registry.has_configured_profile(decision.profile or "")
+            )
+        )
         and resolution is not None
         and resolution.status in {"no_match", "ambiguous"}
     )
@@ -162,8 +170,10 @@ def create_specialist_handoff(
     effective_decision = decision
     effective_resolution: RegistryResolution | None = None
     if signature is not None and type(registry) is CapabilityRegistry:
-        effective_resolution = resolve_registry(signature, registry)
-        if not _is_candidate_orchestration_fallback(decision, effective_resolution):
+        effective_resolution = resolve_registry(
+            signature, registry, profile_id=decision.profile
+        )
+        if not _is_candidate_orchestration_fallback(decision, effective_resolution, registry):
             effective_decision = apply_registry_resolution(effective_resolution, fallback=decision)
     elif signature is not None:
         effective_decision = apply_registry_resolution(

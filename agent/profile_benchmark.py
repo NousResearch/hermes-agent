@@ -22,6 +22,7 @@ from hermes_cli import kanban_db_connect as kanban_db
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _MAX_RECEIPT_LIFETIME_SECONDS = 86_400
 
 
@@ -42,6 +43,12 @@ def _require_hash(value: object, *, field: str) -> str:
 def _require_identity(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not _IDENTITY_RE.fullmatch(value):
         raise ValueError(f"{field} must be a bounded canonical identity")
+    return value
+
+
+def _require_model_id(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or not _MODEL_ID_RE.fullmatch(value):
+        raise ValueError(f"{field} must be a bounded model identifier")
     return value
 
 
@@ -118,7 +125,7 @@ class BenchmarkReceipt:
 
     def __post_init__(self) -> None:
         _require_identity(self.candidate_id, field="candidate_id")
-        _require_identity(self.scorer_model, field="scorer_model")
+        _require_model_id(self.scorer_model, field="scorer_model")
         for field in ("proposal_input_hash", "case_set_hash", "result_hash"):
             _require_hash(getattr(self, field), field=field)
         if not isinstance(self.scores, tuple) or any(
@@ -318,6 +325,17 @@ class CandidatePromotionGate:
         receipt_lifetime_seconds: int = 3_600,
     ) -> tuple[PromotionResult, BenchmarkReceipt]:
         """Record only a local receipt; unavailable scorers cause no call or transition."""
+        current = self._requests.lifecycle_snapshot(proposal.candidate_id)
+        if current is not None and current.lifecycle_status == "benchmarked":
+            expired_hash = self._expired_receipt_hash(
+                "specialist_benchmark_receipts", proposal.candidate_id
+            )
+            if expired_hash is not None:
+                self._requests.reopen_expired(
+                    proposal.candidate_id,
+                    expected_status="benchmarked",
+                    receipt_hash=expired_hash,
+                )
         now = int(self._clock())
         status: BenchmarkStatus = "unavailable"
         if not self._proposal_matches_candidate(proposal):
@@ -373,6 +391,18 @@ class CandidatePromotionGate:
     ) -> tuple[PromotionResult, VerificationReceipt]:
         now = int(self._clock())
         valid_benchmark = self.valid_benchmark(benchmark, proposal, None)
+        if not valid_benchmark and self._requests.lifecycle_snapshot(proposal.candidate_id) is not None:
+            current = self._requests.lifecycle_snapshot(proposal.candidate_id)
+            if current is not None and current.lifecycle_status == "benchmarked":
+                expired_hash = self._expired_receipt_hash(
+                    "specialist_benchmark_receipts", proposal.candidate_id
+                )
+                if expired_hash is not None:
+                    self._requests.reopen_expired(
+                        proposal.candidate_id,
+                        expected_status="benchmarked",
+                        receipt_hash=expired_hash,
+                    )
         independent = self._independent_verifier(proposal, benchmark, verifier_identity)
         status: VerificationStatus = "verified"
         if not valid_benchmark or not independent or not self._has_disposable_sandbox(proposal.candidate_id, benchmark.result_hash, sandbox_id):
@@ -396,6 +426,20 @@ class CandidatePromotionGate:
         verification: VerificationReceipt,
         approval: OperatorApproval | None,
     ) -> PromotionResult:
+        current = self._requests.lifecycle_snapshot(proposal.candidate_id)
+        if current is not None and current.lifecycle_status == "verified":
+            expired_hash = self._expired_receipt_hash(
+                "specialist_benchmark_receipts", proposal.candidate_id
+            ) or self._expired_receipt_hash(
+                "specialist_verification_receipts", proposal.candidate_id
+            )
+            if expired_hash is not None:
+                self._requests.reopen_expired(
+                    proposal.candidate_id,
+                    expected_status="verified",
+                    receipt_hash=expired_hash,
+                )
+                return PromotionResult("rejected", "benchmark or verification receipt expired; rerun promotion")
         if not self.valid_benchmark(benchmark, proposal, None) or not self.valid_verification(verification, proposal, benchmark, None):
             return PromotionResult("rejected", "benchmark or verification receipt is invalid")
         if not self._valid_approval(approval, proposal, verification, "staged"):
@@ -472,6 +516,20 @@ class CandidatePromotionGate:
         *,
         expires_at: int | None = None,
     ) -> PromotionResult:
+        current = self._requests.lifecycle_snapshot(proposal.candidate_id)
+        if current is not None and current.lifecycle_status == "staged":
+            expired_hash = self._expired_receipt_hash(
+                "specialist_benchmark_receipts", proposal.candidate_id
+            ) or self._expired_receipt_hash(
+                "specialist_verification_receipts", proposal.candidate_id
+            )
+            if expired_hash is not None:
+                self._requests.reopen_expired(
+                    proposal.candidate_id,
+                    expected_status="staged",
+                    receipt_hash=expired_hash,
+                )
+                return PromotionResult("rejected", "benchmark or verification receipt expired; rerun promotion")
         if signature.signature_hash != proposal.signature_hash or signature.permissions_hash != proposal.permissions_hash:
             return PromotionResult("rejected", "activation signature or permissions differ from the benchmarked candidate")
         if not self.valid_benchmark(benchmark, proposal, None) or not self.valid_verification(verification, proposal, benchmark, None):
@@ -556,10 +614,25 @@ class CandidatePromotionGate:
     @staticmethod
     def _independent_scorer(proposal: CandidateProposal, scorer: str) -> bool:
         try:
-            scorer = _require_identity(scorer, field="scorer_model")
+            scorer = _require_model_id(scorer, field="scorer_model")
         except ValueError:
             return False
         return scorer not in {proposal.proposal_author, proposal.sol_reviewer}
+
+    def _expired_receipt_hash(self, table: str, candidate_id: str) -> str | None:
+        if table not in {"specialist_benchmark_receipts", "specialist_verification_receipts"}:
+            raise ValueError("unsupported receipt table")
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    f"SELECT result_hash, expires_at FROM {table} WHERE candidate_id = ? ORDER BY id DESC LIMIT 1",
+                    (candidate_id,),
+                ).fetchone()
+            if row is not None and isinstance(row["expires_at"], int) and row["expires_at"] <= int(self._clock()):
+                return row["result_hash"]
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _independent_verifier(proposal: CandidateProposal, benchmark: BenchmarkReceipt, verifier: str) -> bool:

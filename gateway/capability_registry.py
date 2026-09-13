@@ -20,6 +20,7 @@ from typing import Literal
 _MAX_EXPIRY_TIMESTAMP = 253402300799
 _PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9._-]{0,95}$")
 _REASON_CODE_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _FIXED_BASELINE_SCOPES: dict[str, tuple[str, frozenset[str], str]] = {
     "task-orchestrator": (
@@ -347,6 +348,150 @@ class CapabilityRegistry:
         """Reject the former arbitrary active-profile entry point."""
         raise ValueError("direct arbitrary active profile registration is disabled; use configured declarations")
 
+    def add_active_from_durable_promotion(
+        self,
+        *,
+        profile_id: str,
+        signature: CapabilitySignature,
+        candidate_id: str,
+        promotion_proof_hash: str,
+        expires_at: datetime | int | float | None = None,
+        now: int | None = None,
+    ) -> int:
+        """Activate only a profile backed by an append-only promotion proof."""
+        self._validate_profile_id(profile_id)
+        if not isinstance(signature, CapabilitySignature):
+            raise TypeError("signature must be a CapabilitySignature")
+        if not isinstance(candidate_id, str) or not _PROFILE_ID_RE.fullmatch(candidate_id):
+            raise ValueError("candidate_id must be a bounded canonical identifier")
+        if not isinstance(promotion_proof_hash, str) or not _HASH_RE.fullmatch(promotion_proof_hash):
+            raise ValueError("promotion_proof_hash must be a SHA-256 hex digest")
+        created_at = int(time.time()) if now is None else now
+        if isinstance(created_at, bool) or not isinstance(created_at, int):
+            raise ValueError("now must be an integer timestamp")
+        expiry = _expiry_timestamp(expires_at)
+        with self._connection() as conn:
+            with _write_txn()(conn):
+                proof = conn.execute(
+                    """
+                    SELECT benchmark_result_hash, verification_result_hash, approval_hash
+                    FROM specialist_promotion_proofs
+                    WHERE proof_hash = ? AND candidate_id = ? AND target_state = 'active'
+                      AND profile_id = ? AND signature_hash = ? AND permissions_hash = ?
+                    LIMIT 1
+                    """,
+                    (
+                        promotion_proof_hash,
+                        candidate_id,
+                        profile_id,
+                        signature.signature_hash,
+                        signature.permissions_hash,
+                    ),
+                ).fetchone()
+                if proof is None:
+                    raise ValueError("active capability requires a matching durable promotion proof")
+                benchmark = conn.execute(
+                    """
+                    SELECT proposal_author, sol_reviewer, scorer_model, status, expires_at
+                    FROM specialist_benchmark_receipts
+                    WHERE result_hash = ? AND candidate_id = ?
+                    LIMIT 1
+                    """,
+                    (proof["benchmark_result_hash"], candidate_id),
+                ).fetchone()
+                verification = conn.execute(
+                    """
+                    SELECT verifier_identity, sandbox_id, status, expires_at
+                    FROM specialist_verification_receipts
+                    WHERE result_hash = ? AND candidate_id = ? AND benchmark_result_hash = ?
+                    LIMIT 1
+                    """,
+                    (proof["verification_result_hash"], candidate_id, proof["benchmark_result_hash"]),
+                ).fetchone()
+                if (
+                    benchmark is None
+                    or verification is None
+                    or benchmark["status"] != "passed"
+                    or verification["status"] != "verified"
+                    or not _unexpired(benchmark["expires_at"], now=created_at)
+                    or not _unexpired(verification["expires_at"], now=created_at)
+                    or benchmark["scorer_model"] in {benchmark["proposal_author"], benchmark["sol_reviewer"]}
+                    or verification["verifier_identity"]
+                    in {benchmark["proposal_author"], benchmark["sol_reviewer"], benchmark["scorer_model"]}
+                ):
+                    raise ValueError("durable benchmark or independent verification is invalid")
+                sandbox = conn.execute(
+                    """
+                    SELECT 1 FROM specialist_sandbox_runs
+                    WHERE sandbox_id = ? AND candidate_id = ? AND benchmark_result_hash = ?
+                      AND disposable = 1 AND task_count = 1
+                    LIMIT 1
+                    """,
+                    (verification["sandbox_id"], candidate_id, proof["benchmark_result_hash"]),
+                ).fetchone()
+                if sandbox is None:
+                    raise ValueError("durable disposable sandbox record is missing")
+                approval = conn.execute(
+                    """
+                    SELECT 1 FROM specialist_operator_approvals
+                    WHERE approval_hash = ? AND candidate_id = ? AND target_state = 'active'
+                      AND verification_result_hash = ? AND approved = 1
+                    LIMIT 1
+                    """,
+                    (proof["approval_hash"], candidate_id, proof["verification_result_hash"]),
+                ).fetchone()
+                if approval is None:
+                    raise ValueError("durable active approval is missing")
+                canary = conn.execute(
+                    """
+                    SELECT 1 FROM specialist_canary_receipts
+                    WHERE candidate_id = ? AND verification_result_hash = ?
+                      AND mode = 'local-no-send' AND status = 'passed'
+                    LIMIT 1
+                    """,
+                    (candidate_id, proof["verification_result_hash"]),
+                ).fetchone()
+                if canary is None:
+                    raise ValueError("durable local no-send canary is missing")
+                self._configured_profiles[profile_id] = signature
+                existing = conn.execute(
+                    """
+                    SELECT profiles.id FROM capability_profiles AS profiles
+                    WHERE profiles.profile_id = ? AND profiles.signature_hash = ?
+                      AND profiles.permissions_hash = ? AND profiles.status = 'active'
+                      AND profiles.expires_at IS ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM specialist_profile_revocations AS revocations
+                          WHERE revocations.capability_profile_id = profiles.id
+                      )
+                    LIMIT 1
+                    """,
+                    (profile_id, signature.signature_hash, signature.permissions_hash, expiry),
+                ).fetchone()
+                if existing is not None:
+                    return int(existing["id"])
+                cursor = conn.execute(
+                    """
+                    INSERT INTO capability_profiles (
+                        profile_id, signature_hash, permissions_hash, domain,
+                        actions_json, evidence_class, requested_permissions_json,
+                        expires_at, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                    """,
+                    (
+                        profile_id,
+                        signature.signature_hash,
+                        signature.permissions_hash,
+                        signature.domain,
+                        json.dumps(signature.actions, separators=(",", ":")),
+                        signature.evidence_class,
+                        json.dumps(signature.requested_permissions, separators=(",", ":")),
+                        expiry,
+                        created_at,
+                    ),
+                )
+                return int(cursor.lastrowid)
+
     def revoke(
         self,
         *,
@@ -460,10 +605,20 @@ class CapabilityRegistry:
             return False
         return _unexpired(row["expires_at"], now=int(time.time()))
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+    def has_configured_profile(self, profile_id: str) -> bool:
+        """Return whether the caller supplied a declaration for this profile."""
+        try:
+            self._validate_profile_id(profile_id)
+        except ValueError:
+            return False
+        return profile_id in self._configured_profiles
+
+    def resolve(self, signature: CapabilitySignature, *, profile_id: str | None = None) -> RegistryResolution:
         """Resolve exactly one active, unexpired, non-expanding local profile."""
         if not isinstance(signature, CapabilitySignature):
             raise TypeError("signature must be a CapabilitySignature")
+        if profile_id is not None:
+            self._validate_profile_id(profile_id)
         try:
             with self._connection() as conn:
                 rows = conn.execute(
@@ -473,6 +628,7 @@ class CapabilityRegistry:
                     FROM capability_profiles AS profiles
                     WHERE status = 'active' AND signature_hash = ?
                       AND permissions_hash = ? AND evidence_class = ?
+                      AND (? IS NULL OR profile_id = ?)
                       AND NOT EXISTS (
                           SELECT 1 FROM specialist_profile_revocations AS revocations
                           WHERE revocations.capability_profile_id = profiles.id
@@ -486,6 +642,8 @@ class CapabilityRegistry:
                         signature.signature_hash,
                         signature.permissions_hash,
                         signature.evidence_class,
+                        profile_id,
+                        profile_id,
                     ),
                 ).fetchall()
         except Exception as exc:

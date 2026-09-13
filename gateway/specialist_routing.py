@@ -277,7 +277,7 @@ ClassifierCall = Callable[[list[dict[str, str]]], Awaitable[str]]
 class CapabilityResolver(Protocol):
     """Minimal local registry dependency for active-profile routing."""
 
-    def resolve(self, signature: CapabilitySignature) -> RegistryResolution:
+    def resolve(self, signature: CapabilitySignature, *, profile_id: str | None = None) -> RegistryResolution:
         """Return the locally verified resolution for one exact signature."""
 
 
@@ -321,7 +321,10 @@ def apply_registry_resolution(
 
 
 def resolve_registry(
-    signature: CapabilitySignature, registry: CapabilityResolver | None
+    signature: CapabilitySignature,
+    registry: CapabilityResolver | None,
+    *,
+    profile_id: str | None = None,
 ) -> RegistryResolution:
     """Resolve locally and turn registry faults into a typed no-dispatch result."""
     if not isinstance(signature, CapabilitySignature) or registry is None or not hasattr(registry, "resolve"):
@@ -329,7 +332,12 @@ def resolve_registry(
             status="unavailable", profile=None, reason="local capability registry is unavailable"
         )
     try:
-        resolution = registry.resolve(signature)
+        try:
+            resolution = registry.resolve(signature, profile_id=profile_id)
+        except TypeError:
+            # Keep small test doubles and older external registry adapters
+            # compatible while the concrete registry gains profile identity.
+            resolution = registry.resolve(signature)
     except Exception:
         return RegistryResolution(
             status="unavailable", profile=None, reason="local capability registry is unavailable"
@@ -348,7 +356,10 @@ def resolve_route(
     fallback: SpecialistRouteDecision | None = None,
 ) -> SpecialistRouteDecision:
     """Resolve an active specialist before using a fixed classifier fallback."""
-    return apply_registry_resolution(resolve_registry(signature, registry), fallback=fallback)
+    return apply_registry_resolution(
+        resolve_registry(signature, registry, profile_id=fallback.profile if fallback else None),
+        fallback=fallback,
+    )
 
 
 async def classify_specialist_request(

@@ -92,6 +92,22 @@ def test_case_set_or_proposal_hash_change_invalidates_benchmark_receipt(tmp_path
     assert not gate.valid_benchmark(receipt, proposal, cases)
 
 
+def test_provider_qualified_scorer_model_is_accepted(tmp_path):
+    now = [1_000]
+    _, gate, proposal, cases = _candidate(tmp_path, now)
+
+    result, receipt = gate.benchmark(
+        proposal,
+        cases,
+        scorer_model="anthropic/claude-sonnet-4.6",
+        scores=(90, 90),
+        scorer_available=True,
+    )
+
+    assert result.status == "benchmarked"
+    assert receipt.scorer_model == "anthropic/claude-sonnet-4.6"
+
+
 def test_permission_delta_cannot_be_benchmarked_or_activated(tmp_path):
     now = [1_000]
     _, gate, proposal, cases = _candidate(tmp_path, now)
@@ -213,7 +229,6 @@ def test_unattested_operator_identity_cannot_stage_or_activate_a_candidate(tmp_p
         benchmark,
         verification,
         active_approval,
-        expires_at=now[0] + 100,
     )
 
     assert active.status == "rejected"
@@ -247,6 +262,62 @@ def test_authenticated_allowlisted_operator_approval_is_durable_and_can_stage(tm
     with gate._connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM specialist_operator_approvals").fetchone()[0] == 1
     assert requests.lifecycle_snapshot(proposal.candidate_id).lifecycle_status == "staged"
+
+
+def test_durable_active_promotion_creates_registry_profile(tmp_path):
+    now = [1_000]
+    requests, gate, proposal, cases = _candidate(tmp_path, now)
+    _, benchmark = gate.benchmark(
+        proposal, cases, scorer_model="benchmark-model", scores=(90, 90), scorer_available=True
+    )
+    assert gate.open_disposable_sandbox(proposal, benchmark, sandbox_id="sandbox-1").status == "benchmarked"
+    _, verification = gate.verify(
+        proposal,
+        benchmark,
+        verifier_identity="independent-verifier",
+        sandbox_id="sandbox-1",
+        verifier_available=True,
+    )
+    stage_approval = OperatorApproval(
+        candidate_id=proposal.candidate_id,
+        approval_id="stage-approval",
+        operator_identity="portal:operator-1",
+        verification_result_hash=verification.result_hash,
+        target_state="staged",
+        approved=True,
+        issued_at=now[0],
+    )
+    assert gate.record_operator_approval(
+        stage_approval, authenticated_operator_identity="portal:operator-1"
+    )
+    assert gate.stage(proposal, benchmark, verification, stage_approval).status == "staged"
+    assert gate.run_local_no_send_canary(proposal, verification)[0].status == "staged"
+
+    active_approval = OperatorApproval(
+        candidate_id=proposal.candidate_id,
+        approval_id="active-approval",
+        operator_identity="portal:operator-1",
+        verification_result_hash=verification.result_hash,
+        target_state="active",
+        approved=True,
+        issued_at=now[0],
+    )
+    assert gate.record_operator_approval(
+        active_approval, authenticated_operator_identity="portal:operator-1"
+    )
+    result = gate.activate(
+        proposal,
+        SIGNATURE,
+        "market-data-specialist",
+        benchmark,
+        verification,
+        active_approval,
+    )
+
+    assert result.status == "active"
+    assert CapabilityRegistry(db_path=requests._db_path).resolve(
+        SIGNATURE, profile_id="market-data-specialist"
+    ).status == "active_match"
 
 
 def test_arbitrary_operator_identity_never_creates_staged_or_active_authority(tmp_path):

@@ -5088,7 +5088,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return await classify_specialist_request(
             event.text, _classifier, threshold=settings["confidence_threshold"],
             timeout=settings["timeout_seconds"],
-            registry=self._specialist_capability_registry(settings),
         )
 
     async def _maybe_route_specialist_event(self, event: MessageEvent) -> bool:
@@ -5118,8 +5117,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False
         try:
             from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
+            from gateway.specialist_routing import capability_signature_for_profile
 
             platform = getattr(event.source.platform, "value", event.source.platform)
+            registry = self._specialist_capability_registry(settings)
             source = HandoffSource(
                 platform=str(platform), chat_id=str(event.source.chat_id),
                 chat_type=str(event.source.chat_type or "group"),
@@ -5134,6 +5135,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 create_specialist_handoff, decision=decision, source=source,
                 request=event.text, router_model=settings["model"] or "configured_auxiliary",
                 board=settings["board"],
+                signature=capability_signature_for_profile(decision.profile),
+                registry=registry,
             )
         except Exception:
             logger.warning("[Discord] specialist routing handoff failed", exc_info=True)

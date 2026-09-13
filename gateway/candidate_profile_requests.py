@@ -23,10 +23,11 @@ CandidateRequestStatus = Literal["candidate", "duplicate", "cooldown", "rejected
 _LIFECYCLE_NONTERMINAL = frozenset({"candidate", "benchmarked", "verified", "staged", "active"})
 _LIFECYCLE_TERMINAL = frozenset({"rejected", "expired", "revoked"})
 _ALLOWED_LIFECYCLE_TRANSITIONS = {
-    "candidate": "benchmarked",
-    "benchmarked": "verified",
-    "verified": "staged",
-    "staged": "active",
+    "candidate": frozenset({"benchmarked"}),
+    "benchmarked": frozenset({"verified", "expired"}),
+    "verified": frozenset({"staged", "expired"}),
+    "staged": frozenset({"active", "expired"}),
+    "expired": frozenset({"candidate"}),
 }
 _DEFAULT_COOLDOWN_SECONDS = 3_600
 _MAX_SOURCE_KEY_CHARS = 512
@@ -333,7 +334,7 @@ class CandidateProfileRequests:
         deterministic derived row id; it is not persisted as raw advisory or
         benchmark content in the candidate ledger.
         """
-        if _ALLOWED_LIFECYCLE_TRANSITIONS.get(expected_status) != next_status:
+        if next_status not in _ALLOWED_LIFECYCLE_TRANSITIONS.get(expected_status, frozenset()):
             raise ValueError("candidate lifecycle transition is not permitted")
         if not _REASON_CODE_RE.fullmatch(reason_code):
             raise ValueError("reason_code must be a bounded canonical code")
@@ -386,6 +387,31 @@ class CandidateProfileRequests:
                     ),
                 )
         return self.lifecycle_snapshot(candidate_id)
+
+    def reopen_expired(
+        self,
+        candidate_id: str,
+        *,
+        expected_status: str,
+        receipt_hash: str,
+    ) -> CandidateLifecycleSnapshot | None:
+        """Record receipt expiry and reopen the candidate for a fresh generation."""
+        expired = self.append_lifecycle_transition(
+            candidate_id,
+            expected_status=expected_status,
+            next_status="expired",
+            reason_code="receipt_expired",
+            receipt_hash=receipt_hash,
+        )
+        if expired is None:
+            return None
+        return self.append_lifecycle_transition(
+            candidate_id,
+            expected_status="expired",
+            next_status="candidate",
+            reason_code="receipt_renewed",
+            receipt_hash=_hash((receipt_hash, "renewed")),
+        )
 
     @staticmethod
     def _insert(

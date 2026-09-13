@@ -2749,7 +2749,17 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # MCP server names only resolve after discover_mcp_tools runs; skip them here.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            # Plugin toolsets register in a background discovery thread that may not have
+            # joined yet, so validate against the persisted plugin toolset-key cache too —
+            # otherwise every enabled plugin toolset is falsely flagged "unknown" (the
+            # tools themselves still load; this is pure warning noise).
+            try:
+                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+                plugin_ts_keys = get_plugin_toolset_keys_nowait()
+            except Exception:
+                plugin_ts_keys = set()
+            invalid = [t for t in toolsets if not validate_toolset(t)
+                       and t not in mcp_names and t not in plugin_ts_keys]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
 

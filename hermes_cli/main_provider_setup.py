@@ -174,10 +174,13 @@ def _aux_task_takes_reasoning(task: str) -> bool:
 
 
 def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
-    """Effort step for an aux task: a level, "none", "" (provider default), or None to keep current."""
+    """Effort step for an aux task: a level, "none", "" (provider default / inherit parent), or None to
+    keep current. The empty-value row is "Inherit parent" for delegation (a child inherits the parent's
+    effort; wording from #105431 by @fangliquanflq) and "Provider default" for aux tasks."""
     from hermes_constants import VALID_REASONING_EFFORTS
+    label = "Inherit parent" if task == _DELEGATION_TASK_KEY else "Provider default"
     return _prompt_reasoning_effort_selection(
-        list(VALID_REASONING_EFFORTS), current_effort=current, default_label="Provider default")
+        list(VALID_REASONING_EFFORTS), current_effort=current, default_label=label)
 
 
 def _reset_aux_to_auto() -> int:

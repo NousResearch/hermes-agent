@@ -33,89 +33,8 @@ from tools.environments.local import hermes_subprocess_env
 ACP_MARKER_BASE_URL = "acp://copilot"
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
-
-_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-_TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
-
-# Markers the pi-acp bridge emits as agent_thought_chunk updates for tool
-# activity executed INSIDE the delegate's own runtime. pi runs its tools
-# natively, so these are the only in-band trace of that work hermes receives.
-# Formats: "[pi-tool] name {json-args}" (start) and
-# "[pi-tool:ok|FAILED] name -> result N bytes" (end).
-_PI_TOOL_MARKER_RE = re.compile(
-    r"\[pi-tool(?::(?P<status>ok|FAILED))?\]\s+(?P<name>\S+)(?:\s+(?P<rest>.+))?"
-)
-_PI_TOOL_RESULT_BYTES_RE = re.compile(r"result (\d+) bytes")
-
-
-def parse_pi_tool_markers(text):
-    """Parse ``[pi-tool]`` markers from a reasoning/thought string.
-
-    Start markers contribute name + raw args; end markers fill in the
-    status and result size for the oldest unmatched start of the same tool
-    name (the bridge emits start/end pairs sequentially per execution).
-    Returns a list of ``{"name", "args", "status", "result_bytes"}`` dicts
-    in occurrence order. Text without markers yields an empty list.
-    """
-    events = []
-    open_by_name = {}
-    for m in _PI_TOOL_MARKER_RE.finditer(text or ""):
-        name = m.group("name")
-        status = m.group("status")
-        rest = m.group("rest") or ""
-        if status is None:
-            entry = {"name": name, "args": rest, "status": "", "result_bytes": None}
-            events.append(entry)
-            open_by_name.setdefault(name, []).append(entry)
-        else:
-            size_m = _PI_TOOL_RESULT_BYTES_RE.search(rest)
-            size = int(size_m.group(1)) if size_m else None
-            pending = open_by_name.get(name)
-            if pending:
-                entry = pending.pop(0)
-                entry["status"] = status
-                entry["result_bytes"] = size
-            else:
-                events.append(
-                    {"name": name, "args": "", "status": status, "result_bytes": size}
-                )
-    return events
-
-
-# The pi-acp bridge appends a fenced JSON footer to the delegate's final
-# response text after every run. It carries the objective outcome of the
-# run: status, duration, and touched_files derived from git snapshots
-# taken before and after the pi process did its work.
-_PI_RESULT_FOOTER_RE = re.compile(
-    r"```pi-delegation-result\s*\n(\{.*?\})\s*\n```", re.DOTALL
-)
-
-
-def parse_pi_result_footer(text):
-    """Parse the last ``pi-delegation-result`` fenced JSON block.
-
-    Returns the parsed dict, or ``None`` when no well-formed footer is
-    present. When several blocks appear (multi-prompt session), the last
-    one wins — it reflects the final state of the delegate's work.
-    """
-    last_match = None
-    for match in _PI_RESULT_FOOTER_RE.finditer(text or ""):
-        last_match = match
-    if last_match is None:
-        return None
-    try:
-        payload = json.loads(last_match.group(1))
-    except (ValueError, TypeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-# Stderr fingerprint of the deprecated `gh copilot` CLI extension
-# (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
-# We require BOTH the literal product name ("gh-copilot") AND a deprecation
-# marker, so generic stderr from the NEW `@github/copilot` CLI — whose repo
-# is github.com/github/copilot-cli and which legitimately mentions "copilot-cli"
-# in its own banners and error messages — doesn't get misclassified as the
-# deprecated extension.
+# Stderr fingerprint of the deprecated `gh copilot` extension. Require BOTH the product name
+# AND a deprecation marker: the NEW `@github/copilot` CLI legitimately mentions "copilot-cli".
 _DEPRECATION_REQUIRED = ("gh-copilot",)
 _DEPRECATION_MARKERS = ("has been deprecated", "no commands will be executed")
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
@@ -182,14 +101,7 @@ def _read_env_var(name: str) -> str | None:
 
 
 def _resolve_command() -> str:
-    # Re-read .env at call time so changing HERMES_COPILOT_ACP_COMMAND
-    # applies to the next delegation without a gateway restart.
-    env_val = _read_env_var("HERMES_COPILOT_ACP_COMMAND")
-    return (
-        env_val
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
+    return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
 
 
 def _resolve_args() -> list[str]:

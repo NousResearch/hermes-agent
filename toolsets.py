@@ -24,11 +24,8 @@ _HERMES_CORE_TOOLS = [
     "todo_list", "memory",
     "session_search",
     "clarify",
-    # Code execution + delegation
-    "execute_code", "delegate_task", "delegate_session",
-    # Cronjob management
-    "cronjob",
-    # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+    "execute_code", "delegate_task",
+    "cronjob_manage",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
@@ -74,267 +71,65 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
-    "web": {
-        "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
-        "includes": []  # No other toolsets included
-    },
-    
-    "search": {
-        "description": "Web search only (no content extraction/scraping)",
-        "tools": ["web_search"],
-        "includes": []
-    },
-
-    "x_search": {
-        "description": (
-            "Search X (Twitter) posts and threads via xAI's built-in "
-            "x_search Responses tool. Read-only public X discovery; use the "
-            "xurl skill for authenticated X API reads and account actions. "
-            "Available when xAI credentials are configured (SuperGrok OAuth "
-            "or XAI_API_KEY). Off by default; enable in `hermes tools` → "
-            "X (Twitter) Search."
-        ),
-        "tools": ["x_search"],
-        "includes": []
-    },
-    
-    "vision": {
-        "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
-        "includes": []
-    },
-
-    "video": {
-        "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
-        "tools": ["video_analyze"],
-        "includes": []
-    },
-    
-    "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
-        "includes": []
-    },
-
-    "video_gen": {
-        "description": (
-            "Video generation tools. Single ``video_generate`` tool covers "
-            "text-to-video (prompt only) and image-to-video (prompt + "
-            "image_url), plus reference-to-video. Provider-specific edit/"
-            "extend workflows may appear as separate tools. Configure via "
-            "``hermes tools`` → Video Generation."
-        ),
-        "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
-        "includes": []
-    },
-
-    "computer_use": {
-        "description": (
-            "Background desktop control via cua-driver (macOS/Windows/Linux) — "
-            "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the "
-            "user's cursor or keyboard focus. Works with any tool-capable model."
-        ),
-        "tools": ["computer_use"],
-        "includes": []
-    },
-
-    "terminal": {
-        "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
-        "includes": []
-    },
-    
-    "skills": {
-        "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
-        "includes": []
-    },
-    
-    "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
-        "tools": [
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
-        ],
-        "includes": []
-    },
-    
-    "cronjob": {
-        "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
-        "includes": []
-    },
-    
-
-    "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
-        "includes": []
-    },
-    
-    "tts": {
-        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
-        "tools": ["text_to_speech"],
-        "includes": []
-    },
-    
-    "todo": {
-        "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
-        "includes": []
-    },
-    
-    "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
-        "includes": []
-    },
-
-    "context_engine": {
-        "description": "Runtime tools exposed by the active context engine",
-        "tools": [],
-        "includes": []
-    },
-    
-    "session_search": {
-        "description": "Search and recall past conversations with summarization",
-        "tools": ["session_search"],
-        "includes": []
-    },
-
-    "project": {
-        "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
-        "tools": ["desktop_project"],
-        "includes": []
-    },
-
-    # Affordances that only exist because a GUI renderer is on the other end of
-    # the connection: read/close the embedded terminal pane, open/read/close the
-    # in-app browser, focus a pane, tapback a message.
-    #
-    # Enabled by the GUI gateway for a session whose SOURCE is the desktop app
-    # (tui_gateway/server.py::_load_enabled_toolsets), NOT by a process env var.
-    # The renderer is a CLIENT — it can be driving a local, SSH, URL, or cloud
-    # backend — so "was this process spawned by Electron?" is the wrong
-    # question and silently strips these tools from every remote gateway.
-    "desktop_ui": {
-        "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
-        "tools": [
-            "read_terminal", "close_terminal",
-            "desktop_preview", "drive_preview", "annotate_preview",
-            "read_window_below",
-            "focus_pane", "react_to_message",
-            "setup_mcp", "tour", "tip",
-        ],
-        "includes": []
-    },
-    
-    "clarify": {
-        "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
-        "tools": ["clarify"],
-        "includes": []
-    },
-    
-    "code_execution": {
-        "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
-        "tools": ["execute_code"],
-        "includes": []
-    },
-    
-    "delegation": {
-        "description": "Delegate work to isolated Hermes subagents or persistent external-agent sessions",
-        "tools": ["delegate_task", "delegate_session"],
-        "includes": []
-    },
-
-    "delegation_session": {
-        "description": "Persistent external-agent delegation sessions (internal scoping surface)",
-        "tools": ["delegate_session"],
-        "includes": []
-    },
-
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
-    # Tools are injected via MemoryManager, not the toolset system.
-
-    "homeassistant": {
-        "description": "Home Assistant smart home control and monitoring",
-        "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
-        "includes": []
-    },
-
-    "kanban": {
-        "description": (
-            "Kanban multi-agent coordination — only active when the agent "
-            "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
-            "set). The dispatcher runs inside the gateway by default; see "
-            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, enter first-class review "
-            "(request_review — not a block), return review changes, block for human input, "
-            "heartbeat during long ops, comment on threads, attach files, and "
-            "(for orchestrators) list, unblock, and fan out tasks."
-        ),
-        "tools": [
-            "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
-            "kanban_request_review", "kanban_request_changes",
-            "kanban_heartbeat", "kanban_comment",
-            "kanban_create", "kanban_link",
-            "kanban_unblock",
-            "kanban_attach", "kanban_attach_url", "kanban_attachments",
-        ],
-        "includes": [],
-    },
-
-    "discord": {
-        "description": "Discord read and participate tools (fetch messages, search members, create threads)",
-        "tools": ["discord"],
-        "includes": [],
-    },
-
-    "discord_admin": {
-        "description": "Discord server management (list channels/roles, pin messages, assign roles)",
-        "tools": ["discord_admin"],
-        "includes": [],
-    },
-
-    "yuanbao": {
-        "description": "Yuanbao platform tools - group info, member queries, DM, stickers",
-        "tools": [
-            "yb_query_group_info",
-            "yb_query_group_members",
-            "yb_send_dm",
-            "yb_search_sticker",
-            "yb_send_sticker",
-        ],
-        "includes": []
-    },
-
-    "feishu_doc": {
-        "description": "Read Feishu/Lark document content",
-        "tools": ["feishu_doc_read"],
-        "includes": []
-    },
-
-    "feishu_drive": {
-        "description": "Feishu/Lark document comment operations (list, reply, add)",
-        "tools": [
-            "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
-            "feishu_drive_reply_comment", "feishu_drive_add_comment",
-        ],
-        "includes": []
-    },
-
-    "spotify": {
-        "description": "Native Spotify playback, search, playlist, album, and library tools",
-        "tools": [
-            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-            "spotify_playlists", "spotify_albums", "spotify_library",
-        ],
-        "includes": []
-    },
+    "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
+    "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),
+    "x_search": _ts(
+        "Search X (Twitter) posts and threads via xAI's built-in x_search Responses "
+        "tool. Read-only public X discovery; use the xurl skill for authenticated X "
+        "API reads and account actions. Available when xAI credentials are configured "
+        "(SuperGrok OAuth or XAI_API_KEY). Off by default; enable in `hermes tools` → "
+        "X (Twitter) Search.",
+        ["x_search"],
+    ),
+    "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
+    "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
+    "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),
+    "video_gen": _ts(
+        "Video generation tools. Single ``video_generate`` tool covers text-to-video "
+        "(prompt only) and image-to-video (prompt + image_url), plus "
+        "reference-to-video. Provider-specific edit/extend workflows may appear as "
+        "separate tools. Configure via ``hermes tools`` → Video Generation.",
+        ["video_generate", "xai_video_edit", "xai_video_extend"],
+    ),
+    "computer_use": _ts(
+        "Background desktop control via cua-driver (macOS/Windows/Linux) — "
+        "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
+        "or keyboard focus. Works with any tool-capable model.",
+        ["computer_use"],
+    ),
+    "terminal": _ts("Terminal/command execution and process management tools", ["terminal", "process_manage"]),
+    "skills": _ts(
+        "Access, create, edit, and manage skill documents with specialized "
+        "instructions and knowledge",
+        ["skills_list", "skill_view", "skill_manage"],
+    ),
+    # web_search belongs to `web`/`search` only. Listing it here too let
+    # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
+    # web_search from every session, because disabled toolsets are a strict
+    # end-of-pipeline subtraction (#17309, #64503).
+    "browser": _ts(
+        "Browser automation for web interaction (navigate, click, type, scroll, "
+        "iframes, hold-click)",
+        [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")],
+    ),
+    "cronjob": _ts(
+        "Cronjob management tool - create, list, update, pause, resume, remove, and "
+        "trigger scheduled tasks",
+        ["cronjob_manage"],
+    ),
+    "file": _ts(
+        "File manipulation tools: read, write, patch (with fuzzy matching), and "
+        "search (content + files)",
+        ["read_file", "write_file", "patch", "search_files"],
+    ),
+    "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
+    "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
+    "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
+    "context_engine": _ts("Runtime tools exposed by the active context engine"),
+    "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
+    "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
+    "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 
     # GUI-renderer affordances, enabled per desktop-sourced SESSION by the GUI
     # gateway (tui_gateway/server.py::_load_enabled_toolsets) — never by a
@@ -375,223 +170,31 @@ TOOLSETS = {
     "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
     "safe": _ts("Safe toolkit without terminal access", [], includes=["web", "vision", "image_gen"]),
 
-    # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
-    # code workspace; see agent/coding_context.py. Keeps everything you reach
-    # for while pairing on code and drops the rest (messaging, tts, image_gen,
-    # spotify, home-assistant, cron, computer-use).
-    #
-    # The GUI pane/browser affordances are NOT listed here: they belong to the
-    # client surface, not the posture, so the GUI gateway folds `desktop_ui`
-    # in alongside this selection for a desktop-sourced session (see
-    # tui_gateway/server.py::_load_enabled_toolsets).
-    "coding": {
-        "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            "todo", "memory",
-            "session_search", "clarify",
-            "execute_code", "delegate_task", "delegate_session",
-        ],
-        "includes": [],
-        # Posture toolset: selected per-session by agent/coding_context.py,
-        # never auto-recovered into per-platform tool config (see the
-        # non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
-        "posture": True,
-    },
-    
-    # ==========================================================================
-    # Full Hermes toolsets (CLI + messaging platforms)
-    #
-    # All platforms share the same core tools. Note: agents do NOT get an
-    # agent-callable send_message tool — outbound platform messaging is handled
-    # outside the agent loop (cron delivery, the gateway kanban notifier, and
-    # the `hermes send` CLI), not by the model deciding to send on its own.
-    # ==========================================================================
+    # Coding posture, auto-selected in a code workspace (agent/coding_context.py).
+    # `desktop_ui` is folded in separately by the GUI gateway for desktop sessions.
+    # posture=True: per-session posture, never auto-recovered into platform tool
+    # config (see the non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
+    "coding": _ts(
+        "Coding-focused toolset: files, terminal, search, web docs, skills, todo, "
+        "delegate, vision, browser",
+        _CODING_TOOLS,
+        posture=True,
+    ),
 
-    "hermes-acp": {
-        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            "todo", "memory",
-            "session_search",
-            "execute_code", "delegate_task", "delegate_session",
-        ],
-        "includes": []
-    },
-
-    "hermes-api-server": {
-        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
-        "tools": [
-            # Web
-            "web_search", "web_extract",
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Vision + image generation
-            "vision_analyze", "image_generate",
-            # Skills
-            "skills_list", "skill_view", "skill_manage",
-            # Browser automation
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            # Planning & memory
-            "todo", "memory",
-            # Session history search
-            "session_search",
-            # Code execution + delegation
-            "execute_code", "delegate_task", "delegate_session",
-            # Cronjob management
-            "cronjob",
-            # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
-            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-
-        ],
-        "includes": []
-    },
-    
-    "hermes-cli": {
-        "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-cron": {
-        # Mirrors hermes-cli so cron's "default" toolset is the same set of
-        # core tools users see interactively — then `hermes tools` filters
-        # them down per the platform config. _DEFAULT_OFF_TOOLSETS (moa,
-        # homeassistant) are excluded by _get_platform_tools() unless
-        # the user explicitly enables them.
-        "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-telegram": {
-        "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-    
-    "hermes-discord": {
-        "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _HERMES_CORE_TOOLS + [
-            "discord",
-            "discord_admin",
-        ],
-        "includes": []
-    },
-    
-    "hermes-whatsapp": {
-        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-    
-    "hermes-slack": {
-        "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-    
-    "hermes-signal": {
-        "description": "Signal bot toolset - encrypted messaging platform (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-bluebubbles": {
-        "description": "BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-homeassistant": {
-        "description": "Home Assistant bot toolset - smart home event monitoring and control",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-email": {
-        "description": "Email bot toolset - interact with Hermes via email (IMAP/SMTP)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-mattermost": {
-        "description": "Mattermost bot toolset - self-hosted team messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-matrix": {
-        "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-dingtalk": {
-        "description": "DingTalk bot toolset - enterprise messaging platform (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-feishu": {
-        "description": "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
-        "tools": _HERMES_CORE_TOOLS + [
-            "feishu_doc_read",
-            "feishu_drive_list_comments",
-            "feishu_drive_list_comment_replies",
-            "feishu_drive_reply_comment",
-            "feishu_drive_add_comment",
-        ],
-        "includes": []
-    },
-
-    "hermes-weixin": {
-        "description": "Weixin bot toolset - personal WeChat messaging via iLink (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-qqbot": {
-        "description": "QQBot toolset - QQ messaging via Official Bot API v2 (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-wecom": {
-        "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-wecom-callback": {
-        "description": "WeCom callback toolset - enterprise self-built app messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
+    # Full Hermes toolsets (CLI + messaging platforms). All share the core tools;
+    # there is deliberately no agent-callable send_message tool. hermes-acp is the
+    # coding posture minus the interactive clarify UI.
+    "hermes-acp": _ts(
+        "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without "
+        "messaging, audio, or clarify UI",
+        [t for t in _CODING_TOOLS if t != "clarify"],
+    ),
+    "hermes-api-server": _ts(
+        "OpenAI-compatible API server — full agent tools accessible via HTTP (no "
+        "interactive UI tools like clarify or send_message)",
+        _core_without("text_to_speech", "clarify", "computer_use", kanban=False),
+    ),
+    "hermes-cli": _bundle("Full interactive CLI toolset - all default tools plus cronjob management"),
 
     # Mirrors hermes-cli; `hermes tools` platform config filters it down and
     # _get_platform_tools() drops _DEFAULT_OFF_TOOLSETS unless user-enabled.

@@ -556,31 +556,6 @@ def _creds_fallback(api_key, explicit_base_url, base_url, expiry, expiry_key, re
     creds = resolve()
     return creds.get("api_key", ""), explicit_base_url or creds.get("base_url", "").rstrip("/") or base_url, creds.get(expiry_key)
 
-    if provider == "pi-rpc":
-        creds = resolve_external_process_provider_credentials(provider)
-        return {
-            "provider": "pi-rpc",
-            "api_mode": "chat_completions",
-            "base_url": creds.get("base_url", "").rstrip("/"),
-            "api_key": creds.get("api_key", ""),
-            "command": creds.get("command", ""),
-            "args": list(creds.get("args") or []),
-            "source": creds.get("source", "process"),
-            "requested_provider": requested_provider,
-        }
-
-    # Anthropic (native Messages API)
-    if provider == "anthropic":
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == "anthropic":
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-            if not _anthropic_base_url_override_ok(cfg_base_url):
-                cfg_base_url = ""
-        base_url = cfg_base_url or "https://api.anthropic.com"
 
 def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
     api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,

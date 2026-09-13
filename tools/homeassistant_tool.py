@@ -94,15 +94,9 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
         "last_changed": data.get("last_changed"), "last_updated": data.get("last_updated")}
 
 
-def _build_service_payload(
-    entity_id: Optional[str | list[str]] = None,
-    data: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Build the JSON payload for a HA service call."""
-    payload: Dict[str, Any] = {}
-    if data:
-        payload.update(data)
-    # entity_id parameter takes precedence over data["entity_id"]
+def _build_service_payload(entity_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Dict:
+    """JSON payload for a HA service call; ``entity_id`` overrides data["entity_id"]."""
+    payload: Dict[str, Any] = dict(data or {})
     if entity_id:
         payload["entity_id"] = entity_id
     return payload
@@ -116,122 +110,12 @@ def _parse_service_response(domain: str, service: str, result: Any) -> Dict[str,
 
 
 async def _async_call_service(
-    domain: str,
-    service: str,
-    entity_id: Optional[str | list[str]] = None,
-    data: Optional[Dict[str, Any]] = None,
+    domain: str, service: str, entity_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     result = await _api_json(
         "POST", f"/api/services/{domain}/{service}", 15, _build_service_payload(entity_id, data))
     return _parse_service_response(domain, service, result)
 
-
-# ---------------------------------------------------------------------------
-# Sync wrappers (handler signature: (args, **kw) -> str)
-# ---------------------------------------------------------------------------
-
-def _run_async(coro):
-    """Run an async coroutine from a sync handler."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        # Already inside an event loop -- create a new thread
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=30)
-    else:
-        return asyncio.run(coro)
-
-
-def _handle_list_entities(args: dict, **kw) -> str:
-    """Handler for ha_list_entities tool."""
-    domain = args.get("domain")
-    area = args.get("area")
-    try:
-        result = _run_async(_async_list_entities(domain=domain, area=area))
-        return json.dumps({"result": result})
-    except Exception as e:
-        logger.error("ha_list_entities error: %s", e)
-        return tool_error(f"Failed to list entities: {e}")
-
-
-def _handle_get_state(args: dict, **kw) -> str:
-    """Handler for ha_get_state tool."""
-    entity_id = args.get("entity_id", "")
-    if not entity_id:
-        return tool_error("Missing required parameter: entity_id")
-    if not _ENTITY_ID_RE.match(entity_id):
-        return tool_error(f"Invalid entity_id format: {entity_id}")
-    try:
-        result = _run_async(_async_get_state(entity_id))
-        return json.dumps({"result": result})
-    except Exception as e:
-        logger.error("ha_get_state error: %s", e)
-        return tool_error(f"Failed to get state for {entity_id}: {e}")
-
-
-def _handle_call_service(args: dict, **kw) -> str:
-    """Handler for ha_call_service tool."""
-    domain = args.get("domain", "")
-    service = args.get("service", "")
-    if not domain or not service:
-        return tool_error("Missing required parameters: domain and service")
-
-    # Validate domain/service format BEFORE the blocklist check — prevents
-    # path traversal in /api/services/{domain}/{service} and blocklist bypass
-    # via payloads like "shell_command/../light".
-    if not _SERVICE_NAME_RE.match(domain):
-        return tool_error(f"Invalid domain format: {domain!r}")
-    if not _SERVICE_NAME_RE.match(service):
-        return tool_error(f"Invalid service format: {service!r}")
-
-    if domain in _BLOCKED_DOMAINS:
-        return tool_error(
-            f"Service domain '{domain}' is blocked for security. "
-            f"Blocked domains: {', '.join(sorted(_BLOCKED_DOMAINS))}"
-        )
-
-    entity_id = args.get("entity_id")
-    if isinstance(entity_id, str):
-        # Be forgiving of the common LLM form "light.a, light.b": normalize it
-        # to Home Assistant's native entity_id array instead of forcing another
-        # model/tool correction round.
-        if "," in entity_id:
-            entity_id = [item.strip() for item in entity_id.split(",") if item.strip()]
-        elif not _ENTITY_ID_RE.match(entity_id):
-            return tool_error(f"Invalid entity_id format: {entity_id}")
-    if isinstance(entity_id, list):
-        if not entity_id:
-            entity_id = None
-        else:
-            invalid = [item for item in entity_id if not isinstance(item, str) or not _ENTITY_ID_RE.match(item)]
-            if invalid:
-                return tool_error(f"Invalid entity_id format: {', '.join(map(str, invalid))}")
-    elif entity_id is not None and not isinstance(entity_id, str):
-        return tool_error("entity_id must be a string or list of strings")
-
-    data = args.get("data")
-    if isinstance(data, str):
-        try:
-            data = json.loads(data) if data.strip() else None
-        except json.JSONDecodeError as e:
-            return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
-
-    try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
-        return json.dumps({"result": result})
-    except Exception as e:
-        logger.error("ha_call_service error: %s", e)
-        return tool_error(f"Failed to call {domain}.{service}: {e}")
-
-
-# ---------------------------------------------------------------------------
-# List services
-# ---------------------------------------------------------------------------
 
 async def _async_list_services(domain: Optional[str] = None) -> Dict[str, Any]:
     """Available services, optionally filtered by domain, compacted for context."""

@@ -1589,104 +1589,34 @@ def anthropic_prompt_cache_policy(
     return False, False
 
 
-
-def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
-    from agent.ssl_verify import resolve_httpx_verify
-    # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
-    # copies of it) in; any in-place mutation leaks back into the stored dict and is
-    # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
-    # transport that was torn down after the first request, so the next request
-    # wrapped a closed transport and raised "Cannot send a request, as the client
-    # has been closed" on every retry. The revert resolved that specific path; this
-    # copy locks the contract so future transport/keepalive work can't reintroduce
-    # the same class of bug.
-    client_kwargs = dict(client_kwargs)
-    # The MoA virtual provider has no real OpenAI wire endpoint - the facade
-    # *is* the client. Rebuilding a native OpenAI client while
-    # agent.provider == "moa" (client replacement, stream-retry pool cleanup,
-    # credential rotation, fallback+restore) drops the facade: the next primary
-    # call either raises a `_moa_prepared_request` TypeError (#78382) or, when
-    # _client_kwargs carry an unrelated relay base_url, leaks the request to a
-    # foreign gateway. Rebuild the facade instead (build_moa_facade also
-    # re-wires the reference relay, see #53802).
-    if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
-        from agent.moa_loop import build_moa_facade
-        return build_moa_facade(agent, getattr(agent, "model", None) or "default")
-    ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
-    ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
-    httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
-    _validate_proxy_env_urls()
-    _validate_base_url(client_kwargs.get("base_url"))
-    if agent.provider == "pi-rpc" or str(client_kwargs.get("base_url", "")).startswith("pi://"):
-        # First-class pi delegation: drive pi's native JSONL RPC directly.
-        # Unlike ACP, the native protocol exposes extension_ui_request, so
-        # delegated pi agents can ask the parent questions and receive real
-        # free-text answers.
-        from agent.copilot_acp_client import _resolve_command
-        from agent.pi_rpc_client import PI_RPC_MARKER_BASE_URL, PiRPCClient
-
-        _pi_cmd = str(
-            client_kwargs.get("acp_command")
-            or client_kwargs.get("command")
-            or os.getenv("HERMES_PI_BIN", "").strip()
-            or "pi"
-        ).strip()
-        if _pi_cmd and (
-            Path(_pi_cmd).name in ("pi", "pi-acp")
-            or shutil.which(_pi_cmd) is not None
-            or Path(_pi_cmd).exists()
-        ):
-            # Basename fast-path accepts pi / pi-acp; anything else must
-            # actually resolve on disk so versioned installs and wrapper
-            # scripts pointed at via HERMES_PI_BIN still work.
-            client_kwargs.pop("base_url", None)
-            client_kwargs.pop("acp_command", None)
-            client_kwargs.pop("command", None)
-            client = PiRPCClient(**client_kwargs, base_url=PI_RPC_MARKER_BASE_URL)
-            _ra().logger.info(
-                "Pi RPC client created (%s, shared=%s) %s",
-                reason,
-                shared,
-                agent._client_log_context(),
-            )
-            return client
-        raise RuntimeError(
-            f"pi-rpc provider requires the pi binary (got command '{_pi_cmd}'). "
-            "Install pi or set HERMES_PI_BIN."
-        )
-    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
-        # When the ACP transport is actually pi (directly or via the pi-acp
-        # bridge), drive pi's native JSONL RPC instead. Unlike ACP, the
-        # native protocol exposes extension_ui_request, so delegated pi
-        # agents can ask the parent questions and receive real answers.
-        from agent.copilot_acp_client import _resolve_command
-
-        _acp_cmd = str(
-            client_kwargs.get("acp_command")
-            or client_kwargs.get("command")
-            or _resolve_command()
-        ).strip()
-        if Path(_acp_cmd).name in ("pi", "pi-acp"):
-            from agent.pi_rpc_client import PI_RPC_MARKER_BASE_URL, PiRPCClient
-
-            client_kwargs.pop("base_url", None)
-            client = PiRPCClient(**client_kwargs, base_url=PI_RPC_MARKER_BASE_URL)
-            _ra().logger.info(
-                "Pi RPC client created (%s, shared=%s) %s",
-                reason,
-                shared,
-                agent._client_log_context(),
-            )
-            return client
-        from agent.copilot_acp_client import CopilotACPClient
-
-        client = CopilotACPClient(**client_kwargs)
-        _ra().logger.info(
-            "Copilot ACP client created (%s, shared=%s) %s",
-            reason,
-            shared,
-            agent._client_log_context(),
+def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
+    """Ask the registered ProviderProfile for a custom client, if any. Resolves by provider name,
+    then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
+    A profile that raises is logged and skipped: a third-party plugin must not be able to take
+    the turn down, it can only fail to provide a client."""
+    try:
+        from providers import get_provider_profile
+    except Exception:
+        return None
+    profile = None
+    provider_name = (getattr(agent, "provider", "") or "").strip()
+    if provider_name:
+        try:
+            profile = get_provider_profile(provider_name)
+        except Exception:
+            profile = None
+    if profile is None:
+        base_url = str(client_kwargs.get("base_url", "") or "").strip()
+        if base_url:
+            profile = _profile_for_base_url(base_url)
+    if profile is None:
+        return None
+    try:
+        return profile.create_client(**client_kwargs)
+    except Exception:
+        _ra().logger.warning(
+            "Provider profile %r failed to create a client; falling back to the standard client path",
+            getattr(profile, "name", provider_name) or "?", exc_info=True,
         )
         return None
 
@@ -2349,199 +2279,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 duration_ms=int((time.monotonic() - tool_start_time) * 1000),
                 middleware_trace=_tool_middleware_trace,
             )
-        except Exception:
-            pass
-        return result
-
-    if function_name == "todo":
-        def _execute(next_args: dict) -> Any:
-            from tools.todo_tool import todo_tool as _todo_tool
-            return _finish_agent_tool(
-                _todo_tool(
-                    todos=next_args.get("todos"),
-                    merge=next_args.get("merge", False),
-                    store=agent._todo_store,
-                ),
-                next_args,
-            )
-    elif function_name == "session_search":
-        def _execute(next_args: dict) -> Any:
-            session_db = agent._get_session_db_for_recall()
-            if not session_db:
-                from hermes_state import format_session_db_unavailable
-                return _finish_agent_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}), next_args)
-            from tools.session_search_tool import session_search as _session_search
-            return _finish_agent_tool(
-                _session_search(
-                    query=next_args.get("query", ""),
-                    role_filter=next_args.get("role_filter"),
-                    limit=next_args.get("limit", 3),
-                    session_id=next_args.get("session_id"),
-                    around_message_id=next_args.get("around_message_id"),
-                    window=next_args.get("window", 5),
-                    sort=next_args.get("sort"),
-                    detail=next_args.get("detail", "adaptive"),
-                    db=session_db,
-                    current_session_id=agent.session_id,
-                ),
-                next_args,
-            )
-    elif function_name == "memory":
-        def _execute(next_args: dict) -> Any:
-            target = next_args.get("target", "memory")
-            operations = next_args.get("operations")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=next_args.get("action"),
-                target=target,
-                content=next_args.get("content"),
-                old_text=next_args.get("old_text"),
-                operations=operations,
-                store=agent._memory_store,
-            )
-            # Mirror successful built-in memory writes to external providers.
-            # All gating/op-expansion lives behind the manager interface
-            # (MemoryManager.notify_memory_tool_write).
-            if agent._memory_manager:
-                agent._memory_manager.notify_memory_tool_write(
-                    result,
-                    next_args,
-                    build_metadata=lambda: agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            return _finish_agent_tool(result, next_args)
-    elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
-    elif function_name == "clarify":
-        def _execute(next_args: dict) -> Any:
-            from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _finish_agent_tool(
-                _clarify_tool(
-                    question=next_args.get("question", ""),
-                    choices=next_args.get("choices"),
-                    multi_select=next_args.get("multi_select", False),
-                    questions=next_args.get("questions"),
-                    callback=agent.clarify_callback,
-                ),
-                next_args,
-            )
-    elif function_name == "read_terminal":
-        def _execute(next_args: dict) -> Any:
-            from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
-            return _finish_agent_tool(
-                _read_terminal_tool(
-                    start_line=next_args.get("start_line"),
-                    count=next_args.get("count"),
-                    callback=getattr(agent, "read_terminal_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "desktop_preview":
-        def _execute(next_args: dict) -> Any:
-            # action=read needs the GUI callback (agent-level); open/close go
-            # through the registry handler like any other tool.
-            if (next_args.get("action") or "").strip() == "read":
-                from tools.read_preview_tool import read_preview_tool as _read_preview_tool
-                return _finish_agent_tool(
-                    _read_preview_tool(
-                        start=next_args.get("start"),
-                        count=next_args.get("count"),
-                        callback=getattr(agent, "read_preview_callback", None),
-                    ),
-                    next_args,
-                )
-            from tools.preview_tool import _handle_preview
-            return _finish_agent_tool(_handle_preview(next_args), next_args)
-    elif function_name == "drive_preview":
-        def _execute(next_args: dict) -> Any:
-            from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
-            return _finish_agent_tool(
-                _drive_preview_tool(
-                    action=next_args.get("action", ""),
-                    ref=next_args.get("ref"),
-                    selector=next_args.get("selector"),
-                    text=next_args.get("text"),
-                    key=next_args.get("key"),
-                    submit=next_args.get("submit"),
-                    amount=next_args.get("amount"),
-                    to=next_args.get("to"),
-                    limit=next_args.get("max"),
-                    callback=getattr(agent, "drive_preview_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "annotate_preview":
-        def _execute(next_args: dict) -> Any:
-            from tools.annotate_preview_tool import annotate_preview_tool as _annotate_preview_tool
-            return _finish_agent_tool(
-                _annotate_preview_tool(
-                    action=next_args.get("action", "add"),
-                    ref=next_args.get("ref"),
-                    selector=next_args.get("selector"),
-                    label=next_args.get("label"),
-                    callback=getattr(agent, "drive_preview_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "read_window_below":
-        def _execute(next_args: dict) -> Any:
-            from tools.read_window_tool import read_window_below_tool as _read_window_below_tool
-            return _finish_agent_tool(
-                _read_window_below_tool(
-                    callback=getattr(agent, "read_window_below_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "tour":
-        def _execute(next_args: dict) -> Any:
-            from tools.tour_tool import tour_tool as _tour_tool
-            return _finish_agent_tool(
-                _tour_tool(
-                    action=next_args.get("action", ""),
-                    surface=next_args.get("surface"),
-                    selector=next_args.get("selector"),
-                    title=next_args.get("title"),
-                    text=next_args.get("text"),
-                    side=next_args.get("side"),
-                    steps=next_args.get("steps"),
-                    step_index=next_args.get("step_index"),
-                    callback=getattr(agent, "tour_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "setup_mcp":
-        def _execute(next_args: dict) -> Any:
-            from tools.setup_mcp_tool import setup_mcp_tool as _setup_mcp_tool
-            return _finish_agent_tool(
-                _setup_mcp_tool(
-                    server=next_args.get("server", ""),
-                    action=next_args.get("action", "install"),
-                    reason=next_args.get("reason", ""),
-                    callback=getattr(agent, "setup_mcp_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "delegate_task":
-        def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
-    elif function_name == "delegate_session":
-        def _execute(next_args: dict) -> Any:
-            from tools.delegate_session_tool import delegate_session as _delegate_session
-            return _finish_agent_tool(
-                _delegate_session(
-                    action=next_args.get("action") or "start",
-                    session_id=next_args.get("session_id"),
-                    goal=next_args.get("goal"),
-                    context=next_args.get("context"),
-                    message=next_args.get("message"),
-                    timeout=next_args.get("timeout"),
-                    parent_agent=agent,
-                ),
-                next_args,
-            )
+            return result
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

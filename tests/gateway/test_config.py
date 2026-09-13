@@ -1295,24 +1295,31 @@ class TestApiServerEnvOverride:
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
 
-    def test_hass_env_token_does_not_reenable_explicitly_disabled_platform(self):
-        """HASS_TOKEN must not re-enable a platform the config disabled.
 
-        Regression: _apply_env_overrides() force-set homeassistant.enabled =
-        True whenever HASS_TOKEN was present. In multiplex mode a secondary
-        profile pins ``homeassistant.enabled: false`` (the default profile
-        owns the HA connection) but still inherits the process-level
-        HASS_TOKEN. The unconditional re-enable made the secondary claim the
-        same credential and the gateway refused to start it with a fatal
-        ``duplicate_credential`` (``voice:homeassistant`` stuck fatal).
+class TestWebhookEnvOverride:
+    def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
+        """An explicit ``platforms.webhook.enabled: false`` must survive
+        _apply_env_overrides() even when WEBHOOK_ENABLED is truthy in the env.
 
-        A secondary profile may still keep HASS_TOKEN for the built-in HA
-        toolset; the fix honors the explicit disable, flagged by
-        ``_enabled_explicit`` in the platform's extra.
+        Regression (#85637): _apply_env_overrides() force-set
+        webhook.enabled = True whenever WEBHOOK_ENABLED was truthy. In
+        multiplex mode a secondary profile pins ``webhook.enabled: false`` so
+        it shares the default profile's listener instead of binding its own
+        port, but it still inherits the process-level WEBHOOK_ENABLED
+        (or carries one in its own .env). The unconditional re-enable
+        flipped it back on and tripped the MultiplexConfigError check.
+
+        The fix honors the explicit disable, flagged by ``_enabled_explicit``
+        in the platform's extra (set when the config.yaml pins enabled).
+        The MSGRAPH_WEBHOOK branch shares the shape and the fix.
         """
         config = GatewayConfig(
             platforms={
-                Platform.HOMEASSISTANT: PlatformConfig(
+                Platform.WEBHOOK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+                Platform.MSGRAPH_WEBHOOK: PlatformConfig(
                     enabled=False,
                     extra={"_enabled_explicit": True},
                 ),
@@ -1321,28 +1328,24 @@ class TestApiServerEnvOverride:
 
         with patch.dict(
             os.environ,
-            {"HASS_TOKEN": "ha-token", "HASS_URL": "http://homeassistant:8123"},
+            {
+                "WEBHOOK_ENABLED": "true",
+                "WEBHOOK_PORT": "9999",
+                "WEBHOOK_SECRET": "shared-secret",
+                "MSGRAPH_WEBHOOK_ENABLED": "true",
+                "MSGRAPH_WEBHOOK_PORT": "9998",
+            },
             clear=True,
         ):
             _apply_env_overrides(config)
 
-        assert config.platforms[Platform.HOMEASSISTANT].enabled is False
-        assert config.platforms[Platform.HOMEASSISTANT].token == "ha-token"
-        assert config.platforms[Platform.HOMEASSISTANT].extra.get("url") == "http://homeassistant:8123"
-
-    def test_hass_env_token_still_enables_default_off_platform(self):
-        """Without an explicit pin, HASS_TOKEN keeps enabling HA.
-
-        Guards the other side of the contract: a profile that has no
-        ``platforms.homeassistant`` entry at all (fresh install, setup wizard
-        wrote HASS_TOKEN into .env) must still get HA enabled by env
-        presence. Only the *explicit* ``enabled: false`` pin suppresses it.
-        """
-        config = GatewayConfig(platforms={})
-
-        with patch.dict(os.environ, {"HASS_TOKEN": "hass-token-value"}, clear=True):
-            _apply_env_overrides(config)
-
-        assert Platform.HOMEASSISTANT in config.platforms
-        assert config.platforms[Platform.HOMEASSISTANT].enabled is True
-        assert config.platforms[Platform.HOMEASSISTANT].token == "hass-token-value"
+        # Explicit disable wins over the env-var presence.
+        assert config.platforms[Platform.WEBHOOK].enabled is False
+        assert config.platforms[Platform.MSGRAPH_WEBHOOK].enabled is False
+        assert config.platforms[Platform.MSGRAPH_WEBHOOK].extra.get("port") == 9998
+        # Port/secret are still wired through for the shared listener.
+        assert config.platforms[Platform.WEBHOOK].extra.get("port") == 9999
+        assert (
+            config.platforms[Platform.WEBHOOK].extra.get("secret")
+            == "shared-secret"
+        )

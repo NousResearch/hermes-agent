@@ -469,41 +469,12 @@ class ToolCallGuardrailController:
         spec = _LOOP_CAPS.get(tool_name)
         if spec is None:
             return None
-
-        if tool_name == "delegate_task":
-            cap = caps.max_subagents
-            if not cap:
-                return None
-            spawn_count = _subagent_spawn_count(args)
-            if spawn_count == 0:
-                # Control action (list/steer/stop) — spawns nothing. Never
-                # block: once the spawn cap is hit, steering/stopping the
-                # existing children is exactly what should still work.
-                return None
-            if self._turn_subagent_count >= cap:
-                decision = ToolGuardrailDecision(
-                    action="block",
-                    code="loop_subagent_cap",
-                    message=(
-                        f"Blocked delegate_task: this turn has already spawned "
-                        f"{self._turn_subagent_count} subagents (limit {cap}). "
-                        "This looks like a runaway delegation loop. Finish the "
-                        "work with the results you have and answer the user."
-                    ),
-                    tool_name=tool_name,
-                    count=self._turn_subagent_count,
-                    signature=signature,
-                )
-                self._halt_decision = decision
-                return decision
-            # delegate_task itself rejects any batch larger than
-            # delegation.max_concurrent_children with "Too many tasks", so an
-            # oversized spawn_count spawns nothing. Count it as one failed
-            # attempt (mirroring the tool-failure loop counter) instead of
-            # len(tasks), which would permanently poison the turn's budget.
-            self._turn_subagent_count += 1 if spawn_count > cap else spawn_count
-            return None
-
+        cap_field, count_attr, code = spec
+        cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
+        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
+        if increment and cap and count >= cap:
+            return self._decide("block", code, tool_name, count, signature, cap=cap)
+        setattr(self, count_attr, count + increment)
         return None
 
 

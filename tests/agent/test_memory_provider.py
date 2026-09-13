@@ -1253,6 +1253,33 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(None, mgr)
         assert names == {"fact_store", "memory_search", "memory_add"}
 
+    def test_deferred_schema_is_not_reinjected_beside_tool_search(self):
+        """A provider alias of a deferred registry tool stays represented only by the bridge."""
+        import model_tools
+        from tools.registry import discover_builtin_tools, registry
+
+        discover_builtin_tools()
+        enabled = ["terminal", "memory"]
+        assembled = model_tools.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+        assembled_names = {tool["function"]["name"] for tool in assembled}
+        assert "tool_search" in assembled_names
+        assert "process_manage" not in assembled_names
+
+        mgr = MemoryManager()
+        mgr.add_provider(FakeMemoryProvider("ext", tools=[registry.get_schema("process_manage")]))
+        agent = SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=enabled,
+            disabled_toolsets=None,
+            tools=list(assembled),
+            valid_tool_names=set(assembled_names),
+        )
+
+        assert inject_memory_provider_tools(agent) == 0
+        assert "process_manage" not in {
+            tool["function"]["name"] for tool in agent.tools
+        }
+
 
 class TestContextEngineToolsetGate:
     """Issue #5544 (sibling): context engine tools follow the same gate.

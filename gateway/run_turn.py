@@ -66,6 +66,39 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
+# Floor for the window-derived hygiene turn-hold budget: the historical flat default, and the
+# shortest hold that still gives a live summary a chance to land within the same turn.
+_HYG_TURN_HOLD_FLOOR_SECONDS = 10.0
+
+
+def derive_hygiene_turn_hold_seconds(
+    context_length: Optional[int],
+    threshold_pct: float,
+    tokens_per_second: float,
+    floor_seconds: float,
+    ceiling_seconds: float,
+) -> float:
+    """Derive the hygiene turn-hold budget from the summary's expected ingest cost.
+
+    Hygiene summarises roughly ``threshold_pct x context_length`` tokens in ONE auxiliary call, so
+    how long an arriving user turn can afford to wait follows the model's context window and its
+    prefill rate rather than a flat constant (measured hygiene summaries of 205k-246k tokens took
+    45-98s on production gateways -- an order of magnitude beyond the historical 10s default).
+
+    ``tokens_per_second`` is the operator's throughput hint for the summary model (<= 0 keeps the
+    flat default). The result is clamped to ``[floor_seconds, ceiling_seconds]``; the ceiling must
+    stay under the transport idle timeout, so callers pass the resolved idle budget.
+    """
+    try:
+        tokens = float(context_length) * float(threshold_pct)
+        rate = float(tokens_per_second)
+    except (TypeError, ValueError):
+        return float(floor_seconds)
+    if tokens <= 0 or rate <= 0:
+        return float(floor_seconds)
+    return float(min(max(tokens / rate, floor_seconds), max(float(ceiling_seconds), float(floor_seconds))))
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -543,7 +576,12 @@ class GatewayTurnMixin:
         hs.total_ceiling_seconds = _knob("hygiene_total_ceiling_seconds", hs.total_ceiling_seconds, float)
         # The ceiling can never be tighter than one idle window, or the extension loop would be dead code.
         hs.total_ceiling_seconds = max(hs.total_ceiling_seconds, hs.timeout_seconds)
+        # An explicit knob always wins over the window-derived budget (see _hmwa_hygiene_plan).
+        hs.turn_hold_configured = _comp_cfg.get("hygiene_max_turn_hold_seconds") is not None
         hs.max_turn_hold_seconds = _knob("hygiene_max_turn_hold_seconds", hs.max_turn_hold_seconds, float)
+        hs.turn_hold_tokens_per_second = _knob(
+            "hygiene_max_turn_hold_tokens_per_second", hs.turn_hold_tokens_per_second, float, allow_zero=True,
+        )
         hs.failure_cooldown_seconds = _knob(
             "hygiene_failure_cooldown_seconds", hs.failure_cooldown_seconds, float, allow_zero=True,
         )
@@ -560,6 +598,7 @@ class GatewayTurnMixin:
             hard_msg_limit=5000, timeout_seconds=30.0, total_ceiling_seconds=600.0,
             max_turn_hold_seconds=10.0, failure_cooldown_seconds=300.0, config_context_length=None,
             provider=None, base_url=None, api_key=None, data={},
+            turn_hold_configured=False, turn_hold_tokens_per_second=0.0,
         )
         try:
             hs.data = _load_gateway_config()
@@ -618,6 +657,13 @@ class GatewayTurnMixin:
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
         )
+        # The window implies how long summarising THIS transcript takes; a flat hold cannot outlast
+        # it. Derive the budget unless the operator pinned hygiene_max_turn_hold_seconds explicitly.
+        if hs.turn_hold_tokens_per_second > 0 and not hs.turn_hold_configured:
+            hs.max_turn_hold_seconds = derive_hygiene_turn_hold_seconds(
+                _hyg_context_length, hs.threshold_pct, hs.turn_hold_tokens_per_second,
+                _HYG_TURN_HOLD_FLOOR_SECONDS, hs.timeout_seconds,
+            )
         _compress_token_threshold = int(_hyg_context_length * hs.threshold_pct)
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)

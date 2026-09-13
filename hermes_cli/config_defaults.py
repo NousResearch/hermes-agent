@@ -587,6 +587,14 @@ DEFAULT_CONFIG = {
         # turn proceeds uncompressed; the detached worker keeps its watermark-fenced commit, so the
         # summary is adopted at the next safe boundary.
         "hygiene_max_turn_hold_seconds": 10,
+        # Prefill throughput hint (tokens/second) for the hygiene summary model. When > 0 AND
+        # hygiene_max_turn_hold_seconds is NOT set explicitly, the turn-hold budget is derived from
+        # the resolved context window instead of the flat default:
+        #   hold ~= (context_length x threshold) / hint, clamped to [10s, hygiene_timeout_seconds]
+        # Reference: hygiene summaries of 205k-246k tokens completed in 45-98s on production
+        # gateways (~2.5k-5.5k tokens/s), i.e. well beyond the flat default. 0 = keep today's
+        # behaviour (flat budget, no derivation).
+        "hygiene_max_turn_hold_tokens_per_second": 0,
         # Inactivity budget for in-agent compress_context (loop, /compress, preflight); same
         # progress-aware semantics as hygiene_timeout_seconds. 0 = disable the owned wrapper
         # (callers passing commit_fence, e.g. gateway hygiene, never use it).

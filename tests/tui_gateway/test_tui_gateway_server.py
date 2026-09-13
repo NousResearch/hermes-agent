@@ -15128,9 +15128,9 @@ def test_session_list_can_exclude_cron(monkeypatch, tmp_path):
         ("cli-1", "cli"),
         ("tui-1", "tui"),
         ("chat-1", "telegram"),
-        ("cron-1", "cron"),
-        ("kanban-1", "kanban"),
-        ("tool-1", "tool"),
+        ("cron-1", " CRON "),
+        ("kanban-1", " Kanban "),
+        ("tool-1", " Tool "),
     ):
         db.create_session(session_id=session_id, source=source)
         db.append_message(session_id, role="user", content=session_id)
@@ -15163,6 +15163,45 @@ def test_session_list_can_exclude_cron(monkeypatch, tmp_path):
             "cron-1",
             "tui-1",
         }
+    finally:
+        db.close()
+
+
+def test_session_list_excludes_cron_before_limit(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="older-interactive", source="tui")
+    db.append_message("older-interactive", role="user", content="interactive")
+    for index in range(201):
+        session_id = f"newer-cron-{index:03d}"
+        db.create_session(session_id=session_id, source="cron")
+        db.append_message(session_id, role="user", content=session_id)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        with_cron = server.handle_request(
+            {
+                "id": "with-cron",
+                "method": "session.list",
+                "params": {"include_cron": True, "limit": 200},
+            }
+        )
+        assert len(with_cron["result"]["sessions"]) == 200
+        assert "older-interactive" not in {
+            row["id"] for row in with_cron["result"]["sessions"]
+        }
+
+        without_cron = server.handle_request(
+            {
+                "id": "without-cron",
+                "method": "session.list",
+                "params": {"include_cron": False, "limit": 200},
+            }
+        )
+        assert [row["id"] for row in without_cron["result"]["sessions"]] == [
+            "older-interactive"
+        ]
     finally:
         db.close()
 

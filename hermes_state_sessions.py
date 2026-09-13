@@ -112,7 +112,10 @@ def _session_filter_where(
     for clause, values in (
         (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
         ("s.session_key = ?", [session_key] if session_key else []),
-        (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
+        # Exclusion is a deny-list of canonical labels: normalize the stored value too, so NULL,
+        # mixed-case, and whitespace-padded sources can't slip past it.
+        (f"LOWER(TRIM(COALESCE(s.source, ''))) NOT IN ({_session_ids_placeholders(exclude_sources or ())})",
+         [source.strip().lower() for source in exclude_sources or []]),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
         ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
     ):

@@ -18,7 +18,11 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal,
+    get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env,
+)
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -31,23 +35,6 @@ def _redact_telegram_error_text(error: object) -> str:
         return redact_sensitive_text(text, force=True)
     except Exception:
         return "<telegram error redacted>"
-
-
-def _decode_json_list_literal(raw):
-    """Decode a JSON-encoded allowlist written by ``hermes config set``.
-
-    String-typed defaults keep list literals verbatim on write (``allowed_chats`` is
-    declared as ``""``), so the config can hold ``'["-100","-200"]'`` as a string.
-    Malformed JSON passes through unchanged and keeps the legacy comma-split path.
-    """
-    if isinstance(raw, str) and raw.lstrip()[:1] == "[":
-        try:
-            loaded = json.loads(raw)
-        except ValueError:
-            return raw
-        if isinstance(loaded, list):
-            return loaded
-    return raw
 
 
 def _consume_abandoned_task(task: asyncio.Task) -> None:

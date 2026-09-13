@@ -50,3 +50,16 @@ def test_comma_and_malformed_strings_keep_the_legacy_split():
     assert _adapter({"allowed_chats": "-100, -200"})._telegram_allowed_chats() == {"-100", "-200"}
     assert _adapter({"allowed_chats": ["-100", "-200"]})._telegram_allowed_chats() == {"-100", "-200"}
     assert _adapter({"allowed_chats": '["-100", "-200'})._telegram_allowed_chats() == {'["-100"', '"-200'}
+
+
+def test_runner_side_allow_set_decodes_json_string(monkeypatch):
+    """The runner's central gate reads the same env chain (``TELEGRAM_GROUP_ALLOWED_CHATS``
+    via the YAML bridge) and must not comma-split the brackets onto the ids either."""
+    from gateway.authz_mixin import _coerce_allow_set
+
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", '["-100","-200"]')
+    from gateway.platforms._shared import platform_gate_env
+
+    assert _coerce_allow_set(platform_gate_env("TELEGRAM_GROUP_ALLOWED_CHATS")) == {"-100", "-200"}
+    assert _coerce_allow_set("-100, -200") == {"-100", "-200"}
+    assert _coerce_allow_set(["-100"]) == {"-100"}

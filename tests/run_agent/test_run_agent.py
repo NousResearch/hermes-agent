@@ -1968,25 +1968,27 @@ class TestRetryAfterCap:
         return next(((m, s) for m, s in captured if status_marker in m), ("", ""))
 
     def test_retry_after_under_cap_is_honored(self, agent):
-        # 300s > old 120s cap but < new 600s cap → used verbatim.
+        # 300s > old 120s cap but < new 600s cap; positive-only jitter may
+        # extend, but never shorten, the provider cooldown.
         error = self._retryable_error(429, {"retry-after": "300"})
         status, _ = self._drive_once(agent, error, "Waiting")
-        assert "Waiting 300.0s" in status
+        wait = float(status.split("Waiting ", 1)[1].split("s", 1)[0])
+        assert 300.0 <= wait <= 330.0
 
     @pytest.mark.parametrize(
-        ("headers", "body", "expected_wait", "expected_surface"),
+        ("headers", "body", "minimum_wait", "expected_surface"),
         [
             # Long cooldowns (> 60s) surface immediately...
-            ({"Retry-After": "120"}, {}, "120.0", "emit"),
-            ({}, {"status": 524, "retry_after": 120}, "120.0", "emit"),
-            ({}, {"status": 524, "error": {"retry_after": 120}}, "120.0", "emit"),
+            ({"Retry-After": "120"}, {}, 120.0, "emit"),
+            ({}, {"status": 524, "retry_after": 120}, 120.0, "emit"),
+            ({}, {"status": 524, "error": {"retry_after": 120}}, 120.0, "emit"),
             # Above the 600s ceiling → capped, never used verbatim.
-            ({"Retry-After": "3600"}, {}, "600.0", "emit"),
+            ({"Retry-After": "3600"}, {}, 600.0, "emit"),
             # ...short cooldowns keep the buffered status line.
-            ({"Retry-After": "30"}, {}, "30.0", "buffer"),
+            ({"Retry-After": "30"}, {}, 30.0, "buffer"),
             # No cooldown on header or body → falls through to jittered
             # backoff (patched to 0.0 by the conftest fixture), no crash.
-            ({}, {"status": 524}, "0.0", "buffer"),
+            ({}, {"status": 524}, 0.0, "buffer"),
         ],
         ids=(
             "header",
@@ -1998,12 +2000,14 @@ class TestRetryAfterCap:
         ),
     )
     def test_retry_after_on_cloudflare_524_is_honored(
-        self, agent, headers, body, expected_wait, expected_surface
+        self, agent, headers, body, minimum_wait, expected_surface
     ):
         """A retryable 5xx must not bypass the provider's cooldown."""
         error = self._retryable_error(524, headers, body)
         status, surface = self._drive_once(agent, error, "Retrying in")
-        assert f"Retrying in {expected_wait}s" in status
+        wait = float(status.split("Retrying in ", 1)[1].split("s", 1)[0])
+        assert wait >= minimum_wait
+        assert wait <= 630.0
         assert surface == expected_surface
 
 

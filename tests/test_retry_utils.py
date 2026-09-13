@@ -5,7 +5,7 @@ import threading
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jitter_retry_after, jittered_backoff
 
 
 def test_backoff_is_exponential():
@@ -99,6 +99,21 @@ def test_backoff_uses_locked_tick_for_seed(monkeypatch):
 
     assert len(recorded_seeds) == 2
     assert len(set(recorded_seeds)) == 2, f"Expected unique seeds, got {recorded_seeds}"
+
+
+def test_retry_after_jitter_spreads_identical_cooldowns():
+    """Identical provider cooldowns must not synchronize concurrent retries."""
+    waits = [jitter_retry_after(600.0) for _ in range(20)]
+
+    assert len(set(waits)) > 1
+    assert all(wait <= 630.0 for wait in waits)
+
+
+def test_retry_after_jitter_never_retries_early():
+    """Jitter may only extend a provider-mandated cooldown."""
+    retry_after = 120.0
+
+    assert all(jitter_retry_after(retry_after) >= retry_after for _ in range(20))
 
 
 def _zai_overload_error():

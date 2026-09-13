@@ -132,23 +132,48 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         return None
     if sys.platform == "win32":
         return None
-    script = (
+    common = (
         f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
         "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        f"echo '--- pstree of self ---'; pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
     )
+    if sys.platform == "darwin":
+        script = common + (
+            "echo '--- processes (top 60 by cpu) ---'; "
+            "ps -Ao pid,ppid,state,pcpu,pmem,command -r 2>/dev/null | head -60; "
+            "echo '--- gateway process ---'; "
+            f"ps -o pid,ppid,state,command -p {os.getpid()} 2>/dev/null || true; "
+            "echo '--- load ---'; uptime 2>/dev/null || true; "
+            "echo '=== end ==='"
+        )
+    else:
+        script = common + (
+            "echo '--- ps auxf (top 60 by cpu) ---'; ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+            f"echo '--- pstree of self ---'; pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
+            "echo '--- /proc/loadavg ---'; cat /proc/loadavg 2>/dev/null || true; "
+            "echo '--- recent dmesg (oom/killed) ---'; "
+            "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+            "echo '=== end ==='"
+        )
     try:  # O_APPEND so concurrent diagnostics from rapid signals don't trample each other
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     except OSError:
         return None
+    # Python wait-timeout instead of GNU `timeout` (absent on stock macOS).
+    helper = (
+        "import os, signal, subprocess, sys\n"
+        "p = subprocess.Popen(['bash', '-c', sys.argv[1]], start_new_session=True)\n"
+        "try:\n"
+        "    p.wait(timeout=float(sys.argv[2]))\n"
+        "except subprocess.TimeoutExpired:\n"
+        "    try:\n"
+        "        os.killpg(p.pid, signal.SIGKILL)\n"  # windows-footgun: ok -- helper only after Windows early return
+        "    except ProcessLookupError:\n"
+        "        pass\n"
+        "    p.wait()\n"
+    )
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script], stdout=fd,
+            [sys.executable, "-c", helper, script, str(timeout_seconds)], stdout=fd,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:

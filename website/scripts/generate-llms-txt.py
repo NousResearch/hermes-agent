@@ -135,6 +135,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("guides/work-with-skills", "Work with Skills", None),
         ("guides/delegation-patterns", "Delegation Patterns", None),
         ("guides/github-pr-review-agent", "GitHub PR Review Agent", None),
+        ("guides/all-gods-must-die", "All Gods Must Die: Adversarially Verified Transformation", "Unified Hermes doctrine: god-file decomposition, documentation parity, cyber defense, interlock, skill refactoring, and attribution"),
     ]),
     ("Developer Guide", [
         ("developer-guide/contributing", "Contributing", None),

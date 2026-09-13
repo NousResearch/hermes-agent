@@ -1012,3 +1012,34 @@ class TestProviderReportedCost:
         # Rate-table path: source is official_docs_snapshot or similar
         assert result.status == "estimated"
         assert result.amount_usd is not None
+
+    def test_invalid_upstream_cost_string_falls_back_to_rate_table(self):
+        """Non-numeric upstream_inference_cost string doesn't crash — falls back."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": "not-a-number"},
+        )
+        # Should not raise — should gracefully fall back to rate-table estimate
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd is None
+
+    def test_nan_upstream_cost_ignored(self):
+        """NaN/Infinity upstream_inference_cost is ignored (not finite)."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": float("nan")},
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd is None
+
+    def test_infinity_upstream_cost_ignored(self):
+        """Infinity upstream_inference_cost is ignored (not finite)."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": float("inf")},
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd is None

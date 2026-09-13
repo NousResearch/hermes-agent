@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import decimal
 import logging
 import re
 from dataclasses import dataclass, fields
@@ -557,8 +558,10 @@ def normalize_usage(
             upstream_cost = cost_details.get("upstream_inference_cost")
         if upstream_cost is not None:
             try:
-                actual_cost_usd = Decimal(str(upstream_cost))
-            except (ValueError, TypeError):
+                parsed = Decimal(str(upstream_cost))
+                if parsed.is_finite():
+                    actual_cost_usd = parsed
+            except (ValueError, TypeError, decimal.InvalidOperation):
                 pass
 
     return CanonicalUsage(

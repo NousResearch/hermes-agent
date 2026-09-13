@@ -97,7 +97,8 @@ def _initialize_run_state(self, *, store_factory) -> None:
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
-    ) = ({} for _ in range(7))
+        self._run_approval_resolvers,
+    ) = ({} for _ in range(8))
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -354,8 +355,10 @@ def _forget_run(self, run_id: str, *tables) -> None:
 
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
-    _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids)
+    with self._run_lifecycle_lock:
+        _forget_run(
+            self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
+            self._run_approval_resolvers, self._stopping_run_ids)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -502,6 +505,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author, approval_resolver=create_approval_resolver(run_id))
     self._activate_admitted_request()
+    with self._run_lifecycle_lock:
+        self._run_approval_resolvers[run_id] = launch.approval_resolver
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
@@ -708,7 +713,7 @@ def _release_run_owner_if_forgotten(self, run_id: str) -> None:
     """Drop the owner stamp only once nothing keyed by *run_id* survives: ownership must
     outlive every surface it protects (retired on different clocks); ownerless = fail-closed."""
     live = (self._run_statuses, self._active_run_agents, self._active_run_tasks, self._run_streams,
-            self._run_approval_sessions)
+            self._run_approval_sessions, self._run_approval_resolvers)
     if not any(run_id in table for table in live):
         self._run_owners.pop(run_id, None)
 
@@ -809,6 +814,21 @@ def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
 
 
+def _revoke_run_approval(self, run_id: str) -> None:
+    """Revoke one run's resolver and wake every approval waiter it owns.
+
+    Callers hold ``_run_lifecycle_lock`` so a stop/shutdown transition and a competing
+    HTTP approval resolution have one serialized winner.
+    """
+    resolver = self._run_approval_resolvers.get(run_id)
+    session_key = self._run_approval_sessions.get(run_id)
+    if session_key:
+        from tools.approval import unregister_gateway_notify
+        unregister_gateway_notify(session_key, resolver)
+    elif resolver is not None:
+        resolver.revoke()
+
+
 async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
     _openai_error = _api_server._openai_error
@@ -828,7 +848,6 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
     # Room grants may resolve exactly one request and never widen to session/always.
     allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
     resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
-    approval_session_key = self._run_approval_sessions.get(run_id)
     for failed, message, code, status in (
         (raw_request_id is not None and (not request_id or len(request_id) > 256),
          "Approval request_id is invalid.", "invalid_approval_request", 400),
@@ -839,17 +858,29 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
          "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
         (room_scoped and not request_id,
          "Room approvals require the exact request_id.", "approval_request_required", 400),
-        (not approval_session_key,
-         f"Run has no active approval session: {run_id}", "approval_not_active", 409)):
+    ):
         if failed:
             return _json_error(_openai_error, message, code=code, status=status)
-    try:
-        from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
-    except Exception as exc:
-        logger.exception("[api_server] approval resolution failed for run %s", run_id)
-        return _json_error(_openai_error, str(exc), status=500)
+    with self._run_lifecycle_lock:
+        status = self._run_statuses.get(run_id) or {}
+        if status.get("status") in TERMINAL_STATUSES or status.get("status") == "stopping":
+            return _json_error(
+                _openai_error, f"Run is no longer accepting approval: {run_id}",
+                code="approval_not_active", status=409)
+        approval_session_key = self._run_approval_sessions.get(run_id)
+        resolver = self._run_approval_resolvers.get(run_id)
+        if not approval_session_key or resolver is None:
+            return _json_error(
+                _openai_error, f"Run has no active approval session: {run_id}",
+                code="approval_not_active", status=409)
+        try:
+            from tools.approval import resolve_gateway_approval
+            resolved = resolve_gateway_approval(
+                approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None,
+                approval_resolver=resolver)
+        except Exception as exc:
+            logger.exception("[api_server] approval resolution failed for run %s", run_id)
+            return _json_error(_openai_error, str(exc), status=500)
     if resolved <= 0:
         return _json_error(
             _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
@@ -901,14 +932,16 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
-    if status.get("status") in TERMINAL_STATUSES:
-        return web.json_response(status)
-    if agent is None and task is None:
-        return _json_error(
-            _openai_error, f"Run is not active in this gateway process: {run_id}",
-            code="run_not_active", status=409)
-    self._set_run_status(run_id, "stopping", last_event="run.stopping")
-    self._stopping_run_ids.add(run_id)
+    with self._run_lifecycle_lock:
+        if status.get("status") in TERMINAL_STATUSES:
+            return web.json_response(status)
+        if agent is None and task is None:
+            return _json_error(
+                _openai_error, f"Run is not active in this gateway process: {run_id}",
+                code="run_not_active", status=409)
+        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        self._stopping_run_ids.add(run_id)
+        _revoke_run_approval(self, run_id)
     if agent is not None:
         with suppress(Exception):
             _api_server.request_hard_interrupt(agent, "Stop requested via API")

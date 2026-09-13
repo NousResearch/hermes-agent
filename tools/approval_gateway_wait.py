@@ -36,7 +36,8 @@ class _ApprovalEntry:
         self.reason: str | None = None
 
 
-def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
+def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str,
+                wake_is_cancelled=None) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
     elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
@@ -63,6 +64,12 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
             if remaining <= 0:
                 return "timeout"
             if event.wait(timeout=min(1.0, remaining)):
+                # A lifecycle revoke wakes the same Event used by an approval response. Recheck
+                # cancellation after wake so that wakeup cannot be mistaken for approval.
+                cancelled = wake_is_cancelled() if wake_is_cancelled is not None else is_interrupted()
+                if cancelled:
+                    logger.info(interrupt_log, session_key)
+                    return "interrupted"
                 return "set"
             heartbeat()
 
@@ -85,9 +92,12 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
-    state = _poll_event(leader.event, session_key,
-                        interrupt_log="Coalesced approval wait interrupted by user signal — "
-                                      "returning deny for session %s")
+    state = _poll_event(
+        leader.event, session_key,
+        interrupt_log="Coalesced approval wait interrupted by user signal — returning deny for session %s",
+        wake_is_cancelled=lambda: leader.result is None and (
+            is_interrupted() or not _ctx._api_approval_resolver_available(session_key)),
+    )
     if state == "interrupted":
         # Deny only OUR follower; the leader thread handles its own signal.
         choice, resolved = "deny", True
@@ -168,8 +178,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    state = _poll_event(entry.event, session_key,
-                        interrupt_log="Approval wait interrupted by user signal — returning deny for session %s")
+    state = _poll_event(
+        entry.event, session_key,
+        interrupt_log="Approval wait interrupted by user signal — returning deny for session %s",
+        wake_is_cancelled=lambda: entry.result is None and (
+            is_interrupted() or not _ctx._api_approval_resolver_available(session_key)),
+    )
     if state == "interrupted":
         entry.result = "deny"
         entry.event.set()

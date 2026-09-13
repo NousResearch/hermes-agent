@@ -1153,6 +1153,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
         _api_runs._initialize_run_state(self, store_factory=RunIdempotencyStore)
+        # Serialize run terminal transitions against approval resolution. The resolver itself
+        # remains route/run-scoped; this lock only closes the lifecycle race at the adapter seam.
+        self._run_lifecycle_lock = threading.RLock()
         self._session_db: Optional[Any] = None  # explicit override (tests/manual wiring)
         self._session_dbs: Dict[str, Any] = {}  # per-profile-home SessionDB cache
         self._session_db_cache_lock = threading.Lock()
@@ -1192,6 +1195,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
         ``GatewayRunner._running_agents``): exactly the set the drain waits on. Returns count."""
+        # Shutdown is a cancellation boundary for /v1/runs too. Revoke and wake each
+        # resolver before asking agents to stop, so no approval can win after shutdown begins.
+        with self._run_lifecycle_lock:
+            for run_id in tuple(self._run_approval_resolvers):
+                status = self._run_statuses.get(run_id, {})
+                if status.get("status") not in _api_runs.TERMINAL_STATUSES:
+                    self._set_run_status(run_id, "stopping", last_event="run.stopping")
+                    self._stopping_run_ids.add(run_id)
+                _api_runs._revoke_run_approval(self, run_id)
         # Dedupe by identity: an agent in both registries must be interrupted once.
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())

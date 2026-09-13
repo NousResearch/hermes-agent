@@ -136,13 +136,18 @@ def unregister_gateway_notify(session_key: str, approval_resolver=None) -> None:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
+        # A lifecycle teardown is a deny/cancel wake, not an approval. Preserve an
+        # already-recorded user choice if the approval endpoint won the queue race.
+        if entry.result is None:
+            entry.result = "deny"
         entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None,
+                             approval_resolver=None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
@@ -150,6 +155,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
     """
     with _lock:
+        # API-run lifecycle cancellation and approval resolution share this queue lock. Once
+        # the owning resolver is revoked, a stale endpoint must not release any waiter as approved.
+        if approval_resolver is not None and not approval_resolver.is_active():
+            return 0
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0

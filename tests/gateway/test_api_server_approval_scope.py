@@ -9,6 +9,7 @@ lifecycle with a small agent double whose only work is the harmless
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -56,6 +57,35 @@ class _GuardAgent:
         return {"final_response": "approval-probe continued", "messages": []}
 
 
+class _InterruptibleGuardAgent(_GuardAgent):
+    """Guard agent whose worker-thread wait can be interrupted by lifecycle control."""
+
+    def __init__(self, seen: list[dict]):
+        super().__init__(seen)
+        self.worker_thread_id = None
+        self.continued = threading.Event()
+
+    def run_conversation(self, **kwargs):
+        from tools.interrupt import is_interrupted, set_interrupt
+
+        self.worker_thread_id = threading.get_ident()
+        set_interrupt(False)
+        try:
+            result = super().run_conversation(**kwargs)
+            if is_interrupted():
+                result["interrupted"] = True
+            if result.get("final_response") == "approval-probe continued":
+                self.continued.set()
+            return result
+        finally:
+            set_interrupt(False, self.worker_thread_id)
+
+    def interrupt(self, _message=None):
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True, self.worker_thread_id)
+
+
 def _make_adapter() -> APIServerAdapter:
     return APIServerAdapter(PlatformConfig(enabled=True, extra={}))
 
@@ -71,6 +101,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     return app
@@ -143,6 +174,68 @@ async def test_runs_execute_code_approval_round_trip_once(monkeypatch):
         assert completed["output"] == "approval-probe continued"
         assert seen[0]["approved"] is True
         assert seen[0].get("user_approved") is True
+
+    _clear_run_approval(run_id)
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_stop_wins_over_racing_once(monkeypatch):
+    """A successful stop invalidates approval before a racing once can continue the tool."""
+    _isolated_approval(monkeypatch)
+    adapter = _make_adapter()
+    seen: list[dict] = []
+    agent = _InterruptibleGuardAgent(seen)
+
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            response = await client.post("/v1/runs", json={"input": "stop race probe"})
+        run_id = (await response.json())["run_id"]
+        await _wait_for_status(client, run_id, "waiting_for_approval")
+
+        stop_response = await client.post(f"/v1/runs/{run_id}/stop")
+        assert stop_response.status == 200
+        assert (await stop_response.json())["status"] == "stopping"
+
+        racing_approval = await client.post(
+            f"/v1/runs/{run_id}/approval", json={"choice": "once"}
+        )
+        assert racing_approval.status == 409
+        assert (await racing_approval.json())["error"]["code"] == "approval_not_active"
+
+        cancelled = await _wait_for_status(client, run_id, "cancelled")
+        assert cancelled["status"] == "cancelled"
+        assert seen and seen[0]["approved"] is False
+        assert not agent.continued.is_set()
+
+    _clear_run_approval(run_id)
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_gateway_shutdown_wins_over_racing_once(monkeypatch):
+    """Gateway shutdown invalidates every live run resolver before approval can continue it."""
+    _isolated_approval(monkeypatch)
+    adapter = _make_adapter()
+    seen: list[dict] = []
+    agent = _InterruptibleGuardAgent(seen)
+
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        with patch.object(adapter, "_create_agent", return_value=agent):
+            response = await client.post("/v1/runs", json={"input": "shutdown race probe"})
+        run_id = (await response.json())["run_id"]
+        await _wait_for_status(client, run_id, "waiting_for_approval")
+
+        assert adapter.interrupt_active_runs("gateway shutdown") == 1
+
+        racing_approval = await client.post(
+            f"/v1/runs/{run_id}/approval", json={"choice": "once"}
+        )
+        assert racing_approval.status == 409
+        assert (await racing_approval.json())["error"]["code"] == "approval_not_active"
+
+        cancelled = await _wait_for_status(client, run_id, "cancelled")
+        assert cancelled["status"] == "cancelled"
+        assert seen and seen[0]["approved"] is False
+        assert not agent.continued.is_set()
 
     _clear_run_approval(run_id)
 

@@ -353,6 +353,79 @@ Quick reference for the most common things Nix users want to customize:
 | Override the hermes package | `package` | `inputs.hermes-agent.packages.${system}.default.override { ... }` |
 | Change state directory | `stateDir` | `"/opt/hermes"` |
 | Set the agent's working directory | `workingDirectory` | `"/home/user/projects"` |
+| Declare an isolated named profile | `profiles.<name>` | See [Named Profiles](#named-profiles) |
+
+---
+
+## Named Profiles
+
+The NixOS and Home Manager modules can manage Hermes named profiles without an
+imperative `hermes profile create`. Each attribute under `profiles` becomes an
+independent `HERMES_HOME` at `profiles/<name>` beneath the default Hermes home:
+
+```nix
+{
+  services.hermes-agent = {
+    enable = true;
+
+    # Package-level dependencies are shared by the default and named profiles.
+    extraDependencyGroups = [ "messaging" ];
+
+    profiles = {
+      coder = {
+        settings.model.default = "anthropic/claude-sonnet-4";
+        environmentFiles = [ config.sops.secrets."hermes-coder-env".path ];
+        hermesHomeFiles."SOUL.md" = "You are a focused coding assistant.";
+      };
+
+      support = {
+        settings.model.default = "openai/gpt-5.4";
+        mcpServers.ticketing.url = "https://mcp.example.com/tickets";
+        gateway.enable = true;
+      };
+    };
+  };
+}
+```
+
+After activation, select a profile explicitly:
+
+```bash
+hermes -p coder chat
+hermes -p support doctor
+```
+
+The module does not install command aliases such as `coder`; declarative
+package installation should not claim arbitrary executable names. The normal
+`hermes -p <name>` interface works on every installation.
+
+A profile accepts the profile-local options `settings`, `configFile`,
+`environment`, `environmentFiles`, `authFile`, `authFileForceOverwrite`,
+`workingDirectory`, `documents`, `hermesHomeFiles`, `mcpServers`,
+`extraPlugins`, `extraArgs`, `restart`, `restartSec`, and `gateway.enable`.
+Package construction remains installation-wide: configure `package`,
+`extraPackages`, `extraPythonPackages`, and `extraDependencyGroups` at
+`services.hermes-agent`, and every profile uses the resulting package and PATH.
+
+The profile's default working directory is its own `workspace/` directory, so
+profile `documents` have an unambiguous destination and do not require an
+explicit `workingDirectory`. Declaring profiles does not change the default
+profile or the `HERMES_HOME` exported for interactive commands.
+
+When `gateway.enable = true`, the module starts a separate service with that
+profile's home:
+
+- NixOS and Home Manager on Linux: `hermes-agent-<name>`
+- Home Manager on macOS: `org.nix-community.home.hermes-agent-<name>`
+
+Named profiles work for interactive commands in NixOS container mode, but
+named profile gateways do not: the managed container supervises only the
+default profile gateway. The module rejects that combination rather than
+silently omitting the service.
+
+Profile names must be canonical lowercase identifiers matching
+`[a-z0-9][a-z0-9_-]{0,63}`. The reserved names `default`, `hermes`, `root`,
+`sudo`, `test`, and `tmp` are rejected.
 
 ---
 
@@ -942,8 +1015,11 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `entry-points-sync` | Every `[project.scripts]` entry in `pyproject.toml` has a wrapped binary in the Nix package |
 | `cli-commands` | `hermes --help` exposes `gateway` and `config` subcommands |
 | `managed-guard` | `HERMES_MANAGED=true hermes config set ...` prints the NixOS error |
+| `home-manager-profiles` | Named profile activation, Linux user services, and Darwin launchd agents stay isolated |
+| `nixos-profiles` | Named profile activation, ownership, services, and container routing metadata |
+| `profile-names-are-safe` | Profile names cannot escape `profiles/` or use reserved identifiers |
 | `bundled-skills` | Skills directory exists, contains SKILL.md files, `HERMES_BUNDLED_SKILLS` is set in wrapper |
-| `config-roundtrip` | 7 merge scenarios: fresh install, Nix override, user key preservation, mixed merge, MCP additive merge, nested deep merge, idempotency |
+| `config-roundtrip` | 8 merge scenarios: fresh install, Nix override, user key preservation, mixed merge, MCP additive merge, nested deep merge, idempotency, and atomic replacement with the requested final mode |
 
 </details>
 
@@ -962,6 +1038,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `createUser` | `bool` | `true` | Auto-create user/group |
 | `stateDir` | `str` | `"/var/lib/hermes"` | State directory (`HERMES_HOME` parent) |
 | `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory |
+| `profiles` | `attrsOf submodule` | `{}` | Declaratively managed named profiles under the default `HERMES_HOME/profiles/` directory |
 | `addToSystemPackages` | `bool` | `false` | Add `hermes` CLI to system PATH and set `HERMES_HOME` system-wide |
 
 ### Configuration
@@ -1108,7 +1185,12 @@ replacement.
 │   ├── memories/
 │   ├── skills/
 │   ├── cron/
-│   └── logs/
+│   ├── logs/
+│   └── profiles/
+│       └── coder/                     # profiles.coder HERMES_HOME
+│           ├── config.yaml
+│           ├── .managed
+│           └── workspace/
 ├── home/                            # Agent HOME
 └── workspace/                       # Agent working directory
     ├── AGENTS.md                    # from the documents option
@@ -1125,6 +1207,11 @@ replacement.
 ├── .env                             # written again from environment + environmentFiles
 ├── auth.json                        # OAuth credentials: seeded, then Hermes owns it
 ├── memories/  sessions/  skills/  cron/  logs/  plugins/
+├── profiles/
+│   └── coder/                       # profiles.coder HERMES_HOME
+│       ├── config.yaml
+│       ├── .managed
+│       └── workspace/
 └── (runtime state)
 
 ~/                                   # workingDirectory, your home by default

@@ -170,7 +170,7 @@ def test_missing_canonical_persistence_blocks_external_observers(monkeypatch):
     assert result["failed"] is False
     assert result["final_response"] == "Done."
     assert result["turn_exit_reason"] == "text_response(final)"
-    assert trajectory_calls[-1][2] is True
+    assert trajectory_calls == []
     assert sync_calls == []
     assert "post_llm_call" not in hook_names
     assert "on_session_end" not in hook_names

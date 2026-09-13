@@ -27,13 +27,18 @@ def first_proxy_env_value() -> str:
 
 def split_host_port(value: str) -> tuple[str, int | None]:
     """``(host, port)`` from a URL (scheme optional: ``//host/path``), ``[v6]:port``,
-    ``host:port`` or bare host; host lowercased."""
+    ``host:port`` or bare host; host lowercased. A malformed URL port (``host:abc``,
+    ``host:99999``) yields ``(host, None)`` rather than raising."""
     raw = str(value or "").strip()
     if not raw:
         return "", None
     if "://" in raw or raw.startswith("//"):
         parsed = urlsplit(raw)
-        host, port = parsed.hostname or "", parsed.port
+        host = parsed.hostname or ""
+        try:
+            port = parsed.port
+        except ValueError:  # ``host:abc`` / ``host:99999``: keep the host, drop the port
+            port = None
     elif raw.startswith("[") and "]" in raw:
         host, _, rest = raw[1:].partition("]")
         port = int(rest[1:]) if rest.startswith(":") and rest[1:].isdigit() else None

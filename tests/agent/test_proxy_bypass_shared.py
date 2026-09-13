@@ -46,3 +46,14 @@ def test_non_matching_host_keeps_the_proxy_on_both_paths(proxy_env):
     assert resolve_proxy_url(target_hosts="api.telegram.org") == "http://proxy.corp:3128"
     assert not is_host_excluded_by_no_proxy("slack.com")
     assert is_host_excluded_by_no_proxy("files.slack.com", "slack.com")  # explicit value wins
+    assert not should_bypass_proxy("notslack.com", no_proxy_value="*.slack.com")
+
+
+def test_malformed_port_in_base_url_keeps_the_proxy_instead_of_raising(proxy_env):
+    """A ``host:notaport`` base_url must not raise out of the bypass check: the caller's
+    blanket ``except`` would otherwise drop the shared keepalive transport entirely."""
+    proxy_env.setenv("NO_PROXY", "other.example")
+    assert _get_proxy_for_base_url("http://host:notaport/v1") == "http://proxy.corp:3128"
+    assert _get_proxy_for_base_url("http://host:99999/v1") == "http://proxy.corp:3128"
+    proxy_env.setenv("NO_PROXY", "host")
+    assert _get_proxy_for_base_url("http://host:notaport/v1") is None  # host still matched

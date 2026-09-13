@@ -3669,7 +3669,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             transcript = result.get("transcript", "").strip()
             if not transcript or is_whisper_hallucination(transcript):
                 return
-            logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            logger.info("Voice input transcribed (chars=%d)", len(transcript))
             if self._voice_input_callback:
                 await self._voice_input_callback(
                     guild_id=guild_id, user_id=user_id, transcript=transcript,

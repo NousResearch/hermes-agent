@@ -403,11 +403,11 @@ def _prepare_fal_request(model_id, meta, prompt, aspect_ratio, seed, overrides, 
         clamped_sources = source_images[:max_refs] if max_refs > 0 else source_images
         arguments = _build_fal_edit_payload(
             model_id, prompt, clamped_sources, aspect_lc, seed=seed, overrides=overrides)
-        logger.info("Editing image with %s (%s) — %d source image(s), prompt: %s",
-                    display, edit_endpoint, len(clamped_sources), prompt[:80])
+        logger.info("Editing image with %s (%s) — %d source image(s), prompt_chars=%d",
+                    display, edit_endpoint, len(clamped_sources), len(prompt))
         return edit_endpoint, arguments
     arguments = _build_fal_payload(model_id, prompt, aspect_lc, seed=seed, overrides=overrides)
-    logger.info("Generating image with %s (%s) — prompt: %s", display, model_id, prompt[:80])
+    logger.info("Generating image with %s (%s) — prompt_chars=%d", display, model_id, len(prompt))
     return model_id, arguments
 
 

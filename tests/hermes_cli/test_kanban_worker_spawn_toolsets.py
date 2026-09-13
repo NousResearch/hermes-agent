@@ -136,6 +136,60 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     assert args.query == "work kanban task t_spawn_tools"
 
 
+def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
+    """Under multiplex, a worker spawn must not crash when ``terminal.env_passthrough``
+    is configured, and the forwarded value must come from the ASSIGNEE profile's own
+    secret scope, not the dispatcher's ambient os.environ.
+
+    Regression guard: ``_default_spawn`` built the worker env via
+    ``build_subprocess_env(scrub_secrets=True)`` with no profile secret scope
+    installed. Any registered ``env_passthrough`` var made
+    ``resolve_passthrough_value()`` call ``get_secret()`` with no scope while
+    multiplexing was active, which raises ``UnscopedSecretError`` and crashed the
+    spawn for every task, every profile, as soon as ``terminal.env_passthrough``
+    was configured anywhere.
+    """
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    root.joinpath("config.yaml").write_text(
+        "terminal:\n  env_passthrough:\n    - MY_PASSTHROUGH_VAR\n", encoding="utf-8")
+    profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    profile.joinpath(".env").write_text("MY_PASSTHROUGH_VAR=elias-value\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("MY_PASSTHROUGH_VAR", "dispatcher-value")
+
+    from agent.secret_scope import set_multiplex_active
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+
+    captured = {}
+
+    class FakeProc:
+        pid = 4243
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    set_multiplex_active(True)
+    try:
+        pid = kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    finally:
+        set_multiplex_active(False)
+
+    assert pid == 4243
+    # The assignee's own scoped value, not the dispatcher's ambient os.environ one.
+    assert captured["env"].get("MY_PASSTHROUGH_VAR") == "elias-value"
+
+
 def test_resolve_worker_cli_toolsets_uses_profile_home_not_parent_config(monkeypatch, tmp_path):
     root = tmp_path / ".hermes"
     profile = root / "profiles" / "elias"

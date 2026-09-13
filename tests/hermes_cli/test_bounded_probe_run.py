@@ -20,6 +20,7 @@ descendant-survival cases live in ``test_git_probe_tree_kill.py`` and now
 exercise the same code path through the ``bounded_git_probe`` delegation.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -36,6 +37,17 @@ def test_success_returns_completed_process():
     assert result is not None
     assert result.returncode == 0
     assert result.stdout.strip() == "ok"
+
+
+def test_cwd_runs_probe_in_requested_directory(tmp_path):
+    result = bounded_probe_run(
+        [_PY, "-c", "import os; print(os.getcwd())"],
+        timeout=30,
+        cwd=tmp_path,
+    )
+    assert result is not None
+    assert result.returncode == 0
+    assert os.path.normcase(result.stdout.strip()) == os.path.normcase(str(tmp_path))
 
 
 def test_nonzero_exit_is_returned_not_swallowed():
@@ -66,6 +78,41 @@ def test_timeout_returns_none_within_bounded_time():
     # an indefinite hang, so any bound proves the property; keep it loose for
     # slow CI runners.
     assert elapsed < 30
+
+
+@pytest.mark.windows_only
+def test_windows_timeout_kills_launcher_descendant_holding_pipes(tmp_path):
+    """A timed-out .cmd launcher must not leave its pipe-owning child alive."""
+    import psutil
+
+    marker = tmp_path / "descendant.pid"
+    child = tmp_path / "pipe_holder.py"
+    child.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "time.sleep(300)\n",
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "launcher.cmd"
+    launcher.write_text(
+        f'@echo off\r\n"{_PY}" "{child}"\r\n',
+        encoding="utf-8",
+    )
+
+    result = bounded_probe_run([str(launcher)], timeout=2.0)
+    assert result is None
+    assert marker.exists(), "descendant never started"
+
+    child_pid = int(marker.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and psutil.pid_exists(child_pid):
+        time.sleep(0.05)
+
+    alive = psutil.pid_exists(child_pid)
+    if alive:
+        psutil.Process(child_pid).kill()
+    assert not alive, f"descendant {child_pid} survived probe timeout"
 
 
 def test_decode_errors_configurable():

@@ -5580,3 +5580,30 @@ def test_local_recovery_skips_unavailable_candidate(monkeypatch, stream):
     assert result is expected
     primary.chat.completions.create.assert_not_called()
     healthy.chat.completions.create.assert_called_once()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+def test_vision_auto_parameter_retry_keeps_concrete_provider(monkeypatch, async_mode):
+    import asyncio
+    import agent.auxiliary_client as auxiliary
+
+    client = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    monkeypatch.setattr(auxiliary, "_resolve_call_client", lambda *a, **kw: (client, "model", "auto", "openai-codex"))
+    providers = []
+    expected = _aux_egress_response("done")
+
+    def completion(client, kwargs, *, provider, **extra):
+        providers.append(provider)
+        if len(providers) == 1:
+            raise ValueError("unsupported parameter temperature")
+        return expected
+
+    async def async_completion(*args, **kwargs):
+        return completion(*args, **kwargs)
+
+    monkeypatch.setattr(auxiliary, "_relay_sync_completion", completion)
+    monkeypatch.setattr(auxiliary, "_relay_async_completion", async_completion)
+    kwargs = dict(task="vision", provider="auto", messages=[{"role": "user", "content": "inspect"}], temperature=0.5)
+    result = asyncio.run(auxiliary.async_call_llm(**kwargs)) if async_mode else auxiliary.call_llm(**kwargs)
+    assert result is expected
+    assert providers == ["openai-codex", "openai-codex"]

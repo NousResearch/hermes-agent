@@ -7532,7 +7532,7 @@ def _ladder_step_call(
 ) -> Tuple[str, tuple, Dict[str, Any]]:
     """Resolve a ladder step into ``(kind, args, kwargs)`` for the sync/async performer."""
     if step.kind == "call":
-        return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
+        return "call", step.args, dict(provider=req.request_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
         retry_provider, retry_model = step.args
         return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)

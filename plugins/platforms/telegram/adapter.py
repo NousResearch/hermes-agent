@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 from agent.deadline import run_bounded_async
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal,
-    get_scoped_secret as _get_scoped_secret,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env,
 )
 
@@ -5046,22 +5046,20 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Group mention gating ──────────────────────────────────────────────
 
     def _extra_bool(self, key: str, env_name: str, default: str, *fallback_keys: str) -> bool:
-        """Boolean gate from ``config.extra[key]`` (then ``fallback_keys``), else env var."""
-        configured = self.config.extra.get(key)
+        """Boolean gate: scoped ``env_name`` → ``config.extra[key]`` (then ``fallback_keys``) → ``default``."""
+        configured = _extra_or_secret(self.config.extra, key, env_name, None)
         for alt in fallback_keys:
             if configured is None:
                 configured = self.config.extra.get(alt)
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return _scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
+        if configured is None:
+            configured = default
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
-        """Comma/list allowlist from ``config.extra[key]``, else the profile-scoped env var."""
-        raw = self.config.extra.get(key)
-        if raw is None:
-            raw = _scoped_gate_env(env_name)
+        """Comma/list allowlist: scoped ``env_name`` → ``config.extra[key]`` → empty."""
+        raw = _extra_or_secret(self.config.extra, key, env_name, "", blank_is_unset=False)
         raw = _decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
@@ -6392,17 +6390,13 @@ class TelegramAdapter(BasePlatformAdapter):
     # -- Message reactions (processing lifecycle) --
 
     def _reactions_enabled(self) -> bool:
-        """Reactions enabled via TELEGRAM_REACTIONS or ``extra.reactions`` (YAML, per profile).
+        """Reactions: scoped ``TELEGRAM_REACTIONS`` → ``extra.reactions`` (YAML, per profile) → off.
 
-        An explicitly set env var wins over YAML — the same rule ``yaml_env_setter`` documents for
-        the YAML→env bridge — so the stock ``reactions: false`` every install materializes cannot
-        silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under multiplex a scoped
-        miss returns the default instead of another profile's process-env value (#72348), so only
-        a scoped/env hit counts as explicit; otherwise the profile's own YAML decides.
+        An explicit env var wins over YAML, so the stock ``reactions: false`` every install
+        materializes cannot silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under
+        multiplex a scoped miss falls to the profile's own YAML, never another profile's env (#72348).
         """
-        configured = _scoped_gate_env("TELEGRAM_REACTIONS", "")
-        if not configured:
-            configured = self.config.extra.get("reactions")
+        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
         if configured is None:
             return False
         return str(configured).lower() not in {"false", "0", "no"}

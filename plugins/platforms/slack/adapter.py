@@ -2567,9 +2567,8 @@ class SlackAdapter(BasePlatformAdapter):
             pass
 
     def _slack_allow_bots(self) -> str:
-        """Return normalized Slack bot-message policy."""
-        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
-        raw = self.config.extra.get("allow_bots", "") or _get_scoped_secret("SLACK_ALLOW_BOTS", "none")
+        """Return normalized Slack bot-message policy (scoped ``SLACK_ALLOW_BOTS`` → YAML → none)."""
+        raw = _extra_or_secret(self.config.extra, "allow_bots", "SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -2974,10 +2973,8 @@ class SlackAdapter(BasePlatformAdapter):
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (``extra.reactions`` / ``SLACK_REACTIONS``)."""
-        configured = self.config.extra.get("reactions")
-        if configured is None:
-            configured = _get_scoped_secret("SLACK_REACTIONS", "true")
+        """Whether message reactions are enabled (scoped ``SLACK_REACTIONS`` → ``extra.reactions`` → on)."""
+        configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:

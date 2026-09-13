@@ -222,10 +222,13 @@ done
 
 # ---- X server + RFB (TigerVNC Xvnc), Unix socket only ----
 # SecurityTypes None is safe ONLY because -rfbport -1 disables TCP and the 0600 socket is reachable
-# solely by the gateway process, whose WebSocket bridge performs the real authentication.
+# only by processes running as this user (the gateway's WebSocket bridge does the real authentication;
+# same-UID processes, the bot's own terminal tool included, are inside that boundary by design).
+# -SendCutText=0: watchers must never receive the holder's clipboard; -AcceptCutText stays on so
+# paste INTO the screen keeps working.
 Xvnc "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
   -rfbport -1 -rfbunixpath "$HERMES_BD_SOCKET" -rfbunixmode 0600 \
-  -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize -FrameRate 30 \
+  -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize -FrameRate 30 -SendCutText=0 \
   -desktop "hermes:$HERMES_BD_PROFILE" -auth "$XAUTHORITY" -nolisten tcp \
   -Log '*:stderr:30' &
 XVNC_PID=$!

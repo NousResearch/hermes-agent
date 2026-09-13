@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   computeKeyboardInset,
   KEYBOARD_INSET_MIN_PX,
+  shouldPinPageScroll,
   shouldPinScroll,
+  shouldScrollChatIntoView,
 } from "./keyboard-inset";
 
 describe("computeKeyboardInset", () => {
@@ -75,5 +77,30 @@ describe("shouldPinScroll", () => {
 
   it("does not pin without a keyboard", () => {
     expect(shouldPinScroll(0)).toBe(false);
+  });
+});
+
+describe("keyboard chat reveal", () => {
+  it("pins the page only when the chat already sits at the top", () => {
+    expect(shouldPinPageScroll(320, 0)).toBe(true);
+    expect(shouldPinPageScroll(320, 120)).toBe(false);
+    expect(shouldPinPageScroll(0, 0)).toBe(false);
+  });
+
+  it("scrolls the chat into view when it sits below the top", () => {
+    expect(shouldScrollChatIntoView(320, 120)).toBe(true);
+    expect(shouldScrollChatIntoView(320, 0)).toBe(false);
+    expect(shouldScrollChatIntoView(0, 120)).toBe(false);
+  });
+
+  it("never pins the page inside a Werkbank iframe — that hides the composer", () => {
+    expect(shouldPinPageScroll(320, 0, true)).toBe(false);
+    expect(shouldPinPageScroll(320, 120, true)).toBe(false);
+  });
+
+  it("always reveals the chat (composer) in an iframe when the keyboard opens", () => {
+    expect(shouldScrollChatIntoView(320, 0, true)).toBe(true);
+    expect(shouldScrollChatIntoView(320, 120, true)).toBe(true);
+    expect(shouldScrollChatIntoView(0, 0, true)).toBe(false);
   });
 });

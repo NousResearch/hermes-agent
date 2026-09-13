@@ -69,3 +69,25 @@ export function computeKeyboardInset(
 export function shouldPinScroll(nextInsetPx: number): boolean {
   return nextInsetPx > 0;
 }
+
+const CHAT_AT_TOP_PX = 8;
+
+/** Full-page dashboard chat already at y≈0: undo iOS page scroll. */
+export function shouldPinPageScroll(
+  nextInsetPx: number,
+  chatTopPx: number,
+  inIframe = false,
+): boolean {
+  if (inIframe) return false;
+  return nextInsetPx > 0 && chatTopPx <= CHAT_AT_TOP_PX;
+}
+
+/** Chat sits lower (Werkbank iframe / stacked layout): bring it into the visual viewport. */
+export function shouldScrollChatIntoView(
+  nextInsetPx: number,
+  chatTopPx: number,
+  inIframe = false,
+): boolean {
+  if (inIframe) return nextInsetPx > 0;
+  return nextInsetPx > 0 && chatTopPx > CHAT_AT_TOP_PX;
+}

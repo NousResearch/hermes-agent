@@ -279,7 +279,11 @@ export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
 }
 
 /** Synthesize one text segment to audio bytes (mp3). Throws on provider rejection. */
-export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: string): Promise<ArrayBuffer> {
+export async function synthesizeSpeechClientDirect(
+  tts: DirectTtsConfig,
+  text: string,
+  options?: { signal?: AbortSignal }
+): Promise<ArrayBuffer> {
   if (tts.wire === 'openai-speech') {
     const body: Record<string, unknown> = {
       model: tts.model,
@@ -298,7 +302,8 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
         Authorization: `Bearer ${tts.api_key}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: options?.signal
     })
 
     if (!response.ok) {
@@ -318,7 +323,8 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
           'Content-Type': 'application/json',
           Accept: 'audio/mpeg'
         },
-        body: JSON.stringify({ text, model_id: tts.model })
+        body: JSON.stringify({ text, model_id: tts.model }),
+        signal: options?.signal
       }
     )
 

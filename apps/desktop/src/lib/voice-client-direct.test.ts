@@ -226,11 +226,12 @@ describe('synthesizeSpeechClientDirect', () => {
 
   it('POSTs the openai speech shape and returns audio bytes', async () => {
     const bytes = new Uint8Array([1, 2, 3]).buffer
+    const controller = new AbortController()
 
     const fetchMock = vi.fn(async () => new Response(bytes, { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    const audio = await synthesizeSpeechClientDirect(openaiTts, 'Hello there.')
+    const audio = await synthesizeSpeechClientDirect(openaiTts, 'Hello there.', { signal: controller.signal })
 
     expect(new Uint8Array(audio)).toEqual(new Uint8Array([1, 2, 3]))
 
@@ -242,6 +243,7 @@ describe('synthesizeSpeechClientDirect', () => {
     expect(body.voice).toBe('nova')
     expect(body.input).toBe('Hello there.')
     expect(body.speed).toBeUndefined()
+    expect(init.signal).toBe(controller.signal)
   })
 
   it('speaks the elevenlabs tts shape with the voice in the path', async () => {

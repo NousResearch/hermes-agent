@@ -980,8 +980,10 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        result = AIAgent(**_background_agent_kwargs(session["agent"], task_id)).run_conversation(
-            user_message=text, task_id=task_id)
+        kwargs = _background_agent_kwargs(session["agent"], task_id)
+        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
+            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
+                user_message=text, task_id=task_id)
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)

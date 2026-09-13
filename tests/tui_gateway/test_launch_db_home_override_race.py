@@ -82,6 +82,72 @@ def test_background_side_agent_persists_into_the_parent_agent_store(launch_db_en
     assert server._background_agent_kwargs(agent, "bg_1")["session_db"] is parent_db
 
 
+def test_background_side_agent_holds_its_own_registry_reference(launch_db_env, tmp_path):
+    """The parent releases its registry reference from ``AIAgent.close()``; a side agent sharing
+    that object without its own reference had its store torn down under a live background turn.
+    ``prompt.background`` must acquire (and release) a separate reference on the same file."""
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    parent_db = registry.acquire(profile_home / "state.db")
+
+    with server._side_agent_session_db(parent_db) as side_db:
+        assert side_db.db_path == parent_db.db_path
+        registry.release_or_close(parent_db)  # parent closes mid-turn
+        assert registry.stats()["live_generations"] == 1
+        assert side_db._conn is not None
+        side_db.create_session("bg_1", source="tui", model="m")
+    assert registry.stats()["live_generations"] == 0  # side agent's reference released on exit
+
+
+def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, monkeypatch):
+    """End to end through the RPC: the side agent's ``run_conversation`` keeps a live store after
+    the parent agent released its own reference."""
+    from unittest.mock import patch
+
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    parent_db = registry.acquire(profile_home / "state.db")
+    parent = type("Parent", (), {"model": "m", "provider": "p", "_fallback_chain": [], "_session_db": parent_db})()
+    session = {"agent": parent, "session_key": "k", "profile_home": None}
+    seen = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            seen["db"] = kwargs["session_db"]
+
+        def run_conversation(self, **_kw):
+            registry.release_or_close(parent_db)  # parent closes / resets mid-turn
+            # Still registry-owned and open: the side agent's own reference kept the generation alive
+            # (no #94736 emergency reopen of a torn-down connection).
+            seen["still_shared"] = seen["db"]._shared_registry_owned and seen["db"]._conn is not None
+            seen["db"].create_session("bg_1", source="tui", model="m")
+            return {"final_response": "ok"}
+
+    class InlineThread:
+        def __init__(self, target=None, **_kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda *_a, **_kw: None)
+    with patch("tui_gateway.server.threading.Thread", InlineThread), \
+            patch("run_agent.AIAgent", FakeAgent), \
+            patch("tui_gateway.server._sess", return_value=(session, None)), \
+            patch("tui_gateway.server._set_session_context", return_value=None), \
+            patch("tui_gateway.server._clear_session_context"), \
+            patch("tui_gateway.server._session_cwd", return_value=str(tmp_path)), \
+            patch("tui_gateway.server._emit"):
+        server._methods["prompt.background"]("rid", {"text": "hi", "session_id": "ui1"})
+
+    # The registry lends ONE shared object per path; the side agent's own refcount is what kept it open.
+    assert seen["db"].db_path == parent_db.db_path
+    assert seen["still_shared"] is True
+    assert registry.stats()["live_generations"] == 0
+
+
 def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_store(launch_db_env, tmp_path):
     """A compression-rotated NAMED-PROFILE session must still claim events keyed by its compressed
     parent: the lineage lives in ``profiles/<x>/state.db``, which the launch handle cannot see, so

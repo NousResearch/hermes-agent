@@ -50,6 +50,15 @@ export {
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export {
+  applyDocumentLocale,
+  type EndonymLocale,
+  isRecord,
+  LOCALE_ENDONYMS,
+  mergeTranslations,
+  RTL_LOCALES,
+  type TranslationOverride
+} from './i18n'
+export {
   type ConnectionState,
   type GatewayClientOptions,
   type GatewayEvent,

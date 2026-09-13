@@ -60,3 +60,16 @@ def test_only_a_clean_viewer_close_hands_the_screen_back(monkeypatch, close_code
         after = asyncio.run(_bridge_once(close_code, home))
     lease._reset_for_tests()
     assert (after.holder == lease.HUMAN) is human_keeps_control, after
+
+
+def test_ex_holder_who_handed_back_is_not_evicted_by_a_later_takeover():
+    """desk-1 holds, hands back to the agent, then desk-2 takes over: desk-1 is a plain watcher again
+    and must stay connected; only a takeover WHILE desk-1 held (or believed it held) kicks it."""
+    held = {"ever": False}
+    assert display._should_evict(held, lease.Lease(holder=lease.HUMAN, viewer_id="desk-1"), "desk-1") is False
+    assert display._should_evict(held, lease.Lease(holder=lease.AGENT), "desk-1") is False
+    assert display._should_evict(held, lease.Lease(holder=lease.HUMAN, viewer_id="desk-2"), "desk-1") is False
+
+    held = {"ever": False}
+    display._should_evict(held, lease.Lease(holder=lease.HUMAN, viewer_id="desk-1"), "desk-1")
+    assert display._should_evict(held, lease.Lease(holder=lease.HUMAN, viewer_id="desk-2"), "desk-1") is True

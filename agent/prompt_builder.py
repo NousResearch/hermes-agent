@@ -210,6 +210,14 @@ SESSION_SEARCH_GUIDANCE = (
     "context exists, use session_search to recall it before asking them to repeat themselves."
 )
 
+TASK_COMMIT_GUIDANCE = (
+    "When the user has formed a clear execution task whose completion must be tracked across multiple actions, "
+    "tool calls, background operations, or turns, use task_commit to enter the existing persistent Goal lifecycle. "
+    "Do not commit discovery, ordinary questions, or short work reliably completed in this turn. If a Goal already "
+    "exists, decide whether the new input amends the same task, explicitly replaces its objective, or is merely a "
+    "side question. outcome plus verification define DONE; stop_when defines BLOCKED human intervention."
+)
+
 # The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
 # ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
 # credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth

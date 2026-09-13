@@ -336,16 +336,28 @@ class TimelineNotification(str):
 
     display_text: str
     display_kind: str
+    goal_execution_incomplete: bool
 
-    def __new__(cls, text: str, display_text: str, display_kind: str):
+    def __new__(
+        cls, text: str, display_text: str, display_kind: str,
+        goal_execution_incomplete: bool = False,
+    ):
         instance = super().__new__(cls, text)
         instance.display_text = display_text
         instance.display_kind = display_kind
+        instance.goal_execution_incomplete = bool(goal_execution_incomplete)
         return instance
 
     @classmethod
     def for_delegation(cls, text: str, event: dict) -> "TimelineNotification":
-        return cls(text, async_delegation_display_text(event), "async_delegation_complete")
+        incomplete = any(
+            isinstance(result, dict) and result.get("truncated") is True
+            for result in (event.get("results") or [])
+        ) or event.get("truncated") is True
+        return cls(
+            text, async_delegation_display_text(event), "async_delegation_complete",
+            goal_execution_incomplete=incomplete,
+        )
 
 
 def _delegation_attribution_line(evt: dict) -> "str | None":

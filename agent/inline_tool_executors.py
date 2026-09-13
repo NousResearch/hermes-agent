@@ -156,6 +156,13 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,
     ),
+    "task_commit": _tool(
+        "tools.task_commit_tool", "task_commit",
+        ("operation", "operation", ""), ("objective", "objective"), ("outcome", "outcome"),
+        ("verification", "verification"), ("constraints", "constraints"),
+        ("boundaries", "boundaries"), ("stop_when", "stop_when"),
+        session_id=lambda agent, ctx: getattr(agent, "session_id", "") or "",
+    ),
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(

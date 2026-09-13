@@ -28,6 +28,12 @@ def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
         and not (isinstance(result, dict) and result.get("completed") is False))
 
 
+def _goal_execution_incomplete(result: Any, session: dict) -> bool:
+    event_incomplete = session.pop("_goal_execution_incomplete_event", False) is True
+    reason = str(result.get("turn_exit_reason") or "") if isinstance(result, dict) else ""
+    return event_incomplete or reason == "budget_exhausted" or reason.startswith("max_iterations_reached")
+
+
 def _active_goal_manager(session: dict):
     """The session's GoalManager when a goal is active, else None."""
     from hermes_cli.goals import GoalManager
@@ -289,7 +295,10 @@ def _goal_followup_after_turn(
         goal_followup = recovery_prompt or None
     except Exception as _goal_recovery_exc:
         _hook_failure("goal compression recovery", _goal_recovery_exc)
-    if compression_exhausted or not _is_successful_goal_turn(result, status, raw):
+    execution_incomplete = _goal_execution_incomplete(result, session)
+    if compression_exhausted or (
+        not _is_successful_goal_turn(result, status, raw) and not execution_incomplete
+    ):
         return goal_followup
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
@@ -303,7 +312,9 @@ def _goal_followup_after_turn(
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+                raw, user_initiated=True, background_processes=_bg_procs,
+                active_delegations=_active_deleg,
+                execution_incomplete=execution_incomplete)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (

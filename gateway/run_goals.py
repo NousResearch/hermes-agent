@@ -260,7 +260,7 @@ class GatewayGoalsMixin:
         return factory(sid)
 
     async def _post_turn_goal_continuation(
-        self, *, session_entry: Any, source: Any, final_response: str,
+        self, *, session_entry: Any, source: Any, final_response: str, execution_incomplete: bool = False,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
@@ -287,7 +287,7 @@ class GatewayGoalsMixin:
         decision = await self._run_in_executor_with_context(
             lambda: mgr.evaluate_after_turn(
                 final_response or "", user_initiated=True, background_processes=_bg_procs,
-                active_delegations=_active_deleg,
+                active_delegations=_active_deleg, execution_incomplete=execution_incomplete,
             ),
         )
         msg = decision.get("message") or ""
@@ -320,12 +320,22 @@ class GatewayGoalsMixin:
             return
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
+        turn_exit_reason = str(agent_result.get("turn_exit_reason") or "") if isinstance(agent_result, dict) else ""
+        metadata = getattr(event, "metadata", None) or {}
+        execution_incomplete = (
+            turn_exit_reason == "budget_exhausted"
+            or turn_exit_reason.startswith("max_iterations_reached")
+            or metadata.get("goal_execution_incomplete") is True
+        )
         hooks = [("loop completion", self._post_turn_loop_completion)]
         if final_text.strip():
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response=final_text)
+                kwargs = dict(session_entry=session_entry, source=source, final_response=final_text)
+                if label == "goal continuation":
+                    kwargs["execution_incomplete"] = execution_incomplete
+                await hook(**kwargs)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
 

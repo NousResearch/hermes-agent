@@ -18,6 +18,7 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
+import { MessageTimeLabel } from '@/components/assistant-ui/thread/message-time'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
@@ -744,6 +745,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
       <AssistantActionBar durationS={durationS} {...props} />
+      <MessageTimeLabel className="pb-0.5" />
     </div>
   )
 }

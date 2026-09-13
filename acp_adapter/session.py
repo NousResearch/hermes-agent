@@ -384,6 +384,11 @@ class SessionManager:
         elif isinstance(model_cfg, str):
             default_model = model_cfg.strip()
 
+        agent_cfg = config.get("agent")
+        if not isinstance(agent_cfg, dict):
+            agent_cfg = {}
+        max_iterations = agent_cfg.get("max_turns") or config.get("max_turns") or 500
+
         configured_mcp_servers = [
             name for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
@@ -392,6 +397,7 @@ class SessionManager:
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
             "model": model or default_model,
+            "max_iterations": max_iterations,
         }
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

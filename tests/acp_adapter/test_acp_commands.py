@@ -93,7 +93,13 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m", "provider": "p"}}),
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "m", "provider": "p"},
+                "agent": {"max_turns": 150},
+            },
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -118,6 +124,7 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+    assert captured["max_iterations"] == 150
 
 
 @pytest.mark.asyncio

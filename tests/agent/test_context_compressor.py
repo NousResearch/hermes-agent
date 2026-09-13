@@ -2348,8 +2348,11 @@ class TestTruncateToolCallArgsJson:
     def test_windowing_never_expands_argument_json(self):
         import json as _json
         shrink = self._helper()
-        payload = _json.dumps({"left": "a" * 2001, "right": "b" * 2001})
+        data = {f"key_{i}": "x" for i in range(1100)}
+        data["barely_long"] = "y" * 2018
+        payload = _json.dumps(data, separators=(",", ":"))
         assert len(payload) > 4000
+        assert len(shrink(payload)) <= len(payload)
         assert shrink(payload) == payload
 
     def test_pass3_emits_valid_json_for_downstream_provider(self):

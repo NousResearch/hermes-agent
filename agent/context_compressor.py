@@ -1288,7 +1288,8 @@ def _truncate_tool_call_args_json(
 
     shrunken = _shrink(parsed)
     # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+    candidate = json.dumps(shrunken, ensure_ascii=False)
+    return candidate if len(candidate) < len(args) else args
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})

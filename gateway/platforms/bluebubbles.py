@@ -197,7 +197,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Lifecycle ---
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self, *, is_reconnect: bool = False, outbound_only: bool = False) -> bool:
         if not self.server_url or not self.password:
             logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
             return False
@@ -218,11 +218,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
             await self._close_client()
             return False
-        # client_max_size makes aiohttp enforce the cap on every read path, incl. chunked requests
-        # with no Content-Length.
-        # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
-        # client_max_size makes aiohttp enforce the cap on every read path — including chunked requests that
-        # carry no Content-Length (same pattern as webhook.py / raft, #58536/#58902).
+        if outbound_only:
+            self._mark_connected()
+            self._wire_plugin_handlers(None)
+            return True
+
+        # Explicit body cap: BlueBubbles webhook events are small JSON (or
+        # form-encoded) payloads. client_max_size makes aiohttp enforce the
+        # cap on every read path — including chunked requests that carry no
+        # Content-Length (same pattern as webhook.py / raft, #58536/#58902).
         app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
@@ -247,7 +251,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.client = None
 
     async def disconnect(self) -> None:
-        await self._unregister_webhook()
+        # Unregister only webhooks this adapter instance registered. Direct
+        # outbound sends use the REST API without owning a webhook listener;
+        # unregistering there could remove the live gateway's inbound webhook.
+        if self._runner:
+            await self._unregister_webhook()
         await self._close_client()
         if self._runner:
             await self._runner.cleanup()

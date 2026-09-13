@@ -81,25 +81,45 @@ _INFRA_JOBS = frozenset({
     "Detect affected areas",
 })
 
-# Map GitHub API conclusion values to our result strings.
-_CONCLUSION_MAP = {
-    "success": "success",
-    "failure": "failure",
-    "skipped": "skipped",
-    "cancelled": "skipped",
-    "neutral": "skipped",
-    "timed_out": "failure",
-    "action_required": "skipped",
-}
+# The only conclusions that count as a pass. This mirrors the merge gate's
+# ``gate_results.PASSING_RESULTS`` on purpose: the comment and the gate must
+# agree on what "passed" means, or the comment renders a green ✅ next to the
+# very lane ``all-checks-pass`` is going red on. The same allowlist applies to
+# a *workflow run*'s own conclusion — a run and its jobs are separate
+# settlement coordinates.
+_PASSING_CONCLUSIONS = frozenset({"success", "skipped"})
+
+
+def _display_name(job: dict) -> str:
+    """Comment-facing job name — ``"Workflow / job"`` for a watched run's job."""
+    name = str(job.get("name", "unknown"))
+    workflow = job.get("_workflow_name")
+    return f"{workflow} / {name}" if workflow else name
+
+
+def _project_conclusion(conclusion: str) -> str:
+    """Project an API conclusion onto a comment result, failing closed.
+
+    Only ``success`` and ``skipped`` pass. Every other conclusion keeps its
+    own name — ``cancelled``, ``action_required``, ``neutral``, ``timed_out``,
+    or whatever GitHub adds next — so the comment reports what actually
+    happened rather than laundering it into ``skipped``. A completed job that
+    carries no conclusion at all is reported too, never assumed green: an
+    absence of execution must not read as a positive result.
+    """
+    if conclusion in _PASSING_CONCLUSIONS:
+        return conclusion
+    return conclusion or "no conclusion"
 
 def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict[str, str]]:
     """Classify raw API job dicts into completed + pending + job_urls.
 
     Returns ``(completed, pending, job_urls)``:
 
-    - ``completed``: ``{job_name: result}`` where result is
-      ``"success"`` / ``"failure"`` / ``"skipped"``. Only non-infra jobs
-      that have finished.
+    - ``completed``: ``{job_name: result}`` where result is the job's own
+      conclusion, projected by :func:`_project_conclusion` so that only
+      ``"success"`` and ``"skipped"`` pass. Only non-infra jobs that have
+      finished.
     - ``pending``: list of job names still running (in_progress / queued
       / waiting). Excludes infra jobs.
     - ``job_urls``: ``{job_name: html_url}`` — direct links to each
@@ -115,13 +135,10 @@ def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict
     job_urls: dict[str, str] = {}
 
     for job in api_jobs:
-        name = job.get("name", "unknown")
-        if job.get("_workflow_name"):
-            name = f"{job['_workflow_name']} / {name}"
+        name = _display_name(job)
         if name in _INFRA_JOBS:
             continue
         status = job.get("status", "")
-        conclusion = job.get("conclusion", "")
         html_url = job.get("html_url", "")
 
         if html_url:
@@ -130,8 +147,7 @@ def classify_jobs(api_jobs: list[dict]) -> tuple[dict[str, str], list[str], dict
         if status in ("in_progress", "queued", "waiting"):
             pending.append(name)
         elif status == "completed":
-            result = _CONCLUSION_MAP.get(conclusion, "skipped")
-            completed[name] = result
+            completed[name] = _project_conclusion(str(job.get("conclusion") or ""))
         # else: unknown status → skip
 
     return completed, pending, job_urls
@@ -232,15 +248,70 @@ def runs_all_completed(runs: list[dict]) -> bool:
     return bool(runs) and all(str(r.get("status", "")) == "completed" for r in runs)
 
 
+def classify_runs(
+    runs: list[dict], api_jobs: list[dict],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Blocking entries for workflow runs that finished without passing.
+
+    ``status: completed`` says a run stopped, not that it passed. A run
+    concludes ``cancelled``, ``action_required`` or ``startup_failure``
+    while its jobs endpoint returns ``total_count: 0`` — no job ever
+    materialised. Classified from jobs alone that is indistinguishable from
+    "everything green", so the comment would have no blocking item and
+    render ``all good!`` for a commit that ran no assertions at all.
+
+    Returns ``({run_name: conclusion}, {run_name: html_url})``. The names
+    join the ``{name: result}`` dict the assembler already blocks on, so a
+    run failure surfaces the same way a job failure does.
+
+    A run whose own comment-visible jobs already report a non-passing or
+    still-pending result is left out: its failure is on the comment
+    already, and repeating it at run level would double every ordinary
+    red build.
+    """
+    explained: set[str] = set()
+    for job in api_jobs:
+        if _display_name(job) in _INFRA_JOBS:
+            continue
+        status = str(job.get("status", ""))
+        if status in ("in_progress", "queued", "waiting"):
+            explained.add(str(job.get("_run_id", "")))
+        elif status == "completed":
+            if _project_conclusion(str(job.get("conclusion") or "")) not in _PASSING_CONCLUSIONS:
+                explained.add(str(job.get("_run_id", "")))
+
+    blocking: dict[str, str] = {}
+    run_urls: dict[str, str] = {}
+    for run_info in runs:
+        if str(run_info.get("status", "")) != "completed":
+            continue
+        conclusion = str(run_info.get("conclusion") or "")
+        if conclusion in _PASSING_CONCLUSIONS:
+            continue
+        run_id = str(run_info.get("id", ""))
+        if run_id in explained:
+            continue
+        name = str(run_info.get("name") or "") or f"run {run_id}"
+        blocking[name] = conclusion or "no conclusion"
+        html_url = str(run_info.get("html_url") or "")
+        if html_url:
+            run_urls[name] = html_url
+
+    return blocking, run_urls
+
+
 def collect_run_jobs(
     token: str, repo: str, run_id: str, watch_workflows: list[str] | None = None,
-) -> tuple[list[dict], bool]:
+) -> tuple[list[dict], list[dict]]:
     """Collect all jobs in the CI run + any watched sibling runs.
 
-    Returns ``(jobs, runs_completed)``: a flat list of job dicts (same
-    shape as the API returns, plus ``_workflow_name`` on jobs from a
-    watched run), and whether the CI run and every selected watched run
-    report ``status: completed`` (see :func:`runs_all_completed`).
+    Returns ``(jobs, runs)``: a flat list of job dicts (same shape as the
+    API returns, plus ``_workflow_name`` on jobs from a watched run and
+    ``_run_id`` on every job), and the run objects those jobs came from.
+    The run objects travel with the jobs because a run carries settlement
+    information its jobs cannot: whether it is still queued
+    (:func:`runs_all_completed`) and what it actually concluded
+    (:func:`classify_runs`).
 
     Reusable-workflow (``workflow_call``) jobs need no special handling:
     GitHub flattens them into the caller run's job list, already named
@@ -266,10 +337,11 @@ def collect_run_jobs(
         steps = job.get("steps") or []
         if any(s.get("name", "").startswith("Run ./.github/workflows/") for s in steps):
             continue
+        job["_run_id"] = str(run_info.get("id", run_id))
         all_jobs.append(job)
 
     if not watch_workflows or not head_sha:
-        return all_jobs, runs_all_completed([run_info])
+        return all_jobs, [run_info]
 
     # Watched sibling runs for the same commit. A run can be absent on the
     # first polls. Then classify_jobs() shows nothing for it.
@@ -286,9 +358,10 @@ def collect_run_jobs(
         )
         for job in watched_jobs:
             job["_workflow_name"] = watched.get("name", "")
+            job["_run_id"] = str(watched.get("id", ""))
             all_jobs.append(job)
 
-    return all_jobs, runs_all_completed(relevant_runs)
+    return all_jobs, relevant_runs
 
 
 def find_comment_id(token: str, repo: str, pr_number: str) -> int | None:
@@ -515,14 +588,24 @@ def build_comment_body(
     review_statuses_json: str,
     commit_info: str = "",
     waiting: bool = False,
+    failed_runs: dict[str, str] | None = None,
+    run_urls: dict[str, str] | None = None,
 ) -> str:
-    """Assemble the comment body from current job states + static inputs."""
+    """Assemble the comment body from current job states + static inputs.
+
+    ``failed_runs`` is :func:`classify_runs`' ``{run_name: conclusion}`` —
+    workflow runs that finished without an accepted conclusion and whose
+    jobs did not already report the failure.
+    """
     needs_json = json.dumps(completed) if completed else ""
+    runs_json = json.dumps(failed_runs) if failed_runs else ""
 
     return asm_mod.assemble(
         needs_json=needs_json,
+        runs_json=runs_json,
         run_url=run_url,
         job_urls=job_urls,
+        run_urls=run_urls,
         review_statuses_json=review_statuses_json,
         pending_jobs=pending if pending else None,
         commit_info=commit_info,
@@ -575,13 +658,19 @@ def run(
             break
 
         try:
-            jobs, runs_completed = collect_run_jobs(token, repo, run_id, watch_workflows)
+            jobs, runs = collect_run_jobs(token, repo, run_id, watch_workflows)
         except Exception as e:
             print(f"  API error collecting jobs: {e}", file=sys.stderr)
             time.sleep(interval)
             continue
 
+        runs_completed = runs_all_completed(runs)
         completed, pending, job_urls = classify_jobs(jobs)
+        failed_runs, run_urls = classify_runs(runs, jobs)
+        if failed_runs:
+            parts = [f"{name}={conclusion}" for name, conclusion in sorted(failed_runs.items())]
+            print(f"  → {len(failed_runs)} workflow run(s) finished without passing: "
+                  f"{', '.join(parts)}")
         total = len(completed) + len(pending)
         infra_count = len(jobs) - total
         print(f"  [{elapsed:.0f}s] fetched {len(jobs)} jobs from API "
@@ -620,6 +709,8 @@ def run(
             merged_json,
             current_commit_info,
             waiting=not runs_completed,
+            failed_runs=failed_runs,
+            run_urls=run_urls,
         )
 
         if body != last_body:
@@ -665,9 +756,13 @@ def run(
             continue
 
         if all_done:
-            failed = [name for name, result in completed.items() if result == "failure"]
+            failed = [
+                name for name, result in completed.items()
+                if result not in _PASSING_CONCLUSIONS
+            ]
+            failed += [f"{name} (workflow run)" for name in sorted(failed_runs)]
             if failed:
-                print(f"  All jobs done, {len(failed)} failed: {', '.join(failed)}")
+                print(f"  All jobs done, {len(failed)} did not pass: {', '.join(failed)}")
             else:
                 print("  All jobs completed — done.")
             break

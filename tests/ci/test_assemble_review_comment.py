@@ -100,10 +100,22 @@ def test_failed_jobs_empty_needs():
     assert _mod.collect_failed_jobs("", "https://run") == []
 
 
+def test_failed_jobs_include_cancelled_not_just_failure():
+    """A cancelled lane blocks the merge, so the comment must name it.
 
-
-
-
+    ``all-checks-pass`` fails on any result outside success/skipped. When
+    this list only matched ``"failure"``, the gate went red while the
+    review comment showed nothing to explain it.
+    """
+    needs = json.dumps({
+        "tests": "cancelled",
+        "lint": "success",
+        "docker-lint": "skipped",
+    })
+    items = _mod.collect_failed_jobs(needs, "https://run")
+    assert [item.title for item in items] == ["tests"]
+    assert items[0].severity == "error"
+    assert "cancelled" in items[0].summary
 
 
 def test_failed_jobs_excluded_by_source():
@@ -355,3 +367,29 @@ def test_render_both_emitted_link_and_job_url():
     assert " · " in body
 
 
+
+
+# ─── workflow-run conclusions ─────────────────────────────────────────
+
+
+def test_a_run_that_stopped_without_passing_becomes_a_blocking_item():
+    """A run with zero jobs leaves ``needs_json`` empty; the run itself blocks."""
+    body = _mod.assemble(
+        needs_json="",
+        runs_json=json.dumps({"CI": "action_required"}),
+        run_urls={"CI": "https://example/runs/1"},
+    )
+    assert "all good!" not in body
+    assert "## ❌ Job failures" in body
+    assert "CI (workflow run)" in body
+    assert "action_required" in body
+    assert "[View run](https://example/runs/1)" in body
+
+
+def test_no_runs_json_leaves_the_banner_alone():
+    assert "all good!" in _mod.assemble(needs_json="", runs_json="")
+
+
+def test_malformed_runs_json_is_ignored_rather_than_crashing():
+    assert "all good!" in _mod.assemble(runs_json="{not json")
+    assert "all good!" in _mod.assemble(runs_json='["CI"]')

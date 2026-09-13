@@ -20,8 +20,12 @@ on:
 permissions:
   contents: read
 
+# Supersede only within one PR. ``github.ref`` also collides two pushes to
+# main, where the newer run cancels the older run's lane and the older
+# run's ``all-checks-pass`` gate then reports on a suite that never
+# finished. ``github.run_id`` is unique per run, so pushes never collide.
 concurrency:
-  group: rust-tests-${{ github.ref }}
+  group: rust-tests-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:

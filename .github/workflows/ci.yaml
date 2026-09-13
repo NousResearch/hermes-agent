@@ -221,8 +221,10 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
-  # status even when some deps were skipped. Only actual ``failure``
-  # results cause it to fail; ``skipped`` is treated as success.
+  # status even when some deps were skipped. Any result other than
+  # ``success`` or ``skipped`` fails the gate — ``cancelled`` included.
+  # ``skipped`` is treated as success because that is how a path-filtered
+  # lane reports when a PR does not touch its area.
   #
   # Branch protection should require ONLY this check.
   #
@@ -244,6 +246,7 @@ jobs:
       - history-check
       - contributor-check
       - uv-lockfile
+      - infographic-check
       - case-collision-check
       - lockfile-diff
       - docker-lint
@@ -261,29 +264,18 @@ jobs:
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
+      # Only the gate script is needed, so take the cheap checkout.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          filter: blob:none
+          sparse-checkout: scripts/ci/gate_results.py
+          sparse-checkout-cone-mode: false
+
       - name: Evaluate job results
         id: evaluate
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          echo "$NEEDS" | python3 -c "
-          import json, sys
-          needs = json.load(sys.stdin)
-          # Emit compact {job_name: result} for the comment assembler.
-          compact = {name: info['result'] for name, info in needs.items()}
-          print(f'needs-json={json.dumps(compact)}')
-          with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
-          for name, info in sorted(needs.items()):
-              result = info['result']
-              icon = '✅' if result in ('success', 'skipped') else '❌'
-              print(f'{icon} {name}: {result}')
-          if failed:
-              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
-              sys.exit(1)
-          print('All checks passed (or were skipped)')
-          "
+        run: echo "$NEEDS" | python3 scripts/ci/gate_results.py
 
   # ─────────────────────────────────────────────────────────────────────
   # CI timing report: collect per-job/step durations from the GitHub API,

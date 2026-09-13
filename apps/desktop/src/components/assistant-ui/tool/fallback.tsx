@@ -30,7 +30,6 @@ import {
   SCAFFOLD_META_CLASS,
   ScaffoldRow
 } from '@/components/chat/scaffold-row'
-import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -74,6 +73,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
+import { ToolImagePreviews } from './image-previews'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 import { ToolRunTicker } from './run-ticker'
 
@@ -465,7 +465,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
   const hasExpandableContent = Boolean(
-    view.imageUrl ||
+    view.imageSources.length ||
     view.inlineDiff ||
     showDetail ||
     hasSearchHits ||
@@ -539,7 +539,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   // persists its diff in the tool result, so creates rehydrate diff-less and
   // read like dead duplicates of the real diff row. Hide them — but keep
   // in-flight writes (activity) and failures (errors) visible.
-  if (isFileEdit && !isPending && view.status !== 'error' && !view.inlineDiff) {
+  if (isFileEdit && !isPending && view.status !== 'error' && !view.inlineDiff && !view.imageSources.length) {
     return null
   }
 
@@ -558,7 +558,18 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
-          action={dismissAction}
+          action={
+            <>
+              {view.imageSources.length > 0 && !open && (
+                <Button onClick={() => setToolDisclosureOpen(disclosureId, true)} size="xs" variant="text">
+                  <Codicon name="file-media" size="0.75rem" />
+                  {t.desktop.openImage}
+                  {view.imageSources.length > 1 ? ` (${view.imageSources.length})` : ''}
+                </Button>
+              )}
+              {dismissAction}
+            </>
+          }
           onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
           open={open}
           trailing={trailing}
@@ -601,6 +612,9 @@ function ToolEntry({ part }: ToolEntryProps) {
         </DisclosureRow>
       </div>
       {isPending && <PendingToolApproval part={part} />}
+      {view.imageSources.length > 0 && (
+        <ToolImagePreviews active={open} sources={view.imageSources} toolCallId={toolCallId || disclosureId} />
+      )}
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {copyAction.text && (
@@ -618,11 +632,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
             <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
           )}
-          {view.imageUrl && (
-            <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
-            </div>
-          )}
+
           {hasSearchHits && view.searchHits && (
             <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
               {view.searchQuery && (
@@ -1005,7 +1015,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
         part.type === 'tool-call'
           ? isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length
             ? 'manage_connections'
-            : part.toolName
+            : isCardTool(part.toolName, part.args, part.result) ? '' : part.toolName
           : ''
       )
       .join('\u0000')

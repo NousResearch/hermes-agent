@@ -35,7 +35,7 @@ export interface ToolView {
   detailLabel: string
   durationLabel?: string
   icon?: string
-  imageUrl?: string
+  imageSources: string[]
   inlineDiff: string
   previewTarget?: string
   /** Set for tools whose output naturally contains ANSI escape codes

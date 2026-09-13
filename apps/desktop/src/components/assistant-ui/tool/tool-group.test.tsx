@@ -399,6 +399,49 @@ afterEach(() => {
   clearDismissedToolRows()
 })
 
+describe('visual work stays reachable', () => {
+  it('keeps a screenshot accessible after the agent moves to later tools, before the turn finishes', async () => {
+    const image =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aU1sAAAAASUVORK5CYII='
+
+    const message = {
+      ...groupedPendingMessage(),
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'capture',
+          toolName: 'computer_use',
+          args: { action: 'capture' },
+          argsText: '',
+          result: { _multimodal: true, content: [{ type: 'image_url', image_url: { url: image } }] }
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'read-next',
+          toolName: 'read_file',
+          args: { path: '/etc/hosts' },
+          argsText: '',
+          result: { content: 'ok' }
+        },
+        { type: 'text', text: 'Now I am continuing the work.' },
+        {
+          type: 'tool-call',
+          toolCallId: 'continue',
+          toolName: 'terminal',
+          args: { command: 'render next' },
+          argsText: ''
+        }
+      ]
+    } as ThreadMessage
+
+    render(<GroupHarness message={message} />)
+    fireEvent.click(await screen.findByRole('button', { name: /open image/i }))
+    expect((await screen.findByRole('img', { name: 'Tool output' })).getAttribute('src')).toBe(image)
+    expect(screen.getByText('Now I am continuing the work.')).toBeTruthy()
+  })
+})
+
 describe('settled tool run', () => {
   it('collapses to a summary line naming the work', async () => {
     const { container } = render(<GroupHarness message={settledRunMessage()} />)

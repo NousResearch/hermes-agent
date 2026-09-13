@@ -1307,7 +1307,12 @@ def _cwd_candidates_before(command: str, start: int, cwd: str | None) -> set[str
         os.path.normpath(os.path.abspath(os.path.expanduser(cwd))) if cwd else None
     }
     spans = list(_iter_shell_command_word_spans(command[:start]))
-    for index, (command_start, _, word) in enumerate(spans):
+    target_command_start = start
+    prior_spans = spans
+    if spans and not _connector_after(command, spans[-1][0], start):
+        target_command_start = spans[-1][0]
+        prior_spans = spans[:-1]
+    for index, (command_start, _, word) in enumerate(prior_spans):
         if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "cd":
             continue
         try:
@@ -1321,8 +1326,8 @@ def _cwd_candidates_before(command: str, start: int, cwd: str | None) -> set[str
             for candidate in candidates
         }
         connector = _connector_after(command, command_start, start)
-        next_start = spans[index + 1][0] if index + 1 < len(spans) else start
-        immediate = next_start == start
+        next_start = spans[index + 1][0] if index + 1 < len(spans) else target_command_start
+        immediate = next_start == target_command_start
         if connector == "&&" and immediate:
             candidates = resolved
         elif connector == "||" and immediate:

@@ -485,7 +485,7 @@ class TestHermesHomeHardline:
             target.write_text("keep", encoding="utf-8")
             terminal_module.register_task_env_overrides(task_id, {"cwd": str(workspace)})
             cd_result = json.loads(terminal_module.terminal_tool(
-                command=f'cd "{home.as_posix()}"', task_id=task_id,
+                command=f'cd "{home.as_posix()}" && pwd', task_id=task_id,
             ))
             assert cd_result["exit_code"] == 0
             assert os.path.samefile(terminal_module.get_session_cwd(task_id), home)

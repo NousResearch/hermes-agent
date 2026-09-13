@@ -1356,16 +1356,33 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
 
 
 def _config_model_provider() -> Tuple[Any, Optional[str]]:
-    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider.
+    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider
+    or a custom OpenAI-compatible endpoint (``custom``, ``custom:<name>``, ``vllm``/``ollama``/...).
 
     The normal chat/gateway path resolves config.provider upstream in resolve_requested_provider();
-    this is the safety net for the lone direct caller (main.py resolve_provider("auto"))."""
+    this is the safety net for the direct ``resolve_provider("auto")`` callers. A configured custom
+    endpoint is explicit intent like any registry pin: without this rung the boot inventory
+    (``free_tier_bootstrap``) read a llama.cpp/vLLM install as "nothing configured" and the
+    dashboard's Ink chat parked every session on Setup Required while ``hermes chat`` worked
+    (#108383)."""
     try:
         from hermes_cli.config import load_config
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
-        return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
+        provider = _plugin_aliases().get(provider, provider)
+        if provider == "custom" or provider.startswith("custom:"):
+            return model_cfg, "custom"
+        if provider in PROVIDER_REGISTRY:
+            return model_cfg, provider
+        # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
+        # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
+        base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
+        if base_url:
+            from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+            if _config_base_url_trustworthy_for_bare_custom(base_url, provider):
+                return model_cfg, "custom"
+        return model_cfg, None
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
         return None, None

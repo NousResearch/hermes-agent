@@ -375,7 +375,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         role: 'user',
         parts: [textPart(bubbleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
         timestamp: submittedAt,
-        attachmentRefs
+        attachmentRefs,
+        // Mark as pending so the SessionStateCache won't evict this session
+        // while the turn is in flight. Without this flag, a fast-completing
+        // turn can prune the cache entry before the backend persists the user
+        // message to the DB — a subsequent cold resume then fetches an empty
+        // transcript and the prompt appears to vanish.
+        pending: true
       })
 
       const releaseBusy = () => {

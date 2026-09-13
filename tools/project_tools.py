@@ -11,12 +11,13 @@ from typing import Callable, Optional
 
 from tools.registry import registry
 
-# Set by the GUI gateway: ``(task_id, primary_path, project_name)`` re-anchors that session's
-# workspace. ``None`` in CLI/messaging — the DB write still happens, nothing to move.
-_workspace_callback: Optional[Callable[[str, str, str], None]] = None
+# Set by the GUI gateway: ``(task_id, project_id, primary_path, project_name)`` re-anchors that session's
+# workspace and returns Runtime-confirmed affinity context. ``None`` in CLI/messaging — the projects.db
+# active pointer still updates, but no session ownership is claimed without a Runtime callback.
+_workspace_callback: Optional[Callable[[str, str, str, str], Optional[dict]]] = None
 
 
-def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], None]]) -> None:
+def set_project_workspace_callback(fn: Optional[Callable[[str, str, str, str], Optional[dict]]]) -> None:
     global _workspace_callback
     _workspace_callback = fn
 
@@ -30,13 +31,16 @@ def _primary_path(proj) -> Optional[str]:
     return proj.folders[0].path if proj.folders else None
 
 
-def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> None:
+def _apply_workspace(
+    task_id: Optional[str], project_id: str, path: Optional[str], name: str,
+) -> Optional[dict]:
     cb = _workspace_callback
     if cb and task_id and path:
         try:
-            cb(task_id, path, name)
+            return cb(task_id, project_id, path, name)
         except Exception:
-            pass
+            return None
+    return None
 
 
 def _resolve(conn, token: str):
@@ -58,10 +62,19 @@ def _resolve(conn, token: str):
 
 def _activated(proj, task_id: Optional[str]) -> str:
     primary = _primary_path(proj)
-    _apply_workspace(task_id, primary, proj.name)
-    return json.dumps({
+    runtime_affinity = _apply_workspace(task_id, proj.id, primary, proj.name)
+    if task_id and _workspace_callback is not None and not runtime_affinity:
+        return json.dumps({
+            "success": False,
+            "error": "Runtime could not persist the session project affinity; workspace was not moved.",
+            "id": proj.id,
+        })
+    payload = {
         "success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
-        "primary_path": primary})
+        "primary_path": primary}
+    if runtime_affinity:
+        payload["runtime_affinity"] = runtime_affinity
+    return json.dumps(payload)
 
 
 def project_list(task_id: Optional[str] = None) -> str:

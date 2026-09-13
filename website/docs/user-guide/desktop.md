@@ -76,6 +76,12 @@ Two independent font settings live in **Settings → Appearance**, both stored p
 - **Chat Font** (`desktop.font_family`) — chat and the rest of the app's UI. Readability faces such as OpenDyslexic or Atkinson Hyperlegible work as soon as they are installed on the system; the active theme's stack stays behind your pick so missing glyphs still render. Blank means the theme's font.
 - **Terminal Font** (`terminal.font_family`) — the embedded terminal pane; Nerd Fonts render shell icons here. Blank means the bundled JetBrains Mono.
 
+### Project affinity
+
+A chat opened in a Project keeps a Runtime-owned affinity record in its session. New, empty sessions are automatically bound to the innermost Project containing their workspace; existing chats are never silently moved merely because a later command changes directories. An explicit `desktop_project` switch updates both the workspace and the session affinity.
+
+Project instructions are loaded from the bound Project root. When an affinity is established or its context files change, Hermes supplies the Runtime-confirmed context through the current turn without rebuilding the session's cached system prompt. The affinity and its generation survive resume, restart, branch/delegate child creation, and compression. `skip_context_files` disables both project-context loading and automatic binding.
+
 #### Repository discovery
 
 Hermes Desktop discovers local Git repositories for the Projects sidebar by scanning your home directory to a bounded depth. You can change this per profile in **Settings → Workspace**, or in `config.yaml`:

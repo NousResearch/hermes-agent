@@ -21,6 +21,23 @@ def _tool_msg(tool_call_id, payload):
     }
 
 
+def _skill_call(call_id, operations):
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({"operations": operations}),
+                },
+            }
+        ],
+    }
+
+
 def test_skips_prior_tool_messages_by_tool_call_id():
     """Stale 'created' tool result from prior history must not be re-surfaced."""
     prior_payload = {"success": True, "message": "Cron job 'remind-me' created."}
@@ -75,7 +92,6 @@ def test_falls_back_to_content_equality_when_tool_call_id_missing():
 
 
 
-
 def test_handles_non_json_tool_content_gracefully():
     review_messages = [
         {"role": "tool", "tool_call_id": "x", "content": "not-json"},
@@ -90,7 +106,6 @@ def test_handles_non_json_tool_content_gracefully():
 def test_empty_inputs():
     assert _summarize([], []) == []
     assert _summarize(None, None) == []
-
 
 
 
@@ -110,3 +125,85 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+def test_skill_batch_without_message_surfaces_ops_summary():
+    """Batch skill_manage results carry operations_applied/results and no message —
+    the non-verbose summary must still surface the writes (#104506)."""
+    operations = [
+        {"action": "patch", "name": "deploy", "old_string": "a", "new_string": "b"},
+        {
+            "action": "write_file",
+            "name": "deploy",
+            "file_path": "references/api.md",
+            "file_content": "x",
+        },
+    ]
+    batch_result = {
+        "success": True,
+        "operations_applied": 2,
+        "results": [
+            {"name": "deploy", "action": "patch", "success": True},
+            {"name": "deploy", "action": "write_file", "success": True},
+        ],
+    }
+    review_messages = [
+        _skill_call("call_b1", operations),
+        _tool_msg("call_b1", batch_result),
+    ]
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == [
+        "Skill 'deploy' patched",
+        "Skill 'deploy' written (references/api.md)",
+    ]
+
+
+def test_skill_batch_without_message_or_details_falls_back():
+    """A message-less skill result whose call arguments are unavailable still
+    surfaces a generic line instead of vanishing (#104506)."""
+    batch_result = {"success": True, "operations_applied": 1, "results": []}
+    review_messages = [
+        _skill_call(
+            "call_b2",
+            [
+                {
+                    "action": "patch",
+                    "name": "deploy",
+                    "old_string": "a",
+                    "new_string": "b",
+                }
+            ],
+        ),
+        _tool_msg("call_b2", batch_result),
+    ]
+    # Simulate unparsable call arguments: detail missing for this tool_call_id.
+    review_messages[0]["tool_calls"][0]["function"]["arguments"] = "{not json"
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == ["Skill updated"]
+
+
+def test_staged_skill_write_is_not_surfaced():
+    """A write staged for approval is not an applied action — it must stay silent
+    even though its response says success=True (#104506)."""
+    staged = {
+        "success": True,
+        "staged": True,
+        "pending_id": "p1",
+        "gist": "batch(1 ops: patch) on deploy",
+        "message": (
+            "Staged for approval (skills.write_approval is on). "
+            "Not yet saved — review with /skills pending."
+        ),
+    }
+    operations = [
+        {"action": "patch", "name": "deploy", "old_string": "a", "new_string": "b"}
+    ]
+    review_messages = [_skill_call("call_s1", operations), _tool_msg("call_s1", staged)]
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == []

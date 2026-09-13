@@ -613,6 +613,11 @@ hermes profile delete research-bot-test --yes
 hermes profile install ~/.hermes/profiles/research-bot --name research-bot-test
 ```
 
+Local sources are copied into temporary staging before the install plan is built.
+Links or changes detected during that copy stop installation before it updates the
+target profile. Finish editing the source and retry. Staging must be outside both
+the source directory and the destination profile.
+
 ---
 
 ## Export and import a profile file

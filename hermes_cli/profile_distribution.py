@@ -12,7 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -145,16 +145,24 @@ class DistributionManifest:
         return out
 
 
+def _parse_manifest(content: bytes, mf_path: Path) -> DistributionManifest:
+    try:
+        data = yaml.safe_load(content.decode("utf-8"))
+    except Exception as exc:
+        raise DistributionError(f"Failed to parse {mf_path}: {exc}") from exc
+    return DistributionManifest.from_dict(data or {})
+
+
 def read_manifest(profile_dir: Path) -> Optional[DistributionManifest]:
     """Return the manifest for *profile_dir*, or None if it isn't a distribution."""
     mf_path = profile_dir / MANIFEST_FILENAME
     if not mf_path.is_file():
         return None
     try:
-        data = yaml.safe_load(mf_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise DistributionError(f"Failed to parse {mf_path}: {exc}") from exc
-    return DistributionManifest.from_dict(data or {})
+        content = mf_path.read_bytes()
+    except OSError as exc:
+        raise DistributionError(f"Failed to read {mf_path}: {exc}") from exc
+    return _parse_manifest(content, mf_path)
 
 
 def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
@@ -246,38 +254,67 @@ def _git_clone(url: str, dest: Path) -> None:
         raise DistributionError(f"git clone failed: {stderr.strip()}") from exc
 
 
-def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
-    """Resolve *source* to ``(staged_dir, provenance)``: git URLs are shallow-cloned into
-    *workdir* (``.git`` removed); local sources are copied there before planning."""
+@contextmanager
+def _stage_source(source: str, workdir: Path, override_name: Optional[str] = None):
+    """Capture inputs before planning; remove only our staged tree on any failure."""
+    from hermes_cli.profile_distribution_source import open_source
+    from hermes_cli.profile_distribution_staging import copy_source_tree, owned_stage, read_source_bytes
+
     src_str = source.strip()
-    if _looks_like_git_url(src_str):
-        staged, provenance = workdir / "clone", src_str
-        _git_clone(src_str, staged)
-        shutil.rmtree(staged / ".git", ignore_errors=True)
-        missing = (
-            f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
-            "This repository is not a Hermes profile distribution."
-        )
-    elif (path_guess := Path(src_str).expanduser()).is_dir():
-        local_source = path_guess.resolve()
-        staged, provenance = workdir / "local", str(local_source)
-        if staged.resolve().is_relative_to(local_source):
-            raise DistributionError("Distribution staging directory must be outside the local source.")
-        # Plan and publication read only this copy. Preserve links for the staged-tree
-        # validation to reject, instead of materializing their external targets.
-        shutil.copytree(local_source, staged, symlinks=True)
-        missing = (
-            f"No {MANIFEST_FILENAME} in {path_guess}. "
-            "A local-directory source must contain a distribution.yaml at its root."
-        )
-    else:
+    try:
+        if _looks_like_git_url(src_str):
+            staged = workdir / "clone"
+            with owned_stage(staged):
+                _git_clone(src_str, staged)
+                shutil.rmtree(staged / ".git", ignore_errors=True)
+                if not (staged / MANIFEST_FILENAME).is_file():
+                    raise DistributionError(f"No {MANIFEST_FILENAME} at the root of {src_str!r}.")
+                yield staged, src_str
+        elif (path_guess := Path(src_str).expanduser()).is_dir():
+            local_source = path_guess.resolve()
+            staged = workdir / "local"
+            if staged.resolve().is_relative_to(local_source):
+                raise DistributionError("Distribution staging directory must be outside the local source.")
+            with ExitStack() as source_handles:
+                captured = source_handles.enter_context(open_source(local_source))
+                try:
+                    with captured.child(MANIFEST_FILENAME) as entry:
+                        manifest_bytes = read_source_bytes(entry)
+                except FileNotFoundError as exc:
+                    raise DistributionError(f"No {MANIFEST_FILENAME} in {local_source}.") from exc
+                manifest = _parse_manifest(manifest_bytes, local_source / MANIFEST_FILENAME)
+                with profile_lifecycle_lock():
+                    _plan_target(manifest, override_name, staged)
+                with owned_stage(staged):
+                    copy_source_tree(captured, staged, MANIFEST_FILENAME, manifest_bytes)
+                    # Validate the root before handing off the independent copy. Keeping
+                    # the stage guard outside this close also cleans up validation failures.
+                    source_handles.close()
+                    yield staged, str(local_source)
+        else:
+            raise DistributionError(
+                f"Cannot resolve distribution source: {source!r}. "
+                "Expected a git URL (e.g. github.com/user/repo) or a local directory."
+            )
+    except OSError as exc:
+        raise DistributionError(f"Could not stage profile distribution: {exc}") from exc
+
+
+def _plan_target(manifest: DistributionManifest, override_name: Optional[str], staged: Path):
+    from hermes_cli.profiles import _canon_valid, _validate_new_profile_target, get_profile_dir, profile_exists
+
+    canon = _canon_valid(override_name or manifest.name)
+    if canon == "default":
         raise DistributionError(
-        f"Cannot resolve distribution source: {source!r}. "
-        "Expected a git URL (e.g. github.com/user/repo) or a local directory."
-    )
-    if not (staged / MANIFEST_FILENAME).is_file():
-        raise DistributionError(missing)
-    return staged, provenance
+            "Cannot install a distribution as 'default' — that is the built-in "
+            "root profile (~/.hermes).  Pass --name <name> to install under a new profile."
+        )
+    target_dir = get_profile_dir(canon)
+    if staged.resolve().is_relative_to(target_dir.resolve()):
+        raise DistributionError("Distribution staging directory must be outside the target profile.")
+    if not profile_exists(canon):
+        _validate_new_profile_target(canon)
+    return canon, target_dir, target_dir.is_dir()
 
 
 def _reject_distribution_symlinks(staged: Path) -> None:
@@ -318,10 +355,8 @@ def plan_install(
     source: str, workdir: Path, override_name: Optional[str] = None, *, guards: ExitStack | None = None,
 ) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
-    from hermes_cli.profiles import _canon_valid, _validate_new_profile_target, get_profile_dir, profile_exists
     from hermes_cli import __version__ as hermes_version
-    staged, provenance = _stage_source(source, workdir)
-    with profile_lifecycle_lock():
+    with _stage_source(source, workdir, override_name) as (staged, provenance), profile_lifecycle_lock():
         _reject_distribution_symlinks(staged)
         manifest = read_manifest(staged)
         if manifest is None:
@@ -329,22 +364,11 @@ def plan_install(
                 f"No {MANIFEST_FILENAME} found at the distribution root — this source is not a Hermes distribution."
             )
         check_hermes_requires(manifest.hermes_requires, hermes_version)  # fail fast
-        canon = _canon_valid(override_name or manifest.name)
-        if canon == "default":
-            raise DistributionError(
-                "Cannot install a distribution as 'default' — that is the built-in "
-                "root profile (~/.hermes).  Pass --name <name> to install under a new profile."
-            )
+        canon, target_dir, existing = _plan_target(manifest, override_name, staged)
         manifest.name = canon
         manifest.source = provenance
         # Stamped once here so both fresh install and update propagate a fresh timestamp.
         manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        target_dir = get_profile_dir(canon)
-        if staged.resolve().is_relative_to(target_dir.resolve()):
-            raise DistributionError("Distribution staging directory must be outside the target profile.")
-        existing = target_dir.is_dir()
-        if not profile_exists(canon):
-            _validate_new_profile_target(canon)
         return InstallPlan(
             manifest=manifest, staged_dir=staged, provenance=provenance, target_dir=target_dir, existing=existing,
             source_identity=directory_identity(staged, guards), target_identity=directory_identity(target_dir, guards),

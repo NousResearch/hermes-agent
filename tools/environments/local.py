@@ -460,9 +460,14 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
     # recognized as a global name and left alone.
+    # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
+    # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
+    # a re-parse of the file alone no longer names it (#107695 review).
+    from hermes_cli.env_loader import launch_dotenv_keys
     residue_names = {
         key.upper() for key in
-        set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values())
+        set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
+        | set(TERMINAL_CONFIG_ENV_MAP.values())
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")}
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]

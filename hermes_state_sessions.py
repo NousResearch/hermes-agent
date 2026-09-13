@@ -114,7 +114,7 @@ def _session_filter_where(
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
-        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
+        ("(s.message_count >= ? OR (s.title IS NOT NULL AND s.title != '') OR s.pinned = 1)", [min_message_count] if min_message_count > 0 else []),
     ):
         if values:
             where.append(clause)

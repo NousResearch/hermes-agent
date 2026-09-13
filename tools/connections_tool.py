@@ -16,24 +16,15 @@ lifecycle:
   so guidance produced a burst of polls rather than a paced one. Waiting
   inside the call cannot be skipped and works the same on every platform.
 
-Scope: gateway connectors AND locally configured MCP servers (``mcp_servers`` in
-config.yaml, catalog or hand-configured). A target is either a managed connector
-(bare string or ``{"name": ...}``) or an MCP server (``{"name": ..., "mcp": true}``);
-``install`` / ``enable`` / ``authorize`` are the MCP verbs. MCP targets run through one
-backend-owned connection operation (``connections_tool_operation.py``): the desktop
-renders it as an approval card and answers through ``connection.respond``; the tool
-blocks until the operation settles (every target resolved, Continue, deadline or
-interrupt), exactly once. The approval callback reaches this tool only through the
-agent-level inline executor (``registry.dispatch`` never forwards a callback), so on
-every non-GUI surface MCP targets return ``unavailable`` with the terminal commands
-and managed targets in the same call are unaffected (``connections_tool_mcp.py``).
+Scope: managed connectors AND local MCP servers. ``{"name": ..., "mcp": true}`` targets take
+``install`` / ``enable`` / ``authorize`` through one connection operation
+(``connections_tool_operation.py``, ``connections_tool_mcp.py``); the approval card is reached
+only via the inline executor, so non-GUI surfaces get ``unavailable`` for MCP targets.
 
 De-authentication is deliberately NOT exposed to the model: disconnecting
 an account is a user decision, made in the portal dashboard.
 
-Availability: the managed-connector leg is gated by the portal sign-in the managed
-tools already use; a signed-out session gets a plain error for managed targets while
-MCP targets keep working.
+Availability: the managed leg is portal-gated in the handler; MCP targets need no sign-in.
 """
 
 import json
@@ -314,11 +305,7 @@ def manage_connections(
     connectors_available: Optional[Callable[[], bool]] = None,
     wait_seconds: Optional[float] = None,
 ) -> str:
-    """Dispatch one ``manage_connections`` action. Returns a JSON string.
-
-    ``connection_callback`` is the GUI approval bridge (present only through the inline
-    executor); ``connectors_available`` is the managed leg's portal gate.
-    """
+    """Dispatch one ``manage_connections`` action. Returns a JSON string."""
     action = str(args.get("action") or "status").strip().lower()
     managed, mcp_targets, target_error = normalize_targets(args.get("connectors"))
     if target_error:
@@ -333,8 +320,7 @@ def manage_connections(
             connection_callback=connection_callback, session_id=session_id, wait_seconds=wait_seconds,
         )
 
-    # Managed leg from here on: portal-gated (the registry handler and the inline executor
-    # pass the gate; direct callers and tests do not), behaviour unchanged.
+    # Managed leg: portal-gated when a gate is passed (registry handler, inline executor).
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     connectors: List[str] = managed
@@ -546,9 +532,8 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # The registry path carries no GUI callback: MCP targets settle as ``unavailable`` here;
-    # the desktop reaches the approval card through the inline executor. The managed leg keeps
-    # its portal gate in the handler (check_fn would hide the MCP leg from signed-out sessions).
+    # No GUI callback on the registry path; the portal gate lives in the handler, not check_fn,
+    # so signed-out sessions still see the tool for MCP approvals.
     handler=lambda args, **kw: manage_connections(
         args, session_id=kw.get("session_id"), connectors_available=_connectors_available,
     ),

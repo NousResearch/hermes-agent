@@ -786,9 +786,8 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
 # spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
 # one run).
-# ``manage_connections`` blocks on a connection operation whose deadline is server-owned
-# (``connections.wait_timeout_seconds``); under the generic deadline a card the user is still
-# looking at would be reported as ``tool_timeout`` while the renderer flow ran on as an orphan.
+# ``manage_connections`` owns its wait (connections.wait_timeout_seconds); the generic
+# deadline would report tool_timeout while the card is still on screen.
 _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
 
 

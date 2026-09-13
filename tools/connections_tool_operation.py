@@ -1,13 +1,5 @@
-"""The connection operation: one backend-owned record per ``manage_connections`` call.
-
-A call names targets; each target resolves on its own (connected, skipped, failed); the
-operation settles exactly once. The first of {every target resolved, Continue, deadline,
-interrupt} wins, and later events change the current per-target state only, never the
-settled result. The deadline is set here, at creation, and nothing on the client side
-(navigation, remount, desktop restart) can move it.
-
-Pure data + settlement rules; no I/O. ``tools/connections_tool.py`` drives it.
-"""
+"""One backend-owned connection operation per ``manage_connections`` call: targets, a
+server-set deadline, exactly-once settlement. Pure data, no I/O."""
 
 from __future__ import annotations
 
@@ -17,22 +9,17 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-# config.yaml ``connections.wait_timeout_seconds``: how long one operation may stay open.
-# The floor keeps the card on screen long enough to be clicked; there is no ceiling — the
-# configured value bounds the wait directly.
+# config.yaml ``connections.wait_timeout_seconds``; floor only, no ceiling.
 WAIT_TIMEOUT_DEFAULT_SECONDS = 120.0
 WAIT_TIMEOUT_FLOOR_SECONDS = 5.0
 
-# Per-target states. ``connected`` and ``skipped`` are RESOLVED (the user decided);
-# ``failed`` is recoverable and keeps the operation open for Try again / Continue / deadline;
-# ``unavailable`` is resolved too — no surface exists to ask on.
+# Target states. connected/skipped/unavailable are resolved; failed keeps the operation open.
 PENDING = "pending"
 CONNECTED = "connected"
 SKIPPED = "skipped"
 FAILED = "failed"
 UNAVAILABLE = "unavailable"
-# Assigned at settlement to every target still pending/failed: the card's static
-# "Not connected · <reason>" row, with ``detail`` carrying how the operation settled.
+# Stamped on unresolved targets at settlement; ``detail`` carries the settle reason.
 NOT_CONNECTED = "not_connected"
 RESOLVED_STATES = frozenset({CONNECTED, SKIPPED, UNAVAILABLE})
 
@@ -45,11 +32,8 @@ SETTLED_UNAVAILABLE = "unavailable"
 
 
 def resolve_wait_timeout(config: Optional[Dict[str, Any]] = None) -> float:
-    """``connections.wait_timeout_seconds`` from config.yaml, floored, default 120.
-
-    Reads only that key: the executor batch guard (``HERMES_CONCURRENT_TOOL_TIMEOUT_S``) and
-    the clarify timeout are separate budgets and never proxy for this one.
-    """
+    """``connections.wait_timeout_seconds`` from config.yaml, floored, default 120. Reads only
+    that key; the executor and clarify budgets never proxy for it."""
     if config is None:
         try:
             from hermes_cli.config import load_config_readonly
@@ -113,11 +97,8 @@ class ConnectionOperation:
         return next((t for t in self.targets if t.name == name), None)
 
     def record_target(self, name: str, state: str, detail: str = "", **extra: Any) -> bool:
-        """Update one target's CURRENT state. Returns False for an unknown target.
-
-        Allowed after settlement on purpose: the live card may keep reporting, but the
-        settled result (``result()``) was frozen at settle time and does not change.
-        """
+        """Update a target's live state; False for an unknown name. Allowed after settlement:
+        the frozen ``result()`` does not change."""
         target = self.target(name)
         if target is None:
             return False
@@ -141,15 +122,13 @@ class ConnectionOperation:
     # -- settlement ----------------------------------------------------------
 
     def settle(self, by: str, now: Optional[float] = None) -> bool:
-        """Compare-and-set: the first caller settles and freezes the result; every later
-        caller gets False and changes nothing."""
+        """Compare-and-set: first caller freezes the result, later callers get False."""
         with self._lock:
             if self.settled_at is not None:
                 return False
             self.settled_at = time.time() if now is None else now
             self.settled_by = by
-            # Freeze: anything the user never decided is "not connected" with the settle
-            # reason, so the static card never shows a live-looking "pending" row.
+            # Unresolved targets freeze as not_connected so the static card has no pending row.
             for target in self.targets:
                 if not target.resolved:
                     reason = target.detail or by
@@ -178,7 +157,7 @@ class ConnectionOperation:
             return self._snapshot_locked()
 
     def request_payload(self, reason: str = "") -> Dict[str, Any]:
-        """What the UI bridge sends: the operation identity, its targets and the server-owned deadline."""
+        """The ``connection.request`` payload: identity, targets, server-owned deadline."""
         return {
             "op_id": self.op_id,
             "deadline_at": self.deadline_at,

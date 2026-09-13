@@ -111,9 +111,7 @@ def _agent_cbs(sid: str) -> dict:
         "drive_preview_callback": lambda payload: _block("preview.act.request", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _block("window.read.request", sid, {}, timeout=30),
-        # manage_connections MCP targets (desktop GUI): approval card driving a connection
-        # operation. The payload carries the server-owned deadline; the bridge waits exactly that
-        # long, and like clarify a late answer is tolerated (allow_expired on the respond).
+        # manage_connections approval card; waits exactly the operation's deadline, late answer tolerated.
         "connection_callback": lambda payload: _block(
             "connection.request", sid, dict(payload), timeout=float(payload.get("timeout_seconds") or 120)),
         # tour (desktop GUI): renderer drives driver.js and answers tour.respond.

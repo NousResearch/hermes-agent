@@ -30,32 +30,26 @@ export interface McpTarget {
   action: 'authorize' | 'enable' | 'install'
 }
 
-const MCP_ACTIONS = new Set(['install', 'enable', 'authorize'])
+const MCP_ACTIONS: readonly McpTarget['action'][] = ['install', 'enable', 'authorize']
 
-/**
- * The MCP targets of a `manage_connections` call, or [] for a managed-connector
- * call. Read from the call args, so both the live card (before any result) and
- * the settled row classify the same way. Bare-string targets are managed.
- */
+/** MCP targets of a `manage_connections` call ([] for managed); read from args so live and
+ *  settled rows classify alike. */
 export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']): McpTarget[] {
   if (toolName !== 'manage_connections') {
     return []
   }
 
   const input = recordOf(args)
-  const rawAction = typeof input.action === 'string' ? input.action : 'install'
-  const action: McpTarget['action'] = MCP_ACTIONS.has(rawAction) ? (rawAction as McpTarget['action']) : 'install'
+  const action = MCP_ACTIONS.find(a => a === input.action) ?? 'install'
 
   if (!Array.isArray(input.connectors)) {
     return []
   }
 
   return input.connectors.flatMap(entry => {
-    if (!isRecord(entry) || entry.mcp !== true || typeof entry.name !== 'string' || !entry.name.trim()) {
-      return []
-    }
+    const name = isRecord(entry) && entry.mcp === true ? connectorText(entry.name)?.trim() : undefined
 
-    return [{ action, name: entry.name.trim().toLowerCase() }]
+    return name ? [{ action, name: name.toLowerCase() }] : []
   })
 }
 

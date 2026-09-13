@@ -244,12 +244,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'connection.request') {
-    // manage_connections with MCP targets (desktop GUI): the agent opened a
-    // connection operation and the Python side is blocked on
-    // connection.respond until it settles. Park the request per-session (like
-    // clarify) and upsert a stable pending tool row so the inline card has
-    // somewhere to render even when the tool.start event was missed (stream
-    // reconnect / hydration race).
+    // Python is blocked on connection.respond. Park per-session (like clarify) and upsert a
+    // stable tool row so the card renders even if tool.start was missed.
     const request = normalizeConnectionRequest(payload, sessionId ?? null)
 
     if (request) {
@@ -272,9 +268,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'connection.expire') {
-    // The operation settled server-side (deadline or interrupt) with the card
-    // still open. Request-correlated: a late expire for an older operation
-    // must not erase a newer card raised by the same session.
+    // Settled server-side with the card still open; request-correlated so a late expire
+    // cannot erase a newer card.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const request = sessionId ? $connectionRequests.get()[sessionId] : undefined
 

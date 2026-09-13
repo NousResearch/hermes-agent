@@ -1,13 +1,6 @@
-"""MCP targets of ``manage_connections``: target normalization, action/target validation,
-catalog validation, and the blocking approval leg that drives a :class:`ConnectionOperation`
-through the GUI bridge.
-
-The consent card lives in the desktop renderer. The tool reaches it through
-``agent.connection_callback`` (wired per session by ``tui_gateway/agent_callbacks.py``), which
-``registry.dispatch`` never forwards: the fold therefore runs through the agent-level inline
-executor (``agent/inline_tool_executors.py``), and a registry-path call — every non-GUI
-surface — degrades to a per-target ``unavailable`` result with the terminal commands.
-"""
+"""MCP targets of ``manage_connections``: target/action/catalog validation and the approval
+leg. The card is reached via ``agent.connection_callback`` through the inline executor;
+registry dispatch has no callback and settles targets ``unavailable``."""
 
 from __future__ import annotations
 
@@ -39,9 +32,7 @@ ALL_ACTIONS = CONNECTOR_ACTIONS + MCP_ACTIONS
 
 _TARGET_FIELDS = frozenset({"name", "mcp"})
 
-# Renderer-reported per-target outcomes → operation states. ``declined`` is the renderer's
-# word for the user's Not now; ``error`` is a recoverable failure (auth denied, install
-# failed) that keeps the card live until Continue or the deadline.
+# Renderer outcome → operation state. declined = Not now; error = recoverable, card stays live.
 _OUTCOME_STATES = {
     "installed": CONNECTED, "enabled": CONNECTED, "authorized": CONNECTED, "connected": CONNECTED,
     "declined": SKIPPED, "skipped": SKIPPED,
@@ -52,12 +43,8 @@ UNAVAILABLE_HINT = "hermes mcp install {name} / hermes mcp login {name}"
 
 
 def normalize_targets(raw: Any) -> Tuple[List[str], List[str], Optional[str]]:
-    """``connectors`` → ``(managed names, mcp names, error)``.
-
-    Bare strings and ``{"name": ...}`` are managed connectors; ``{"name": ..., "mcp": true}``
-    is a locally configured MCP server. Any other field on a target object is an error, so a
-    model cannot smuggle URLs, commands or credentials past the manifest.
-    """
+    """``connectors`` → ``(managed names, mcp names, error)``. Bare strings and ``{name}`` are
+    managed; ``{name, mcp: true}`` is a local MCP. Any other field is an error."""
     if raw is None:
         return [], [], None
     if isinstance(raw, (str, dict)):
@@ -130,12 +117,11 @@ def _configured_names() -> List[str]:
 
 
 def validate_mcp_names(action: str, names: List[str]) -> Optional[str]:
-    """``install`` is catalog-only; ``enable`` / ``authorize`` need a configured server.
-    Unknown → a model-actionable error that lists what exists."""
+    """install: catalog names only; enable/authorize: configured servers only."""
     try:
         catalog = _catalog_names()
         configured = _configured_names()
-    except Exception as exc:  # catalog on disk is malformed: still a model-visible answer
+    except Exception as exc:
         return f"could not read the MCP catalog: {exc}"
     allowed = set(catalog) if action == "install" else set(configured)
     unknown = [n for n in names if n not in allowed]
@@ -171,7 +157,7 @@ def _unavailable_result(operation: ConnectionOperation) -> str:
 
 
 def _apply_answer(operation: ConnectionOperation, raw: str) -> Optional[str]:
-    """Fold the renderer's answer into the operation; returns how it asked to settle (or None)."""
+    """Apply the renderer's per-target answer; returns its requested settle reason, if any."""
     try:
         answer = json.loads(raw)
     except (TypeError, ValueError):
@@ -221,7 +207,7 @@ def run_mcp_operation(
     if raw:
         operation.settle(settled_by or (SETTLED_ALL_RESOLVED if operation.all_resolved else SETTLED_CONTINUE))
     else:
-        # The bridge returned empty: the deadline passed or the user interrupted the turn.
+        # Empty answer: deadline passed or the turn was interrupted.
         from tools.interrupt import is_interrupted
 
         operation.settle(SETTLED_INTERRUPT if is_interrupted() else SETTLED_DEADLINE)

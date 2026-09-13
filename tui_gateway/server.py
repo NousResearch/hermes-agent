@@ -648,8 +648,7 @@ def _approval_request_payload(data: dict | None) -> dict:
 
 
 def _pending_request_payload(sid: str, event: str) -> dict | None:
-    """Read-only snapshot of one blocking-bridge prompt still parked on *sid* (``clarify.request``,
-    ``connection.request``): a client detached when it was emitted would otherwise never see it."""
+    """Snapshot of one blocking prompt still parked on *sid*, for clients that missed the emit."""
     with _prompt_lock:
         for rid, (owner_sid, _ev) in _pending.items():
             pending_event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
@@ -680,8 +679,7 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
 
 
 def _pending_connection_request_payload(sid: str) -> dict | None:
-    """The connection operation (manage_connections MCP approval card) still blocking *sid*, if any.
-    The payload carries the server-owned ``deadline_at``; a restored card keeps that deadline."""
+    """The connection card still blocking *sid*; carries the server-owned deadline."""
     return _pending_request_payload(sid, "connection.request")
 
 

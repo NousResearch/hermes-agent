@@ -234,8 +234,7 @@ export function useComposerSubmit({
       void skipClarifyRequest(sessionId)
     }
 
-    // Same deal for a pending connection card: the agent is blocked on
-    // connection.respond, so a typed message declines every target and rides on.
+    // Same for a pending connection card: typing declines every target.
     if (payloadPresent && !queueEdit && hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
     }

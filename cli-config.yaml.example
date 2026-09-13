@@ -1642,9 +1642,7 @@ code_execution:
 # =============================================================================
 # Connections (manage_connections tool)
 # =============================================================================
-# One call = one connection operation: managed connector links, or an approval card for
-# local MCP servers on the desktop. The deadline is fixed when the operation is created;
-# reopening the chat or restarting the desktop never extends it. Floor 5s, no ceiling.
+# Deadline for one manage_connections call; fixed at creation, floor 5s, no ceiling.
 connections:
   wait_timeout_seconds: 120
 

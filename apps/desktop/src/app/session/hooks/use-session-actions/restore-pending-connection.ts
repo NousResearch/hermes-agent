@@ -14,16 +14,8 @@ export interface PendingConnectionResumeState {
   request: ConnectionRequest | null
 }
 
-/**
- * Restore a pending connection operation from a resume/activate snapshot onto
- * `sessionId`. The snapshot is the live `connection.request` wire payload, so
- * the restored card carries the SAME `deadline_at` the backend fixed when the
- * tool call began — reopening the chat never buys more time.
- *
- * A missing snapshot is authoritative only for requests that already existed
- * when the RPC began; a newer request that arrives while the response is in
- * flight is left alone (same rule as `restorePendingClarifyFromSnapshot`).
- */
+/** Restore a pending connection card from a resume snapshot with its original deadline.
+ *  A missing snapshot clears only requests older than the RPC (same rule as clarify). */
 export function restorePendingConnectionFromSnapshot(
   response: Pick<SessionResumeResponse, 'pending_connection'>,
   sessionId: string,
@@ -52,9 +44,7 @@ export function restorePendingConnectionFromSnapshot(
   return { authoritativeAbsent: false, cleared: null, request }
 }
 
-/** The tool row a pending operation renders as when `tool.start` was never
- *  seen (reconnect / resume): the folded tool call, MCP targets, request id
- *  as the stable row id. */
+/** Synthetic tool row for a pending operation whose `tool.start` was missed. */
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload {
   return {
     args: {

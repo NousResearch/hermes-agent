@@ -1,19 +1,10 @@
+import { isRecord } from '@assistant-ui/core/internal'
 import { atom, computed } from 'nanostores'
 
 import { $gateway } from './gateway'
 
-/**
- * Pending `connection.request`s — the desktop half of the `manage_connections`
- * tool's blocking bridge for local MCP targets (tools/connections_tool_mcp.py).
- * Mirrors the clarify store: keyed by the runtime session id that raised the
- * request so a background session can park its card while the user looks at
- * another chat, and the inline card reads its own session's entry.
- *
- * The backend owns the operation: `opId`, the target list and `deadlineAt`
- * are fixed when the tool call starts. Navigation, remount and desktop
- * restart never recompute the deadline; `session.resume` replays this same
- * payload as `pending_connection`.
- */
+/** Pending `connection.request`s, keyed by runtime session id (mirrors the clarify store).
+ *  The backend owns `opId`, targets and `deadlineAt`; the renderer never recomputes them. */
 export type ConnectionTargetKind = 'connector' | 'mcp'
 export type ConnectionAction = 'authorize' | 'enable' | 'install'
 
@@ -36,8 +27,7 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
-/** One target's answer. `declined` is the user's Not now; `error` is a
- *  recoverable failure the tool records as `failed`. */
+/** One target's answer. `declined` = Not now; `error` = recoverable failure. */
 export type ConnectionTargetStatus = 'authorized' | 'declined' | 'enabled' | 'error' | 'installed'
 
 export interface ConnectionTargetOutcome {
@@ -59,36 +49,48 @@ const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
 
-/** The pending request for one specific session — the transcript card reads
- *  this fixed-key view, same shape as `sessionClarifyRequest`. */
+/** One session's pending request (same shape as `sessionClarifyRequest`). */
 export const sessionConnectionRequest = (sessionId: string | null) =>
   computed($connectionRequests, requests => requests[keyFor(sessionId)] ?? null)
 
 const ACTIONS: readonly ConnectionAction[] = ['install', 'enable', 'authorize']
 
-/** Validate a wire `connection.request` / `pending_connection` payload. Null
- *  when it carries no usable operation (no request id, no targets). */
-export function normalizeConnectionRequest(payload: unknown, sessionId: string | null): ConnectionRequest | null {
-  if (typeof payload !== 'object' || payload === null) {
+/** The wire shape of `connection.request` and the `pending_connection` resume field. */
+export interface ConnectionRequestWire {
+  request_id?: string
+  op_id?: string
+  deadline_at?: number
+  reason?: string
+  targets?: unknown
+}
+
+const str = (value: string | undefined): string => value ?? ''
+
+/** Validate a wire payload. Null when it carries no usable operation (no request id, no targets). */
+export function normalizeConnectionRequest(
+  payload: ConnectionRequestWire | null | undefined,
+  sessionId: string | null
+): ConnectionRequest | null {
+  if (!payload) {
     return null
   }
 
-  const row = payload as Record<string, unknown>
-  const requestId = typeof row.request_id === 'string' ? row.request_id : ''
-  const opId = typeof row.op_id === 'string' ? row.op_id : ''
-  const deadlineAt = typeof row.deadline_at === 'number' && row.deadline_at > 0 ? row.deadline_at : 0
-  const rawTargets = Array.isArray(row.targets) ? row.targets : []
+  const requestId = str(payload.request_id)
+  const opId = str(payload.op_id)
+  const deadlineAt = payload.deadline_at && payload.deadline_at > 0 ? payload.deadline_at : 0
+  const rawTargets = Array.isArray(payload.targets) ? payload.targets : []
 
   const targets: ConnectionTarget[] = rawTargets.flatMap(entry => {
-    if (typeof entry !== 'object' || entry === null) {
+    if (!isRecord(entry)) {
       return []
     }
 
-    const t = entry as Record<string, unknown>
-    const name = typeof t.name === 'string' ? t.name.trim() : ''
+    // SAFETY: isRecord narrowed to an object; each field is re-checked against its allowed values below.
+    const t = entry as { action?: unknown; kind?: unknown; name?: unknown }
+    const name = String(t.name ?? '').trim()
     const action = ACTIONS.find(a => a === t.action) ?? 'install'
 
-    return name ? [{ action, kind: t.kind === 'connector' ? 'connector' : 'mcp', name }] : []
+    return name && t.name === name.trim() ? [{ action, kind: t.kind === 'connector' ? 'connector' : 'mcp', name }] : []
   })
 
   if (!requestId || !opId || !deadlineAt || targets.length === 0) {
@@ -98,7 +100,7 @@ export function normalizeConnectionRequest(payload: unknown, sessionId: string |
   return {
     deadlineAt,
     opId,
-    reason: typeof row.reason === 'string' ? row.reason : '',
+    reason: str(payload.reason),
     receivedAt: Date.now() / 1000,
     requestId,
     sessionId,
@@ -144,16 +146,12 @@ export function clearConnectionRequest(requestId?: string, sessionId?: string | 
   }
 }
 
-/** Whether `sessionId` has a connection card pending right now (imperative
- *  read — the composer checks this on Enter, not on every render). */
+/** Imperative read for the composer's Enter handler. */
 export const hasConnectionRequest = (sessionId: string | null | undefined): boolean =>
   Boolean($connectionRequests.get()[keyFor(sessionId)])
 
-/** Send the card's answer. Clears the local entry FIRST so an in-flight RPC
- *  can never leave a live card the user can answer a second time. Resolves
- *  to false when this session's request is already gone (cancel racing
- *  completion, or a stale card). `connection.respond` is allow_expired, so
- *  racing the backend deadline is harmless. */
+/** Send the card's answer. Clears the entry first so the card cannot be answered twice;
+ *  false when the request is already gone. `connection.respond` tolerates a late answer. */
 export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
@@ -171,15 +169,8 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
   return true
 }
 
-/**
- * Answer `sessionId`'s pending card as declined on every target and drop it
- * locally, resolving to whether there was one to skip.
- *
- * The composer uses this when the user types a real message instead of acting
- * on the card: the tool blocks the agent inside its tool batch, so leaving the
- * card unanswered would park the follow-up until the deadline. Typing IS the
- * answer "not now" for every target. Mirrors skipClarifyRequest.
- */
+/** Typing a message while the card is up declines every target (mirrors skipClarifyRequest);
+ *  otherwise the follow-up would park until the deadline. */
 export async function skipConnectionRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $connectionRequests.get()[keyFor(sessionId)]
 
@@ -193,8 +184,7 @@ export async function skipConnectionRequest(sessionId: string | null | undefined
       targets: request.targets.map(target => ({ name: target.name, status: 'declined' }))
     })
   } catch {
-    // The tool settles on its own deadline; a failed skip must never swallow
-    // the message the user is actually sending.
+    // A failed skip must not swallow the message being sent; the tool settles on its deadline.
   }
 
   return true

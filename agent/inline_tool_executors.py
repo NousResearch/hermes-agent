@@ -151,8 +151,7 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
-    # Folded MCP approval: the GUI bridge lives on the agent, and registry dispatch never
-    # forwards a callback, so the tool runs inline whenever the session can render a card.
+    # The GUI callback lives on the agent; registry dispatch never forwards it.
     from tools.connections_tool import _connectors_available, manage_connections
 
     return manage_connections(
@@ -163,10 +162,8 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
-    # Replay shim for conversations opened before the fold: ``setup_mcp`` is gone from every
-    # advertised schema, but a cached prompt still carries it; translate and dispatch rather
-    # than error (prompt cache protection). Not a `_LEGACY_TOOL_ALIASES` entry: that table is
-    # consulted by ``handle_function_call``, which inline tools bypass.
+    # Replay shim: conversations opened before the fold still carry setup_mcp in their cached
+    # prompt. Not in _LEGACY_TOOL_ALIASES because inline tools bypass handle_function_call.
     return _manage_connections(agent, {
         "action": args.get("action", "install"),
         "connectors": [{"name": args.get("server", ""), "mcp": True}],

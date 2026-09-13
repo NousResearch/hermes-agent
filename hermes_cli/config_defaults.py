@@ -1838,9 +1838,7 @@ DEFAULT_CONFIG = {
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
-    # One `manage_connections` call = one connection operation (managed connectors and local
-    # MCP approvals). The operation's deadline is fixed here when it is created; the desktop
-    # card cannot extend it. Floor 5s, no ceiling. Additive key: no _config_version bump.
+    # manage_connections operation deadline; fixed at creation, floor 5s, no ceiling.
     "connections": {
         "wait_timeout_seconds": 120,
     },

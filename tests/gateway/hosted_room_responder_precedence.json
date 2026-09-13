@@ -1,0 +1,16 @@
+{
+  "_comment": "Language-neutral responder-precedence contract for group rooms: explicit mentions and @everyone win, then the configured owner when nothing matches, then the whole room for rooms without an owner. Roster order is research, build, review; `owner` names the handle flagged on the roster or null. `expected` is the ordered round-0 responder list when every member passes. The hosted planner (gateway/hosted_room_discussion.py) is the reference implementation; the Desktop client's group-rounds.ts may adopt these cases once its relevance tier lands.",
+  "cases": [
+    {"name": "explicit_mention_beats_owner", "text": "@research inspect this", "owner": "build", "expected": ["research"]},
+    {"name": "explicit_mention_of_owner", "text": "@build inspect this", "owner": "build", "expected": ["build"]},
+    {"name": "two_mentions_keep_roster_order", "text": "@review then @research", "owner": "build", "expected": ["research", "review"]},
+    {"name": "everyone_beats_owner", "text": "@everyone inspect this", "owner": "build", "expected": ["research", "build", "review"]},
+    {"name": "all_beats_owner", "text": "@all inspect this", "owner": "build", "expected": ["research", "build", "review"]},
+    {"name": "broadcast_mixed_with_direct_mention_is_everyone", "text": "@research @ALL inspect this", "owner": "build", "expected": ["research", "build", "review"]},
+    {"name": "mentions_are_case_insensitive", "text": "@REVIEW inspect this", "owner": "build", "expected": ["review"]},
+    {"name": "no_match_with_owner", "text": "inspect this", "owner": "build", "expected": ["build"]},
+    {"name": "unknown_handle_is_no_match_with_owner", "text": "@unknown inspect this", "owner": "build", "expected": ["build"]},
+    {"name": "no_match_without_owner_is_whole_room", "text": "inspect this", "owner": null, "expected": ["research", "build", "review"]},
+    {"name": "unknown_handle_without_owner_is_whole_room", "text": "@unknown inspect this", "owner": null, "expected": ["research", "build", "review"]}
+  ]
+}

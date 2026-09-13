@@ -443,7 +443,8 @@ class HostedRoomService:
                 {
                     "member_id": member.member_id, "profile": member.profile,
                     "handle": member.handle, "target": dict(member.target or {}),
-                    **({"display_name": member.display_name} if member.display_name else {})}
+                    **({"display_name": member.display_name} if member.display_name else {}),
+                    **({"owner": True} if member.owner else {})}
                 for member in normalized],
             authority_gateway_id=hosted_rooms.local_authority_gateway_id())
         self.runtime.wakeup()

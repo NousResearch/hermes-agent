@@ -128,9 +128,13 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                     return cache.setdefault(key, obj)
             # Client rebuilt mid-resolve: this object holds the discarded transport. Retry.
 
-    def _sdk_session(self, session_id: str) -> Any:
+    def _sdk_session(self, session_id: str, **create_kwargs: Any) -> Any:
         """Get or create the SDK session (cached until a client rebuild clears the cache)."""
-        return self._cached_sdk_object(self._sessions_cache, session_id, lambda: self.honcho.session(session_id))
+        return self._cached_sdk_object(
+            self._sessions_cache,
+            session_id,
+            lambda: self.honcho.session(session_id, **create_kwargs),
+        )
 
     def _get_or_create_peer(self, peer_id: str) -> Any:
         """Get or create a Honcho peer (one get-or-create API call, then cached)."""

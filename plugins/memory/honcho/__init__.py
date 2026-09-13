@@ -331,13 +331,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if cfg.session_strategy == "per-session":
             logger.debug("Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
                          self._session_key)
-        elif not session.messages:
+        else:
             try:
                 from hermes_constants import get_hermes_home
                 self._manager.migrate_memory_files(self._session_key, str(get_hermes_home() / "memories"))
-                logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
+                logger.debug("Honcho memory file migration checked for session: %s", self._session_key)
             except Exception as e:
-                logger.debug("Honcho memory file migration skipped: %s", e)
+                logger.warning("Honcho memory file migration failed: %s", e)
 
         # Generic dialectic prewarm is incompatible with latest-message query rewriting,
         # which needs the first substantive user message.

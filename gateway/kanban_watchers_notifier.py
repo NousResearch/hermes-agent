@@ -57,6 +57,33 @@ def diagnostic_event(ev) -> bool:
     if ev.kind in {"blocked", "block_loop_detected"}:
         return (ev.payload or {}).get("kind") != "needs_input"
     return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
+
+# ``kanban.wake_event_kinds`` narrows the tuple above. Some stacks want the passive
+# ping for every terminal event but a synthetic wake turn (a full agent turn in the
+# origin session) only for the kinds that genuinely need a decision, e.g.
+# ``["blocked", "block_loop_detected"]``. Absent/empty/no-known-kind values fall back
+# to the full tuple, so behaviour is unchanged out of the box. Only kinds that have a
+# formatter in _EVENT_FORMATTERS can ever wake.
+def wake_kinds_from_config(cfg: Any) -> tuple:
+    """Allowed wake kinds, from ``kanban.wake_event_kinds`` (default: ``_WAKE_KINDS``)."""
+    raw = ((cfg or {}).get("kanban") or {}).get("wake_event_kinds")
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",")]
+    if not raw:
+        return _WAKE_KINDS
+    allowed = tuple(kind for kind in raw if kind in _WAKE_KINDS)
+    return allowed or _WAKE_KINDS
+
+
+def _resolve_wake_kinds() -> tuple:
+    """``kanban.wake_event_kinds`` read in the notifier's own profile scope."""
+    try:
+        from hermes_cli.config import load_config
+        return wake_kinds_from_config(load_config())
+    except Exception:  # a config read must never break delivery
+        logger.debug("kanban notifier: wake-kind config unreadable; using the default kinds", exc_info=True)
+        return _WAKE_KINDS
+
 # Consecutive send failures (adapter raised OR reported SendResult(success=False))
 # before a sub is dropped as a dead chat. 12 ≈ 60s at the 5s cadence: a transient
 # API outage must not permanently unsubscribe a live review-gate channel.
@@ -524,6 +551,9 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        # Allowed wake kinds, resolved per delivery in the notifier's own scope
+        # (``kanban.wake_event_kinds``); defaults to every _WAKE_KINDS entry.
+        self.wake_kinds_allowed: tuple = _WAKE_KINDS
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -574,7 +604,7 @@ class _KanbanNotification:
     def build_wake_text(self) -> None:
         """Set ``wake_kinds`` / ``session_key`` / ``synth`` for the wake paths."""
         task, sub = self.task, self.sub
-        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in _WAKE_KINDS} if self.wake_agent else set()
+        self.wake_kinds = {ev.kind for ev in self.d["events"] if ev.kind in self.wake_kinds_allowed} if self.wake_agent else set()
         self.wake_diagnostic = all(diagnostic_event(ev) for ev in self.d["events"] if ev.kind in self.wake_kinds)
         if not self.wake_kinds:
             return
@@ -764,6 +794,10 @@ class _KanbanNotification:
         self.adapter = adapter
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
+        # Wake-kind filter, read HERE (the notifier thread's scope = the launch profile, i.e.
+        # the root config) and never inside _owner_scope() — the subscriber's own config must
+        # not decide, or the same task would wake or not depending on who owns the chat.
+        self.wake_kinds_allowed = _resolve_wake_kinds()
 
         # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
         # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.

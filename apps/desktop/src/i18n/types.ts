@@ -2392,6 +2392,7 @@ export interface Translations {
 
   composer: {
     message: string
+    draftRestored: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string

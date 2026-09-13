@@ -11,7 +11,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: () => null,
     useValue: useStore,
     resolveSiblingWsUrl: vi.fn(),
-    host: { onEvent: onGatewayEvent, requestProfile: vi.fn() }
+    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn() }
   }
 })
 vi.mock('./data', async () => {
@@ -197,5 +197,18 @@ it('settles on an older backend without display.*: portal tone is unavailable an
   const view = render(<ScreenHero bot={botA} />)
   await act(async () => {})
   expect(view.container.firstChild).toBeNull()
+  view.unmount()
+})
+
+it('a sidebar group portal keeps its lease subscription across parent re-renders (no per-paint row rebuild)', async () => {
+  vi.mocked(host.requestProfile).mockResolvedValue(status)
+  const view = render(<ProfileGroupScreenPortal route={{ connectionId: 'host-b', profile: 'default' }} />)
+  await act(async () => {})
+  const subscriptions = vi.mocked(host.onEvent).mock.calls.length
+
+  view.rerender(<ProfileGroupScreenPortal route={{ connectionId: 'host-b', profile: 'default' }} />)
+  view.rerender(<ProfileGroupScreenPortal route={{ connectionId: 'host-b', profile: 'default' }} />)
+  await act(async () => {})
+  expect(vi.mocked(host.onEvent).mock.calls.length).toBe(subscriptions)
   view.unmount()
 })

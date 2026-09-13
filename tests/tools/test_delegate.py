@@ -1660,6 +1660,23 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
 
+    def test_model_output_schema_is_forwarded(self):
+        """The live model dispatch path forwards the top-level output schema."""
+        import run_agent
+
+        captured = {}
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(parent, {"goal": "test", "output_schema": schema})
+
+        self.assertEqual(captured.get("output_schema"), schema)
+
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
 

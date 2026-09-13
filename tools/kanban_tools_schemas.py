@@ -156,8 +156,10 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "are not the deliverable. The path must exist "
                 "on disk at completion. Files inside a managed scratch "
                 "workspace are copied to durable task attachments before "
-                "cleanup; a missing declared scratch artifact keeps the "
-                "task in-flight so you can fix the path and retry."
+                "cleanup; declared files inside a worktree workspace are "
+                "snapshotted the same way. A missing declared scratch or "
+                "worktree artifact keeps the task in-flight so you can fix "
+                "the path and retry."
             ),
         },
     },

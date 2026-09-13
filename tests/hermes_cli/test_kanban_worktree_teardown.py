@@ -182,6 +182,136 @@ def test_complete_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> No
     assert not _branch_exists(repo, f"wt/{tid}")
 
 
+def test_complete_task_worktree_artifact_survives_source_mutation(
+    kanban_home: Path, repo: Path
+) -> None:
+    """Declared worktree artifacts keep the bytes submitted at completion.
+
+    Scratch workspaces already copy declared deliverables into durable
+    attachment storage. Worktree tasks must use that same staging path so a
+    post-completion mutation or removal of the original file cannot alias
+    the completed evidence. Worktree deletion is not required: unlinking
+    the original file is enough to prove the snapshot is independent.
+    """
+    bytes_a = b"completion-boundary-A"
+    bytes_b = b"post-completion-B----"
+    with kbc.connect_closing() as conn:
+        tid, wt = _worktree_task(conn, repo)
+        artifact = wt / "deliverable.bin"
+        artifact.write_bytes(bytes_a)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, tid)
+        attachments = kb.list_attachments(conn, tid)
+        event_refs = list((completed.payload or {}).get("artifacts") or [])
+        run_refs = list((run.metadata or {}).get("artifacts") or []) if run else []
+        attachment_paths = [a.stored_path for a in attachments]
+
+    assert event_refs and run_refs and attachment_paths
+    assert event_refs == run_refs == attachment_paths
+    persisted = Path(event_refs[0])
+    assert persisted.parent == kb.task_attachments_dir(tid)
+    assert persisted.name == "deliverable.bin"
+    assert str(persisted) != str(artifact)
+    assert persisted.read_bytes() == bytes_a
+
+    assert artifact.exists(), "dirty worktree is preserved; mutation does not need deletion"
+    artifact.write_bytes(bytes_b)
+    artifact.unlink()
+    assert persisted.read_bytes() == bytes_a
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("deliverable.bin", str(persisted.resolve()))
+    ]
+
+
+def test_complete_task_worktree_artifact_uses_connection_board(
+    kanban_home: Path, repo: Path
+) -> None:
+    """Worktree snapshots land on the connection's board, not the ambient board."""
+    kb.create_board("other")
+    assert kb.get_current_board() == "default"
+    bytes_a = b"explicit-board-A"
+    bytes_b = b"explicit-board-B"
+    with kbc.connect_closing(board="other") as conn:
+        tid, wt = _worktree_task(conn, repo)
+        artifact = wt / "board.bin"
+        artifact.write_bytes(bytes_a)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, tid)
+        attachments = kb.list_attachments(conn, tid)
+        event_refs = list((completed.payload or {}).get("artifacts") or [])
+        run_refs = list((run.metadata or {}).get("artifacts") or []) if run else []
+        attachment_paths = [a.stored_path for a in attachments]
+
+    assert event_refs == run_refs == attachment_paths
+    persisted = Path(event_refs[0])
+    other_dir = kb.task_attachments_dir(tid, board="other")
+    default_dir = kb.task_attachments_dir(tid, board="default")
+    assert persisted.parent == other_dir
+    assert persisted.parent != default_dir
+    artifact.write_bytes(bytes_b)
+    artifact.unlink()
+    assert persisted.read_bytes() == bytes_a
+    assert not (default_dir / "board.bin").exists()
+
+
+def test_complete_task_worktree_artifact_worker_env_pins_named_board(
+    kanban_home: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dispatcher-spawned workers keep named-board snapshots on the named board.
+
+    ``kanban_db_dispatch._default_spawn`` pins ``HERMES_KANBAN_DB`` (and
+    ``HERMES_KANBAN_BOARD``) into every worker's env. Because
+    ``kanban_db_path()`` honors that pin regardless of its ``board=``
+    argument, board resolution from the live connection must not compare
+    against env-contaminated paths — otherwise a named board's snapshot
+    lands under the default board's attachments tree.
+    """
+    kb.create_board("other")
+    other_db = kb.kanban_db_path(board="other")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(other_db))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "other")
+    payload = b"worker-env-A"
+    with kbc.connect_closing() as conn:
+        tid, wt = _worktree_task(conn, repo)
+        artifact = wt / "worker.bin"
+        artifact.write_bytes(payload)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.complete_task(
+            conn,
+            tid,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        attachments = kb.list_attachments(conn, tid)
+
+    assert [a.filename for a in attachments] == ["worker.bin"]
+    persisted = Path(attachments[0].stored_path)
+    assert persisted.parent == kb.task_attachments_dir(tid, board="other")
+    assert persisted.parent != kb.task_attachments_dir(tid, board="default")
+    artifact.unlink()
+    assert persisted.read_bytes() == payload
+
+
 def test_complete_task_preserves_dirty_worktree(kanban_home: Path, repo: Path) -> None:
     with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)

@@ -119,7 +119,7 @@ def _cmd_subscribe(args):
     subs = _load_subscriptions()
     is_update = name in subs
     existing = subs.get(name, {})
-    profile_arg = getattr(args, "profile", None)
+    profile_arg = getattr(args, "route_profile", None)
     if profile_arg is None:
         profile = existing.get("profile", "default")
     else:

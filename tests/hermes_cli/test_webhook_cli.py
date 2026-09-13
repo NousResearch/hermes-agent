@@ -35,7 +35,7 @@ def _make_args(**kwargs):
         "deliver": "log",
         "deliver_chat_id": "",
         "secret": "",
-        "profile": None,
+        "route_profile": None,
         "payload": "",
         "script": "",
     }
@@ -72,7 +72,7 @@ class TestSubscribe:
         profile_dir.mkdir(parents=True)
 
         webhook_command(_make_args(
-            webhook_action="subscribe", name="notifier", profile="compta"
+            webhook_action="subscribe", name="notifier", route_profile="compta"
         ))
         created = _load_subscriptions()["notifier"]
         first_secret = created["secret"]
@@ -91,7 +91,7 @@ class TestSubscribe:
             webhook_action="subscribe", name="notifier", secret="original"
         ))
         webhook_command(_make_args(
-            webhook_action="subscribe", name="notifier", profile="missing"
+            webhook_action="subscribe", name="notifier", route_profile="missing"
         ))
 
         assert "does not exist" in capsys.readouterr().out

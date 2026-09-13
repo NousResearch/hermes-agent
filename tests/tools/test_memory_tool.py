@@ -869,3 +869,86 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestStagedMemorySemanticPreflight:
+    @pytest.mark.parametrize(
+        ("seed_entries", "proposal", "error_fragment"),
+        [
+            (["known fact"], {"action": "remove", "old_text": "absent"}, "No entry matched"),
+            (
+                ["first shared anchor", "second shared anchor"],
+                {"action": "replace", "old_text": "shared anchor", "content": "replacement"},
+                "Multiple entries matched",
+            ),
+            (
+                ["x" * 450],
+                {"action": "replace", "old_text": "x" * 450, "content": "y" * 600},
+                "Replacement would put memory",
+            ),
+            (
+                ["keep me"],
+                {
+                    "operations": [
+                        {"action": "add", "content": "must not stage separately"},
+                        {"action": "remove", "old_text": "missing anchor"},
+                    ]
+                },
+                "No operations were applied",
+            ),
+        ],
+    )
+    def test_background_invalid_proposals_are_rejected_before_atomic_staging(
+        self, store, tmp_path, monkeypatch, seed_entries, proposal, error_fragment
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for entry in seed_entries:
+            assert store.add("memory", entry)["success"] is True
+        before = list(store.memory_entries)
+
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(store=store, **proposal))
+        finally:
+            reset_current_write_origin(token)
+
+        from tools.write_approval import MEMORY, pending_count
+
+        assert result["success"] is False
+        assert error_fragment.lower() in result["error"].lower()
+        assert pending_count(MEMORY) == 0
+        assert store.memory_entries == before
+
+    def test_approval_preflight_uses_final_batch_state_and_fails_open_on_runtime_error(
+        self, store, tmp_path, monkeypatch
+    ):
+        from tools import write_approval as wa
+        from tools.terminal_tool import set_approval_callback
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: subsystem == wa.MEMORY)
+        set_approval_callback(None)
+        original = "x" * 450
+        assert store.add("memory", original)["success"] is True
+
+        invalid = json.loads(memory_tool(action="remove", old_text="missing", store=store))
+        assert invalid["success"] is False
+        assert wa.pending_count(wa.MEMORY) == 0
+
+        valid = json.loads(memory_tool(operations=[
+            {"action": "add", "content": "y" * 100},
+            {"action": "remove", "old_text": original},
+        ], store=store))
+        assert valid["staged"] is True
+        assert wa.pending_count(wa.MEMORY) == 1
+        assert store.memory_entries == [original]
+        assert wa.discard_pending(wa.MEMORY, valid["pending_id"]) is True
+
+        def clone_failure(_store):
+            raise RuntimeError("snapshot unavailable")
+
+        monkeypatch.setattr("tools.memory_tool.copy.copy", clone_failure)
+        fail_open = json.loads(memory_tool(action="remove", old_text=original, store=store))
+        assert fail_open["staged"] is True
+        assert wa.pending_count(wa.MEMORY) == 1
+        assert store.memory_entries == [original]

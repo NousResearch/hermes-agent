@@ -61,7 +61,7 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
-def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Optional[str]:
+def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any], store: "MemoryStore") -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
     try:
@@ -73,6 +73,9 @@ def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Option
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
+    invalid = _semantic_preflight(store, payload)
+    if invalid is not None:
+        return invalid
     record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
@@ -88,6 +91,41 @@ _STORE_ACTIONS = {
                lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
 
 
+def _semantic_preflight(store: "MemoryStore", payload: Dict[str, Any]) -> Optional[str]:
+    """Apply a proposal to an isolated snapshot using the native semantic validators.
+
+    A returned store failure is deterministic and blocks staging. Snapshot or runtime
+    failures are infrastructure failures, so they fail open and leave the approval
+    policy responsible for whether the untouched proposal may be staged.
+    """
+    try:
+        snapshot = copy.copy(store)
+        snapshot.memory_entries = list(store.memory_entries)
+        snapshot.user_entries = list(store.user_entries)
+        snapshot._consolidation_failures = 0
+
+        def _mutate_snapshot(target, mutate, *, skip_drift=False):
+            del skip_drift
+            result = mutate(snapshot._entries_for(target), snapshot._char_limit(target))
+            if isinstance(result, dict):
+                return result
+            snapshot._set_entries(target, result[0])
+            return snapshot._success_response(target, result[1])
+
+        snapshot._mutate = _mutate_snapshot
+        action, target = payload.get("action"), payload.get("target", "memory")
+        if action == "batch":
+            result = snapshot.apply_batch(target, payload.get("operations") or [])
+        else:
+            result = _STORE_ACTIONS[action][0](
+                snapshot, target, payload.get("content"), payload.get("old_text")
+            )
+        return None if result.get("success") else json.dumps(result, ensure_ascii=False)
+    except Exception:
+        logger.warning("Memory semantic preflight unavailable; preserving staging behavior", exc_info=True)
+        return None
+
+
 def _batch_op_line(op: Dict[str, Any]) -> str:
     op = op or {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
@@ -97,15 +135,16 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str], old_text: Optional[str],
-                      operations: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                      operations: Optional[List[Dict[str, Any]]] = None,
+                      store: Optional[MemoryStore] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(f"apply {len(operations)} op(s) to {label}",
                               "\n".join(_batch_op_line(op) for op in operations),
-                              {"action": "batch", "target": target, "operations": operations})
+                              {"action": "batch", "target": target, "operations": operations}, store)
     return _gate_or_stage(*_STORE_ACTIONS[action][1](label, content, old_text),
-                          {"action": action, "target": target, "content": content, "old_text": old_text})
+                          {"action": action, "target": target, "content": content, "old_text": old_text}, store)
 
 
 def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
@@ -129,7 +168,8 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
 _BG_DELETE_ACTIONS = ("replace", "remove")
 
 
-def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
+def _background_delete_gate(action, operations, target="memory", content=None, old_text=None,
+                            store: Optional[MemoryStore] = None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
     stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
@@ -149,6 +189,9 @@ def _background_delete_gate(action, operations, target="memory", content=None, o
                {"action": action, "target": target, "content": content, "old_text": old_text})
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
+    invalid = _semantic_preflight(store, payload)
+    if invalid is not None:
+        return invalid
     try:
         from tools import write_approval as wa
         record = wa.stage_write(
@@ -187,19 +230,19 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        denied = _background_delete_gate(action, operations, target)
+        denied = _background_delete_gate(action, operations, target, store=store)
         if denied is not None:
             return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
-        gate_result = _apply_write_gate("batch", target, None, None, operations)
+        gate_result = _apply_write_gate("batch", target, None, None, operations, store)
         if gate_result is not None:
             return gate_result
         return json.dumps(store.apply_batch(target, operations), ensure_ascii=False)
     if action not in _STORE_ACTIONS:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
-               or _background_delete_gate(action, None, target, content, old_text)
-               or _apply_write_gate(action, target, content, old_text))
+               or _background_delete_gate(action, None, target, content, old_text, store)
+               or _apply_write_gate(action, target, content, old_text, store=store))
     if invalid is not None:
         return invalid
     return json.dumps(_STORE_ACTIONS[action][0](store, target, content, old_text), ensure_ascii=False)

@@ -97,6 +97,12 @@ export interface HermesPluginSDK {
 
   /** React core — use instead of importing/bundling react. */
   React: typeof import("react").default;
+  /**
+   * Render into a supplied DOM container using the host's React DOM instance.
+   * For overlays outside the plugin tab's stacking context, pass document.body.
+   * React context and event propagation still follow the plugin component tree.
+   */
+  createPortal: typeof import("react-dom").createPortal;
   hooks: {
     useState: typeof import("react").useState;
     useEffect: typeof import("react").useEffect;

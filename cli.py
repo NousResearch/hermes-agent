@@ -2521,6 +2521,7 @@ class _ChatTurn:
     stop_event: Optional[threading.Event] = None
     tts_normal_exit: bool = False
     voice_prefix: str = ""
+    voice_context: Optional[dict] = None
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 

@@ -812,6 +812,7 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         from tools.terminal_tool_sudo import (
+            _nnp_manager_keys_to_unset,
             _nnp_sudo_unit_from_command,
             _wrap_local_command_for_no_new_privs,
             _write_nnp_env_file,
@@ -828,16 +829,25 @@ class LocalEnvironment(BaseEnvironment):
         if wrapped != cmd_string:
             env_file = _write_nnp_env_file(run_env)
             cmd_string = _wrap_local_command_for_no_new_privs(
-                cmd_string, cwd=self.cwd or None, env_file=env_file
+                cmd_string,
+                cwd=self.cwd or None,
+                env_file=env_file,
+                unset_names=_nnp_manager_keys_to_unset(run_env),
             )
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
+        try:
+            proc = subprocess.Popen(
             args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        except Exception:
+            if env_file:
+                with contextlib.suppress(OSError):
+                    os.unlink(env_file)
+            raise
         unit = _nnp_sudo_unit_from_command(cmd_string)
         if unit:
             proc._nnp_sudo_unit = unit

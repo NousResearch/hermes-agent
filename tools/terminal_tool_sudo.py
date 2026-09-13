@@ -496,6 +496,8 @@ def _format_nnp_env_line(key: str, value: str) -> str | None:
         .replace("\n", "\\n")
         .replace("\r", "\\r")
         .replace('"', '\\"')
+        .replace("`", "\\`")
+        .replace("$", "\\$")
     )
     return f'{key}="{escaped}"'
 
@@ -537,6 +539,31 @@ def _release_nnp_sudo_env_file(proc) -> None:
         os.unlink(path)
 
 
+def _nnp_manager_keys_to_unset(env: dict) -> list[str]:
+    """User-manager keys absent from *env* — otherwise they fill the unit."""
+    ctl = "/usr/bin/systemctl"
+    if not os.path.isfile(ctl):
+        return []
+    try:
+        completed = subprocess.run(
+            [ctl, "--user", "show-environment"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    names: list[str] = []
+    for line in completed.stdout.splitlines():
+        name = line.split("=", 1)[0]
+        if _NNP_ENV_KEY_RE.match(name) and name not in env:
+            names.append(name)
+    return names
+
+
 def _stop_nnp_sudo_unit(unit: str | None) -> None:
     if not unit or not unit.startswith("hermes-nnp-sudo-"):
         return
@@ -554,7 +581,11 @@ def _stop_nnp_sudo_unit(unit: str | None) -> None:
 
 
 def _wrap_local_command_for_no_new_privs(
-    command: str, *, cwd: str | None = None, env_file: str | None = None
+    command: str,
+    *,
+    cwd: str | None = None,
+    env_file: str | None = None,
+    unset_names: list[str] | None = None,
 ) -> str:
     """Run a local sudo-bearing command in a fresh systemd user unit.
 
@@ -583,12 +614,17 @@ def _wrap_local_command_for_no_new_privs(
         "--wait",
         "--quiet",
         "--collect",
+        "--expand-environment=no",
         f"--unit={unit}",
     ]
     if cwd and os.path.isabs(cwd) and os.path.isdir(cwd):
         parts.append(f"--working-directory={shlex.quote(cwd)}")
     if env_file and os.path.isfile(env_file):
         parts.append(f"--property=EnvironmentFile={shlex.quote(env_file)}")
+    if unset_names:
+        safe = [name for name in unset_names if _NNP_ENV_KEY_RE.match(name)]
+        if safe:
+            parts.append(f"--property=UnsetEnvironment={shlex.quote(' '.join(safe))}")
     parts.extend(["--", "/bin/bash", "-lc", shlex.quote(command)])
     return " ".join(parts)
 

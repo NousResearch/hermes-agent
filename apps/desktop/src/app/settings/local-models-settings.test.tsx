@@ -16,6 +16,7 @@ vi.mock('@/hermes', () => ({
   downloadBrowsedModel: vi.fn(),
   downloadLocalModel: vi.fn(),
   ejectLocalModel: vi.fn(),
+  getHermesConfigRecord: vi.fn().mockResolvedValue({}),
   getLocalCatalog: vi.fn(),
   getLocalHardware: vi.fn(),
   getLocalModelsJobs: vi.fn(),
@@ -374,6 +375,24 @@ describe('quickstart', () => {
     await waitFor(() => {
       expect(mocked.quickstartLocalModels).toHaveBeenCalled()
     })
+  })
+
+  it('renders conditional fallback copy when fallback_providers is configured', async () => {
+    mocked.getHermesConfigRecord.mockResolvedValue({
+      fallback_providers: [{ provider: 'openrouter', model: 'deepseek-v4' }]
+    })
+    renderPane()
+
+    expect(await screen.findByText(/unless local inference fails and a fallback provider is used/i)).toBeTruthy()
+  })
+
+  it('renders absolute privacy guarantee when no fallback providers are configured', async () => {
+    mocked.getHermesConfigRecord.mockResolvedValue({
+      fallback_providers: []
+    })
+    renderPane()
+
+    expect(await screen.findByText(/Nothing leaves this computer/i)).toBeTruthy()
   })
 
   it('pins the quickstart progress view while the job runs', async () => {

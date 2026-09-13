@@ -11,6 +11,7 @@ import {
   downloadBrowsedModel,
   downloadLocalModel,
   ejectLocalModel,
+  getHermesConfigRecord,
   getLocalCatalog,
   getLocalHardware,
   getLocalModelsStatus,
@@ -93,6 +94,7 @@ export function LocalModelsSettings() {
   const [catalog, setCatalog] = useState<LocalCatalogModel[] | null>(null)
   const [deleting, setDeleting] = useState<null | string>(null)
   const [serverBusy, setServerBusy] = useState(false)
+  const [hasFallbacks, setHasFallbacks] = useState(false)
   // Quickstart escape hatch: true once the user asks for the full pane
   // (model list, HF browser) instead of the one-button setup card.
   const [configure, setConfigure] = useState(false)
@@ -107,6 +109,12 @@ export function LocalModelsSettings() {
     void getLocalCatalog()
       .then(data => setCatalog(data.models))
       .catch(() => setCatalog([]))
+    void getHermesConfigRecord()
+      .then(cfg => {
+        const fallbacks = cfg.fallback_providers
+        setHasFallbacks(Array.isArray(fallbacks) && fallbacks.length > 0)
+      })
+      .catch(() => setHasFallbacks(false))
   }, [])
 
   // Snappy first paint: status + catalog immediately; hardware (may shell out
@@ -379,8 +387,8 @@ export function LocalModelsSettings() {
               <>
                 <p className="mt-2 text-[0.8rem] leading-5 text-muted-foreground">
                   {heroModel.downloaded
-                    ? copy.quickstartDetailReady(heroModel.display_name)
-                    : copy.quickstartDetail(heroModel.display_name, heroModel.size_label)}
+                    ? copy.quickstartDetailReady(heroModel.display_name, hasFallbacks)
+                    : copy.quickstartDetail(heroModel.display_name, heroModel.size_label, hasFallbacks)}
                 </p>
 
                 <div className="mt-6 flex items-center justify-center gap-3">

@@ -74,6 +74,21 @@ describe('live transcript timeline events', () => {
     expect(system?.parts[0].timestamp).toBe(401.625)
   })
 
+  it('records lifecycle and warn status updates as persistent system rows', () => {
+    event('status.update', 450.5, {
+      kind: 'lifecycle',
+      text: '⚠️ Model fallback: local-model via llamacpp unavailable; using deepseek via openrouter.'
+    })
+
+    const systemMsg = stream.state(SID).messages.find(
+      message => message.role === 'system' && message.parts[0]?.type === 'text' && message.parts[0].text.includes('Model fallback')
+    )
+
+    expect(systemMsg).toBeDefined()
+    expect(systemMsg?.timestamp).toBe(450.5)
+    expect(systemMsg?.parts[0].timestamp).toBe(450.5)
+  })
+
   it('uses session.info time when it is the only stop boundary', () => {
     event('message.start', 500)
     event('tool.start', 501, { args: {}, name: 'terminal', tool_id: 'call-3' })
@@ -85,3 +100,4 @@ describe('live transcript timeline events', () => {
     expect(assistant?.parts[0].completedAt).toBe(502.75)
   })
 })
+

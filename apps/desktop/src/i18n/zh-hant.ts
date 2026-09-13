@@ -3468,7 +3468,7 @@ export const zhHant = defineLocale({
       },
       'local-setup': {
         title: '這台電腦可以本地執行模型',
-        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
+        text: '你的硬體可以執行本地模型。該模型處於活動狀態時，對話會留在你的電腦上；如果切換到備援提供者，Hermes 會通知你。',
         action: '立即設定'
       },
       'right-pane': {

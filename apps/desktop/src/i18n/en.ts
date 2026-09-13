@@ -1335,10 +1335,14 @@ export const en: Translations = {
       downloadDoneToast: model => `${model} is ready.`,
       installDoneToast: 'Local runtime installed and ready.',
       quickstartTitle: 'Run a model on this machine',
-      quickstartDetail: (model, size) =>
-        `One click sets everything up: the local engine, ${model} (${size} download), and your default for new chats. Nothing leaves this computer.`,
-      quickstartDetailReady: model =>
-        `One click makes ${model} your default for new chats. Everything runs on this machine.`,
+      quickstartDetail: (model, size, hasFallbacks) =>
+        hasFallbacks
+          ? `One click sets everything up: the local engine, ${model} (${size} download), and your default for new chats. Chats stay on this computer unless local inference fails and a fallback provider is used.`
+          : `One click sets everything up: the local engine, ${model} (${size} download), and your default for new chats. Nothing leaves this computer.`,
+      quickstartDetailReady: (model, hasFallbacks) =>
+        hasFallbacks
+          ? `One click makes ${model} your default for new chats. Everything runs on this machine unless local inference fails and a fallback provider is used.`
+          : `One click makes ${model} your default for new chats. Everything runs on this machine.`,
       quickstartAction: 'Set up for me',
       quickstartConfigure: 'Let me choose',
       quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
@@ -4163,7 +4167,7 @@ export const en: Translations = {
       },
       'local-setup': {
         title: 'This machine can run models locally',
-        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
+        text: 'Your hardware can serve a local model. Chats stay on your computer while it is active; Hermes will notify you if it switches to a fallback provider.',
         action: 'Set it up'
       },
       'right-pane': {

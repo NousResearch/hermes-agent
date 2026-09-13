@@ -56,6 +56,37 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId && (payload?.kind === 'lifecycle' || payload?.kind === 'warn')) {
+      // Durable lifecycle/fallback switches and failure traces. Emitted via
+      // _emit_status / _emit_warning from python turn loop (e.g. model fallback
+      // notice, safety refusal, terminal failure attempts). Rendered as persistent
+      // system lines so operators have durable transcript record of provider switches.
+      const text = coerceGatewayText(payload?.text).trim()
+
+      if (text) {
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => {
+          const lastMsg = state.messages[state.messages.length - 1]
+          const lastText = lastMsg?.parts?.map(p => (p.type === 'text' ? p.text : '')).join('')
+
+          if (lastText === text) {
+            return state
+          }
+
+          return {
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `status-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                role: 'system',
+                parts: [textPart(text, occurredAt)],
+                timestamp: occurredAt
+              }
+            ]
+          }
+        })
+      }
     }
 
     return true

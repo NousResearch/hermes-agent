@@ -1158,8 +1158,8 @@ export interface Translations {
       downloadDoneToast: (model: string) => string
       installDoneToast: string
       quickstartTitle: string
-      quickstartDetail: (model: string, size: string) => string
-      quickstartDetailReady: (model: string) => string
+      quickstartDetail: (model: string, size: string, hasFallbacks?: boolean) => string
+      quickstartDetailReady: (model: string, hasFallbacks?: boolean) => string
       quickstartAction: string
       quickstartConfigure: string
       quickstartDoneToast: (model: string) => string

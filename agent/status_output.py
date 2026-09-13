@@ -161,15 +161,34 @@ class StatusOutputMixin:
     def _emit_pending_fallback_notice(self) -> None:
         """Surface the one-shot fallback-switch notice on successful recovery: a provider switch is durable
         state operators must see, unlike the retry chatter ``_clear_status_buffer`` drops. Emitted once, then
-        cleared; on terminal failure the buffered switch line is flushed instead (``_flush_status_buffer``)."""
+        cleared; on terminal failure the buffered switch line is flushed instead (``_flush_status_buffer``).
+
+        Delivered via dual channels:
+        - As an immediate structured ``AgentNotice`` warning toast via ``notice_callback`` for visual alerts.
+        - As a lifecycle status message via ``_emit_status`` for terminal output, logging, and durable session
+          transcript recording on gateway clients like Desktop.
+        """
         notice = getattr(self, "_pending_fallback_notice", None)
         if not notice:
             return
         # Clear before emitting so a (swallowed) callback error can't leave a stale re-emit.
         self._pending_fallback_notice = None
         for item in notice if isinstance(notice, list) else [notice]:
+            text = str(item)
             try:
-                self._emit_status(str(item))
+                if getattr(self, "notice_callback", None):
+                    from agent.credits_tracker import AgentNotice
+
+                    self._emit_notice(AgentNotice(
+                        text=text,
+                        level="warn",
+                        kind="ttl",
+                        ttl_ms=15_000,
+                    ))
+            except Exception:
+                pass
+            try:
+                self._emit_status(text)
             except Exception:
                 # One surface failure must not hide later switches from the same chain.
                 continue

@@ -1495,9 +1495,14 @@ export const zh = defineLocale({
       installing: '正在安装运行时…',
       installFailed: '运行时安装失败',
       quickstartTitle: '在本机运行模型',
-      quickstartDetail: (model, size) =>
-        `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。数据不会离开这台电脑。`,
-      quickstartDetailReady: model => `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行。`,
+      quickstartDetail: (model, size, hasFallbacks) =>
+        hasFallbacks
+          ? `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。对话留在本机，除非本地推理失败并使用备用提供商。`
+          : `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。数据不会离开这台电脑。`,
+      quickstartDetailReady: (model, hasFallbacks) =>
+        hasFallbacks
+          ? `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行，除非本地推理失败并使用备用提供商。`
+          : `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行。`,
       quickstartAction: '为我设置',
       quickstartConfigure: '让我选择',
       quickstartDoneToast: model => `${model} 已就绪——新会话将在本机运行。`,
@@ -4273,7 +4278,7 @@ export const zh = defineLocale({
       },
       'local-setup': {
         title: '这台电脑可以本地运行模型',
-        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
+        text: '你的硬件可以运行本地模型。该模型处于活动状态时，对话会留在你的电脑上；如果切换到备用提供商，Hermes 会通知你。',
         action: '立即设置'
       },
       'right-pane': {

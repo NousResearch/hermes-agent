@@ -732,7 +732,6 @@ that touches the OS, assume *any* platform can hit your code path.
    For process enumeration: PowerShell's `Get-CimInstance Win32_Process` is
    the modern replacement for `wmic process`. See
    `hermes_cli/gateway.py::_scan_gateway_pids` for the pattern.
-   ```
 
 3. **File encoding.** Windows may save `.env` files in `cp1252`. Always
    handle encoding errors:

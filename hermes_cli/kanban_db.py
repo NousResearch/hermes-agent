@@ -470,16 +470,113 @@ def _dir_holds_board(d: Path) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _pin_answers_for(slug: str, pinned: Path, canonical: Path) -> bool:
+    """Whether the caller's pin may answer a request for ``slug``.
+
+    True when ``slug`` IS the caller's own board: ``HERMES_KANBAN_BOARD`` — injected
+    next to the pin by the dispatcher — says so, or (absent that declaration) the
+    pinned path already IS ``slug``'s canonical file. The declaration matters
+    because the pinned path cannot always be compared to a derived one: the pin
+    exists precisely to survive ``hermes -p`` rewriting ``HERMES_HOME`` (symlink /
+    Docker layouts — see the spawn path), where the two differ for the SAME board.
+    """
+    if _pinned_board_slug() == slug:
+        return True
+    return _same_db_file(pinned, canonical)
+
+
+def _override_board_request() -> Optional[str]:
+    """The board a call's ``scoped_current_board`` override names — or ``None``.
+
+    This is the CLI ``--board <slug>`` / dashboard per-request board: an EXPLICIT
+    board request made by the caller for ONE call, unlike the ``board`` argument
+    of the internal API (which callers pass for the board they are already bound
+    to — the dispatcher spawn path, for instance, runs pinned to its own DB and
+    passes that same board).
+
+    ``None`` means no override, so the legacy chain (``HERMES_KANBAN_DB`` ->
+    ``HERMES_KANBAN_BOARD`` -> ``<root>/kanban/current`` -> ``default``) decides.
+    An override naming a board that does not exist falls through, mirroring
+    :func:`get_current_board`: a stale/malformed override must not invent a board.
+    """
+    raw = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if not raw:
+        return None
+    try:
+        normed = _normalize_board_slug(raw)
+    except ValueError:
+        return None
+    return normed if normed and board_exists(normed) else None
+
+
+def _pinned_board_slug() -> Optional[str]:
+    """The board the caller's pins identify, per the environment — or ``None``.
+
+    The dispatcher injects ``HERMES_KANBAN_BOARD`` next to ``HERMES_KANBAN_DB``,
+    and it is what makes the pin authoritative for the caller's OWN board even
+    when the pinned path cannot be compared to a derived one (``hermes -p``
+    rewriting ``HERMES_HOME``, Docker / symlink layouts — see the spawn path).
+    """
+    raw = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if not raw:
+        return None
+    try:
+        return _normalize_board_slug(raw)
+    except ValueError:
+        return None
+
+
+def _canonical_pinned_path(slug: str, default_parts: tuple[str, ...], leaf: str) -> Path:
+    """Where ``_board_path`` points for ``slug`` with NO env pin set.
+
+    ``default`` keeps the legacy layout (``<root>/kanban.db``, ``<root>/kanban/
+    workspaces``); every other board lives under its own directory.
+    """
+    if slug == DEFAULT_BOARD:
+        return kanban_home().joinpath(*default_parts)
+    return board_dir(slug) / leaf
+
+
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
+    *, identity: bool = False,
 ) -> Path:
     """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
+    for the ``default`` board, else ``board_dir(slug)/leaf``.
+
+    The env override is a PIN: the dispatcher injects it into every worker and it
+    identifies that worker's OWN board, so a per-call board request must not be
+    answered through it unless it names that same board. The request that matters
+    here is the ``scoped_current_board`` override — the CLI ``--board <slug>`` and
+    the dashboard's per-request board — because that is the one users make for
+    ANOTHER board; the ``board`` argument keeps the legacy chain (its callers pass
+    the board they are already bound to, pin included). This collapse is why
+    ``hermes kanban --board <sibling> create`` printed ``Created t_…`` while the
+    row landed in the caller's own board (fourth site of the ``HERMES_KANBAN_DB``
+    pin collapse behind 6fdaa43d0). So an override naming another board ignores
+    the pin and derives that board's canonical path, and for the DB file itself
+    (``identity=True`` — the trust boundary) a board-scoped caller (dispatcher
+    worker / delegate child) is refused loudly instead of silently mis-delivered.
+    :func:`connection_db_path` applies the same rule to an explicit ``board=``
+    request on the connector side.
+    """
+    requested = _override_board_request()
     if env_var:
         override = os.environ.get(env_var, "").strip()
         if override:
-            return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
+            pinned = Path(override).expanduser()
+            if requested is None:
+                return pinned
+            canonical = _canonical_pinned_path(requested, default_parts, leaf)
+            if _pin_answers_for(requested, pinned, canonical):
+                # The caller's OWN board (or the pinned path already IS this
+                # board's): the pin is the authority — it survives a rewritten
+                # HERMES_HOME, where the derived path differs for the SAME board.
+                return pinned
+            if identity and _is_board_scoped_process():
+                raise _board_pin_conflict(env_var, requested, pinned)
+            return canonical
+    slug = _normalize_board_slug(board) or requested
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -489,8 +586,9 @@ def _board_path(
 
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
-    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
+    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir. The pin
+    answers only for the board it names — see :func:`_board_path`."""
+    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db", identity=True)
 
 
 def board_db_path_unpinned(board: Optional[str] = None) -> Path:
@@ -522,6 +620,17 @@ class BoardPinConflict(ValueError):
     DIFFERENT board: resolving through the pin would create or read the task on
     the caller's own board — a silent mis-delivery that reports success.
     """
+
+
+def _board_pin_conflict(env_var: str, slug: str, pinned: Path) -> BoardPinConflict:
+    """The one refusal message every site of the pin collapse raises."""
+    return BoardPinConflict(
+        f"board {slug!r} is out of scope for this process: {env_var} pins it "
+        f"to {pinned}, which is the caller's own board, not {slug!r}. A dispatcher "
+        f"worker (or a descendant of one) cannot read or write another board — route "
+        f"cross-board work from a non-pinned context (dashboard or interactive "
+        f"session) instead."
+    )
 
 
 def _pinned_db_override() -> Optional[Path]:
@@ -561,9 +670,10 @@ def connection_db_path(board: Optional[str] = None, db_path: Optional[Path] = No
 
     ``db_path`` wins outright; ``board=None`` keeps the whole legacy chain
     (:func:`kanban_db_path`). An explicit ``board`` is a request for THAT board,
-    so the caller's ``HERMES_KANBAN_DB`` pin is honoured only while it already IS
-    that board's canonical file (:func:`board_db_path_unpinned`) — i.e. the
-    caller's own board. When the pin names something else:
+    so the caller's ``HERMES_KANBAN_DB`` pin is honoured only while that board IS
+    the caller's own (:func:`_pin_answers_for`: ``HERMES_KANBAN_BOARD`` says so,
+    or the pinned file already is that board's canonical file). When the pin names
+    something else:
 
     * a board-scoped process (:func:`_is_board_scoped_process`) raises
       :class:`BoardPinConflict` — resolving through the pin would create or read
@@ -583,16 +693,10 @@ def connection_db_path(board: Optional[str] = None, db_path: Optional[Path] = No
     if pinned is None:
         return kanban_db_path(slug)
     canonical = board_db_path_unpinned(slug)
-    if _same_db_file(pinned, canonical):
+    if _pin_answers_for(slug, pinned, canonical):
         return pinned
     if _is_board_scoped_process():
-        raise BoardPinConflict(
-            f"board {slug!r} is out of scope for this process: HERMES_KANBAN_DB pins it "
-            f"to {pinned}, which is the caller's own board, not {slug!r}. A dispatcher "
-            f"worker (or a descendant of one) cannot read or write another board — route "
-            f"cross-board work from a non-pinned context (dashboard or interactive "
-            f"session) instead."
-        )
+        raise _board_pin_conflict("HERMES_KANBAN_DB", slug, pinned)
     return canonical
 
 
@@ -619,6 +723,20 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     return _board_path(None, board, ("kanban", "logs"), "logs")
 
 
+def _caller_effective_db_path(board: Optional[str] = None) -> Path:
+    """The DB file THIS process reads and writes for a board — pin included.
+
+    Distinct from :func:`kanban_db_path`, which honours an EXPLICIT board request
+    over a contradictory pin (an explicit request is not "the caller's board"):
+    with ``HERMES_KANBAN_DB`` set this returns the pinned file for EVERY slug.
+    Board metadata reports this value (see :func:`read_board_metadata`).
+    """
+    pinned = _pinned_db_override()
+    if pinned is not None:
+        return pinned
+    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
+
+
 def board_metadata_path(board: Optional[str] = None) -> Path:
     """``board.json`` path — display metadata only; the directory slug is the identity."""
     return board_dir(_slug_or_default(board)) / "board.json"
@@ -633,14 +751,16 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
     raises — a missing/malformed file yields the synthesized entry.
 
-    ``db_path`` is the CALLER-EFFECTIVE path (:func:`kanban_db_path`), not a
-    board's canonical file: every path-taking API in this process resolves
+    ``db_path`` is the CALLER-EFFECTIVE path (:func:`_caller_effective_db_path`),
+    not a board's canonical file: every path-taking API in this process resolves
     through ``HERMES_KANBAN_DB``, so with that pin set the entry reports the
     pinned file for EVERY slug. That is deliberate and load-bearing — the two
     consumers of this field (``gateway.kanban_watchers_notifier`` and
     ``tui_gateway.session_notifications``) key a seen-DB set on it so a pinned
-    DB is polled once instead of once per aliased slug, and it keeps the value
-    consistent with ``connect()`` / ``_board_counts()`` in the same process.
+    DB is polled once instead of once per aliased slug. (It is NOT
+    :func:`kanban_db_path` any more: that honours an explicit board request over a
+    contradictory pin — a CLI ``--board <sibling>`` — so it can no longer stand in
+    for "this process's board".)
     A caller that needs a board's CANONICAL file (cross-board reads from a
     pinned worker, e.g. :func:`_other_board_db_paths`) must use
     :func:`board_db_path_unpinned` instead of this field.
@@ -679,7 +799,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
-    meta["db_path"] = str(kanban_db_path(slug))
+    meta["db_path"] = str(_caller_effective_db_path(slug))
     return meta
 
 
@@ -721,7 +841,7 @@ def write_board_metadata(
     path.write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
     )
-    meta["db_path"] = str(kanban_db_path(slug))
+    meta["db_path"] = str(_caller_effective_db_path(slug))
     return meta
 
 

@@ -12,18 +12,31 @@ mirroring ``test_kanban_phantom_refs.py::test_pinned_db_env_resolves_cross_board
   loud ``BoardPinConflict`` — never a row in its own DB;
 * a board-agnostic caller (gateway / dashboard / interactive / top-level cron)
   gets the board it asked for.
+
+The CLI verb ``hermes kanban --board X …`` is the fourth site: its ``--board``
+became a context-local current-board override, which the resolver only consults
+*after* the ``HERMES_KANBAN_*`` env pins, so from a pinned worker ``--board X``
+was still answered out of the pin and the card was written to the caller's own
+board — with a ``Created t_…`` success line. Those cases are covered at the
+bottom of this file and drive the real CLI in a child process.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+
+
+_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -199,3 +212,170 @@ def test_board_agnostic_caller_with_a_pin_reaches_the_named_board(
 
     assert [r[0] for r in _sql(sibling, "SELECT id FROM tasks ORDER BY id")] == [tid]
     assert _titles(pinned) == []  # nothing collapsed onto the pinned file
+
+
+# ---------------------------------------------------------------------------
+# Fourth site — the CLI path: ``hermes kanban --board X <verb>``
+# ---------------------------------------------------------------------------
+
+def _titles_if_any(db_path: Path) -> list[str]:
+    """``_titles`` for a DB that may never have been created."""
+    return _titles(db_path) if Path(db_path).exists() else []
+
+
+def _run_cli(
+    home: Path,
+    *args: str,
+    pin_db: str | None = None,
+    board_env: str | None = None,
+    task: str | None = None,
+    workspaces_root: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``hermes kanban …`` in a child process — the real CLI entry point.
+
+    The pins are injected the way the dispatcher injects them into a worker, so
+    the child has exactly the environment of the reported repro.
+    """
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["HERMES_KANBAN_HOME"] = str(home)
+    env["PYTHONPATH"] = str(_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK",
+                "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_DELEGATED_CHILD_CONTEXT"):
+        env.pop(var, None)
+    if pin_db:
+        env["HERMES_KANBAN_DB"] = pin_db
+    if board_env:
+        env["HERMES_KANBAN_BOARD"] = board_env
+    if task:
+        env["HERMES_KANBAN_TASK"] = task
+    if workspaces_root:
+        env["HERMES_KANBAN_WORKSPACES_ROOT"] = workspaces_root
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "kanban", *args],
+        cwd=_ROOT, env=env, capture_output=True, text=True, check=False, timeout=120,
+    )
+
+
+@pytest.fixture
+def two_boards(tmp_path, monkeypatch):
+    """Isolated kanban home holding two named boards: ``alpha`` and ``beta``."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK",
+                "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_DELEGATED_CHILD_CONTEXT"):
+        monkeypatch.delenv(var, raising=False)
+    kb.init_db()
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    return home
+
+
+def test_cli_create_on_a_sibling_board_under_a_pin_is_refused(two_boards):
+    """The reported repro: ``--board beta create`` from a worker pinned to alpha.
+
+    Acceptance: a loud refusal (non-zero exit, naming both boards) — and in NO
+    case a row on either board. Before the fix the CLI answered ``--board`` out of
+    ``HERMES_KANBAN_DB`` and printed ``Created t_…`` for a card that then landed in
+    the caller's own board, which is also how it was claimed and run by the wrong
+    dispatcher.
+    """
+    alpha = kb.board_db_path_unpinned("alpha")
+    beta = kb.board_db_path_unpinned("beta")
+
+    res = _run_cli(
+        two_boards, "--board", "beta", "create", "must not land anywhere",
+        "--assignee", "default",
+        pin_db=str(alpha), board_env="alpha", task="t_pinned0001",
+    )
+
+    assert res.returncode == 1, (res.stdout, res.stderr)
+    assert "out of scope" in res.stderr
+    assert "'beta'" in res.stderr and str(alpha) in res.stderr
+    assert "Created" not in res.stdout
+    assert _titles_if_any(alpha) == []      # not on the caller's own board...
+    assert _titles_if_any(beta) == []       # ...and not on the requested one either
+
+
+def test_cli_create_on_the_pinned_board_still_works(two_boards):
+    """The pin stays authoritative for the caller's OWN board (regression guard)."""
+    alpha = kb.board_db_path_unpinned("alpha")
+    beta = kb.board_db_path_unpinned("beta")
+
+    res = _run_cli(
+        two_boards, "--board", "alpha", "create", "own board work",
+        "--assignee", "default",
+        pin_db=str(alpha), board_env="alpha", task="t_pinned0001",
+    )
+
+    assert res.returncode == 0, res.stderr
+    assert "Created" in res.stdout
+    assert _titles_if_any(alpha) == ["own board work"]
+    assert _titles_if_any(beta) == []
+
+
+def test_cli_board_override_with_a_stale_pin_but_no_worker_identity(two_boards):
+    """A board-agnostic caller (gateway/dashboard/interactive) gets the board it
+    asked for even while a stale ``HERMES_KANBAN_DB`` sits in its env."""
+    alpha = kb.board_db_path_unpinned("alpha")
+    beta = kb.board_db_path_unpinned("beta")
+
+    res = _run_cli(
+        two_boards, "--board", "beta", "create", "routed to beta",
+        "--assignee", "default",
+        pin_db=str(alpha), board_env="alpha",   # no HERMES_KANBAN_TASK -> not scoped
+    )
+
+    assert res.returncode == 0, res.stderr
+    assert _titles_if_any(beta) == ["routed to beta"]
+    assert _titles_if_any(alpha) == []
+
+
+def test_cli_cross_board_create_still_works_without_the_db_pin(two_boards):
+    """The documented workaround must keep working: dropping ``HERMES_KANBAN_DB``
+    (the identity pin) is enough to file a card cross-board from a worker shell,
+    even with the workspace pin still set."""
+    beta = kb.board_db_path_unpinned("beta")
+    alpha_workspaces = kb.workspaces_root(board="alpha")
+
+    res = _run_cli(
+        two_boards, "--board", "beta", "create", "cross-board filing",
+        "--assignee", "default",
+        board_env="alpha", task="t_pinned0001", workspaces_root=str(alpha_workspaces),
+    )
+
+    assert res.returncode == 0, res.stderr
+    assert _titles_if_any(beta) == ["cross-board filing"]
+
+
+def test_pinned_worker_override_for_a_sibling_board_refuses(kanban_home, monkeypatch):
+    """The DB file is the trust boundary, so a per-call board request for a
+    sibling board from a scoped caller is refused — the same rule
+    :func:`connection_db_path` applies to an explicit ``connect(board=…)``."""
+    kb.create_board("sibling")
+    pinned = _pin_worker_to(monkeypatch, "default")
+
+    with pytest.raises(kb.BoardPinConflict) as excinfo:
+        with kb.scoped_current_board("sibling"):
+            kb.kanban_db_path()
+    assert "out of scope" in str(excinfo.value)
+
+    # The caller's own board still resolves through the pin (`--board <own>`).
+    with kb.scoped_current_board("default"):
+        assert kb.kanban_db_path() == pinned
+
+
+def test_pinned_ancillary_roots_follow_the_overridden_board(kanban_home, monkeypatch):
+    """Workspaces/attachments roots are not the identity: a per-call request for
+    a sibling board follows that board's canonical root instead of refusing, so
+    dropping the DB pin is enough to file cross-board work (see the CLI test
+    above)."""
+    kb.create_board("sibling")
+    _pin_worker_to(monkeypatch, "default")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(kb.workspaces_root()))
+
+    assert kb.workspaces_root() == kb.workspaces_root(board="default")
+    with kb.scoped_current_board("sibling"):
+        assert kb.workspaces_root() == kb.board_dir("sibling") / "workspaces"

@@ -173,6 +173,16 @@ def kanban_command(args: argparse.Namespace) -> int:
         if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
             return _err(f"kanban: board {normed!r} does not exist. "
                         f"Create it with `hermes kanban boards create {normed}`.")
+        # A process pinned to ITS OWN board (a dispatcher worker or a descendant) may not route
+        # a CLI call at a sibling board: HERMES_KANBAN_DB outranks `--board` in the resolver, so
+        # this used to answer `--board <sibling>` from the pin and write the card to the WRONG
+        # board while printing "Created t_…". Refuse up front so the operator sees the scope
+        # conflict itself — the resolution layer raises the same error, but wrapped in init_db's
+        # generic "could not initialize database" message.
+        try:
+            kb.connection_db_path(normed)
+        except kb.BoardPinConflict as exc:
+            return _err(f"kanban: {exc}")
         board_scope = kb.scoped_current_board(normed)
 
     with board_scope:

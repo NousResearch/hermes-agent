@@ -188,9 +188,17 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
     absolute directory is ever injected (never a fake container path)."""
     from agent.runtime_cwd import scope_terminal_cwd
+    # Parent-specific fields FIRST. The terminal cwd is process/scope-wide state:
+    # when the gateway is launched outside the target project it holds the
+    # gateway's own directory, and preferring it here would select exactly the
+    # wrong place this hint exists to avoid — and the child's own cwd is pinned
+    # to this value (see _run_child_in_workspace), so the mistake would be
+    # faithfully propagated. It stays only as the last-resort fallback when the
+    # parent carries no workspace of its own.
     candidates = [
-        scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
+        getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
         getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
+        scope_terminal_cwd(),
     ]
     for candidate in filter(None, candidates):
         with _quiet(None):

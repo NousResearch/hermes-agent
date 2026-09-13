@@ -30,6 +30,8 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _run_child_in_workspace,
+    _resolve_workspace_hint,
 )
 from hermes_state import SessionDB
 
@@ -58,6 +60,99 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateRequirements(unittest.TestCase):
+
+    def test_child_run_is_pinned_to_parent_workspace(self):
+        import tempfile
+        from pathlib import Path
+        from agent.runtime_cwd import resolve_agent_cwd, set_session_cwd
+
+        observed = []
+
+        class Child:
+            def run_conversation(self, goal):
+                observed.append(resolve_agent_cwd())
+                return {"final_response": goal}
+
+        # Two DISTINCT directories: a fake gateway cwd (seeded as a
+        # pre-existing session override, the way a gateway launched outside
+        # the project would carry one) and the parent workspace the child
+        # must actually observe.
+        with tempfile.TemporaryDirectory() as gateway_dir, \
+                tempfile.TemporaryDirectory() as workspace:
+            outer_token = set_session_cwd(gateway_dir)
+            try:
+                result = _run_child_in_workspace(Child(), workspace, "review")
+
+                # During the run: the child saw the parent workspace, not the
+                # gateway directory.
+                self.assertEqual(observed, [Path(workspace)])
+                self.assertEqual(result["final_response"], "review")
+
+                # After the run, WHILE both directories still exist: the
+                # pre-existing override is restored — not cleared, not left
+                # pointing at the child workspace. Asserting inside the
+                # tempdir context matters: once the dirs are deleted,
+                # resolve_agent_cwd() falls back and would mask a leak.
+                self.assertEqual(resolve_agent_cwd(), Path(gateway_dir))
+            finally:
+                outer_token.var.reset(outer_token)
+
+    def test_child_run_restores_no_override_state(self):
+        import tempfile
+        from pathlib import Path
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        class Child:
+            def run_conversation(self, goal):
+                return {"final_response": goal}
+
+        with tempfile.TemporaryDirectory() as workspace:
+            baseline = resolve_agent_cwd()
+            _run_child_in_workspace(Child(), workspace, "go")
+            # No pre-existing override: after the run (dirs still alive) the
+            # resolution must be byte-identical to the pre-run baseline.
+            self.assertEqual(resolve_agent_cwd(), baseline)
+            self.assertNotEqual(baseline, Path(workspace))
+
+    def test_child_run_restores_override_even_on_error(self):
+        import tempfile
+        from pathlib import Path
+        from agent.runtime_cwd import resolve_agent_cwd, set_session_cwd
+
+        class ExplodingChild:
+            def run_conversation(self, goal):
+                raise RuntimeError("child crashed")
+
+        with tempfile.TemporaryDirectory() as gateway_dir, \
+                tempfile.TemporaryDirectory() as workspace:
+            outer_token = set_session_cwd(gateway_dir)
+            try:
+                with self.assertRaises(RuntimeError):
+                    _run_child_in_workspace(ExplodingChild(), workspace, "go")
+                self.assertEqual(resolve_agent_cwd(), Path(gateway_dir))
+            finally:
+                outer_token.var.reset(outer_token)
+
+    def test_workspace_hint_prefers_parent_fields_over_terminal_cwd(self):
+        import tempfile
+        from unittest import mock
+
+        # Distinct real directories: the process-wide TERMINAL_CWD (gateway)
+        # and the parent's own workspace. The hint must pick the parent's.
+        with tempfile.TemporaryDirectory() as gateway_dir, \
+                tempfile.TemporaryDirectory() as parent_dir:
+            parent = mock.Mock(spec=[])
+            parent.terminal_cwd = parent_dir
+            with mock.patch.dict(os.environ, {"TERMINAL_CWD": gateway_dir}):
+                resolved = _resolve_workspace_hint(parent)
+            self.assertEqual(resolved, os.path.abspath(parent_dir))
+
+            # And TERMINAL_CWD still serves as the last-resort fallback when
+            # the parent carries no workspace of its own.
+            bare = mock.Mock(spec=[])
+            with mock.patch.dict(os.environ, {"TERMINAL_CWD": gateway_dir}):
+                fallback = _resolve_workspace_hint(bare)
+            self.assertEqual(fallback, os.path.abspath(gateway_dir))
 
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")

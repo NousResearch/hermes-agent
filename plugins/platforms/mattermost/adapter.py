@@ -398,9 +398,11 @@ class MattermostAdapter(BasePlatformAdapter):
         return file_data, _url_filename(image_url, f"image_{index}.png"), ct
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: _Metadata = None, human_delay: float = 0.0) -> SendResult:
+                                   metadata: _Metadata = None, human_delay: float = 0.0,
+                                   reply_to: Optional[str] = None) -> SendResult:
         """Send a batch of images as one post; chunked at Mattermost's 5-``file_ids`` cap, each chunk
-        falling back to the base per-image loop on failure."""
+        falling back to the base per-image loop on failure. ``reply_to`` anchors the post like the
+        text path (thread mode resolves it to the true root)."""
         if not images:
             return SendResult(success=False, error="no images to send")
         chunks = [images[i:i + 5] for i in range(0, len(images), 5)]  # Mattermost post file_ids cap
@@ -420,17 +422,19 @@ class MattermostAdapter(BasePlatformAdapter):
                     continue
                 logger.info("Mattermost: sending %d image(s) as single post (chunk %d/%d)",
                             len(file_ids), chunk_idx + 1, len(chunks))
-                data = await self._post_message(chat_id, "\n".join(caption_parts), None, metadata, file_ids)
+                data = await self._post_message(chat_id, "\n".join(caption_parts), reply_to, metadata, file_ids)
                 if data and "id" in data:
                     delivered = True
                 else:
                     logger.warning("Mattermost: multi-image post failed, falling back")
-                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay,
+                                                                  reply_to=reply_to)
                     delivered = delivered or fallback.success
             except Exception as e:
                 logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                                chunk_idx + 1, len(chunks), e, exc_info=True)
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay,
+                                                              reply_to=reply_to)
                 delivered = delivered or fallback.success
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 

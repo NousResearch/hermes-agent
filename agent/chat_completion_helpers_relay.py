@@ -34,6 +34,7 @@ class RelayChatAccumulator:
     def __init__(self) -> None:
         self._content: list[str] = []
         self._reasoning: list[str] = []
+        self._reasoning_details: list[Any] = []
         self._tool_calls = _ToolCallAccumulator()
         self._model = self._usage = self._finish_reason = None
         self._role = "assistant"
@@ -57,6 +58,7 @@ class RelayChatAccumulator:
         text = flatten_message_text(delta.get("content"), sep="")
         if text:
             self._content.append(text)
+        self._reasoning_details.extend(delta.get("reasoning_details") or [])
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if reasoning:
             self._reasoning.append(separate_glued_reasoning_blocks(
@@ -68,6 +70,7 @@ class RelayChatAccumulator:
         acc = self._tool_calls.materialize()
         message = {"role": self._role, "content": "".join(self._content) or None,
             "reasoning_content": "".join(self._reasoning) or None,
+            "reasoning_details": self._reasoning_details or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}
         # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.
         return {"model": self._model, "usage": self._usage,

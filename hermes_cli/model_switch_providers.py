@@ -863,6 +863,9 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
+        if cp_config and cp_config.auth_type == "external_process":
+            from hermes_cli.auth import get_external_process_provider_status
+            has_creds = bool(get_external_process_provider_status(cp.slug).get("configured"))
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
         if not has_creds:

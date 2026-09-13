@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,9 @@ def catalog_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_hermes
 
 @pytest.fixture
 def client():
-    with TestClient(app) as test_client:
+    # Route-only tests must not start process-lifetime SQLite workers: those
+    # outlive TestClient shutdown and race the next test's HERMES_HOME reset.
+    with closing(TestClient(app)) as test_client:
         yield test_client
 
 

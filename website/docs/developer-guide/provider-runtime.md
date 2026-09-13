@@ -37,6 +37,13 @@ Fragments retain their explicit whitespace; normalization adds no intra-field se
 Main-stream and Relay recording retain the existing paragraph breaks between complete
 bold reasoning headings. Reasoning stays separate from the visible answer.
 
+`delta.reasoning_details` is a list of opaque provider records. Both the main
+stream and Relay recording append these records in arrival order without
+flattening, merging, or rewriting their contents. Providers can emit complete
+records on the final delta or across multiple deltas; omit the field on chunks
+without new records. The collected records pass through response normalization
+and assistant-message storage into session replay, including nested signed payloads.
+
 ## Resolution precedence
 
 At a high level, provider resolution uses:

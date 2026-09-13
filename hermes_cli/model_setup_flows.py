@@ -630,6 +630,77 @@ def _model_flow_copilot_acp(config, current_model=""):
                   base_url=effective_base, api_mode="chat_completions")
 
 
+def _model_flow_external_process(config, provider_id, current_model=""):
+    """Pick from a process profile. The CLI owns login; when the profile can report its status we
+    gate on it (offering the CLI's own login command on a TTY) and list the account's live picker."""
+    from hermes_cli.auth import AuthError, resolve_external_process_provider_credentials
+    from hermes_cli.models import provider_model_ids
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider_id)
+    if profile is None:
+        raise ValueError(f"Unknown process provider: {provider_id}")
+    status = profile.setup_status()
+    if status is not None and not status["available"]:
+        _say(f"  ✗ {status['detail']}")
+        return
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except AuthError as exc:
+        _say(f"  ⚠ {exc}")
+        return
+    if status is None:
+        _say(f"  {profile.display_name} uses its CLI's login; authenticate there first.")
+    elif not _external_process_login_gate(profile, status):
+        return
+    model_ids, notes = _external_process_model_rows(profile, provider_id, status)
+    selected = _pick_model_or_prompt(
+        model_ids, "Model name: ", current_model=current_model,
+        confirm_provider=provider_id, confirm_base_url=creds["base_url"], notes=notes)
+    _finish_model(selected, provider_id, f"Default model set to: {selected} (via {profile.display_name})",
+                  base_url=creds["base_url"], api_mode=profile.api_mode)
+
+
+def _external_process_login_gate(profile, status) -> bool:
+    """Logged in → say so (with plan). Logged out → run the CLI's own login on a TTY (it is
+    browser/device based, so it must own the terminal), else print the instruction and stop."""
+    import shlex
+    import subprocess
+    import sys
+
+    if status["logged_in"]:
+        plan = f" ({status['plan']})" if status.get("plan") else ""
+        _say(f"  {profile.display_name} credentials: ✓{plan}", "")
+        return True
+    login = status.get("login_command")
+    if not login or not sys.stdin.isatty():
+        _say(f"  ✗ {status['detail']}")
+        return False
+    _say(f"  {status['detail'].split('.')[0]}.", f"  Starting `{shlex.join(login[-2:])}` (press Ctrl-C to cancel)...", "")
+    try:
+        subprocess.run(login, check=False)
+    except (KeyboardInterrupt, OSError):
+        print("Login cancelled or failed.")
+        return False
+    if not profile.setup_status()["logged_in"]:
+        print("Login failed.")
+        return False
+    _say("", f"  {profile.display_name} credentials: ✓", "")
+    return True
+
+
+def _external_process_model_rows(profile, provider_id, status):
+    """``(ids, notes)``: the account's live picker when the profile can enumerate it, else the
+    pinned catalog. Notes annotate rows (e.g. ``usage credits``) without hiding any model."""
+    from hermes_cli.models import provider_model_ids
+
+    live = profile.discover_models() if status and status["logged_in"] else None
+    if live:
+        _say("  Models below come from your Claude Code account's picker.", "")
+        return [m["id"] for m in live], {m["id"]: m["note"] for m in live if m.get("note")}
+    return provider_model_ids(provider_id), {}
+
+
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection; the endpoint is chosen by key prefix (no URL prompt):
     ``sk-kimi-*`` → api.kimi.com/coding/v1 (Kimi Coding Plan), other keys → Moonshot."""

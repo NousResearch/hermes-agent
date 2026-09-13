@@ -398,6 +398,26 @@ def test_delivery_command_author_json_survives_quoting_and_windows_slash_rewrite
     assert _runner_author(command) is None
 
 
+def test_display_name_changes_dm_presentation_not_sender_authority(tmp_path, monkeypatch):
+    """Profile metadata is prose only; routing stays on the canonical handle."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    (home / "profile.yaml").write_text("display_name: Relay Bot\n", encoding="utf-8")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="status", agent=_FakeAgent(home, title="Bot Chat"))
+    )
+    assert result["status"] == "sent"
+    _mode, dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    assert transport_argv[:3] == ["hermes", "-p", "researcher"]
+    assert Path(dm_file).read_text(encoding="utf-8").startswith("Message from 🤖 Relay Bot (@hermes): ")
+
+
+def test_display_name_normalization_drops_control_and_format_characters(tmp_path):
+    home = _managed_home(tmp_path)
+    (home / "profile.yaml").write_text('display_name: "Relay\\0 Bot\\u200b"\n', encoding="utf-8")
+    assert bot_mode_dm._sender_display_label(home, "hermes") == "Relay Bot"
+
+
 def test_spawn_failure_reports_error(tmp_path, monkeypatch):
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")
@@ -850,6 +870,7 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
     assert unrelated.exists()
 
 
+@pytest.mark.linux_only
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -862,6 +883,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.linux_only
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None
@@ -874,7 +896,7 @@ def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership contract")
+@pytest.mark.linux_only
 def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target = tmp_path / "attacker-controlled"
     target.mkdir()

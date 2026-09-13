@@ -1285,6 +1285,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, base_url=agent.base_url, max_tokens=agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
+        text_verbosity=getattr(agent, "text_verbosity", ""),
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,

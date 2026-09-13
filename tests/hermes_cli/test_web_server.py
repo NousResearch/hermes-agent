@@ -4693,6 +4693,48 @@ class TestPtyWebSocket:
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
 
+    def test_pub_broadcasts_to_session_event_subscribers(self):
+        """PTY frames also reach /api/events?session=<id> followers.
+
+        Structured chat is not on the Chat-tab channel; it follows the live
+        TUI by session_id so history stays current without a second writer.
+        """
+        import asyncio
+        from hermes_cli import web_server as ws_mod
+
+        class _FakeSub:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        app = ws_mod.app
+        frame = (
+            '{"jsonrpc":"2.0","method":"event","params":'
+            '{"type":"message.delta","session_id":"runtime-1","seq":9,'
+            '"payload":{"text":"live"}}}'
+        )
+
+        async def _run():
+            follower = _FakeSub()
+            other = _FakeSub()
+            event_channels, event_lock = _rt_chat_ws._get_event_state(app)
+            async with event_lock:
+                event_channels.setdefault("session:runtime-1", set()).add(follower)
+                event_channels.setdefault("session:other", set()).add(other)
+            try:
+                await _rt_chat_ws._broadcast_event(app, "pty-channel", frame)
+            finally:
+                async with event_lock:
+                    event_channels.pop("session:runtime-1", None)
+                    event_channels.pop("session:other", None)
+            return follower, other
+
+        follower, other = asyncio.run(_run())
+        assert follower.sent == [frame]
+        assert other.sent == []
+
 
 def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     import hermes_cli.main_tui_launch as tui_launch

@@ -63,11 +63,43 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
+def _event_session_id(payload: str) -> Optional[str]:
+    """session_id from a PTY publisher frame, if it is a valid events key."""
+    try:
+        obj = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    params = obj.get("params") if obj.get("method") == "event" else obj
+    if not isinstance(params, dict):
+        return None
+    sid = params.get("session_id")
+    if not isinstance(sid, str) or not _VALID_CHANNEL_RE.match(sid):
+        return None
+    return sid
+
+
+def _session_event_key(session_id: str) -> str:
+    return f"session:{session_id}"
+
+
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Fan one publisher frame to the PTY channel and to session followers."""
     event_channels, event_lock = _get_event_state(app)
+    keys = [channel]
+    session_id = _event_session_id(payload)
+    if session_id:
+        keys.append(_session_event_key(session_id))
     async with event_lock:
-        subs = list(event_channels.get(channel, ()))
+        subs = []
+        seen = set()
+        for key in keys:
+            for sub in event_channels.get(key, ()):
+                if id(sub) in seen:
+                    continue
+                seen.add(id(sub))
+                subs.append(sub)
     for sub in subs:
         try:
             await sub.send_text(payload)
@@ -80,6 +112,18 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     """Channel id from the query string, or None if invalid."""
     channel = ws.query_params.get("channel", "")
     return channel if _VALID_CHANNEL_RE.match(channel) else None
+
+
+def _events_subscription_keys(ws: WebSocket) -> list[str]:
+    """Channel and/or session keys a follower asked to receive."""
+    keys: list[str] = []
+    channel = _channel_or_close_code(ws)
+    if channel:
+        keys.append(channel)
+    session = ws.query_params.get("session", "")
+    if _VALID_CHANNEL_RE.match(session):
+        keys.append(_session_event_key(session))
+    return keys
 
 
 def _read_active_session_file(path: Path) -> Optional[str]:
@@ -572,6 +616,17 @@ async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
     return channel
 
 
+async def _accept_events_ws(ws: WebSocket) -> Optional[list[str]]:
+    if not await _close_unless_sidecar_allowed(ws):
+        return None
+    keys = _events_subscription_keys(ws)
+    if not keys:
+        await ws.close(code=4400)
+        return None
+    await ws.accept()
+    return keys
+
+
 @router.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
     channel = await _accept_channel_ws(ws)
@@ -586,12 +641,13 @@ async def pub_ws(ws: WebSocket) -> None:
 
 @router.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
-    channel = await _accept_channel_ws(ws)
-    if channel is None:
+    keys = await _accept_events_ws(ws)
+    if keys is None:
         return
     event_channels, event_lock = _get_event_state(ws.app)
     async with event_lock:
-        event_channels.setdefault(channel, set()).add(ws)
+        for key in keys:
+            event_channels.setdefault(key, set()).add(ws)
     try:
         while True:
             # Subscribers don't speak — receive() just blocks until disconnect.
@@ -600,8 +656,9 @@ async def events_ws(ws: WebSocket) -> None:
         pass
     finally:
         async with event_lock:
-            subs = event_channels.get(channel)
-            if subs is not None:
-                subs.discard(ws)
-                if not subs:
-                    event_channels.pop(channel, None)
+            for key in keys:
+                subs = event_channels.get(key)
+                if subs is not None:
+                    subs.discard(ws)
+                    if not subs:
+                        event_channels.pop(key, None)

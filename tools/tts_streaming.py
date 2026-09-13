@@ -1,23 +1,32 @@
 """Provider-agnostic streaming TTS: sentence text → int16 mono PCM chunk iterator.
 
-``stream_tts_to_speaker`` (``tools.tts_tool``) owns the sentence buffer, sounddevice
+``stream_tts_to_speaker`` (``tools/tts_tool``) owns the sentence buffer, sounddevice
 output and stop/queue protocol; this module owns the *provider* half so playback
 starts on sentence one. True streamers (``StreamingTTSProvider.stream``) wrap chunked
 APIs; providers with no chunked API (edge, the default) get per-sentence playback via
 the sync ``text_to_speech_tool`` path. Adding a streamer is ``@register("name")`` on
 a subclass; the dispatcher, config gate (``tts.<name>.streaming``) and resolver come free.
+User-declared ``tts.providers.<name>: {type: command}`` providers need no subclass —
+``CommandTTSStreamer`` runs the same command per sentence and pipes it to PCM, gated by
+``tts.providers.<name>.streaming`` (default on; opt out with ``false``).
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
 from tools.tool_backend_helpers import resolve_openai_audio_api_key
 from tools.tts_tool import _get_provider, _load_tts_config
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -144,19 +153,142 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
 _PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
 
 
+# ── Command providers: stream a user-declared shell command, one sentence at a time ──────────
+# The sync path (tools.tts_command_provider._generate_command_tts) runs the command once per
+# chunked reply. A provider whose audio comes from a local command can instead run the SAME
+# command per SENTENCE and pipe the result to PCM — which is what every streaming consumer
+# (stream_tts_to_speaker, the /api/audio/speak-stream WebSocket) reads. Speech then starts on
+# sentence one instead of after the whole reply is synthesized into one file; without a streamer
+# those surfaces fall back to whole-text synthesis (the desktop's POST path).
+
+_PCM_BLOCK_BYTES = 8192
+_COMMAND_STREAM_FORMAT = "wav"
+_FFMPEG = "ffmpeg"
+
+
+class CommandTTSStreamer(StreamingTTSProvider):
+    """Sentence → the configured ``tts.providers.<name>.command`` → mono int16 PCM at 24 kHz.
+
+    Same template placeholders, env passthrough and idle timeout as the sync path; only the
+    delivery differs. Asks the command for ``{format} = wav`` (one less transcode than the
+    delivered format) and resamples with ffmpeg, which voice-bubble encoding already requires.
+    """
+
+    sample_rate = 24000
+    channels = 1
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        super().__init__(tts_config, section)
+        self.provider_name = str(section.get("_provider_name") or "").strip()
+
+    @staticmethod
+    def available() -> bool:
+        return bool(shutil.which(_FFMPEG))
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        label = f"command streaming TTS ({self.provider_name or 'command provider'})"
+        with tempfile.TemporaryDirectory(prefix="hermes-tts-stream-") as workdir:
+            audio = self._synthesize_sentence(text, workdir)
+            yield from _capped(_pcm_blocks(audio, self.sample_rate), label)
+
+    def _synthesize_sentence(self, text: str, workdir: str) -> str:
+        """Run the provider command for ONE sentence; return the audio path it wrote."""
+        from tools.tts_command_provider import (
+            _get_command_tts_timeout, command_env_passthrough, render_command_template,
+            run_command_provider)
+        template = str(self.section.get("command") or "").strip()
+        if not template:
+            raise RuntimeError(f"tts.providers.{self.provider_name}.command is not configured")
+        text_path = os.path.join(workdir, "input.txt")
+        out_path = os.path.join(workdir, f"sentence.{_COMMAND_STREAM_FORMAT}")
+        with open(text_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        command = render_command_template(template, {
+            "input_path": text_path, "text_path": text_path, "output_path": out_path,
+            "format": _COMMAND_STREAM_FORMAT, "voice": str(self.section.get("voice", "")),
+            "model": str(self.section.get("model", "")),
+            "speed": str(self.section.get("speed", self.tts_config.get("speed", "")))})
+        run_command_provider(command, _get_command_tts_timeout(self.section),
+                            env_passthrough=command_env_passthrough(self.section))
+        if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+            raise RuntimeError(
+                f"command TTS provider '{self.provider_name}' wrote no audio for its sentence")
+        return out_path
+
+
+def _pcm_blocks(path: str, sample_rate: int) -> Iterator[bytes]:
+    """Pipe *path* through ffmpeg to mono int16 PCM at *sample_rate*, block by block.
+
+    Blocks (rather than one buffer) are what lets a barge-in land mid-sentence: every consumer of
+    ``stream()`` checks its stop event between chunks.
+    """
+    proc = subprocess.Popen(
+        [shutil.which(_FFMPEG) or _FFMPEG, "-v", "error", "-nostdin", "-i", path,
+         "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(int(sample_rate)), "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert proc.stdout is not None
+        while True:
+            block = proc.stdout.read(_PCM_BLOCK_BYTES)
+            if not block:
+                break
+            yield block
+        code = proc.wait()
+        stderr = (proc.stderr.read() if proc.stderr is not None else b"") or b""
+        if code != 0:
+            raise RuntimeError(
+                f"ffmpeg PCM conversion failed ({code}): {stderr.decode('utf-8', 'ignore')[:300]}")
+    finally:
+        if proc.poll() is None:  # consumer stopped early (barge-in) — never leave ffmpeg running
+            with contextlib.suppress(Exception):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+
+
+def _command_provider_streamer(name: str, tts_config: Dict) -> Optional[StreamingTTSProvider]:
+    """A :class:`CommandTTSStreamer` for the user-declared command provider *name*, else ``None``.
+
+    Default-on for command providers: the sync path already synthesizes such a provider one
+    sentence at a time, so streaming changes *when* the audio reaches the speaker, not the
+    provider contract. ``tts.providers.<name>.streaming: false`` (or the same key on the top-level
+    ``tts.<name>`` section a registered streamer reads) opts out; ``streaming: true`` forces it.
+    """
+    key = (name or "").lower().strip()
+    if not key:
+        return None
+    try:
+        from tools.tts_command_provider import _resolve_command_provider_config
+        section = _resolve_command_provider_config(key, tts_config) or {}
+    except Exception as exc:  # pragma: no cover - defensive (import/config shape)
+        logger.debug("command streaming provider %s resolution failed: %s", key, exc)
+        return None
+    if not str(section.get("command") or "").strip():
+        return None
+    registered = tts_config.get(key) or {}
+    if not is_truthy_value(section.get("streaming", registered.get("streaming", True))):
+        return None
+    if not CommandTTSStreamer.available():
+        return None
+    return CommandTTSStreamer(tts_config, {**section, "_provider_name": key})
+
+
 def resolve_streaming_provider(
     tts_config: Dict, preferred: Optional[str] = None) -> Optional[StreamingTTSProvider]:
     """Return a ready streamer for the *configured* provider, else ``None``.
     ``tts.streaming.provider`` when set: a name pins that exact streamer (``None`` if unusable);
-    ``auto`` returns the first usable in ``_PROVIDER_PRIORITY``. Otherwise the configured TTS
-    provider (or ``preferred``): ``None`` means "no chunked API" — the dispatcher speaks
-    per-sentence via the sync path, preserving the user's chosen voice. We never silently swap
-    providers just to get streaming."""
+    ``auto`` returns the first usable in ``_PROVIDER_PRIORITY``, then the configured command
+    provider. Otherwise the configured TTS provider (or ``preferred``): a registered streamer
+    wins, then a user-declared command provider (``CommandTTSStreamer``); ``None`` means "no
+    chunked API" — the dispatcher speaks per-sentence via the sync path, preserving the user's
+    chosen voice. We never silently swap providers just to get streaming."""
     pinned = str((tts_config.get("streaming") or {}).get("provider") or "").lower().strip()
     if pinned == "auto":
         return next((inst for name in _PROVIDER_PRIORITY
-                     if (inst := _try_instantiate(name, tts_config))), None)
-    return _try_instantiate(pinned or (preferred or _get_provider(tts_config)).lower().strip(), tts_config)
+                     if (inst := _try_instantiate(name, tts_config))), None) \
+            or _command_provider_streamer(_get_provider(tts_config), tts_config)
+    name = pinned or (preferred or _get_provider(tts_config)).lower().strip()
+    return _try_instantiate(name, tts_config) or _command_provider_streamer(name, tts_config)
 
 
 def _capped(chunks: Iterator[bytes], label: str) -> Iterator[bytes]:

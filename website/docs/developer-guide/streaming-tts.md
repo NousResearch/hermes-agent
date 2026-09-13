@@ -37,12 +37,19 @@ By default the dispatcher streams with the provider you already configured
 (`tts.provider`) when that provider has a chunked API — it never silently
 swaps your voice for a different provider just to get streaming.
 
+A user-declared command provider (`tts.providers.<name>: {type: command}`)
+streams the same way without any registration: `CommandTTSStreamer` runs that
+command once per **sentence** and pipes its audio through ffmpeg to PCM, so
+speech starts on sentence one instead of after the whole reply is synthesized
+into a single file. Opt out per provider with `streaming: false`.
+
 To override, set `tts.streaming.provider` in your `config.yaml`:
 
-- a provider name (`elevenlabs`, `gemini`, `openai`, `xai`) pins that streamer
-- `auto` walks the priority list `elevenlabs → gemini → openai → xai` and uses
-  the first one whose credentials resolve — an explicit opt-in to "best
-  chunked voice available"
+- a provider name (`elevenlabs`, `gemini`, `openai`, `xai`, or a command
+  provider's name) pins that streamer
+- `auto` walks the priority list `elevenlabs → gemini → openai → xai`, then the
+  configured command provider, and uses the first one that resolves — an
+  explicit opt-in to "best chunked voice available"
 
 ```yaml
 tts:
@@ -62,6 +69,7 @@ tts:
 | openai      | chunked HTTP (`with_streaming_response`, `pcm`) | yes | `tts.openai.api_key` → env → managed gateway |
 | gemini      | SSE (`streamGenerateContent?alt=sse`) | yes         | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | xai         | WebSocket (`wss://api.x.ai/v1/tts`)   | yes         | xAI OAuth or `XAI_API_KEY` |
+| `tts.providers.<name>` (`type: command`) | per-sentence shell command → ffmpeg PCM | yes (opt out: `streaming: false`) | the provider's own `command` |
 | edge, piper, kitten, neutts, mistral, minimax, deepinfra, … | — | no (per-sentence sync fallback) | as usual |
 
 All credential lookups go through `resolve_provider_secret()`

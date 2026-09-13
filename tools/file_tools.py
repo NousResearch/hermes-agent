@@ -223,6 +223,9 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
             target = str(_resolve_path_for_task(path, task_id))
         except (OSError, ValueError, RuntimeError):
             target = path
+        if _is_blocked_device(path) or _is_blocked_device(target):
+            omitted += 1
+            return False
         if get_read_block_error(target):
             omitted += 1
             return False
@@ -234,6 +237,16 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
         result.files = [f for f in result.files if _allowed(f)]
     if getattr(result, "counts", None):
         result.counts = {f: c for f, c in result.counts.items() if _allowed(f)}
+    if omitted and hasattr(result, "total_count"):
+        if getattr(result, "counts", None):
+            result.total_count = sum(result.counts.values())
+        else:
+            remaining = 0
+            if getattr(result, "matches", None):
+                remaining += len(result.matches)
+            if getattr(result, "files", None):
+                remaining += len(result.files)
+            result.total_count = remaining
     return omitted
 
 
@@ -958,6 +971,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         block_error = get_read_block_error(resolved_search_path)
         if block_error:
             return tool_error(block_error)
+        if _is_blocked_device(resolved_search_path):
+            return tool_error(
+                f"Cannot search '{path}': this is a device file that would "
+                "block or produce infinite output.")
 
         # A missing search root costs two shells (search + parent listing for
         # "Similar paths"); cache the miss so a retry skips both.
@@ -977,7 +994,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if omitted:
             result_dict["_omitted"] = (
                 f"{omitted} result(s) omitted because they target credential, "
-                "token, cache, or secret-bearing environment files.")
+                "token, cache, secret-bearing environment, or blocked "
+                "device/proc files.")
 
         # No early return on a cached miss — same rationale as the read path.
         _search_err = result_dict.get("error") or ""

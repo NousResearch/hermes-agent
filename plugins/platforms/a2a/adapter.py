@@ -339,10 +339,11 @@ class A2AAdapter(BasePlatformAdapter):
             try:
                 for tid in self.tasks.fail_orphans(
                         _ORPHAN_TIMEOUT,
-                        lambda rec: self._profile_error(rec.get("profile_skill", ""), "PROCESSING_FAILED",
-                                                        "Agent processing failed.", rec, protocol.STATE_FAILED)
+                        lambda rec: self._profile_error(rec.get("profile_skill", ""), "DEADLINE_EXCEEDED",
+                                                        "The task exceeded its deadline before a reply was produced.",
+                                                        rec, protocol.STATE_FAILED, retryable=True)
                         if rec and rec.get("profile_skill") else None):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
+                    logger.warning("A2A: orphaned task %s marked failed (deadline exceeded, timeout %ds)", tid, _ORPHAN_TIMEOUT)
                     protocol.metrics.tasks_failed += 1
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
@@ -522,9 +523,10 @@ class A2AAdapter(BasePlatformAdapter):
         return protocol.TaskStore.to_task(self.tasks.get(rec["task_id"]) or rec), None
 
     @staticmethod
-    def _profile_error(skill: str, code: str, message: str, rec: dict, task_state: str = protocol.STATE_FAILED) -> dict:
+    def _profile_error(skill: str, code: str, message: str, rec: dict, task_state: str = protocol.STATE_FAILED,
+                       retryable: bool = False) -> dict:
         profile_skill = skill if re.fullmatch(r"conversation|[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+", skill or "") else "conversation"
-        return contract.result_for_error(profile_skill, code, message, task_id=rec["task_id"],
+        return contract.result_for_error(profile_skill, code, message, retryable, task_id=rec["task_id"],
                                          context_id=rec["context_id"], reference_task_ids=rec.get("reference_task_ids"),
                                          status="rejected" if task_state == protocol.STATE_REJECTED else "failed")
 

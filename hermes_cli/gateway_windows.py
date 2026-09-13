@@ -889,6 +889,21 @@ def _clear_start_attestation() -> None:
         pass
 
 
+def _read_start_attestation() -> object | None:
+    """Parsed attestation payload (any JSON type), or ``None`` when absent/unreadable. Never raises."""
+    try:
+        return json.loads(_start_attestation_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _attested_pids_from(data: object) -> list[int]:
+    """PID list from an attestation payload; empty for anything malformed."""
+    if not isinstance(data, dict):
+        return []
+    return [p for p in data.get("pids", []) if isinstance(p, int)]
+
+
 def _attested_pid_exited_cleanly(pid: int) -> bool:
     """True when the lifecycle ledger shows a clean exit for ``pid``."""
     try:
@@ -900,14 +915,34 @@ def _attested_pid_exited_cleanly(pid: int) -> bool:
     return isinstance(data, dict) and data.get("phase") == "exited" and data.get("pid") == pid
 
 
+def attested_gateway_died(current_pids: list[int] | None = None) -> bool:
+    """True when the start attestation vouches for gateway PID(s) that are gone without a clean exit.
+
+    Read-only twin of :func:`check_start_attestation` for callers that must not consume the
+    one-shot marker — ``hermes update`` consults it to decide whether a Desktop-owned install
+    still owes a gateway cold-start (#109538). ``False`` for anything undecidable (no marker, a
+    gateway running now, a clean ledger exit, or discovery failure): "unknown" must never read
+    as "dead"."""
+    attested = _attested_pids_from(_read_start_attestation())
+    if not attested:
+        return False
+    if current_pids is None:
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+
+            current_pids = list(find_gateway_pids())
+        except Exception:
+            return False
+    return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+
+
 def check_start_attestation(current_pids: list[int] | None = None) -> str | None:
     """Surface (once) a gateway that died after a ✓ was printed for it. Never raises. Gateway running
     or a clean-exit ledger record: clear silently; otherwise return a warning and consume the marker."""
-    try:
-        data = json.loads(_start_attestation_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data = _read_start_attestation()
+    if data is None:
         return None
-    attested = [p for p in data.get("pids", []) if isinstance(p, int)] if isinstance(data, dict) else []
+    attested = _attested_pids_from(data)
     if not attested:
         _clear_start_attestation()
         return None
@@ -923,7 +958,10 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
     _clear_start_attestation()
     if current_pids or any(_attested_pid_exited_cleanly(pid) for pid in attested):
         return None
+    return _format_attestation_warning(attested, data)
 
+
+def _format_attestation_warning(attested: list[int], data: dict) -> str:
     via = data.get("via") or "direct spawn"
     ts = data.get("ts") or "unknown time"
     lines = [

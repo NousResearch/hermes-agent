@@ -157,14 +157,71 @@ def test_stop_signals_process_and_clears_pointer(tmp_path):
     def _kill(pid, sig):
         sent.append((pid, sig))
 
+    # Legacy record (no pid_start_time): identity falls back to the cmdline
+    # still naming the meet_bot module.
     with patch.object(pm, "_pid_alive", side_effect=_alive), \
          patch.object(pm.os, "kill", side_effect=_kill), \
-         patch.object(pm.time, "sleep", lambda _s: None):
+         patch.object(pm.time, "sleep", lambda _s: None), \
+         patch("gateway.status._read_process_cmdline",
+               return_value="python -m plugins.google_meet.meet_bot"):
         res = pm.stop()
 
     assert res["ok"] is True
     assert (11111, signal.SIGTERM) in sent
     # .active.json cleared
+    assert pm._read_active() is None
+
+
+def test_stop_does_not_kill_a_reused_pid(tmp_path):
+    """A live pid whose start time doesn't match the record is not ours."""
+    from plugins.google_meet import process_manager as pm
+
+    pm._write_active({
+        "pid": 22222, "pid_start_time": 1000.0, "meeting_id": "x-y-z",
+        "out_dir": str(tmp_path / "x-y-z"),
+        "url": "https://meet.google.com/x-y-z",
+        "started_at": 0,
+    })
+
+    sent = []
+    with patch.object(pm, "_pid_alive", return_value=True), \
+         patch.object(pm.os, "kill", side_effect=lambda p, s: sent.append((p, s))), \
+         patch.object(pm.time, "sleep", lambda _s: None), \
+         patch("gateway.status.get_process_start_time", return_value=99999.0), \
+         patch("gateway.status._read_process_cmdline", return_value="/usr/bin/sshd"):
+        res = pm.stop()
+
+    assert res["ok"] is True
+    assert sent == []  # nothing was signalled
+    assert pm._read_active() is None  # stale pointer still cleared
+
+
+def test_stop_kills_when_start_time_matches(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    pm._write_active({
+        "pid": 33333, "pid_start_time": 4200.5, "meeting_id": "x-y-z",
+        "out_dir": str(tmp_path / "x-y-z"),
+        "url": "https://meet.google.com/x-y-z",
+        "started_at": 0,
+    })
+
+    alive_seq = iter([True, True, False])
+    def _alive(pid):
+        try:
+            return next(alive_seq)
+        except StopIteration:
+            return False
+
+    sent = []
+    with patch.object(pm, "_pid_alive", side_effect=_alive), \
+         patch.object(pm.os, "kill", side_effect=lambda p, s: sent.append((p, s))), \
+         patch.object(pm.time, "sleep", lambda _s: None), \
+         patch("gateway.status.get_process_start_time", return_value=4200.5):
+        res = pm.stop()
+
+    assert res["ok"] is True
+    assert (33333, signal.SIGTERM) in sent
     assert pm._read_active() is None
 
 

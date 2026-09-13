@@ -47,6 +47,35 @@ def _kill(pid: int, sig) -> None:
         os.kill(pid, sig)
 
 
+def _pid_is_recorded_bot(pid: int, record: Dict[str, Any]) -> bool:
+    """True when the live ``pid`` is verifiably the bot ``record`` points at.
+
+    PIDs get reused, so a bare ``_pid_alive`` is not identity: between the bot's
+    death and a later stop(), the pid may belong to an unrelated process. We
+    confirm with the recorded start time (±2s, the lifecycle-ledger convention)
+    and/or the process cmdline still naming the meet_bot module. When neither
+    check can run we cannot verify, so we refuse rather than signal a stranger.
+    """
+    if not _pid_alive(pid):
+        return False
+    from gateway.status import _read_process_cmdline, get_process_start_time
+    checked = False
+    recorded_start = record.get("pid_start_time")
+    if recorded_start is not None:
+        actual = get_process_start_time(pid)
+        if actual is None:
+            return False
+        checked = True
+        if abs(float(actual) - float(recorded_start)) > 2.0:
+            return False
+    cmdline = _read_process_cmdline(pid)
+    if cmdline is not None:
+        checked = True
+        if "plugins.google_meet.meet_bot" not in cmdline and "meet_bot" not in cmdline:
+            return False
+    return checked
+
+
 _NO_ACTIVE = {"ok": False, "reason": "no active meeting"}
 
 
@@ -93,7 +122,9 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
         proc = subprocess.Popen([sys.executable, "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env, start_new_session=True,
                                 close_fds=True)
-    record = {"pid": proc.pid, "meeting_id": meeting_id, "out_dir": str(out), "url": url,
+    from gateway.status import get_process_start_time
+    record = {"pid": proc.pid, "pid_start_time": get_process_start_time(proc.pid),
+              "meeting_id": meeting_id, "out_dir": str(out), "url": url,
               "started_at": time.time(), "session_id": session_id, "log_path": str(log_path), "mode": mode}
     _write_active(record)
     return {"ok": True, **record}
@@ -152,7 +183,7 @@ def stop(*, reason: str = "requested") -> Dict[str, Any]:
         return dict(_NO_ACTIVE)
     pid = int(active.get("pid", 0))
     out_dir = active.get("out_dir")
-    if _pid_alive(pid):
+    if _pid_is_recorded_bot(pid, active):
         _kill(pid, signal.SIGTERM)
         for _ in range(20):
             if not _pid_alive(pid):

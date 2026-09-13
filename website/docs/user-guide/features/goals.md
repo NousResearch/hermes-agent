@@ -129,6 +129,10 @@ For work that spans multiple tool calls, background operations, or turns, Hermes
 
 The base contract carries `objective`, `outcome`, `verification`, `constraints`, `boundaries`, and `stop_when`.
 
+An optional **`tool_constraints`** section adds deterministic pre-dispatch enforcement. It can allow exact tool names, deny canonical capabilities (`read`, `mutate`, `delete`, `external_write`, `money`, `secrets`, `account`, `environment`, or `install`), and restrict literal filesystem or URL prefixes. Once typed constraints are active, a tool with missing or invalid capability metadata fails closed instead of being treated as safe.
+
+The typed contract can also persist a `landing` declaration for exact targets and lifecycle states. This layer records and validates that declaration; runtime receipt issuance and completion enforcement are added by the dependent landing-evidence change.
+
 ## Adding criteria mid-goal: `/subgoal`
 
 While a goal is active you can append extra acceptance criteria with `/subgoal <text>` without resetting the loop. Each call adds one numbered item to the goal's subgoal list; the **continuation prompt** the agent sees on the next turn includes the original goal plus an "Additional criteria the user added mid-loop" block, and the **judge prompt** is rewritten so the verdict must consider every subgoal — the goal isn't marked done until the original objective **and** every subgoal are met.

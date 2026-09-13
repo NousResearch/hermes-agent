@@ -20,7 +20,7 @@ def two_profiles(tmp_path, monkeypatch):
     root = tmp_path / ".hermes"
     prof_b = root / "profiles" / "b"
     prof_b.mkdir(parents=True)
-    (root / ".env").write_text("BRV_API_KEY=DEFAULT-PROFILE-KEY\nHERMES_MODEL=default-model\n")
+    (root / ".env").write_text("BRV_API_KEY=DEFAULT-PROFILE-KEY\nHERMES_MODEL=default-model\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("BRV_API_KEY", "DEFAULT-PROFILE-KEY")  # the gateway loaded default's .env at boot
     monkeypatch.setenv("HERMES_MODEL", "default-model")

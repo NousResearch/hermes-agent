@@ -100,6 +100,7 @@ class TestChatVerboseArg:
 
         assert captured["quiet"] is False
         assert "verbose" not in captured
+        assert "compact" not in captured
 
 
 class TestYoloEnvVar:

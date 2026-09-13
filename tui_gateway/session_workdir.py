@@ -384,7 +384,8 @@ def _rewind_active_session_history(
             if db is None:
                 raise RuntimeError("session database is unavailable")
             outcome = db.rewind_user_turn(
-                session_key, user_ordinal, warm_history=history, require_retryable=require_retryable)
+                session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
+                adopt_row_ids=True)
         installed, live_view, rewound_count = outcome.prefix, outcome.live_view, outcome.rewound_count
     else:
         target_index = user_indices[user_ordinal]

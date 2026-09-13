@@ -97,6 +97,24 @@ def test_every_surface_persists_the_same_active_set(db, n, rich):
         assert all("QUJD" in c for r, c in active if r == "user")
 
 
+def test_cli_undo_leaves_the_warm_history_shape_alone_while_the_tui_adopts_row_ids(db):
+    """``_row_id`` adoption is the TUI's contract (clients address follow-ups by durable row); a CLI history
+    that had no ids before /undo must not grow them."""
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+    for sid in ("shape-cli", "shape-tui"):
+        _seed(db, sid)
+    warm = db.get_messages_as_conversation("shape-cli")
+    assert not any("_row_id" in m for m in warm)
+    cli = CLISessionMixin.__new__(CLISessionMixin)
+    cli._session_db, cli.session_id, cli.conversation_history, cli.agent = db, "shape-cli", warm, None
+    cli._prefill_input_buffer = MagicMock()
+    cli.undo_last(1)
+    assert len(cli.conversation_history) == 4 and not any("_row_id" in m for m in cli.conversation_history)
+
+    installed, _view, _count = _rewind_via("tui", db, "shape-tui", 1)
+    assert [m["_row_id"] for m in installed] == [row[0] for row in _active_rows(db, "shape-tui") if row[3]]
+
+
 @pytest.mark.parametrize("surface", SURFACES)
 def test_out_of_range_target_changes_nothing_on_every_surface(db, surface):
     sid = f"oob-{surface}"

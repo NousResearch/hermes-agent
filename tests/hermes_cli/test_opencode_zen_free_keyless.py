@@ -63,7 +63,12 @@ class TestFreeRuntime:
     def test_headers_override_sdk_bearer(self):
         headers = opencode_zen_free_headers()
         assert headers["Authorization"] == ""
-        assert headers["X-Title"] == "Hermes Agent"
+        # The free tier 429s the Hermes attribution headers and answers the OpenCode
+        # fingerprint (#106495); keyed zen/go keep the Hermes identity.
+        assert headers["User-Agent"] == "opencode/0.20.5"
+        assert headers["HTTP-Referer"] == "https://opencode.ai/"
+        assert headers["X-Title"] == "opencode"
+        assert headers["X-Session-ID"]
 
 
 class TestRuntimeProviderKeylessRouting:

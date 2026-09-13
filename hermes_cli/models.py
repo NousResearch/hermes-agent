@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.opencode_client_headers import opencode_client_headers
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.models_catalog_static import (
     CANONICAL_PROVIDERS,
@@ -2063,7 +2064,9 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 # OpenCode Zen free-tier models (``*-free`` slugs plus unsuffixed ones like big-pickle) are
 # served ANONYMOUSLY on the Zen relay: no Authorization header succeeds, while ANY unrecognized
 # non-empty bearer — including our placeholder and OpenCode GO subscription keys — is 401'd (the
-# Go relay doesn't serve the free tier at all).
+# Go relay doesn't serve the free tier at all). The relay also gates the free tier on the request
+# identifying as the OpenCode client: the canonical Hermes attribution headers draw HTTP 429
+# ``FreeUsageLimitError``, the OpenCode fingerprint gets 200 (#106495).
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
@@ -2082,18 +2085,17 @@ _OPENCODE_FREE_LIVE_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
 
 
 def opencode_zen_free_headers() -> dict:
-    """Client default_headers for anonymous Zen free-tier requests. ``Authorization: ""`` overrides the
-    OpenAI SDK's ``Bearer <api_key>`` so the placeholder never reaches the wire (the relay 401s any
-    unknown bearer). Attribution headers mirror the opencode provider profile."""
-    try:
-        from hermes_cli import __version__ as _v
-    except Exception:
-        _v = "0"
-    return {
-        "Authorization": "",
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-        "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_v}"}
+    """Client default_headers for anonymous Zen free-tier requests.
+
+    ``Authorization: ""`` overrides the OpenAI SDK's ``Bearer <api_key>`` so the placeholder never
+    reaches the wire (the relay 401s any unknown bearer). The rest of the set is the OpenCode
+    client fingerprint — the free tier 429s the canonical Hermes attribution headers and answers
+    200 to this identity (#106495); keyed Zen/Go traffic keeps the Hermes attribution, and
+    ``x-opencode-session`` still rides on every OpenCode request via ``agent.opencode_affinity``.
+    """
+    headers = {"Authorization": ""}
+    headers.update(opencode_client_headers())
+    return headers
 
 
 def _fetch_opencode_free_models(

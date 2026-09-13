@@ -1031,7 +1031,27 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    last_delivery_event_id INTEGER,
+    last_delivery_kind TEXT,
+    last_delivery_message_id TEXT,
+    last_delivered_at INTEGER,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- Durable, per-event delivery ledger. Unlike kanban_notify_subs this table is
+-- intentionally retained after terminal-task unsubscribe so delivery can be
+-- audited and already-confirmed sends can be skipped on partial-batch retry.
+CREATE TABLE IF NOT EXISTS kanban_notify_deliveries (
+    task_id       TEXT NOT NULL,
+    platform      TEXT NOT NULL,
+    chat_id       TEXT NOT NULL,
+    thread_id     TEXT NOT NULL DEFAULT '',
+    event_id      INTEGER NOT NULL,
+    event_kind    TEXT NOT NULL,
+    delivery_key TEXT NOT NULL DEFAULT 'text',
+    message_id    TEXT,
+    delivered_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, platform, chat_id, thread_id, event_id, delivery_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -1044,6 +1064,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_notify_delivery_task ON kanban_notify_deliveries(task_id, event_id);
 """
 
 

@@ -1800,6 +1800,24 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
         yield
 
 
+def _profile_session_db_probe(profile_home: "Path"):
+    """The goals-cached SessionDB for *profile_home* with ONLY the HERMES_HOME contextvar
+    installed — no config parse, no secret hydration, no terminal policy. Idle-path gates
+    ("is there any work for this profile at all?") use it before paying for a full
+    ``_profile_runtime_scope`` entry on every watcher tick. None when unavailable."""
+    from hermes_cli.goals import _get_session_db
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        return _get_session_db()
+    except Exception:
+        logger.debug("session-db probe failed for %s", profile_home, exc_info=True)
+        return None
+    finally:
+        reset_hermes_home_override(token)
+
+
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. Multiplexed: reload under the default
     profile's ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret

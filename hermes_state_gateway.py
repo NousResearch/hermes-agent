@@ -654,6 +654,15 @@ class SessionGatewayMixin:
             (session_id,),
         ) > 0
 
+    def has_pending_handoffs(self) -> bool:
+        """Cheap existence probe for the handoff watcher's idle gate. Fails OPEN: a probe
+        error answers True so a broken store never silently disables handoff dispatch."""
+        try:
+            return self._read_one(
+                "SELECT 1 AS found FROM sessions WHERE handoff_state = 'pending' LIMIT 1") is not None
+        except Exception:
+            return True
+
     def complete_handoff(self, session_id: str) -> None:
         """Mark a handoff as completed."""
         self._write_sql(

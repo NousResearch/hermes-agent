@@ -1348,6 +1348,9 @@ DEFAULT_CONFIG = {
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
         "max_concurrent_children": 10,
+        # false (default) = model-issued top-level calls detach and results re-enter later. true =
+        # keep child execution parallel but join the whole call inline before the parent can advance.
+        "wait_for_all": False,
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,

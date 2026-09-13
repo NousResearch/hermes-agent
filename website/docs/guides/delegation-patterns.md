@@ -25,7 +25,7 @@ For the full feature reference, see [Subagent Delegation](../user-guide/features
 - Mechanical multi-step work with logic between steps → `execute_code`
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
-- Durable long-running work that must survive session closure or process restart → `cronjob_manage` or `terminal(background=True, notify_on_complete=True)`. Top-level delegation is asynchronous but still process-local.
+- Durable long-running work that must survive session closure or process restart → `cronjob_manage` or `terminal(background=True, notify_on_complete=True)`. Top-level delegation is asynchronous by default, or synchronously joined with `delegation.wait_for_all`, but remains process-local in either mode.
 
 ---
 
@@ -192,6 +192,16 @@ This is often the most efficient pattern: `execute_code` handles the 10+ sequent
 
 ---
 
+## Pattern: Fan Out, Then Integrate
+
+Put independent children in one `tasks` array so they start in parallel. With `delegation.wait_for_all: true`, Hermes returns only after every child has produced a terminal outcome, so verify and integrate the input-ordered result once the call returns.
+
+In the default asynchronous mode, completion units can arrive between turns. When the parent is following a wait-for-all policy and any expected outcome remains outstanding, retain each partial result and end the turn immediately without analyzing it, acting on it, re-dispatching work, polling, or otherwise advancing the task. Integrate only after every expected outcome has returned. Failed, cancelled, timed-out, and interrupted outcomes satisfy “returned”; they are not successful results.
+
+See [Wait for all and the effective-policy query](/user-guide/features/delegation#wait-for-all-opt-in) for runtime selection and integration discovery.
+
+---
+
 ## Inherited Tool Access
 
 Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept a model-facing `toolsets` parameter, so delegated work cannot grant itself capabilities that the parent does not have. Configure the parent's tools before starting the conversation when a delegated task needs web, terminal, file, or other access. Hermes still strips child-blocked tools such as `clarify`, `memory`, and `send_message`; children keep `execute_code` for programmatic tool calling.
@@ -221,7 +231,7 @@ delegation:
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only the `goal` and `context` the parent agent passes when calling `delegate_task`
 - **Default 250 iterations** — set `delegation.max_iterations` lower in `config.yaml` for fleets of simple tasks to save cost
-- **Not durable** — top-level delegation runs in the background and posts its result back later, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob_manage` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
+- **Not durable** — top-level delegation runs in the background by default or joins inline when `delegation.wait_for_all` is enabled, but it remains tied to the owning session and Hermes process. Session closure, `/stop`, `/new`, or a process restart can cancel or strand in-progress work. Use `cronjob_manage` or `terminal(background=True, notify_on_complete=True)` for work that must survive those boundaries.
 
 ---
 

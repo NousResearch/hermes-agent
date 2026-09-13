@@ -8,7 +8,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 The `delegate_task` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
-Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
+Top-level model calls run in the background by default. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. Set `delegation.wait_for_all: true` to keep children parallel while making the parent wait for the complete joined result before it can issue another tool call or model request. An orchestrator subagent always waits for its own workers so it can synthesize their results before returning.
 
 ## Completion delivery
 
@@ -183,11 +183,31 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. By default the call returns **one** consolidated message once every task has finished. Results are delivered only between the parent's turns: the parent should finish anything that does not depend on the children, then end its turn rather than polling transcripts, artifacts, or CI while it waits.
+When a top-level agent provides a `tasks` array, Hermes runs the subagents in parallel. By default it returns one background handle, then delivers **one** consolidated message once every task has finished. Results are delivered only between the parent's turns: the parent should finish anything that does not depend on the children, then end its turn rather than polling transcripts, artifacts, or CI while it waits.
+
+### Wait for all (opt-in)
+
+Set `delegation.wait_for_all: true` when the parent must not advance until every child in the call has terminated. The children still run in parallel, but `delegate_task` stays synchronous and returns one joined result in input order after every child completes, fails, times out, or is interrupted. The parent cannot run a trailing tool or make another model request meanwhile. A user Stop still interrupts the parent and propagates to running children.
+
+This setting takes precedence over `delegation.independent_completions`: joined mode always returns one result and does not expose the task `group` field. A failed, cancelled, timed-out, or interrupted child counts as a returned outcome, not a successful result. Start a new session after changing the setting so the conversation's cached tool description and schema reflect the selected mode.
+
+#### Inspect the effective execution policy
+
+Framework integrations can query the active profile's model-facing top-level policy without parsing source text or treating an unknown config key as support:
+
+```python
+from tools.delegate_tool_config import get_delegation_execution_policy
+
+policy = get_delegation_execution_policy()
+# {"wait_for_all": False, "model_tasks": "asynchronous"}
+# or {"wait_for_all": True, "model_tasks": "joined"}
+```
+
+The function returns a fresh dictionary with exactly `wait_for_all` (boolean) and `model_tasks` (`"joined"` or `"asynchronous"`). It resolves the same effective-profile policy used by both model dispatch paths. Its absence on an older Hermes host means the policy query is unsupported. Sessions that cannot consume a later result, including finite CLI and cron runs, retain their existing synchronous fallback even when the configured top-level policy is asynchronous. This is a delegation control-plane API, not a model tool.
 
 ### Independent completions (opt-in)
 
-Set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead. The model-facing `group` field and grouping guidance are only advertised when this option is enabled. Start a new session after changing it so the tool schema can reflect the setting without changing an existing conversation's cached prefix. Old calls containing `group` remain accepted; with the option off, the whole call still returns together.
+With `delegation.wait_for_all` disabled, set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead. The model-facing `group` field and grouping guidance are only advertised when this option is enabled. Start a new session after changing it so the tool schema can reflect the setting without changing an existing conversation's cached prefix. Old calls containing `group` remain accepted; with the option off, the whole call still returns together.
 
 When independent completions are enabled:
 
@@ -554,7 +574,7 @@ delegate_task(
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
-Top-level model-facing `delegate_task` calls run in the background automatically where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. Orchestrator subagents wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
+Top-level model-facing `delegate_task` calls run in the background by default where the session supports later delivery. Hermes returns a handle immediately, and the result re-enters the conversation after the child or batch finishes. With `delegation.wait_for_all: true`, they instead join inline while children remain parallel. Orchestrator subagents always wait for their workers in the current turn because they must synthesize those results before returning. Stateless request/response endpoints fall back to synchronous execution when they cannot deliver a detached result later.
 
 - Normal follow-up messages do not cancel background children. `/stop` on any surface (gateway `/stop` — also when the session is idle after the dispatching turn ended — CLI `/stop`, the Desktop/TUI Stop button, an ACP cancel) ends the session's running background delegations, and closing or resetting the owning session does the same.
 - Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
@@ -635,6 +655,7 @@ error.
 delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+  # wait_for_all: false                     # true = join model-issued top-level batches before the parent advances
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.

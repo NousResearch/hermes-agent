@@ -112,6 +112,27 @@ def _get_independent_completions() -> bool:
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
 
+
+def _get_wait_for_all() -> bool:
+    """Whether model-issued top-level delegation joins all parallel children inline."""
+    return is_truthy_value(_cfg().get("wait_for_all", False))
+
+
+def get_delegation_execution_policy() -> Dict[str, Any]:
+    """Return the effective-profile policy for model-facing top-level delegation.
+
+    This is a public control-plane query for integrations that need to distinguish
+    a supported joined runtime from an unknown configuration key. It reports the
+    configured model policy; sessions without later-result delivery may still use
+    the existing synchronous fallback when asynchronous mode is selected.
+    """
+    wait_for_all = _get_wait_for_all()
+    return {
+        "wait_for_all": wait_for_all,
+        "model_tasks": "joined" if wait_for_all else "asynchronous",
+    }
+
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one

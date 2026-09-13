@@ -5,8 +5,9 @@ Delegate Tool -- Subagent Architecture
 Spawns child AIAgent instances with a fresh conversation, their own task_id
 (terminal session, file-ops cache), the parent's toolsets minus child-blocked
 tools, and a focused system prompt built from goal + context. Single-task and
-batch (parallel) modes; top-level model calls run in the background while
-orchestrator children wait for their own workers. The parent only ever sees
+batch (parallel) modes; top-level model calls run in the background unless
+delegation.wait_for_all joins them inline, while orchestrator children always
+wait for their own workers. The parent only ever sees
 the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
@@ -29,7 +30,8 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback,
+    _get_wait_for_all, _get_worktree_isolation, get_delegation_execution_policy,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
@@ -534,7 +536,7 @@ def delegate_task(
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
 
-def _build_top_level_description(*, independent_completions=None) -> str:
+def _build_top_level_description(*, independent_completions=None, wait_for_all=None) -> str:
     """delegate_task description: ONLY guidance stated nowhere else in the schema
     (limits live in the 'tasks' parameter description, rebuilt per get_definitions())."""
     try:
@@ -551,20 +553,28 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    from tools.delegate_tool_config import _get_independent_completions
+    from tools.delegate_tool_config import _get_independent_completions, get_delegation_execution_policy
 
     if independent_completions is None:
         independent_completions = _get_independent_completions()
-    delivery = (
-        "each ungrouped task / `group` returns on its own"
-        if independent_completions else "one message per call"
-    )
-    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
+    if wait_for_all is None:
+        wait_for_all = get_delegation_execution_policy()["wait_for_all"]
+    if wait_for_all:
+        description_head = _DESCRIPTION_INTRO + _DESCRIPTION_WAIT_FOR_ALL + _DESCRIPTION_GUIDANCE
+    else:
+        delivery = (
+            "each ungrouped task / `group` returns on its own"
+            if independent_completions else "one message per call"
+        )
+        description_head = _DESCRIPTION_INTRO + _DESCRIPTION_ASYNC.format(delivery=delivery) + _DESCRIPTION_GUIDANCE
+    return description_head + restrictions_rule + _DESCRIPTION_TAIL
 
-_DESCRIPTION_HEAD = (
+_DESCRIPTION_INTRO = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
+)
+_DESCRIPTION_ASYNC = (
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
     "and return results in this tool call. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
@@ -572,7 +582,16 @@ _DESCRIPTION_HEAD = (
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live.\n\n"
-    "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
+)
+_DESCRIPTION_WAIT_FOR_ALL = (
+    "Runs in joined synchronous mode: dispatch waits for all subagents while they run in parallel, then returns one "
+    "result containing every child outcome in input order after all terminate (completed, failed, timed out, or "
+    "interrupted). The parent model cannot issue another tool call or provider request meanwhile and should not poll. "
+    "The user can still interrupt or stop the parent; Hermes propagates that stop to running children.\n\n"
+)
+_DESCRIPTION_GUIDANCE = (
+    "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
+    "parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
     "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
     "- A single tool call -> call the tool directly\n"
@@ -589,6 +608,7 @@ _DESCRIPTION_HEAD = (
     "- Children cannot close tracked work: a child asked to close it returns findings instead; "
     "the parent applies the transition.\n"
 )
+_DESCRIPTION_HEAD = _DESCRIPTION_INTRO + _DESCRIPTION_ASYNC + _DESCRIPTION_GUIDANCE
 _DESCRIPTION_TAIL = (
     "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
 )
@@ -609,22 +629,26 @@ def _build_tasks_param_description() -> str:
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
-    from tools.delegate_tool_config import _get_independent_completions
+    from tools.delegate_tool_config import _get_independent_completions, get_delegation_execution_policy
 
     independent_completions = _get_independent_completions()
+    wait_for_all = get_delegation_execution_policy()["wait_for_all"]
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
-    if not independent_completions:
+    if wait_for_all or not independent_completions:
         tasks = overrides_params["properties"]["tasks"]
         tasks["items"] = {**tasks["items"], "properties": {
             k: v for k, v in tasks["items"]["properties"].items() if k != "group"
         }}
 
     return {
-        "description": _build_top_level_description(independent_completions=independent_completions),
+        "description": _build_top_level_description(
+            independent_completions=independent_completions,
+            wait_for_all=wait_for_all,
+        ),
         "parameters": overrides_params,
     }
 
@@ -690,8 +714,8 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
-            # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
-            # delegations always run in the background. Unadvertised; do not re-add.
+            # `background` (bool) is also accepted — DEPRECATED and ignored for model calls;
+            # dispatch policy comes from depth + delegation.wait_for_all. Unadvertised; do not re-add.
             "action": _p(
                 "string",
                 "Default 'spawn'. Live control of running children: "
@@ -718,12 +742,16 @@ DELEGATE_TASK_SCHEMA = {
 from tools.registry import registry, tool_error
 
 def _model_background_value(args: dict, parent_agent=None) -> bool:
-    """Background flag for the MODEL-facing dispatch path (registry fallback). Top-level delegations always run in the
-    background — the model does not choose — for single tasks and fan-out batches alike (one async unit, one
-    consolidated result); an orchestrator subagent (depth > 0) is the exception since it needs its workers' results
-    within its own turn. The live path is ``run_agent._dispatch_delegate_task``; this mirrors it for the rare case
-    the intercept is bypassed. Direct Python callers keep the synchronous default."""
-    return not getattr(parent_agent, "_delegate_depth", 0) > 0
+    """Shared background policy for live and fallback MODEL-facing dispatch.
+
+    The hidden model ``background`` argument is ignored. Top-level calls detach by
+    default, but the effective profile can select the existing parallel inline join.
+    Nested orchestrators always join so they can consume worker results in-turn.
+    Direct Python callers bypass this helper and keep explicit background control.
+    """
+    if getattr(parent_agent, "_delegate_depth", 0) > 0:
+        return False
+    return get_delegation_execution_policy()["model_tasks"] == "asynchronous"
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
 

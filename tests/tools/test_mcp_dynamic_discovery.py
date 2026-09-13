@@ -104,6 +104,102 @@ class TestRefreshTools:
             assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
             assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
+    @pytest.mark.asyncio
+    async def test_restart_with_none_session_skips_without_crash(self, mock_registry):
+        """#109824: a list_changed refresh that lands while the transport is
+        being rebuilt (``session is None`` between teardown and the next
+        handshake) must complete cleanly instead of raising
+        ``AttributeError: 'NoneType' object has no attribute 'list_tools'``.
+
+        The reconnect's own _discover_tools re-lists tools, so the refresh is
+        a no-op and the previous registration is left intact.
+        """
+        from toolsets import resolve_toolset
+
+        server = MCPServerTask("restart_srv")
+        server._config = {}
+        old_tool = _make_mcp_tool("old_tool", "")
+        server._tools = [old_tool]
+        server.session = SimpleNamespace(list_tools=AsyncMock())
+        with patch("tools.registry.registry", mock_registry):
+            # Seed initial state the way the initial connect would: a live
+            # registration with the old tool published.
+            server._registered_tool_names = _register_server_tools(
+                "restart_srv", server, {}
+            )
+            # Teardown state that every run() cycle leaves behind:
+            server.session = None
+
+            # Must NOT raise (the #109824 crash) and must not touch the registry.
+            await server._refresh_tools()
+            assert "mcp__restart_srv__old_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__restart_srv__old_tool" in resolve_toolset("restart_srv")
+            assert server._registered_tool_names == ["mcp__restart_srv__old_tool"]
+            # The pre-restart tool list was left untouched by the skipped refresh.
+            assert len(server._tools) == 1
+
+    @pytest.mark.asyncio
+    async def test_background_refresh_survives_restart_reconnect_cycle(self, mock_registry):
+        """#109824 end-to-end shape: a refresh task scheduled on the dying
+        transport is still alive when run() sets ``session = None`` and then
+        re-establishes the session. _schedule_tools_refresh must not crash the
+        task, and once a live session exists the refresh completes normally.
+        """
+        server = MCPServerTask("reconnect_srv")
+        server._config = {}
+        old_tool = _make_mcp_tool("old_tool", "")
+        new_tool = _make_mcp_tool("new_tool", "")
+        server._tools = [old_tool]
+        server._registered_tool_names = ["mcp__reconnect_srv__old_tool"]
+        with patch("tools.registry.registry", mock_registry):
+            mock_registry.register(
+                name="mcp__reconnect_srv__old_tool", toolset="mcp-reconnect_srv",
+                schema={}, handler=lambda x: x, check_fn=lambda: True,
+                is_async=False, description="", emoji="",
+            )
+            # Simulate run()'s teardown: session dropped, tools deregistered
+            # by park/shutdown. A list_changed refresh from the old transport
+            # is still pending in _pending_refresh_tasks.
+            server.session = None
+            # Schedule the in-flight refresh (as a list_changed would have) and
+            # let it observe the None session — it must be a clean no-op.
+            task = server._schedule_tools_refresh()
+            assert task in server._pending_refresh_tasks  # strongly referenced
+            await asyncio.gather(task, return_exceptions=True)
+            # No crash recorded: the task completed without raising, and the
+            # done-callback removed it from the pending set.
+            assert not task.cancelled()
+            assert task.exception() is None
+            assert task not in server._pending_refresh_tasks
+            # Now the transport reconnects and re-publishes tools; a subsequent
+            # refresh on the LIVE session must succeed and republish.
+            server.session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[new_tool])))
+            await server._refresh_tools()
+            assert server._registered_tool_names == ["mcp__reconnect_srv__new_tool"]
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_session_restored_succeeds(self, mock_registry):
+        """Once the restart re-establishes the session, _refresh_tools works
+        normally (the skip is only while the session is genuinely absent)."""
+        from toolsets import resolve_toolset
+
+        server = MCPServerTask("restored_srv")
+        server._config = {}
+        server.session = None
+        server._registered_tool_names = []
+        server._tools = []
+
+        live_tool = _make_mcp_tool("live_tool", "")
+        with patch("tools.registry.registry", mock_registry):
+            # Restore the session, then refresh.
+            server.session = SimpleNamespace(
+                list_tools=AsyncMock(return_value=SimpleNamespace(tools=[live_tool]))
+            )
+            await server._refresh_tools()
+            assert "mcp__restored_srv__live_tool" in mock_registry.get_all_tool_names()
+            assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
+            assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
+
 
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""

@@ -54,7 +54,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
     Rules, in order: (1) passthrough vars (skill/config-declared) resolve
     through the active profile secret scope — an absent scoped value is
-    omitted; (2) secret-substring names are blocked; (3) safe prefixes pass;
+    omitted; (2) external-source names and secret-substring names are blocked;
+    (3) safe prefixes pass;
     (4) operational HERMES_* pass by exact name; (5) on Windows the
     OS-essential allowlist passes by exact name.
     """
@@ -67,6 +68,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
         is_passthrough = is_env_passthrough
     if is_windows is None:
         is_windows = _IS_WINDOWS
+    from tools.environments.local_env_policy import _external_secret_env_vars
+    source_secrets = _external_secret_env_vars(source_env)
     scrubbed = {}
     # Non-secret HERMES_* vars no allowlist admits are dropped on purpose; a script importing a
     # repo module that reads one would see it silently unset — log the drop, point at the opt-in.
@@ -76,6 +79,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             resolved = resolve_passthrough_value(k, v)
             if resolved is not None:
                 scrubbed[k] = resolved
+            continue
+        if k in source_secrets:
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
             continue

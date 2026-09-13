@@ -15,6 +15,7 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({"AWS_BEARER_TOKEN_BEDROCK"})
 
 _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
+    "BWS_ACCESS_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN",
     "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_ORG_ID",
     "OPENAI_ORGANIZATION", "OPENROUTER_API_KEY", "ANTHROPIC_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "LLM_MODEL", "GOOGLE_API_KEY",
@@ -39,6 +40,17 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
 })
+
+
+def _external_secret_env_vars(env=None) -> frozenset[str]:
+    """Names owned by the effective profile, matching child HERMES_HOME precedence."""
+    try:
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        from hermes_cli.env_loader import get_external_secret_env_vars
+        home = get_hermes_home_override() or (env or {}).get("HERMES_HOME") or get_hermes_home()
+        return get_external_secret_env_vars(home)
+    except Exception:
+        return frozenset()  # preserve established startup fallback to static policy
 
 
 def _build_provider_env_blocklist() -> frozenset:

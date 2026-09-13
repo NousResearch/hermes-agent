@@ -68,6 +68,22 @@ import type {
   GatewayMigratePlan,
 } from "@/lib/api";
 
+function debugShareRetentionNotice(
+  pasteRsSeconds: number,
+  urls?: Record<string, string>,
+): string {
+  const pasteRsHours = Math.round(pasteRsSeconds / 3600);
+  const values = urls ? Object.values(urls) : [];
+  const clauses: string[] = [];
+  if (!urls || values.some((url) => url.startsWith("https://paste.rs/"))) {
+    clauses.push(`paste.rs links auto-delete in ${pasteRsHours}h`);
+  }
+  if (!urls || values.some((url) => url.startsWith("https://dpaste.com/"))) {
+    clauses.push("dpaste.com fallback links are kept for 1 day and cannot be deleted");
+  }
+  return clauses.length > 0 ? `${clauses.join("; ")}.` : "Retention depends on the paste service.";
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -1453,8 +1469,8 @@ export default function SystemPage() {
                   <span className="text-sm font-medium">Share debug report</span>
                   <span className="text-xs text-muted-foreground max-w-prose">
                     Uploads system info + logs to a public paste service and
-                    returns links to send the Hermes team. Pastes auto-delete
-                    after 6 hours.
+                    returns links to send the Hermes team.{" "}
+                    {debugShareRetentionNotice(6 * 3600)}
                   </span>
                 </div>
               </div>
@@ -1502,8 +1518,10 @@ export default function SystemPage() {
                     )}
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
-                      auto-deletes in{" "}
-                      {Math.round(shareResult.auto_delete_seconds / 3600)}h
+                      {debugShareRetentionNotice(
+                        shareResult.auto_delete_seconds,
+                        shareResult.urls,
+                      )}
                     </span>
                   </div>
                   {Object.keys(shareResult.urls).length > 1 && (

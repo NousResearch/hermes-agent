@@ -201,9 +201,10 @@ def task_commit(
 
             previous_created_at = current.created_at if current is not None else 0.0
             state = manager.set(values["objective"], contract=proposed)
-            if operation == "replace" and has_goal and state.created_at <= previous_created_at:
-                # The timestamp is the V1 stale-event generation cutoff; keep it strictly monotonic
-                # even if the wall clock stalls or steps backwards.
+            if current is not None and state.created_at <= previous_created_at:
+                # The timestamp is the V1 stale-event generation cutoff. Keep it strictly monotonic
+                # for every successor generation, including create-after-done/cleared, so a wall-clock
+                # rollback cannot let late work from the prior Goal enter the new Goal's lifecycle.
                 state.created_at = previous_created_at + 0.000001
                 manager._save()
             result = "replaced" if operation == "replace" and has_goal else "created"

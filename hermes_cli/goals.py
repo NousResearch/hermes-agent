@@ -658,7 +658,7 @@ def is_stale_goal_event(session_id: str, event: Dict[str, Any]) -> bool:
     displayed, but must not re-enter the model/judge lifecycle of the replacement.
     """
     state = load_goal(str(session_id or "").strip())
-    if state is None or state.status != "active" or not state.created_at:
+    if state is None or state.status not in {"active", "paused"} or not state.created_at:
         return False
     raw_started = event.get("dispatched_at") if event.get("type") == "async_delegation" else event.get("started_at")
     if raw_started is None:

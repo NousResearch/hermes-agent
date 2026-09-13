@@ -6,6 +6,7 @@ Cold scans run on a background thread; ``/achievements`` serves the last snapsho
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -854,7 +855,16 @@ async def session_badges(session_id: str):
 
 @router.post("/rescan")
 async def rescan():
-    return {"ok": True, **evaluate_all(force=True)}
+    # evaluate_all(force=True) scans synchronously — SessionDB reads plus
+    # regex analysis over every message of every session, which
+    # scan_sessions documents as "tens of seconds to several minutes" on a
+    # cold cache. Calling it directly from an async endpoint runs it on the
+    # event loop, so it freezes the whole gateway rather than just this
+    # request; #46601 was the same class of stall in disk-cleanup. Offload
+    # it instead. This is safe off the loop thread: the module already runs
+    # this exact code path in a worker thread for background scans, and both
+    # locks it takes (_SCAN_LOCK, _BACKGROUND_SCAN_LOCK) are threading.Lock.
+    return {"ok": True, **await asyncio.to_thread(evaluate_all, True)}
 
 
 @router.post("/reset-state")

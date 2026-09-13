@@ -190,11 +190,19 @@ def wait_for_release(*, timeout: float, profile_key: Optional[str] = None) -> bo
     """Block until the agent holds the lease (and no handoff is pending) or ``timeout`` elapses.
     True when control is back with the agent. Polls the file so a release made by another process
     is seen; the local Condition just shortens the wait for same-process transitions."""
+    return _wait_until(lambda lease: lease.holder == AGENT and lease.pending_handoff is None, timeout, profile_key)
+
+
+def wait_for_takeover_or_release(*, timeout: float, profile_key: Optional[str] = None) -> bool:
+    """False when, after ``timeout``, the agent still holds with a handoff pending: nobody answered."""
+    return _wait_until(lambda lease: lease.holder == HUMAN or lease.pending_handoff is None, timeout, profile_key)
+
+
+def _wait_until(done: Callable[[Lease], bool], timeout: float, profile_key: Optional[str]) -> bool:
     path = _path(profile_key)
     deadline = time.monotonic() + timeout
     while True:
-        lease = _read(path)
-        if lease.holder == AGENT and lease.pending_handoff is None:
+        if done(_read(path)):
             return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:

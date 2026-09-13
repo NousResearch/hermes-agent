@@ -18,6 +18,7 @@ from tools.bot_desktop import lease as _lease
 HANDOFF_ACTIONS = frozenset({"request_handoff", "wait_for_human"})
 _DEFAULT_WAIT_SECONDS = 600.0
 _MAX_WAIT_SECONDS = 1800.0
+_DEFAULT_GRACE_SECONDS = 60.0
 
 
 def handle_handoff(action: str, args: Dict[str, Any]) -> str:
@@ -31,6 +32,15 @@ def handle_handoff(action: str, args: Dict[str, Any]) -> str:
                     "computer_use action='wait_for_human' to block until they hand control back and "
                     "re-capture before continuing — the screen state is whatever they left."})
     timeout = min(_MAX_WAIT_SECONDS, max(1.0, float(args.get("seconds") or _DEFAULT_WAIT_SECONDS)))
+    grace = min(timeout, max(0.0, float(args.get("grace") or _DEFAULT_GRACE_SECONDS)))
+    # Nobody has taken over yet: give them `grace` to click Take over, then return so the model can chase
+    # the user in chat instead of blocking the whole timeout on a request nobody saw. Once a human holds
+    # the screen, wait the full timeout for the hand-back.
+    if not _lease.wait_for_takeover_or_release(timeout=grace):
+        state = _lease.get().as_dict()
+        return json.dumps({"ok": False, "action": action, "code": "no_takeover", "state": state,
+                           "error": f"Nobody took over within {grace:.0f}s. Ask the user in chat to open Bots > Screen and "
+                                    "click Take over, then call wait_for_human again."})
     released = _lease.wait_for_release(timeout=timeout)
     state = _lease.get().as_dict()
     if released:

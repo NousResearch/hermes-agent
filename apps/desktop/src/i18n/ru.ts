@@ -2701,6 +2701,7 @@ export const ru = defineLocale({
     queuedPaused: count => `${count} в очереди — пауза`,
     attachmentOnly: 'Ход только с вложениями',
     emptyTurn: 'Пустой ход',
+    queuedFromVoice: 'Голос',
     attachments: count => `${count} ${RU_NOUN(count, 'вложение', 'вложения', 'вложений')}`,
     editingInComposer: 'Редактирование в композере',
     editingQueuedInComposer: 'Редактирование хода в очереди в композере',

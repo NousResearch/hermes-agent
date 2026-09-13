@@ -2479,6 +2479,7 @@ export interface Translations {
     attachmentOnly: string
     emptyTurn: string
     hiddenQueued: string
+    queuedFromVoice: string
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string

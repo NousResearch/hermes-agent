@@ -19,8 +19,8 @@ def config_home(tmp_path, monkeypatch):
     server._cfg_cache = server._cfg_mtime = server._cfg_path = None
 
 
-def _set(value):
-    return server._methods["config.set"](1, {"key": "voice.voice_chat_mode", "value": value})
+def _set(value, key="voice.voice_chat_mode"):
+    return server._methods["config.set"](1, {"key": key, "value": value})
 
 
 def test_engine_choice_reaches_the_config_file_and_round_trips(config_home):
@@ -33,6 +33,22 @@ def test_engine_choice_reaches_the_config_file_and_round_trips(config_home):
 
 def test_unknown_engine_is_refused_rather_than_written(config_home):
     answer = _set("realtime")
+
+    assert answer["error"]["code"] == 4002
+    assert not config_home.exists()
+
+
+def test_busy_delegation_choice_is_profile_scoped_config(config_home):
+    key = "voice.gpt_live.busy_delegation_mode"
+    assert _set("queue", key)["result"] == {"key": key, "value": "queue"}
+    assert yaml.safe_load(config_home.read_text())["voice"]["gpt_live"]["busy_delegation_mode"] == "queue"
+
+    assert _set("Interrupt ", key)["result"]["value"] == "interrupt"
+    assert yaml.safe_load(config_home.read_text())["voice"]["gpt_live"]["busy_delegation_mode"] == "interrupt"
+
+
+def test_unknown_busy_delegation_choice_is_refused(config_home):
+    answer = _set("steer", "voice.gpt_live.busy_delegation_mode")
 
     assert answer["error"]["code"] == 4002
     assert not config_home.exists()

@@ -13,6 +13,15 @@ export interface QueuedPromptEntry {
   /** A hidden note (a setup line for the model) parked while the turn ran. The panel
    *  shows a neutral label and the drain submits it hidden again. */
   displayKind?: 'hidden'
+  /** Where the entry came from. `composer` = the user typed it and hit the
+   *  queue gesture. `voice` = a GPT-Live delegation parked locally until the
+   *  current turn settles. The two coexist; runtime-only voice metadata is
+   *  stripped from persisted queue snapshots. */
+  source?: 'composer' | 'voice'
+  /** With `source: 'voice'`: the recent spoken exchange this turn answers. A
+   *  delegation is often bare ("yes", "do that too") and is unintelligible
+   *  without it. Rides the model input only; never rendered or persisted. */
+  voiceContext?: string
   attachments: ComposerAttachment[]
   queuedAt: number
 }
@@ -20,14 +29,15 @@ export interface QueuedPromptEntry {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'source' | 'text'>): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return entry.source !== 'voice' && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
 
+const externalDrainHandlers = new Map<string, () => void>()
 const STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
 
 const load = (): QueueState => {
@@ -54,7 +64,23 @@ const save = (state: QueueState) => {
     if (Object.keys(state).length === 0) {
       window.localStorage.removeItem(STORAGE_KEY)
     } else {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      // Spoken context and its live-session origin exist only while the WebRTC
+      // session is alive. Persisting either would retain a private transcript
+      // and restore a stale entry that no longer has a voice reply bridge.
+      const persisted = Object.fromEntries(
+        Object.entries(state).map(([sid, entries]) => [
+          sid,
+          entries.map(entry => {
+            const copy = { ...entry }
+            delete copy.source
+            delete copy.voiceContext
+
+            return copy
+          })
+        ])
+      )
+
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
     }
   } catch {
     // best-effort: storage may be unavailable, queue still works in-memory
@@ -127,7 +153,14 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: {
+    text: string
+    attachments: ComposerAttachment[]
+    displayText?: string
+    displayKind?: 'hidden'
+    source?: 'composer' | 'voice'
+    voiceContext?: string
+  }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -140,6 +173,8 @@ export const enqueueQueuedPrompt = (
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
+    ...(payload.source ? { source: payload.source } : {}),
+    ...(payload.voiceContext ? { voiceContext: payload.voiceContext } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }
@@ -151,6 +186,47 @@ export const enqueueQueuedPrompt = (
   setParked(sid, false)
 
   return entry
+}
+
+/** Enqueue a turn that arrived from outside the composer — currently a GPT-Live
+ *  voice delegation that landed while Hermes was mid-turn. It gets the same
+ *  panel row, edit/send-now controls and FIFO drain as a typed queue entry; only
+ *  its origin (`source: 'voice'`) differs, which the panel badges.
+ *
+ *  `voiceContext` (the recent spoken exchange) rides the entry because a
+ *  delegation is often just "yes" or "do that too" — without the transcript the
+ *  drained turn is unintelligible. Returns false when there is no queue key to
+ *  park it under, so the caller can fall back to a direct submit. */
+export const enqueueExternalPrompt = (
+  key: string | null | undefined,
+  payload: {
+    text: string
+    attachments?: ComposerAttachment[]
+    displayText?: string
+    onDrain?: () => void
+    source?: 'composer' | 'voice'
+    voiceContext?: string
+  }
+): null | QueuedPromptEntry => {
+  const entry = enqueueQueuedPrompt(key, {
+    attachments: payload.attachments ?? [],
+    ...(payload.displayText ? { displayText: payload.displayText } : {}),
+    ...(payload.source ? { source: payload.source } : {}),
+    ...(payload.voiceContext?.trim() ? { voiceContext: payload.voiceContext.trim() } : {}),
+    text: payload.text
+  })
+
+  if (entry && payload.onDrain) {
+    externalDrainHandlers.set(entry.id, payload.onDrain)
+  }
+
+  return entry
+}
+
+/** Re-arm an external producer immediately before its queued turn is sent.
+ *  Runtime-only: a restored queue entry outlives its original WebRTC session. */
+export const notifyExternalPromptDraining = (id: string): void => {
+  externalDrainHandlers.get(id)?.()
 }
 
 export const dequeueQueuedPrompt = (key: string | null | undefined): null | QueuedPromptEntry => {
@@ -167,6 +243,7 @@ export const dequeueQueuedPrompt = (key: string | null | undefined): null | Queu
   }
 
   writeSession(sid, rest)
+  externalDrainHandlers.delete(head.id)
 
   return head
 }
@@ -186,6 +263,7 @@ export const removeQueuedPrompt = (key: string | null | undefined, id: string): 
   }
 
   writeSession(sid, next)
+  externalDrainHandlers.delete(id)
 
   return true
 }
@@ -262,6 +340,10 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
 
   if (!sid || !(sid in $queuedPromptsBySession.get())) {
     return
+  }
+
+  for (const entry of queueFor(sid)) {
+    externalDrainHandlers.delete(entry.id)
   }
 
   writeSession(sid, [])

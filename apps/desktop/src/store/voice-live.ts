@@ -20,9 +20,14 @@ export async function refreshVoiceLiveStatus(): Promise<null | VoiceLiveStatus> 
 
   inflight = fetchVoiceLiveStatus()
     .then(status => {
-      $voiceLiveStatus.set(status)
+      // Keep the last resolved profile policy across a transient status failure;
+      // otherwise a queue opt-in would silently fall back to the hidden gateway
+      // queue instead of the visible composer queue for that request.
+      if (status) {
+        $voiceLiveStatus.set(status)
+      }
 
-      return status
+      return status ?? $voiceLiveStatus.get()
     })
     .finally(() => {
       inflight = null

@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  enqueueExternalPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isQueueParked,
+  isSteerableEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
@@ -283,6 +285,113 @@ describe('useComposerQueue park integration', () => {
     expect(onSubmit).not.toHaveBeenCalled()
 
     setSessionsLoading(false)
+    hook.rerender({ busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+  })
+})
+
+// A GPT-Live delegation that arrived while Hermes was mid-turn parks in the same
+// queue as a typed "run after" message — the user sees it pending, can edit or
+// send it now, and it drains in order carrying the spoken exchange it answers.
+describe('useComposerQueue voice-delegation integration', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    setSessionsLoading(true)
+  })
+
+  it('keeps spoken context in memory only, never in the persisted queue snapshot', () => {
+    enqueueExternalPrompt(SESSION_KEY, {
+      source: 'voice',
+      text: 'yes',
+      voiceContext: 'PRIVATE-SPOKEN-CONTEXT'
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.voiceContext).toBe('PRIVATE-SPOKEN-CONTEXT')
+    const persisted = window.localStorage.getItem('hermes.desktop.composerQueue.v1') ?? ''
+    expect(persisted).not.toContain('PRIVATE-SPOKEN-CONTEXT')
+    expect(persisted).not.toContain('voiceContext')
+    expect(persisted).not.toContain('"source":"voice"')
+  })
+
+  it('drains a queued voice delegation with its surface and spoken context', async () => {
+    const onDrain = vi.fn()
+    enqueueExternalPrompt(SESSION_KEY, {
+      onDrain,
+      source: 'voice',
+      text: 'yes',
+      voiceContext: 'User: should I deploy?\nVoice assistant: Deploying now.'
+    })
+
+    const { hook, onSubmit } = renderQueueHook()
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    expect(onDrain).toHaveBeenCalledTimes(1)
+    expect(onDrain.mock.invocationCallOrder[0]).toBeLessThan(onSubmit.mock.invocationCallOrder[0]!)
+    // The bare "yes" alone would be unintelligible; the transcript rides along
+    // and the turn keeps its voice surface so the reply is spoken.
+    expect(onSubmit).toHaveBeenCalledWith(
+      'yes',
+      expect.objectContaining({
+        fromQueue: true,
+        surface: 'voice-live',
+        voiceContext: 'User: should I deploy?\nVoice assistant: Deploying now.'
+      })
+    )
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+    expect(hook.result.current.queuedPrompts).toHaveLength(0)
+  })
+
+  it('drains a long voice request without truncating its beginning, middle, or end', async () => {
+    const beginning = 'BEGIN-QUEUED-LONG-REQUEST'
+    const middle = 'MIDDLE-QUEUED-LONG-REQUEST'
+    const end = 'END-QUEUED-LONG-REQUEST'
+    const text = `${beginning} ${'alpha '.repeat(900)}${middle} ${'omega '.repeat(900)}${end}`
+
+    enqueueExternalPrompt(SESSION_KEY, { source: 'voice', text, voiceContext: 'Voice assistant: earlier context' })
+    const { onSubmit } = renderQueueHook()
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    const submittedText = onSubmit.mock.calls[0]?.[0]
+    expect(submittedText).toContain(beginning)
+    expect(submittedText).toContain(middle)
+    expect(submittedText).toContain(end)
+    expect(submittedText).toHaveLength(text.length)
+  })
+
+  it('never exposes a voice delegation as a mid-turn steer correction', () => {
+    const entry = enqueueExternalPrompt(SESSION_KEY, { source: 'voice', text: 'yes' })!
+
+    expect(isSteerableEntry(entry)).toBe(false)
+  })
+
+  it('keeps a voice entry visible and sendable like a typed one', async () => {
+    const entry = enqueueExternalPrompt(SESSION_KEY, { source: 'voice', text: 'do that too' })!
+
+    expect(entry.source).toBe('voice')
+
+    // While busy, send-now promotes to the head and waits for the settle drain
+    // rather than double-firing into the live turn.
+    const { hook, onSubmit } = renderQueueHook({ busy: true })
+
+    expect(hook.result.current.queuedPrompts.map(item => item.source)).toEqual(['voice'])
+
+    hook.result.current.sendQueuedNow(entry.id)
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+
     hook.rerender({ busy: false })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))

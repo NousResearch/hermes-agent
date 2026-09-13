@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { CornerDownLeft, iconSize, Pencil, SteeringWheel, Trash2 } from '@/lib/icons'
+import { CornerDownLeft, iconSize, Mic, Pencil, SteeringWheel, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -142,8 +142,14 @@ export function QueuePanel({
           >
             <div className="min-w-0 flex-1">
               <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
-              {(attachmentsCount > 0 || isEditing) && (
+              {(attachmentsCount > 0 || isEditing || entry.source === 'voice') && (
                 <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
+                  {entry.source === 'voice' && (
+                    <span className="inline-flex items-center gap-1">
+                      <Mic className={iconSize.xs} />
+                      {c.queuedFromVoice}
+                    </span>
+                  )}
                   {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
                   {isEditing && (
                     <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">

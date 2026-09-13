@@ -347,7 +347,11 @@ def _word_setters() -> dict:
                       lambda w: _write_config_key("display.tui_status_indicator", w)),
         # Which engine the desktop voice button mounts; applies to the NEXT conversation.
         "voice.voice_chat_mode": (_word, {"chained", "gpt-live"}, "unknown voice chat mode: {value}; pick chained|gpt-live",
-                                  lambda w: _write_config_key("voice.voice_chat_mode", w))}
+                                  lambda w: _write_config_key("voice.voice_chat_mode", w)),
+        "voice.gpt_live.busy_delegation_mode": (
+            _word, {"interrupt", "queue"},
+            "unknown GPT-Live busy delegation mode: {value}; pick interrupt|queue",
+            lambda w: _write_config_key("voice.gpt_live.busy_delegation_mode", w))}
 
 
 def _set_word(rid, params, key, value, session):
@@ -462,6 +466,7 @@ _CONFIG_SETTERS = {
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
+    "voice.gpt_live.busy_delegation_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 

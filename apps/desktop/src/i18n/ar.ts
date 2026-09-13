@@ -2072,6 +2072,7 @@ export const ar = defineLocale({
     queued: count => `${count} في الطابور`,
     attachmentOnly: 'إرفاق فقط',
     emptyTurn: 'اكتب رسالة أو أرفق ملفا.',
+    queuedFromVoice: 'صوت',
     attachments: count => `${count} مرفق`,
     editingInComposer: 'جار التحرير في صندوق الكتابة',
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',

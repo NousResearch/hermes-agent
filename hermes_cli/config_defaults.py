@@ -1131,6 +1131,9 @@ DEFAULT_CONFIG = {
             "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
+            # A new delegation while Hermes is already working either replaces that turn (the canonical
+            # behavior) or parks visibly in the Desktop composer queue for the next turn.
+            "busy_delegation_mode": "interrupt",  # interrupt | queue
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
         },
         "record_key": "ctrl+b",

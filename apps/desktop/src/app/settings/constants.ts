@@ -231,6 +231,13 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
 
 // Schema-side select overrides for desktop-relevant enum fields whose
 // backend schema only declares a string type.
+export const ENUM_OPTION_LABELS: Record<string, Record<string, string>> = {
+  'voice.gpt_live.busy_delegation_mode': {
+    interrupt: 'Interrupt current turn',
+    queue: 'Queue for next turn'
+  }
+}
+
 export const ENUM_OPTIONS: Record<string, string[]> = {
   'agent.image_input_mode': ['auto', 'native', 'text'],
   'approvals.mode': ['manual', 'smart', 'off'],
@@ -255,6 +262,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  'voice.gpt_live.busy_delegation_mode': ['interrupt', 'queue'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -462,7 +470,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
       voice: 'GPT-Live Voice',
-      instructions: 'GPT-Live Persona'
+      instructions: 'GPT-Live Persona',
+      busyDelegationMode: 'Concurrent Voice Requests'
     }
   },
   stt: {
@@ -630,7 +639,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
-        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
+        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.',
+      busyDelegationMode:
+        'When Hermes is already working, interrupt the current turn (canonical behavior) or place the new request in the visible composer queue.'
     }
   },
   tts: {
@@ -740,6 +751,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'voice.voice_chat_mode',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
+      'voice.gpt_live.busy_delegation_mode',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',

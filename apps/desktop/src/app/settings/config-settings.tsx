@@ -32,6 +32,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { ConfigField } from './config-field'
+import { ENUM_OPTION_LABELS } from './constants'
 import {
   clearsEnabledToolsets,
   diffConfig,
@@ -432,7 +433,7 @@ function ConfigSettingsInner({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : ENUM_OPTION_LABELS[key]}
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

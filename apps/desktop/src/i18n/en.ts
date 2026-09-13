@@ -2889,6 +2889,7 @@ export const en: Translations = {
     attachmentOnly: 'Attachment-only turn',
     emptyTurn: 'Empty turn',
     hiddenQueued: 'Setup note',
+    queuedFromVoice: 'Voice',
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',

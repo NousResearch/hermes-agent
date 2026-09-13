@@ -539,6 +539,24 @@ def _lock_in_submit_turn(
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
 _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+_VOICE_LIVE_CONTEXT_CHAR_LIMIT = 6000
+
+
+def _bounded_voice_live_context(value: object) -> str:
+    """Keep the newest supplemental spoken history. The authoritative latest
+    utterance travels as prompt.submit.text and is deliberately outside this cap."""
+    if not isinstance(value, str):
+        return ""
+    context = value.strip()
+    if len(context) <= _VOICE_LIVE_CONTEXT_CHAR_LIMIT:
+        return context
+    tail = context[-_VOICE_LIVE_CONTEXT_CHAR_LIMIT:]
+    newline = tail.find("\n")
+    bounded = tail[newline + 1:] if newline >= 0 else tail
+    logger.debug(
+        "voice-live context cap applied: input_chars=%d output_chars=%d dropped_chars=%d",
+        len(context), len(bounded), len(context) - len(bounded))
+    return bounded
 
 
 @method("prompt.submit")
@@ -585,7 +603,7 @@ def _(rid, params: dict) -> dict:
     # user row stays the words the user said); anything else clears it.
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
-        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+        _bounded_voice_live_context(voice_context) if session["client_surface"] == "voice-live" else "")
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or

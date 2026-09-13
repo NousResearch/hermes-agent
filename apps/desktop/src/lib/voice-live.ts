@@ -20,10 +20,12 @@ import { hermesApi } from '@/hermes'
  */
 
 export type VoiceChatMode = 'chained' | 'gpt-live'
+export type VoiceLiveBusyDelegationMode = 'interrupt' | 'queue'
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
   available: boolean
+  busyDelegationMode: VoiceLiveBusyDelegationMode
   reason: null | string
   model: string
   voice: string
@@ -56,10 +58,26 @@ export interface LiveTranscriptFragment {
   endMs: number
 }
 
+export interface LiveDelegationWindowDiagnostics {
+  retainedFragments: number
+  windowFragments: number
+  droppedByRetention: number
+  droppedByTime: number
+  droppedByCount: number
+  latestUserFragments: number
+  latestUserChars: number
+}
+
 export interface VoiceLiveHandlers {
-  /** GPT-Live asked the backend (Hermes) for help. `context` is the recent
-   *  transcript window, newest last — the delegation itself carries no text. */
-  onDelegation: (delegationId: string, context: LiveTranscriptFragment[]) => void
+  /** GPT-Live asked the backend (Hermes) for help. `latestUserUtterance` is
+   *  accumulated independently of the bounded supplemental context window so
+   *  a long request cannot lose its beginning when fragment retention caps. */
+  onDelegation: (
+    delegationId: string,
+    context: LiveTranscriptFragment[],
+    latestUserUtterance: string,
+    diagnostics: LiveDelegationWindowDiagnostics
+  ) => void
   /** Vendor-side error. `fatal` when the session is gone. */
   onError: (message: string, fatal: boolean) => void
   /** `session.closed` arrived (or the transport dropped without it). */
@@ -77,10 +95,74 @@ const APPEND_CHAR_LIMIT = 1_400
 // How much conversation the backend receives per delegation.
 const CONTEXT_WINDOW_MS = 5 * 60_000
 const CONTEXT_MAX_FRAGMENTS = 80
+const TRANSCRIPT_RETENTION_TRIGGER = 2_000
+const TRANSCRIPT_RETENTION_TARGET = 1_500
+
+export class LiveTranscriptBuffer {
+  private fragments: LiveTranscriptFragment[] = []
+  private latestUserUtterance = ''
+  private latestUserFragmentCount = 0
+  private droppedByRetention = 0
+  private lastSeenSpeaker: LiveTranscriptFragment['speaker'] | null = null
+
+  record(fragment: LiveTranscriptFragment): void {
+    if (fragment.speaker === 'user') {
+      if (this.lastSeenSpeaker !== 'user') {
+        this.latestUserUtterance = ''
+        this.latestUserFragmentCount = 0
+      }
+
+      this.latestUserUtterance += fragment.text
+      this.latestUserFragmentCount += 1
+    }
+
+    this.lastSeenSpeaker = fragment.speaker
+    this.fragments.push(fragment)
+
+    if (this.fragments.length > TRANSCRIPT_RETENTION_TRIGGER) {
+      const dropCount = this.fragments.length - TRANSCRIPT_RETENTION_TARGET
+      this.fragments.splice(0, dropCount)
+      this.droppedByRetention += dropCount
+    }
+  }
+
+  takeDelegationSnapshot(): {
+    context: LiveTranscriptFragment[]
+    diagnostics: LiveDelegationWindowDiagnostics
+    latestUserUtterance: string
+  } {
+    const last = this.fragments.at(-1)
+    const retainedFragments = this.fragments.length
+    const withinTime = last ? this.fragments.filter(fragment => fragment.endMs >= last.endMs - CONTEXT_WINDOW_MS) : []
+    const context = withinTime.slice(-CONTEXT_MAX_FRAGMENTS)
+
+    const snapshot = {
+      context,
+      diagnostics: {
+        droppedByCount: withinTime.length - context.length,
+        droppedByRetention: this.droppedByRetention,
+        droppedByTime: retainedFragments - withinTime.length,
+        latestUserChars: this.latestUserUtterance.length,
+        latestUserFragments: this.latestUserFragmentCount,
+        retainedFragments,
+        windowFragments: context.length
+      },
+      latestUserUtterance: this.latestUserUtterance
+    }
+
+    // Do not clear while the latest retained speaker is still the user:
+    // delegation and transcript events are independent streams, so a later
+    // fragment may continue the same utterance. record() resets only after an
+    // intervening assistant turn proves a new user utterance began.
+    return snapshot
+  }
+}
 
 export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
   try {
-    const response = await hermesApi<{ ok: boolean } & VoiceLiveStatus>({
+    const response = await hermesApi<
+      { ok: boolean; busy_delegation_mode?: VoiceLiveBusyDelegationMode } & Omit<VoiceLiveStatus, 'busyDelegationMode'>
+    >({
       ...profileScoped(),
       path: '/api/audio/voice-live/status'
     })
@@ -91,6 +173,7 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
 
     return {
       available: Boolean(response.available),
+      busyDelegationMode: response.busy_delegation_mode === 'queue' ? 'queue' : 'interrupt',
       mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
       model: response.model,
       reason: response.reason ?? null,
@@ -220,7 +303,7 @@ export class VoiceLiveSession {
   private finalized = false
   private started = false
   private eventCounter = 0
-  private transcript: LiveTranscriptFragment[] = []
+  private transcript = new LiveTranscriptBuffer()
   private speakingProbe: null | number = null
   private analyser: null | AnalyserNode = null
   private audioContext: null | AudioContext = null
@@ -253,19 +336,6 @@ export class VoiceLiveSession {
     this.events.send(JSON.stringify(event))
 
     return true
-  }
-
-  /** Recent conversation, oldest first, bounded by time and count. */
-  contextWindow(): LiveTranscriptFragment[] {
-    const last = this.transcript.at(-1)
-
-    if (!last) {
-      return []
-    }
-
-    const floor = last.endMs - CONTEXT_WINDOW_MS
-
-    return this.transcript.filter(fragment => fragment.endMs >= floor).slice(-CONTEXT_MAX_FRAGMENTS)
   }
 
   async start(history: LiveHistoryMessage[]): Promise<void> {
@@ -395,12 +465,7 @@ export class VoiceLiveSession {
           text: event.delta ?? ''
         }
 
-        this.transcript.push(fragment)
-
-        if (this.transcript.length > 2_000) {
-          this.transcript.splice(0, this.transcript.length - 1_500)
-        }
-
+        this.transcript.record(fragment)
         this.handlers.onTranscript?.(fragment)
 
         return
@@ -411,7 +476,8 @@ export class VoiceLiveSession {
 
         if (id) {
           this.activeDelegationId = id
-          this.handlers.onDelegation(id, this.contextWindow())
+          const { context, diagnostics, latestUserUtterance } = this.transcript.takeDelegationSnapshot()
+          this.handlers.onDelegation(id, context, latestUserUtterance, diagnostics)
         }
 
         return

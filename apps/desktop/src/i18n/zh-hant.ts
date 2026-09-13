@@ -666,7 +666,8 @@ export const zhHant = defineLocale({
         voiceChatMode: '語音聊天模式',
         gptLive: {
           voice: 'GPT-Live 音色',
-          instructions: 'GPT-Live 人設'
+          instructions: 'GPT-Live 人設',
+          busyDelegationMode: '並行語音請求'
         }
       },
       stt: {
@@ -832,7 +833,8 @@ export const zhHant = defineLocale({
           'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
         gptLive: {
           voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
-          instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'
+          instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。',
+          busyDelegationMode: '當 Hermes 正在工作時，中斷目前回合（標準行為），或將新請求放入可見的輸入佇列。'
         }
       },
       stt: {
@@ -2409,6 +2411,7 @@ export const zhHant = defineLocale({
     queuedPaused: count => `${count} 個排隊中 — 已暫停`,
     attachmentOnly: '僅附件回合',
     emptyTurn: '空回合',
+    queuedFromVoice: '語音',
     attachments: count => `${count} 個附件`,
     editingInComposer: '在輸入框中編輯',
     editingQueuedInComposer: '在輸入框中編輯排隊回合',

@@ -5,7 +5,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 from gateway.run import GatewayRunner
-from gateway.status import read_runtime_status
+from gateway.status import read_runtime_status, write_runtime_status
 
 
 @pytest.mark.parametrize(
@@ -355,6 +355,11 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     )
     runner = GatewayRunner(config)
 
+    # A previous gateway run connected successfully. Missing adapters on this
+    # run must overwrite that persisted state instead of leaving them healthy.
+    for platform in config.platforms:
+        write_runtime_status(platform=platform.value, platform_state="connected")
+
     # Simulate _create_adapter returning None for ALL platforms (missing library /
     # missing credentials — no connection attempt ever made).
     monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
@@ -370,11 +375,62 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     # Runtime state must remain "running", not "startup_failed".
     state = read_runtime_status()
     assert state["gateway_state"] == "running"
+    for platform in config.platforms:
+        platform_state = state["platforms"][platform.value]
+        assert platform_state["state"] == "failed"
+        assert platform_state["error_code"] == "adapter_unavailable"
+        assert platform_state["error_message"]
     # A warning must be emitted explaining why no platforms connected.
     assert any(
         "No adapter could be created" in record.message
         for record in caplog.records
     ), "Expected degraded-mode warning when all adapters are missing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_error", [PermissionError("read-only status file"), OSError("disk full")])
+async def test_missing_adapter_status_write_error_does_not_block_other_platforms(
+    monkeypatch, tmp_path, write_error,
+):
+    """Status persistence is best-effort, including the unavailable-adapter path."""
+    import gateway.status as status
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    successful_adapter = _SuccessfulAdapter()
+    monkeypatch.setattr(
+        runner, "_create_adapter",
+        lambda platform, cfg: None if platform == Platform.TELEGRAM else successful_adapter,
+    )
+    write_runtime_status(platform="telegram", platform_state="connected")
+    original_write = status._write_json_file
+    failed_writes = []
+
+    def fail_unavailable_status_write(path, payload):
+        telegram = payload.get("platforms", {}).get("telegram", {})
+        if telegram.get("error_code") == "adapter_unavailable":
+            failed_writes.append(path)
+            raise write_error
+        return original_write(path, payload)
+
+    # Keep the real status wrapper and serialization path; fail only the disk
+    # write for the unavailable adapter, never the high-level wrapper itself.
+    monkeypatch.setattr(status, "_write_json_file", fail_unavailable_status_write)
+
+    assert await runner.start() is True
+    assert failed_writes, "the unavailable-adapter status write was not exercised"
+    assert runner.adapters[Platform.DISCORD] is successful_adapter
+    assert Platform.TELEGRAM not in runner.adapters
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    assert state["platforms"]["discord"]["state"] == "connected"
 
 
 class _NonRetryableFailureAdapter(BasePlatformAdapter):

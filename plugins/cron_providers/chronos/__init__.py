@@ -14,6 +14,7 @@ import threading
 from typing import Any, Dict
 
 from cron.scheduler_provider import CronScheduler
+from cron.chronos_fire_profiles import record_cron_fire_profile_hint
 
 logger = logging.getLogger("cron.chronos")
 
@@ -87,6 +88,7 @@ class ChronosCronScheduler(CronScheduler):
         fire_at = job.get("next_run_at")
         if not fire_at:
             return
+        record_cron_fire_profile_hint(job_id)
         self._get_client().provision(
             job_id=job_id, fire_at=fire_at, dedup_key=f"{job_id}:{fire_at}",
             agent_callback_url=str(_cfg("cron", "chronos", "callback_url") or ""))
@@ -131,7 +133,10 @@ class ChronosCronScheduler(CronScheduler):
             if j.get("enabled") and j.get("next_run_at") and j.get("state") != "paused"}
         observed = self._list_armed()
         for job_id, fire_at in desired.items():
-            if observed.get(job_id) != fire_at and (job := get_job(job_id)):
+            if observed.get(job_id) == fire_at:
+                # A cold upgrade must index one-shots that NAS already has armed.
+                record_cron_fire_profile_hint(job_id)
+            elif (job := get_job(job_id)):
                 self._arm_logged(job, f"arm job {job_id}")
         for job_id in observed.keys() - desired.keys():
             try:

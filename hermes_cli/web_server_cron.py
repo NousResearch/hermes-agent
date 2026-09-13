@@ -214,6 +214,66 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+def _load_cron_config_for_profile(profile: Optional[str]) -> Dict[str, Any]:
+    """Load Chronos settings from the resolved cron profile home."""
+    from hermes_cli.config import load_config
+
+    if not profile:
+        return load_config()
+
+    _profile_name, home = _cron_profile_home(profile)
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = set_hermes_home_override(str(home))
+    try:
+        return load_config()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _authenticate_cron_fire(token: str, job_id: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """Authenticate before scanning jobs, then require the actual owner's authority.
+
+    Hints can outlive jobs or name a stale profile. They select a verifier only;
+    the persisted job store selects the destination, which must verify the same JWT.
+    Run this worker off the event loop: config, store and JWKS reads can all block.
+    """
+    from cron.chronos_fire_profiles import resolve_cron_fire_profile_hint
+    from plugins.cron_providers.chronos.verify import get_fire_verifier
+
+    verifier = get_fire_verifier()
+
+    def verify_profile(profile):
+        try:
+            cfg = _load_cron_config_for_profile(profile)
+        except (HTTPException, OSError, ValueError):
+            return False
+        return verifier(
+            token=token,
+            expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
+            jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
+            issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
+        ) is not None
+
+    hinted_profile = resolve_cron_fire_profile_hint(job_id) if job_id else None
+    authenticated_profile = hinted_profile
+    if not verify_profile(hinted_profile):
+        if hinted_profile is None or not verify_profile(None):
+            return False, None
+        authenticated_profile = None
+    if not job_id:
+        return True, None
+    profile = _find_cron_job_profile(job_id)
+    if profile is None:
+        return True, None
+    if profile != authenticated_profile and not verify_profile(profile):
+        return False, None
+    return True, profile
+
+
 async def _run_cron_dashboard_io(func, *args, **kwargs):
     """Run cron dashboard profile/job I/O outside the FastAPI event loop."""
     from starlette.concurrency import run_in_threadpool

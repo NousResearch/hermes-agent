@@ -29,7 +29,8 @@ import {
   Pencil,
   Plus,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api } from "@/lib/api"
+import { Markdown } from "@/components/Markdown"
 import type {
   SkillInfo,
   ToolsetInfo,
@@ -1497,9 +1498,9 @@ function SkillDetailDialog({
                     <span className="font-mono">{preview.files.join("  ")}</span>
                   </div>
                 )}
-                <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
-                  {(preview.skill_md || "").trim() || "(SKILL.md is empty)"}
-                </pre>
+                <div className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs leading-relaxed">
+                  <Markdown content={(preview.skill_md || "").trim() || "(SKILL.md is empty)"} />
+                </div>
               </div>
             ) : (
               <p className="text-sm text-muted-foreground text-center py-10">

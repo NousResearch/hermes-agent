@@ -147,6 +147,29 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+@contextmanager
+def pending_delivery_guard(profile_home: Path | str, session_ids: list[str]):
+    """Hold mailbox admission while reporting whether this conversation has work.
+
+    A clear operation keeps this guard open through its database commit.  A
+    delivery admitted after the guard is released is therefore new work for the
+    cleared chat; one admitted before it is visible here and blocks the clear.
+    """
+    ids = {str(session_id) for session_id in session_ids if session_id}
+    if not _root(profile_home).is_dir():
+        yield False
+        return
+    with _locked(profile_home) as root:
+        pending = any(
+            record is not None
+            and record.get("status") not in _TERMINAL
+            and str((record.get("owner") or {}).get("session_id") or record.get("session_id") or "") in ids
+            for path in root.glob("*.json")
+            if (record := _read(path)) is not None
+        )
+        yield pending
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any],
 ) -> dict[str, Any] | None:

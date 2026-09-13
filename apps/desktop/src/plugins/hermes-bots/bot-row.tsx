@@ -90,6 +90,7 @@ function rowAge(ms: number, r: SidebarRowLabels): string {
 
 interface BotRowProps {
   bot: RosterRow
+  onClear: (bot: RosterRow) => void
   onDelete: (bot: RosterRow) => void
   onEdit: (bot: RosterRow) => void
   onGroup: (bot: RosterRow) => void
@@ -98,7 +99,7 @@ interface BotRowProps {
   showHandle?: boolean
 }
 
-export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
+export function BotRow({ bot, onClear, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
@@ -403,6 +404,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           }}
         >
           {b.bot.newChatWith}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => onClear(bot)} variant="destructive">
+          {b.bot.clearChat}
         </ContextMenuItem>
         <ContextMenuSeparator />
         {/* Filing. Membership is one field on the bot's meta (`sectionId`), so

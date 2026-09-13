@@ -119,6 +119,10 @@ function createCalls() {
   return mocks.request.mock.calls.filter(([method]) => method === 'profiles.create')
 }
 
+function configureCalls() {
+  return mocks.request.mock.calls.filter(([method]) => method === 'profiles.configure')
+}
+
 /** The control under a `labeled(...)` caption — the label is presentational,
  *  so it carries no `for`/`id` pair to query by. */
 function controlUnder(caption: string) {
@@ -190,11 +194,54 @@ describe('materializing the draft profile', () => {
     expect(createCalls()).toHaveLength(1)
   })
 
+  it('reconciles a title changed after the Capabilities draft materializes', async () => {
+    mocks.saveBotMeta.mockResolvedValue({ serverOutcome: 'persisted', serverPersisted: true })
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === 'profiles.configure') {
+        return { applied: { display_name: true, ui_meta: true } }
+      }
+
+      if (method === 'profiles.describe') {
+        return { mcp_servers: [], skills: [], toolsets: [] }
+      }
+
+      return {}
+    })
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0][1]).toMatchObject({ display_name: '' })
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Inbox Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(createCalls()).toHaveLength(1)
+    expect(configureCalls()).toEqual(
+      expect.arrayContaining([
+        ['profiles.configure', { display_name: 'Inbox Captain', name: 'inbox-triage' }],
+        [
+          'profiles.configure',
+          expect.objectContaining({
+            name: 'inbox-triage',
+            ui_meta: expect.objectContaining({
+              'hermes-bots': expect.objectContaining({ title: 'Inbox Captain' })
+            })
+          })
+        ]
+      ])
+    )
+  })
+
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {
     mocks.connections.mockResolvedValue([
       { id: 'local', label: 'This Mac' },
       { id: 'studio', label: 'Studio' }
     ])
+    mocks.requestProfile.mockImplementation(async (_route, method) =>
+      method === 'profiles.configure' ? { applied: { display_name: true, ui_meta: true } } : {}
+    )
 
     await renderDialog(true)
 
@@ -217,6 +264,22 @@ describe('materializing the draft profile', () => {
     expect(createCalls()).toHaveLength(0)
     await waitFor(() =>
       expect(mocks.skillsView.at(-1)).toMatchObject({ fixedConnection: 'studio', fixedProfile: 'inbox-triage' })
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Remote Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'profiles.configure',
+        expect.objectContaining({
+          display_name: 'Remote Captain',
+          name: 'inbox-triage',
+          ui_meta: expect.objectContaining({
+            'hermes-bots': expect.objectContaining({ title: 'Remote Captain' })
+          })
+        })
+      )
     )
   })
 

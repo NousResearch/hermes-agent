@@ -127,6 +127,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
+  const createdAtRef = useRef<null | number>(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -238,6 +239,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
     createdRef.current = null
     flightRef.current = null
+    createdAtRef.current = null
 
     const discard = remoteTarget
       ? requestForTarget('cli.exec', {
@@ -289,6 +291,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     setError(null)
     createdRef.current = null
     flightRef.current = null
+    createdAtRef.current = null
   }
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
@@ -353,6 +356,53 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           }
         : prev
     )
+  }
+
+  const currentBotMeta = () => ({
+    shape,
+    color: color ?? undefined,
+    image,
+    imageKind: image ? ('photo' as const) : ('shape' as const),
+    title: title.trim(),
+    created: (createdAtRef.current ??= Date.now())
+  })
+
+  const reconcileDraftIdentity = async (draft: string) => {
+    const meta = currentBotMeta()
+
+    if (remoteTarget) {
+      const result = await requestForTarget<{ applied?: Record<string, unknown> }>('profiles.configure', {
+        name: draft,
+        display_name: meta.title,
+        ui_meta: {
+          'hermes-bots': {
+            shape: meta.shape,
+            color: meta.color,
+            imageKind: meta.imageKind,
+            title: meta.title,
+            created: meta.created
+          }
+        }
+      })
+
+      if (result?.applied?.display_name !== true || result.applied.ui_meta !== true) {
+        throw new Error('Gateway did not persist the bot title.')
+      }
+
+      return
+    }
+
+    const [profileResult, botResult] = await Promise.all([
+      requestForTarget<{ applied?: Record<string, unknown> }>('profiles.configure', {
+        name: draft,
+        display_name: meta.title
+      }),
+      saveBotMeta(draft, { title: meta.title })
+    ])
+
+    if (profileResult?.applied?.display_name !== true || botResult.serverOutcome === 'failed') {
+      throw new Error('Gateway did not persist the bot title.')
+    }
   }
 
   // Materialize the profile exactly once. createdRef stores the finished slug
@@ -445,14 +495,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // active gateway, so write appearance/title into the remote
         // profile's ui_meta (and asset store) directly. Best-effort: the
         // profile exists either way.
-        const { image: avatarImage, ...look } = {
-          shape,
-          color,
-          image,
-          imageKind: image ? 'photo' : 'shape',
-          title: title.trim(),
-          created: Date.now()
-        }
+        const { image: avatarImage, ...look } = currentBotMeta()
 
         try {
           void requestForTarget('profiles.configure', {
@@ -473,14 +516,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           /* older remote gateway */
         }
       } else {
-        saveBotMeta(slug, {
-          shape,
-          color: color ?? undefined,
-          image,
-          imageKind: image ? 'photo' : 'shape',
-          title: title.trim(),
-          created: Date.now()
-        })
+        saveBotMeta(slug, currentBotMeta())
       }
 
       queryClient.invalidateQueries({
@@ -502,6 +538,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     setError(null)
 
     try {
+      const draftAlreadyCreated = Boolean(createdRef.current)
       const slugCreated = await ensureAgentCreated()
 
       if (!slugCreated) {
@@ -509,6 +546,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         setError('Could not create the bot.')
 
         return
+      }
+
+      if (draftAlreadyCreated) {
+        await reconcileDraftIdentity(slugCreated)
       }
 
       host.notify({

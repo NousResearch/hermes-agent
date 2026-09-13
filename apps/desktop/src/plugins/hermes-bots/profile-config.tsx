@@ -528,6 +528,7 @@ export function emptyAdvancedState(): AdvancedConfigState {
  *  `requestForBot`, whose params are a `Record<string, unknown>`, and only
  *  aliases pick up the implicit index signature that requires. */
 export type ProfileConfigurePayload = {
+  display_name?: string
   disabled_skills?: string[]
   enabled_mcp_servers?: string[]
   enabled_toolsets?: string[]

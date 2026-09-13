@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import threading as _threading
 import time
 import weakref
@@ -42,6 +43,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOST = "hermes"
+
+
+def slug_id(text: str) -> str:
+    """Slug ``text`` into a Honcho identifier. Every ID Honcho accepts (workspace, session,
+    peer) must match ``^[a-zA-Z0-9_-]+$``; anything else comes back as a 422 schema error."""
+    return re.sub(r"[^a-zA-Z0-9_-]+", "-", text).strip("-")
+
+
+def _identifier_or_hash(text: str, prefix: str) -> str:
+    """``text`` slugged, or a stable ``prefix-<hash>`` when it slugs to nothing (a CJK-only
+    directory name, say). The hash keeps distinct inputs distinct instead of collapsing every
+    such name onto one shared session."""
+    return slug_id(text) or f"{prefix}-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _sanitize_url(url: str | None) -> str | None:
@@ -261,6 +275,18 @@ def _env_base_url() -> str | None:
     return (get_secret("HONCHO_BASE_URL", "") or "").strip() or (get_secret("HONCHO_URL", "") or "").strip() or None
 
 
+def _workspace_id(look: _HostLookup, host: str, path: Path) -> str:
+    """Honcho workspace ID from config. A hand-edited value that is not a valid identifier
+    ("hermes workspace") 422s EVERY request while Hermes only logs a warning per call, so slug
+    it and name the file - silence is how such a typo survives a whole day."""
+    value = look.pick("workspace") or host
+    slugged = slug_id(str(value)) or HOST
+    if slugged != value:
+        logger.warning("Honcho workspace %r in %s is not a valid Honcho identifier "
+                       "(allowed: a-z A-Z 0-9 _ -); using %r.", value, path, slugged)
+    return slugged
+
+
 def _connection_fields(look: _HostLookup, host: str, path: Path) -> dict[str, Any]:
     """Resolve identity/credential/transport fields (host block -> root -> env)."""
     raw, host_block = look.raw, look.host
@@ -278,7 +304,7 @@ def _connection_fields(look: _HostLookup, host: str, path: Path) -> dict[str, An
     base_url = _sanitize_url(host_block.get("baseUrl") or host_block.get("base_url") or native_base_url
                              or raw.get("baseUrl") or raw.get("base_url") or _env_base_url())
     return {
-        "workspace_id": look.pick("workspace") or host,
+        "workspace_id": _workspace_id(look, host, path),
         "ai_peer": look.pick("aiPeer") or host,
         "api_key": api_key,
         "environment": look.pick("environment", "production"),
@@ -491,12 +517,10 @@ class HonchoClientConfig:
     ) -> str | None:
         """Resolve the Honcho session name; with ``session_ai_peer_prefix`` the result is prefixed
         ``{ai_peer}-`` on every path, including the AI-peer-agnostic gateway session key."""
-        import re
-
         result = self._resolve_session_name_base(cwd=cwd, session_title=session_title,
                                                  session_id=session_id, gateway_session_key=gateway_session_key)
         if result and self.session_ai_peer_prefix and self.ai_peer:
-            ai = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
+            ai = slug_id(self.ai_peer)
             if ai:
                 prefixed = f"{ai}-{result}"
                 return self._enforce_session_id_limit(prefixed, prefixed)
@@ -509,26 +533,25 @@ class HonchoClientConfig:
         """Order: gateway session key (per-chat isolation no cwd/strategy gives) -> per-session
         strategy's session_id (authoritative, so a generated title never remaps a live conversation)
         -> sessions map override -> /title -> per-repo (git root name) -> per-directory (basename)
-        -> global (workspace)."""
-        import re
+        -> global (workspace).
 
-        def _slug(text: str) -> str:
-            return re.sub(r'[^a-zA-Z0-9_-]+', '-', text).strip('-')
-
+        Every path returns an identifier Honcho accepts: a raw name here (a directory called
+        "my project") 422s every call for that session and surfaces only as a warning."""
         cwd = cwd or os.getcwd()
-        if gateway_session_key and _slug(gateway_session_key):
-            return self._enforce_session_id_limit(_slug(gateway_session_key), gateway_session_key)
+        if gateway_session_key and slug_id(gateway_session_key):
+            return self._enforce_session_id_limit(slug_id(gateway_session_key), gateway_session_key)
         if self.session_strategy == "per-session" and session_id:
             return self._with_peer_prefix(session_id)
         manual = self.sessions.get(cwd)
         if manual:
-            return manual
-        if session_title and _slug(session_title):
-            return self._with_peer_prefix(_slug(session_title))
+            return _identifier_or_hash(manual, "session")
+        if session_title and slug_id(session_title):
+            return self._with_peer_prefix(slug_id(session_title))
         if self.session_strategy == "per-repo":
-            return self._with_peer_prefix(self._git_repo_name(cwd) or Path(cwd).name)
+            root = self._git_repo_name(cwd) or Path(cwd).name
+            return self._with_peer_prefix(_identifier_or_hash(root, "repo"))
         if self.session_strategy in {"per-directory", "per-session"}:
-            return self._with_peer_prefix(Path(cwd).name)
+            return self._with_peer_prefix(_identifier_or_hash(Path(cwd).name, "dir"))
         return self.workspace_id
 
 

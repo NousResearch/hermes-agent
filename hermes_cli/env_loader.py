@@ -28,6 +28,16 @@ _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex d
 # env-var name → source label ("bitwarden", …) for externally injected credentials; setup / `hermes
 # model` tell users WHERE a key came from when .env lacks it.
 _SECRET_SOURCES: dict[str, str] = {}
+# Every env-var name an external source SUPPLIED for some home, whether it was applied or lost to a
+# pre-existing process value (``skipped_existing``). ``_SECRET_SOURCES`` is provenance metadata and only
+# names applied values; the scrub that keeps a launch profile's source-supplied names out of a routed
+# child must see the skipped ones too, or a name already in the process env leaks with the launch value.
+_SOURCE_SUPPLIED_NAMES: set[str] = set()
+# Every KEY name a dotenv file loaded into ``os.environ`` during this process's lifetime. A key removed
+# or renamed in the launch ``.env`` after boot stays in ``os.environ`` (dotenv never unsets), but a
+# re-parse of the current file no longer names it — so the launch-residue strip for a routed child must
+# work from what was LOADED, not from what the file says now. Additive for the process lifetime.
+_LOADED_DOTENV_KEYS: set[str] = set()
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
@@ -77,8 +87,16 @@ def get_secret_source(env_var: str) -> str | None:
 
 def secret_source_names() -> tuple[str, ...]:
     """Every env-var name some profile's external secret source supplied (names only — the map is
-    process-wide, so a value must be resolved through the active profile's secret scope)."""
-    return tuple(_SECRET_SOURCES)
+    process-wide, so a value must be resolved through the active profile's secret scope). Includes names
+    the source supplied but a pre-existing process value won (``skipped_existing``): the launch value
+    in ``os.environ`` is still not a routed profile's to inherit."""
+    return tuple(dict.fromkeys((*_SECRET_SOURCES, *sorted(_SOURCE_SUPPLIED_NAMES))))
+
+
+def launch_dotenv_keys() -> frozenset[str]:
+    """KEY names any dotenv file loaded into this process's ``os.environ`` so far (see
+    ``_LOADED_DOTENV_KEYS``); the launch profile's residue set for routed children."""
+    return frozenset(_LOADED_DOTENV_KEYS)
 
 
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
@@ -160,6 +178,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
     if hermes_home is None:
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
+        _SOURCE_SUPPLIED_NAMES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
@@ -244,6 +263,8 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
         if raw.startswith(codecs.BOM_UTF8):
             raw = raw[len(codecs.BOM_UTF8) :]
         load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
+    # Same scanner both branches: it re-reads the file with the same latin-1 fallback.
+    _LOADED_DOTENV_KEYS.update(_env_keys_defined_in_dotenv(path))
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
@@ -501,6 +522,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     supplied = set(report.provenance)
     for src in report.sources:
         supplied.update(src.skipped_existing)
+    _SOURCE_SUPPLIED_NAMES.update(supplied)
     for name in supplied:
         if name in os.environ:
             values[name] = os.environ[name]

@@ -469,6 +469,96 @@ def test_a_routed_profile_script_never_receives_a_launch_external_source_value(h
     assert os.environ["LAUNCH_VAULT_ONLY"] == "launch-vault-value"  # parent untouched
 
 
+def test_a_routed_profile_script_never_receives_a_launch_key_removed_from_dotenv_after_boot(hermes_env, monkeypatch):
+    """Lifecycle negative control (#107695 review): the launch profile's .env loaded ``STALE_LAUNCH_KEY``
+    at boot, the operator then removed the key from the file, and the long-running process still holds
+    the old value in ``os.environ`` (dotenv never unsets). A re-parse of the CURRENT file no longer names
+    it, so a strip built from the file alone let the stale value reach a routed child. The strip must
+    work from every key any dotenv load put into the process env during its lifetime."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set(env_loader._LOADED_DOTENV_KEYS))
+    monkeypatch.setenv("STALE_LAUNCH_KEY", "placeholder")  # so monkeypatch restores the parent env afterwards
+    (launch / ".env").write_text("STALE_LAUNCH_KEY=stale-launch-value\n", encoding="utf-8")
+    env_loader._load_dotenv_with_fallback(launch / ".env", override=True)  # the boot-time load
+    assert os.environ["STALE_LAUNCH_KEY"] == "stale-launch-value"
+    (launch / ".env").write_text("# key removed after boot\n", encoding="utf-8")
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    script = routed / "scripts" / "probe_stale.sh"
+    script.write_text('#!/bin/bash\necho "${STALE_LAUNCH_KEY:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope({})
+    try:
+        ok, output = _run_job_script("probe_stale.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "<unset>"
+    assert os.environ["STALE_LAUNCH_KEY"] == "stale-launch-value"  # the parent process was not mutated
+
+
+def test_a_routed_profile_script_never_receives_a_launch_source_value_that_lost_to_the_process_env(hermes_env, monkeypatch):
+    """A launch-profile source SUPPLIED ``CUSTOM_VAULT_SECRET`` but a pre-existing process value won
+    (``skipped_existing``), so it never entered the provenance map ``secret_source_names()`` used to be
+    built from — and the launch value reached a routed child with an empty scope (#107695 review). The
+    ownership set must include every source-supplied name, applied or skipped."""
+    import os
+
+    from agent import secret_scope
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import ApplyReport, SourceReport
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    (launch / "config.yaml").write_text("secrets:\n  test-source:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("CUSTOM_VAULT_SECRET", "launch-value")
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+    monkeypatch.setattr(reg_module, "apply_all", lambda _cfg, home_path, **_kw: ApplyReport(
+        sources=[SourceReport(name="test-source", label="Test Source", result=FetchResult(),
+                              applied=[], skipped_existing=["CUSTOM_VAULT_SECRET"])],
+        provenance={}))
+    env_loader._apply_external_secret_sources(launch)  # the real registry path, source loses to the env
+    assert "CUSTOM_VAULT_SECRET" in env_loader.secret_source_names()
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    script = routed / "scripts" / "probe_skipped.sh"
+    script.write_text('#!/bin/bash\necho "${CUSTOM_VAULT_SECRET:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope({})
+    try:
+        ok, output = _run_job_script("probe_skipped.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "<unset>"
+    assert os.environ["CUSTOM_VAULT_SECRET"] == "launch-value"  # parent untouched
+
+
 def test_single_profile_child_keeps_its_own_external_source_value(hermes_env, monkeypatch):
     """No multiplexing: os.environ IS this profile's environment, so the source-name strip must not
     run at all — the child keeps its own vault value even if the per-home snapshot were missing."""

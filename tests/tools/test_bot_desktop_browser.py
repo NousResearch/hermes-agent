@@ -80,7 +80,7 @@ def test_agent_attaches_to_human_started_browser(monkeypatch):
 
     monkeypatch.setattr(session, "_spawn_and_collect", spawn)
     monkeypatch.setattr(session._lp, "_lightpanda_fallback_reason", lambda *a: None)
-    info = {"session_name": "h_abc", "cdp_url": None}
+    info = {"session_name": "h_abc", "cdp_url": None, "features": {"local": True}}
 
     monkeypatch.setattr(browser, "running_instance_cdp_port", lambda d, **kw: 41234)
     session._run_browser_command_unfenced("t", "open", ["https://x"], 10, None, "agent-browser", info)

@@ -26,7 +26,7 @@ def _wire(monkeypatch, commands):
     monkeypatch.setattr(browser, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr(browser, "_blocked_private_page_action", lambda *a: None)
     monkeypatch.setattr(session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
-    monkeypatch.setattr(session, "_get_session_info", lambda *a: {"session_name": "review"})
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {"session_name": "review", "cdp_url": None, "features": {"local": True}})
     monkeypatch.setattr(session._cloud, "_get_browser_engine", lambda: "chrome")
     monkeypatch.setattr(session._cloud, "_is_headed_mode", lambda: True)
 
@@ -59,3 +59,20 @@ def test_browser_result_crossing_a_takeover_is_discarded(monkeypatch):
     monkeypatch.setattr(session, "_spawn_and_collect", spawn_then_takeover)
     result = browser.browser_click("e1", task_id="review")
     assert "WHAT-THE-HUMAN-TYPED" not in result
+
+
+def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_display(monkeypatch):
+    """A real-profile session attaches over a loopback cdp_url but is launched with the Bot Desktop
+    DISPLAY, so it IS the human's browser: the fence keys on the ``local`` feature, not on the
+    transport. And a stranded human lease with the screen already down must still fence (computer_use
+    does), not silently unfence the browser."""
+    commands: list = []
+    browser, session = _wire(monkeypatch, commands)
+    monkeypatch.setattr(session, "_get_session_info", lambda *a: {
+        "session_name": "rp_1", "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+        "features": {"local": True, "real_profile": True}})
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    lease.acquire("human-viewer")
+    result = json.loads(browser.browser_click("e1", task_id="review"))
+    assert commands == [], f"human holds the lease, yet a real-profile browser command was dispatched: {commands}"
+    assert result.get("code") == "human_has_control"

@@ -594,12 +594,14 @@ def _run_browser_command(
 
 
 def _shares_bot_desktop_browser(session_info: Dict[str, Any]) -> bool:
-    """Local agent-browser session (no CDP url: the dispatcher runs it with ``--session``, i.e. on this
-    host's display) while this profile's Bot Desktop screen is running."""
-    if session_info.get("cdp_url"):
+    """Decided by provenance, not transport: every LOCAL session (plain ``--session``, real-profile CDP
+    attach, Lightpanda) is a browser Hermes launched with this profile's Bot Desktop DISPLAY, so it is the
+    screen a human who took over is typing into. Cloud / user-supplied CDP sessions are another browser.
+    A human lease with the screen already gone (dead Xvnc) still fences — computer_use does the same."""
+    if not (session_info.get("features") or {}).get("local"):
         return False
-    from tools.bot_desktop import runtime as _bd_runtime
-    return bool(_bd_runtime.published_env().get("DISPLAY"))
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
 
 
 def _run_browser_command_unfenced(task_id: str, command: str, args: List[str], timeout: int,

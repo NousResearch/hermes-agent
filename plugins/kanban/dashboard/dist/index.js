@@ -301,6 +301,26 @@
     } catch (_e) { /* ignore quota / private mode */ }
   }
 
+  // localStorage key for the user's board layout preference.
+  // "wide" (default) = single horizontal row with grab-pan; "wrapped" =
+  // columns wrap to rows, no horizontal scrolling, page-level vertical
+  // scroll. Independent of board: one preference applies to all boards.
+  const LS_VIEW_KEY = "hermes.kanban.boardView";
+
+  function readBoardView() {
+    try {
+      const v = window.localStorage.getItem(LS_VIEW_KEY);
+      return v === "wrapped" ? "wrapped" : "wide";
+    } catch (_e) { return "wide"; }
+  }
+
+  function writeBoardView(view) {
+    try {
+      if (view === "wrapped") window.localStorage.setItem(LS_VIEW_KEY, "wrapped");
+      else window.localStorage.removeItem(LS_VIEW_KEY);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
   function withBoard(url, board) {
     // Always append ?board=<slug> when we have one picked — including
     // "default". Omitting the param would fall through to the backend's
@@ -604,6 +624,7 @@
     const { t } = useI18n();
     const kanbanDialogs = useKanbanDialogs(t);
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    const [boardView, setBoardView] = useState(() => readBoardView());
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
@@ -1287,6 +1308,7 @@
         }),
         h(BoardToolbar, {
           board: boardData,
+          boardView, setBoardView,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
@@ -1314,6 +1336,7 @@
         }),
         h(BoardColumns, {
           board: filteredBoard,
+          view: boardView,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
@@ -2471,6 +2494,25 @@
         }),
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
+      h("div", { className: "flex flex-col gap-1",
+                 title: tx(t, "boardViewTitle",
+                   "Wide: all columns in one horizontal row (scroll/pan sideways). Wrapped: columns wrap to rows that fit the window — no horizontal scrolling, page scrolls vertically.") },
+        h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "boardView", "Board view")),
+        h("div", { className: "flex items-center gap-1" },
+          h(Button, {
+            size: "sm",
+            variant: props.boardView === "wide" ? "default" : "outline",
+            onClick: function () { props.setBoardView("wide"); writeBoardView("wide"); },
+            title: tx(t, "viewWideTitle", "One horizontal row; pan or scroll sideways."),
+          }, tx(t, "viewWide", "Wide")),
+          h(Button, {
+            size: "sm",
+            variant: props.boardView === "wrapped" ? "default" : "outline",
+            onClick: function () { props.setBoardView("wrapped"); writeBoardView("wrapped"); },
+            title: tx(t, "viewWrappedTitle", "Columns wrap to rows; no horizontal scrolling."),
+          }, tx(t, "viewWrapped", "Wrapped")),
+        ),
+      ),
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onNudgeDispatch,
@@ -2694,8 +2736,14 @@
 
     const checkScrollable = useCallback(function () {
       const el = columnsRef.current;
+      // Wrapped mode never scrolls horizontally: wrap means content always
+      // fits the container width, so report not-scrollable and disable pan.
+      if (props.view === "wrapped") {
+        setIsScrollable(false);
+        return;
+      }
       setIsScrollable(!!el && el.scrollWidth > el.clientWidth + 1);
-    }, []);
+    }, [props.view]);
 
     useEffect(function () {
       checkScrollable();
@@ -2739,6 +2787,8 @@
 
     const handleMouseDown = useCallback(function (e) {
       if (e.button !== 0) return;
+      // Wrapped mode: no horizontal panning (columns wrap instead).
+      if (props.view === "wrapped") return;
       if (isPanBlockedTarget(e.target)) return;
       const el = columnsRef.current;
       if (!el) return;
@@ -2772,7 +2822,7 @@
         window.removeEventListener("blur", onMouseUp);
       };
       e.preventDefault();
-    }, [isPanBlockedTarget, stopPan]);
+    }, [isPanBlockedTarget, stopPan, props.view]);
 
     const handleDragStart = useCallback(function (e) {
       const card = e.target.closest && e.target.closest(".hermes-kanban-card");
@@ -2787,6 +2837,7 @@
       ref: columnsRef,
       className: cn(
         "hermes-kanban-columns",
+        props.view === "wrapped" ? "hermes-kanban-columns--wrapped" : "",
         isScrollable ? "hermes-kanban-columns--scrollable" : "",
         isPanning ? "hermes-kanban-columns--panning" : "",
       ),

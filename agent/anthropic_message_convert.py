@@ -11,8 +11,9 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.anthropic_endpoints import (
-    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
+    _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_minimax_anthropic_endpoint,
+    _is_minimax_m3, _is_nous_portal_endpoint, _is_third_party_anthropic_endpoint,
+    _model_name_is_deepseek_thinking,
 )
 
 logger = logging.getLogger(__name__)
@@ -559,12 +560,17 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
     (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
     turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
-    Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
-    Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
-    native path despite not being anthropic.com.
+    Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones;
+    MiniMax-M3 also replays as-is, because its Anthropic-compatible endpoints require the complete
+    thinking/text/tool_use turn to round-trip. Nous Portal proxies Claude with sticky sessions and
+    validates the same signatures, so it takes the native path despite not being anthropic.com.
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
     is_kimi = _is_kimi_family_endpoint(base_url, model)
+    # MiniMax-M3 documents that its Anthropic-compatible endpoints require the COMPLETE
+    # thinking/text/tool_use blocks to round-trip verbatim across tool-call turns. Its thinking
+    # carries no Anthropic signature, so the generic third-party strip must not touch it.
+    is_minimax_m3 = _is_minimax_anthropic_endpoint(base_url) and _is_minimax_m3(model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)
     )
@@ -572,6 +578,15 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     for idx, m in _assistant_block_lists(result):
         if is_kimi:
             pass  # shared cleanup below still strips cache markers + the flag
+        elif is_minimax_m3:
+            # Keep the complete turn as-is. If orphan cleanup already removed a tool_use from
+            # this turn the content is no longer complete, so replaying the original thinking
+            # would 400 — drop only the now-invalid thinking blocks, leaving the preserved
+            # text/tool_use as a valid recovery turn.
+            if m.get("_thinking_signature_invalidated"):
+                m["content"] = [
+                    b for b in m["content"] if _block_type(b) not in _THINKING_TYPES
+                ] or [_text_block("(thinking elided)")]
         elif is_deepseek:
             # Strip signed (or redacted-with-data), keep unsigned.
             new_content = [

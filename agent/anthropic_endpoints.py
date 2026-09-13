@@ -79,6 +79,30 @@ _DEEPSEEK_THINKING_MODEL_PREFIXES = (
 )
 
 
+_MINIMAX_M3_CANONICAL_SLUGS = frozenset({"minimax-m3", "minimax/minimax-m3"})
+
+
+def _is_minimax_m3(model: str | None) -> bool:
+    """Return True for canonical MiniMax-M3 model slugs only.
+
+    MiniMax-M3 follows a distinct Anthropic-compatible thinking contract — adaptive/disabled,
+    never ``budget_tokens`` — on MiniMax's own Anthropic-compatible endpoints. Canonical slugs
+    are matched exactly (after stripping a vendor prefix) so a third-party slug that merely
+    *contains* the substring, e.g. ``some-vendor/minimax-m3-preview``, falls through to the
+    existing manual-thinking branch instead of claiming M3 semantics.
+
+    See https://platform.minimaxi.com/docs/api-reference/text-anthropic-api
+    """
+    if not isinstance(model, str):
+        return False
+    normalized = model.strip().lower()
+    if not normalized:
+        return False
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    return normalized in _MINIMAX_M3_CANONICAL_SLUGS
+
+
 def _model_name_is_deepseek_thinking(model: str | None) -> bool:
     """Known DeepSeek thinking families behind an Anthropic-compatible relay.
 

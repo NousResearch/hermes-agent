@@ -16,7 +16,7 @@ from utils import normalize_proxy_env_vars
 from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
-    _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
+    _is_minimax_anthropic_endpoint, _is_minimax_m3, _is_nous_portal_endpoint, _is_opencode_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
 )
@@ -582,7 +582,16 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        if _is_minimax_anthropic_endpoint(base_url) and _is_minimax_m3(model):
+            # MiniMax documents only adaptive/disabled for M3 — never Anthropic's
+            # enabled + budget_tokens form, which is not its structured-thinking
+            # contract. ``_thinking_kwargs`` would send the latter (M3 is not in
+            # ``_supports_adaptive_thinking``), so it is bypassed here.
+            kwargs["thinking"] = (
+                {"type": "disabled"} if reasoning_config.get("enabled") is False
+                else {"type": "adaptive"})
+        else:
+            kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):

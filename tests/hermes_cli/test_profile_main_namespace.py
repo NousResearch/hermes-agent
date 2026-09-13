@@ -1,6 +1,7 @@
 """New profile targets must not reuse the default session namespace."""
 
 import tarfile
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,9 +37,12 @@ def profile_home(tmp_path, monkeypatch):
     return home
 
 
-@pytest.mark.parametrize("operation", ["create", "import", "rename", "distribution", "distribution_tombstone"])
+@pytest.mark.parametrize("operation", [
+    "create", "import", "rename", "distribution", "distribution_tombstone", "distribution_symlink",
+    "stage_inside_source", "stage_inside_target",
+])
 @pytest.mark.parametrize("name", ["main", "MAIN", " main "])
-def test_new_profile_targets_cannot_claim_default_namespace(profile_home, tmp_path, operation, name):
+def test_new_profile_targets_cannot_claim_default_namespace(profile_home, tmp_path, monkeypatch, operation, name):
     source = profile_home / "profiles" / "source"
     source.mkdir(parents=True)
     config = "model:\n  provider: custom\n  default: local-model\n"
@@ -48,6 +52,52 @@ def test_new_profile_targets_cannot_claim_default_namespace(profile_home, tmp_pa
         bundle.add(source, arcname="source")
     write_manifest(source, DistributionManifest(name="source"))
     target = profile_home / "profiles" / "main"
+    if operation in {"stage_inside_source", "stage_inside_target"}:
+        parent = source if operation == "stage_inside_source" else target / "skills"
+        workdir = parent / "tmp"
+        workdir.mkdir(parents=True)
+        if operation == "stage_inside_source":
+            def refuse_recursive_copy(*args, **kwargs):
+                pytest.fail("staging tried to copy the source into itself")
+
+            monkeypatch.setattr(distributions.shutil, "copytree", refuse_recursive_copy)
+        else:
+            (target / "config.yaml").write_text(config)
+            (parent / "guide.md").write_text("Existing skill content")
+
+        with pytest.raises(DistributionError, match="outside"):
+            distributions.plan_install(str(source), workdir, override_name=name)
+        assert (source / "config.yaml").read_text() == config
+        if operation == "stage_inside_source":
+            assert not list(workdir.iterdir())
+            assert not target.exists()
+        else:
+            assert (target / "config.yaml").read_text() == config
+            assert (parent / "guide.md").read_text() == "Existing skill content"
+        return
+
+    if operation == "distribution_symlink":
+        external = tmp_path / "private.md"
+        external.write_text("Not distribution content")
+        (source / "SOUL.md").symlink_to(external)
+        staged = []
+        real_reject = distributions._reject_distribution_symlinks
+
+        def inspect_staged(path):
+            staged.append((path, (path / "SOUL.md").is_symlink()))
+            real_reject(path)
+
+        monkeypatch.setattr(distributions, "_reject_distribution_symlinks", inspect_staged)
+        with pytest.raises(DistributionError, match="symlink"):
+            install_distribution(str(source), name=name)
+        assert staged and staged[0][1]
+        assert not staged[0][0].is_relative_to(source)
+        assert not staged[0][0].is_relative_to(target)
+        assert not staged[0][0].exists()
+        assert external.read_text() == "Not distribution content"
+        assert not target.exists()
+        return
+
     tombstoned = operation == "distribution_tombstone"
     if tombstoned:
         target.mkdir()
@@ -78,6 +128,7 @@ def test_new_profile_targets_cannot_claim_default_namespace(profile_home, tmp_pa
     for operation in ("install", "update")
     for change in (
         "delete", "rename", "tombstone", "recreate", "replacement", "source_replacement",
+        "source_file", "source_file_link", "source_dir_link",
         "publication_rename", "publication_delete",
     )
 ])
@@ -98,6 +149,8 @@ def test_legacy_main_profile_remains_manageable(profile_home, tmp_path, monkeypa
     source = profile_home / "profiles" / "distribution"
     source.mkdir()
     (source / "SOUL.md").write_text("Updated distribution content")
+    (source / "skills").mkdir()
+    (source / "skills" / "guide.md").write_text("Planned skill content")
     manifest = DistributionManifest(name="main", source=str(source))
     write_manifest(source, manifest)
     write_manifest(legacy, manifest)
@@ -185,6 +238,26 @@ def test_legacy_main_profile_remains_manageable(profile_home, tmp_path, monkeypa
             write_manifest(source, manifest)
             (source / "SOUL.md").write_text("Unplanned source content")
 
+        def replace_payload():
+            replacement = tmp_path / "replacement.md"
+            replacement.write_text("Unplanned source content")
+            replacement.replace(source / "SOUL.md")
+            (source / "skills" / "guide.md").write_text("Unplanned skill content")
+            write_manifest(source, DistributionManifest(name="other", version="9.9.9"))
+
+        def link_payload(entry):
+            original = source / entry
+            external = tmp_path / "private"
+            if original.is_dir():
+                shutil.rmtree(original)
+                external.mkdir()
+                (external / "guide.md").write_text("Private external content")
+                original.symlink_to(external, target_is_directory=True)
+            else:
+                original.unlink()
+                external.write_text("Private external content")
+                original.symlink_to(external)
+
         mutations = {
             "delete": lambda: profiles.delete_profile(target_name, yes=True),
             "rename": lambda: profiles.rename_profile(target_name, "previous"),
@@ -192,19 +265,34 @@ def test_legacy_main_profile_remains_manageable(profile_home, tmp_path, monkeypa
             "recreate": recreate,
             "replacement": replace_target,
             "source_replacement": replace_source,
+            "source_file": replace_payload,
+            "source_file_link": lambda: link_payload("SOUL.md"),
+            "source_dir_link": lambda: link_payload("skills"),
         }
         monkeypatch.setattr(distributions, "plan_install", pause_after_plan)
         with ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(publish[finish])
             try:
                 assert planned.wait(10), "installation did not reach the planning barrier"
+                source_inode = source.stat().st_ino
                 mutations[change]()
+                if change in {"source_file", "source_file_link", "source_dir_link"}:
+                    assert source.stat().st_ino == source_inode
                 existed = target.exists()
                 contents = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
             finally:
                 release.set()
-            with pytest.raises(DistributionError, match="changed"):
-                pending.result(timeout=10)
+            if change.startswith("source_"):
+                installed = pending.result(timeout=10)
+                assert installed.provenance == installed.manifest.source == str(source)
+                assert installed.manifest.version == manifest.version
+                assert (target / "SOUL.md").read_text() == "Updated distribution content"
+                assert (target / "skills" / "guide.md").read_text() == "Planned skill content"
+                assert not installed.staged_dir.exists()
+                return
+            else:
+                with pytest.raises(DistributionError, match="changed"):
+                    pending.result(timeout=10)
         assert target.exists() == existed
         assert {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()} == contents
         return

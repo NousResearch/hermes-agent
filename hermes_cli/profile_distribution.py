@@ -248,7 +248,7 @@ def _git_clone(url: str, dest: Path) -> None:
 
 def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     """Resolve *source* to ``(staged_dir, provenance)``: git URLs are shallow-cloned into
-    *workdir* (``.git`` removed); a local directory is used in place."""
+    *workdir* (``.git`` removed); local sources are copied there before planning."""
     src_str = source.strip()
     if _looks_like_git_url(src_str):
         staged, provenance = workdir / "clone", src_str
@@ -259,8 +259,13 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
             "This repository is not a Hermes profile distribution."
         )
     elif (path_guess := Path(src_str).expanduser()).is_dir():
-        staged = path_guess.resolve()
-        provenance = str(staged)
+        local_source = path_guess.resolve()
+        staged, provenance = workdir / "local", str(local_source)
+        if staged.resolve().is_relative_to(local_source):
+            raise DistributionError("Distribution staging directory must be outside the local source.")
+        # Plan and publication read only this copy. Preserve links for the staged-tree
+        # validation to reject, instead of materializing their external targets.
+        shutil.copytree(local_source, staged, symlinks=True)
         missing = (
             f"No {MANIFEST_FILENAME} in {path_guess}. "
             "A local-directory source must contain a distribution.yaml at its root."
@@ -335,6 +340,8 @@ def plan_install(
         # Stamped once here so both fresh install and update propagate a fresh timestamp.
         manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         target_dir = get_profile_dir(canon)
+        if staged.resolve().is_relative_to(target_dir.resolve()):
+            raise DistributionError("Distribution staging directory must be outside the target profile.")
         existing = target_dir.is_dir()
         if not profile_exists(canon):
             _validate_new_profile_target(canon)

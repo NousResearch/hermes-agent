@@ -1260,6 +1260,7 @@ class TestMemoryToolToolsetGate:
 
         discover_builtin_tools()
         deferred_name = "memory_provider_deferred_probe"
+        provider_only_name = "memory_provider_direct_probe"
         registry.register(
             name=deferred_name,
             handler=lambda args, **kwargs: "{}",
@@ -1273,7 +1274,19 @@ class TestMemoryToolToolsetGate:
         assert deferred_name not in assembled_names
 
         mgr = MemoryManager()
-        mgr.add_provider(FakeMemoryProvider("ext", tools=[registry.get_schema(deferred_name)]))
+        mgr.add_provider(
+            FakeMemoryProvider(
+                "ext",
+                tools=[
+                    registry.get_schema(deferred_name),
+                    {
+                        "name": provider_only_name,
+                        "description": "probe",
+                        "parameters": {},
+                    },
+                ],
+            )
+        )
         agent = SimpleNamespace(
             _memory_manager=mgr,
             enabled_toolsets=enabled,
@@ -1282,10 +1295,11 @@ class TestMemoryToolToolsetGate:
             valid_tool_names=set(assembled_names),
         )
 
-        assert inject_memory_provider_tools(agent) == 0
-        assert deferred_name not in {
-            tool["function"]["name"] for tool in agent.tools
-        }
+        assert inject_memory_provider_tools(agent) == 1
+        final_names = {tool["function"]["name"] for tool in agent.tools}
+        assert deferred_name not in final_names
+        assert provider_only_name in final_names
+        assert provider_only_name in agent.valid_tool_names
 
 
 class TestContextEngineToolsetGate:

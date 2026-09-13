@@ -906,7 +906,11 @@ def _post_json(url, body, headers=None):
 
 
 def _send_body(text, ctx="", extra_params=None):
-    msg = protocol.text_message(protocol.ROLE_USER, text, context_id=ctx)
+    msg = protocol.structured_message(
+        protocol.ROLE_USER,
+        {"skill": "conversation", "input": {"text": text}},
+        context_id=ctx,
+    )
     params = {"message": msg}
     if extra_params:
         params.update(extra_params)
@@ -957,9 +961,8 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_mixed_parts_delivered_to_agent(self, monkeypatch):
-        """A message with text + file + data Parts delivers all content to the
-        agent — file URLs and data JSON are rendered into the text stream."""
+    def test_mixed_unstructured_parts_rejected_on_profile_endpoint(self, monkeypatch):
+        """The advertised profile endpoint rejects an ambiguous legacy message."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
 
@@ -985,13 +988,10 @@ class TestInboundRoundTrip:
                 "jsonrpc": "2.0", "id": "1", "method": "message/send",
                 "params": {"message": msg},
             })
-            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
-            # The agent received all three parts rendered into text
-            assert "Please process these:" in received["text"]
-            assert "https://example.com/report.pdf" in received["text"]
-            assert "report.pdf" in received["text"]
-            assert "Q3" in received["text"]
-            assert "42" in received["text"]
+            task = resp["result"]
+            assert task["status"]["state"] == "TASK_STATE_REJECTED"
+            assert task["artifacts"][0]["parts"][0]["data"]["error"]["code"] == "INVALID_CONTRACT"
+            assert "text" not in received
             await adapter.disconnect()
 
         asyncio.run(run())
@@ -1388,14 +1388,18 @@ class TestMultiAgentRouting:
             return "dev reply", protocol.STATE_COMPLETED
 
         adapter._forward_to_profile = fake_forward  # type: ignore
+        invocation = {"skill": "conversation", "input": {"text": "hello"}}
         terminal, pending = adapter._prepare_task(
-            {"tenant": "dev", "message": protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")},
+            {"tenant": "dev", "message": protocol.structured_message(
+                protocol.ROLE_USER, invocation, context_id="ctx-dev"
+            )},
             "peer-x",
             agent=agent,
         )
         assert pending is None
         assert terminal["status"]["state"] == protocol.STATE_COMPLETED
-        assert protocol.extract_text(terminal["artifacts"][0]) == "dev reply"
+        result = terminal["artifacts"][0]["parts"][0]["data"]
+        assert result["output"]["text"] == "dev reply"
         assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
 
 

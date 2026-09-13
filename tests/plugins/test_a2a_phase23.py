@@ -93,7 +93,11 @@ def _post_json(url, body, headers=None):
 def _send_body(text, ctx="", method="message/send"):
     return {
         "jsonrpc": "2.0", "id": "1", "method": method,
-        "params": {"message": protocol.text_message(protocol.ROLE_USER, text, context_id=ctx)},
+        "params": {"message": protocol.structured_message(
+            protocol.ROLE_USER,
+            {"skill": "conversation", "input": {"text": text}},
+            context_id=ctx,
+        )},
     }
 
 

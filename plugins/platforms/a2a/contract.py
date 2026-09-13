@@ -178,11 +178,10 @@ def validate_result(result: Any) -> None:
         validate_skill_response(skill, output)
 
 
-def extract_invocation(message: dict[str, Any]) -> dict[str, Any] | None:
+def extract_invocation(message: dict[str, Any]) -> dict[str, Any]:
     """Extract and validate the single authoritative JSON DataPart.
 
-    ``None`` means the message is unstructured conversation text. A JSON data
-    part is never silently downgraded to text.
+    The advertised Hermes/Yeoman profile has no text-only compatibility mode.
     """
     parts = message.get("parts", []) if isinstance(message, dict) else []
     if not isinstance(parts, list):
@@ -197,7 +196,7 @@ def extract_invocation(message: dict[str, Any]) -> dict[str, Any] | None:
     if len(json_parts) > 1:
         raise ContractViolation("exactly one application/json DataPart is allowed")
     if not json_parts:
-        return None
+        raise ContractViolation("exactly one application/json DataPart is required")
     if "data" not in json_parts[0]:
         raise ContractViolation("application/json DataPart must contain data")
     data = json_parts[0].get("data")

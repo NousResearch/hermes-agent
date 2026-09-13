@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from agent import secret_scope
 from gateway.config import PlatformConfig
 from plugins.platforms.a2a import contract, protocol, tools
 from plugins.platforms.a2a.adapter import A2AAdapter
@@ -33,6 +34,19 @@ def test_peer_auth_can_reference_a_service_environment_secret(monkeypatch):
     }
     with pytest.raises(ValueError, match="environment variable"):
         tools._auth_header({"type": "bearer", "token_env": "../../secret"})
+
+
+def test_peer_auth_uses_active_profile_secret_in_multiplex_mode(monkeypatch):
+    monkeypatch.setenv("YEOMAN_A2A_TOKEN", "default-profile-secret")
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"YEOMAN_A2A_TOKEN": "routed-profile-secret"})
+    try:
+        assert tools._auth_header({"type": "bearer", "token_env": "YEOMAN_A2A_TOKEN"}) == {
+            "Authorization": "Bearer routed-profile-secret"
+        }
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
 
 
 def test_contract_loader_rejects_previous_release(tmp_path, monkeypatch):
@@ -103,6 +117,18 @@ def test_adapter_rejects_multiple_authoritative_data_parts():
     assert task["artifacts"][0]["parts"][-1]["data"]["error"]["code"] == "INVALID_CONTRACT"
 
 
+def test_adapter_rejects_text_only_message_on_advertised_profile_endpoint():
+    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    task, pending = adapter._prepare_task(
+        {"message": protocol.text_message(protocol.ROLE_USER, "send_whatsapp team-example hello")},
+        "yeoman",
+    )
+
+    assert pending is None
+    assert task["status"]["state"] == protocol.STATE_REJECTED
+    assert task["artifacts"][0]["parts"][0]["data"]["error"]["code"] == "INVALID_CONTRACT"
+
+
 @pytest.mark.parametrize("parts", [{"not": "a list"}, [{"data": {"skill": 123}, "mediaType": "application/json"}]])
 def test_adapter_returns_rejection_for_malformed_part_container_or_skill(parts):
     adapter = A2AAdapter(PlatformConfig(enabled=True))
@@ -154,8 +180,8 @@ def test_profile_error_status_matches_failed_task():
 
 def test_profile_client_sends_only_the_structured_datapart(monkeypatch):
     card = {
-        "version": "1.0.0",
-        "capabilities": {"extensions": [{"uri": contract.PROFILE_URI, "required": True}]},
+        "version": "1.0.1",
+        "capabilities": {"extensions": [{"uri": contract.PROFILE_URI, "required": False}]},
         "skills": [{"id": "whatsapp.send", "inputModes": ["application/json"], "outputModes": ["application/json"]}],
         "defaultInputModes": ["text/plain", "application/json"],
         "defaultOutputModes": ["text/plain", "application/json"],
@@ -197,8 +223,8 @@ def test_profile_client_sends_only_the_structured_datapart(monkeypatch):
 
 def test_profile_client_refuses_unadvertised_skill(monkeypatch):
     monkeypatch.setattr(tools, "_fetch_card", lambda *args: {
-        "version": "1.0.0",
-        "capabilities": {"extensions": [{"uri": contract.PROFILE_URI, "required": True}]},
+        "version": "1.0.1",
+        "capabilities": {"extensions": [{"uri": contract.PROFILE_URI, "required": False}]},
         "skills": [{"id": "conversation"}],
     })
     with pytest.raises(ValueError, match="does not advertise contract skill"):
@@ -213,8 +239,10 @@ def test_card_advertises_profile_and_structured_modes(monkeypatch):
     card = adapter._build_card("http://localhost:9900/")
     assert card["defaultInputModes"] == ["text/plain", "application/json"]
     assert card["defaultOutputModes"] == ["text/plain", "application/json"]
-    assert card["extensions"][0] == {"uri": contract.PROFILE_URI, "required": True}
-    assert card["capabilities"]["extensions"][0] == {"uri": contract.PROFILE_URI, "required": True}
+    assert card["version"] == contract.CONTRACT_VERSION
+    assert card["supportedInterfaces"][0]["protocolVersion"] == protocol.PROTOCOL_VERSION
+    assert card["extensions"][0] == {"uri": contract.PROFILE_URI, "required": False}
+    assert card["capabilities"]["extensions"][0] == {"uri": contract.PROFILE_URI, "required": False}
     assert {skill["id"] for skill in card["skills"]} >= {"toolset.web_search", "conversation", "search.web", "research.deep"}
     assert not {"whatsapp.send", "media.voice.generate"} & {skill["id"] for skill in card["skills"]}
 
@@ -247,14 +275,117 @@ def test_profile_rpc_endpoint_stays_on_configured_origin():
         tools._profile_rpc_url("https://peer.example", "javascript:alert(1)")
 
 
-def test_profile_client_requires_required_profile_extension(monkeypatch):
+def test_profile_client_rejects_missing_profile_extension(monkeypatch):
     monkeypatch.setattr(tools, "_fetch_card", lambda *args: {
-        "version": "1.0.0",
-        "capabilities": {"extensions": [{"uri": contract.PROFILE_URI}]},
+        "version": "1.0.1",
+        "capabilities": {"extensions": []},
         "skills": [{"id": "conversation"}],
     })
     with pytest.raises(ValueError, match="does not advertise the Hermes/Yeoman A2A profile"):
         tools._send_profile_invocation("yeoman", {"url": "http://peer", "auth": {}}, "conversation", {"text": "hi"})
+
+
+def test_profile_retry_reuses_persisted_outbound_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    card = {
+        "version": "1.0.1",
+        "extensions": [{"uri": contract.PROFILE_URI, "required": False}],
+        "skills": [{"id": "whatsapp.send", "inputModes": ["application/json"], "outputModes": ["application/json"]}],
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "supportedInterfaces": [{"url": "http://peer/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+    }
+    first = {}
+    monkeypatch.setattr(tools, "_fetch_card", lambda *args: card)
+    monkeypatch.setattr(tools.security, "audit", lambda *args: None)
+
+    def fake_post(_url, body, _headers, _timeout, _follow_redirects):
+        context_id = body["params"]["message"]["contextId"]
+        first.setdefault("context_id", context_id)
+        result = {
+            "skill": "whatsapp.send",
+            "status": "completed",
+            "output": {"delivery_id": "delivery-1", "status": "accepted",
+                       "recipient": {"type": "group", "alias": "team-example"}},
+            "correlation": {"task_id": "task-original", "context_id": first["context_id"]},
+        }
+        return {"jsonrpc": "2.0", "id": body["id"], "result": {"task": {
+            "id": "task-original", "contextId": first["context_id"],
+            "status": {"state": protocol.STATE_COMPLETED},
+            "artifacts": [{"artifactId": "artifact-1", "parts": [contract.json_data_part(result)]}],
+        }}}
+
+    monkeypatch.setattr(tools, "_http_post_json", fake_post)
+    peer = {"url": "http://peer", "auth": {}}
+    first_result = tools._send_profile_invocation("yeoman", peer, "whatsapp.send", _whatsapp_input())
+    retry_result = tools._send_profile_invocation("same-peer-alias", peer, "whatsapp.send", _whatsapp_input())
+
+    assert retry_result == first_result
+    assert retry_result["context_id"] == first["context_id"]
+
+
+def test_profile_client_rejects_same_idempotency_key_with_different_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    card = {
+        "version": "1.0.1",
+        "extensions": [{"uri": contract.PROFILE_URI, "required": False}],
+        "skills": [{"id": "research.deep", "inputModes": ["application/json"], "outputModes": ["application/json"]}],
+        "supportedInterfaces": [{"url": "http://peer/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+    }
+    monkeypatch.setattr(tools, "_fetch_card", lambda *args: card)
+    monkeypatch.setattr(tools, "_http_post_json", lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        tools._send_profile_invocation(
+            "yeoman", {"url": "http://peer", "auth": {}}, "research.deep",
+            {"question": "first", "idempotency_key": "same-key"},
+        )
+    with pytest.raises(ValueError, match="Idempotency key"):
+        tools._send_profile_invocation(
+            "yeoman", {"url": "http://peer", "auth": {}}, "research.deep",
+            {"question": "different", "idempotency_key": "same-key"},
+        )
+
+
+def test_profile_client_omits_missing_interface_tenant(monkeypatch):
+    card = {
+        "version": "1.0.1",
+        "extensions": [{"uri": contract.PROFILE_URI, "required": False}],
+        "skills": [{"id": "research.deep", "inputModes": ["application/json"], "outputModes": ["application/json"]}],
+        "supportedInterfaces": [{"url": "http://peer/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+    }
+    captured = {}
+    monkeypatch.setattr(tools, "_fetch_card", lambda *args: card)
+    monkeypatch.setattr(tools.protocol, "persist_message", lambda *args: None)
+
+    def fake_post(_url, body, _headers, _timeout, _follow_redirects):
+        captured["params"] = body["params"]
+        return {"jsonrpc": "2.0", "id": body["id"], "result": {"task": {
+            "id": "task-1", "contextId": body["params"]["message"]["contextId"],
+            "status": {"state": protocol.STATE_WORKING},
+        }}}
+
+    monkeypatch.setattr(tools, "_http_post_json", fake_post)
+    tools._send_profile_invocation(
+        "yeoman", {"url": "http://peer", "auth": {}}, "research.deep",
+        {"question": "question", "idempotency_key": "tenant-test"},
+    )
+    assert "tenant" not in captured["params"]
+
+
+def test_profile_tool_sanitizes_remote_error_payload(monkeypatch):
+    secret = "sk-abcdefghijklmnopqrstuv"
+    signed_url = "https://private.example/report?token=do-not-leak"
+    monkeypatch.setattr(tools, "_resolve_peer", lambda _agent: {"url": "http://peer", "auth": {}})
+    monkeypatch.setattr(
+        tools, "_send_profile_invocation",
+        lambda *_args: (_ for _ in ()).throw(ValueError(f"remote error {secret} at {signed_url}")),
+    )
+
+    output = tools.a2a_skill_call({"agent": "yeoman", "skill": "conversation", "input": {"text": "hi"}})
+
+    assert output == "Error: profile call failed."
+    assert secret not in output
+    assert signed_url not in output
 
 
 def test_research_invocation_returns_working_task_without_waiting(monkeypatch):
@@ -284,6 +415,40 @@ def test_research_invocation_returns_working_task_without_waiting(monkeypatch):
     assert pending is None
     assert task["status"]["state"] == protocol.STATE_WORKING
     assert adapter.tasks.get(task["id"])["orphan_timeout"] == 1800
+
+
+def test_routed_research_returns_working_before_profile_forward(monkeypatch):
+    adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+        "agents": {"research": {"profile": "research", "tenant": "research"}}
+    }))
+    adapter._web_search_is_available = lambda _agent=None: True  # type: ignore[method-assign]
+    agent = adapter._agents["research"]
+    forwarded = []
+    background = []
+    adapter._forward_to_profile = lambda *_args: forwarded.append(True) or ("report", protocol.STATE_COMPLETED)  # type: ignore[method-assign]
+    monkeypatch.setattr("plugins.platforms.a2a.adapter._daemon_thread", lambda target, _name: background.append(target))
+    invocation = {
+        "skill": "research.deep",
+        "input": {"question": "What changed?", "idempotency_key": "routed-research"},
+    }
+
+    task, pending = adapter._prepare_task(
+        {"tenant": "research", "message": protocol.structured_message(
+            protocol.ROLE_USER, invocation, context_id="ctx-routed-research"
+        )},
+        "yeoman",
+        agent=agent,
+    )
+
+    assert pending is None
+    assert task["status"]["state"] == protocol.STATE_WORKING
+    assert forwarded == []
+    assert len(background) == 1
+    background[0]()
+    completed = adapter.tasks.get(task["id"])
+    assert completed["state"] == protocol.STATE_COMPLETED
+    correlation = completed["result_data"]["correlation"]
+    assert correlation == {"task_id": task["id"], "context_id": "ctx-routed-research"}
 
 
 def test_inbound_search_uses_structured_skill_prompt_and_result_artifact(monkeypatch):

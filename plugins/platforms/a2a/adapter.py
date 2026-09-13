@@ -442,7 +442,7 @@ class A2AAdapter(BasePlatformAdapter):
             description=agent.get("description") or _DEFAULT_DESCRIPTION, skills=skills,
             streaming=bool(agent.get("local", True)), push_notifications=True,
             auth_required=not self._security_context.localhost_only(), tenant=str(agent.get("tenant") or ""),
-            extensions=[{"uri": contract.PROFILE_URI, "required": True}],
+            extensions=[{"uri": contract.PROFILE_URI, "required": False}],
             input_modes=["text/plain", contract.JSON_MEDIA_TYPE], output_modes=["text/plain", contract.JSON_MEDIA_TYPE],
         )
 
@@ -560,9 +560,9 @@ class A2AAdapter(BasePlatformAdapter):
             return self._end_task(rec, protocol.STATE_REJECTED, message,
                                   result_data=self._profile_error(profile_skill, "INVALID_CONTRACT", message, rec,
                                                                   protocol.STATE_REJECTED))
-        text = protocol.extract_text(params) if invocation is None else ""
+        text = ""
         task_id = protocol.new_task_id()
-        skill = str(invocation["skill"]) if invocation else ""
+        skill = str(invocation["skill"])
         scope = self._scope_for_agent(agent)
         if skill == "research.deep":
             idempotency_key = str(invocation["input"]["idempotency_key"])
@@ -600,7 +600,7 @@ class A2AAdapter(BasePlatformAdapter):
                                   f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.",
                                   result_data=self._profile_error(skill, "ANTI_LOOP", "Task rejected by anti-loop protection.", rec,
                                                                   protocol.STATE_REJECTED) if skill else None)
-        if invocation and skill not in {"conversation", "search.web", "research.deep"}:
+        if skill not in {"conversation", "search.web", "research.deep"}:
             message = "Requested profile skill is unavailable."
             return self._end_task(rec, protocol.STATE_REJECTED, message,
                                   result_data=self._profile_error(skill, "SKILL_NOT_AVAILABLE", message, rec,
@@ -610,35 +610,34 @@ class A2AAdapter(BasePlatformAdapter):
             return self._end_task(rec, protocol.STATE_REJECTED, message,
                                   result_data=self._profile_error(skill, "SKILL_NOT_AVAILABLE", message, rec,
                                                                   protocol.STATE_REJECTED))
-        if invocation:
-            input_data = invocation["input"]
-            if skill == "conversation":
-                text = input_data["text"]
-            elif skill == "search.web":
-                limits = []
-                if input_data.get("max_results"):
-                    limits.append(f"at most {input_data['max_results']} results")
-                if input_data.get("domains"):
-                    limits.append("restricted to: " + ", ".join(input_data["domains"]))
-                if input_data.get("recency_days"):
-                    limits.append(f"published within {input_data['recency_days']} days")
-                if input_data.get("language"):
-                    limits.append(f"language: {input_data['language']}")
-                text = ("Use Hermes' real web-search capability for this request; do not answer from memory. "
-                        f"Query: {input_data['query']}. " + ("Constraints: " + "; ".join(limits) + ". " if limits else "")
-                        + "Return a concise answer with source URLs.")
-            else:
-                scope = f" Scope: {input_data['scope']}." if input_data.get("scope") else ""
-                constraints = []
-                if input_data.get("output_format"):
-                    constraints.append(f"output format: {input_data['output_format']}")
-                if input_data.get("max_sources"):
-                    constraints.append(f"at most {input_data['max_sources']} sources")
-                text = ("Conduct this as a deep-research task using Hermes' real research and web capabilities; "
-                        "do not merely describe how to research it. "
-                        f"Question: {input_data['question']}.{scope} "
-                        + ("Constraints: " + "; ".join(constraints) + ". " if constraints else "")
-                        + "Return a report with sources.")
+        input_data = invocation["input"]
+        if skill == "conversation":
+            text = input_data["text"]
+        elif skill == "search.web":
+            limits = []
+            if input_data.get("max_results"):
+                limits.append(f"at most {input_data['max_results']} results")
+            if input_data.get("domains"):
+                limits.append("restricted to: " + ", ".join(input_data["domains"]))
+            if input_data.get("recency_days"):
+                limits.append(f"published within {input_data['recency_days']} days")
+            if input_data.get("language"):
+                limits.append(f"language: {input_data['language']}")
+            text = ("Use Hermes' real web-search capability for this request; do not answer from memory. "
+                    f"Query: {input_data['query']}. " + ("Constraints: " + "; ".join(limits) + ". " if limits else "")
+                    + "Return a concise answer with source URLs.")
+        else:
+            scope = f" Scope: {input_data['scope']}." if input_data.get("scope") else ""
+            constraints = []
+            if input_data.get("output_format"):
+                constraints.append(f"output format: {input_data['output_format']}")
+            if input_data.get("max_sources"):
+                constraints.append(f"at most {input_data['max_sources']} sources")
+            text = ("Conduct this as a deep-research task using Hermes' real research and web capabilities; "
+                    "do not merely describe how to research it. "
+                    f"Question: {input_data['question']}.{scope} "
+                    + ("Constraints: " + "; ".join(constraints) + ". " if constraints else "")
+                    + "Return a report with sources.")
         if not text:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         framed = security.wrap_inbound(peer, text)
@@ -647,6 +646,21 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
+            if skill == "research.deep":
+                self.tasks.set_state(task_id, protocol.STATE_WORKING)
+                timeout = int(input_data.get("max_duration_seconds", 86400))
+                self.tasks.set_orphan_timeout(task_id, timeout)
+                pending = {
+                    "task_id": task_id, "context_id": context_id, "peer": peer,
+                    "started": time.time(), "skill": skill, "invocation": invocation,
+                    "reference_task_ids": reference_task_ids,
+                }
+                working_task = protocol.TaskStore.to_task(self.tasks.get(task_id) or rec)
+                _daemon_thread(
+                    lambda: self._background_forward_profile(pending, agent, framed),
+                    f"a2a-research-{task_id}",
+                )
+                return working_task, None
             reply, state = self._forward_to_profile(agent, peer, context_id, framed)
             result_data = (contract.result_for_reply(skill, reply, task_id=task_id, context_id=context_id,
                                                      reference_task_ids=reference_task_ids)
@@ -676,12 +690,19 @@ class A2AAdapter(BasePlatformAdapter):
             timeout = int(invocation["input"].get("max_duration_seconds", 86400))
             self.tasks.set_orphan_timeout(task_id, timeout)
             pending["deadline"] = pending["started"] + timeout
+            working_task = protocol.TaskStore.to_task(self.tasks.get(task_id) or rec)
             _daemon_thread(lambda: self._background_finalize(pending), f"a2a-research-{task_id}")
-            return protocol.TaskStore.to_task(self.tasks.get(task_id) or rec), None
+            return working_task, None
         return None, pending
 
     def _background_finalize(self, pending: dict) -> None:
         self._finalize_task(pending, *self._await_reply(pending))
+
+    def _background_forward_profile(self, pending: dict, agent: dict, framed_text: str) -> None:
+        reply, state = self._forward_to_profile(
+            agent, pending["peer"], pending["context_id"], framed_text
+        )
+        self._finalize_task(pending, state, reply)
 
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
@@ -757,7 +778,7 @@ class A2AAdapter(BasePlatformAdapter):
                 except contract.ContractViolation:
                     state, reply = protocol.STATE_FAILED, "[agent produced no valid profile result]"
                     result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
-            else:
+            elif state != protocol.STATE_INPUT_REQUIRED:
                 result_data = self._profile_error(skill, "PROCESSING_FAILED", "Agent processing failed.", rec, state)
         self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"], result_data=result_data,
                              audit_summary=f"profile skill={skill}" if skill else None)

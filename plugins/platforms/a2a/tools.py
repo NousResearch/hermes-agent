@@ -5,10 +5,12 @@ capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 r
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,8 +59,40 @@ def _auth_header(auth: dict) -> dict:
     if not token and (token_env := auth.get("token_env")):
         if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
             raise ValueError("invalid bearer token environment variable")
-        token = os.environ.get(token_env, "")
+        from agent.secret_scope import get_secret
+        token = get_secret(token_env, "")
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+_PROFILE_CORRELATION_LOCK = threading.Lock()
+
+
+def _profile_correlation(peer: dict, invocation: dict) -> tuple[str, str]:
+    """Stable request/context ids for idempotent profile retries, claimed in existing history."""
+    key = invocation["input"].get("idempotency_key")
+    if not isinstance(key, str) or not key:
+        return protocol.new_context_id(), protocol.new_task_id()
+    canonical = json.dumps(invocation, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    identity = json.dumps(
+        [peer.get("url", ""), peer.get("tenant", ""), invocation["skill"], key],
+        separators=(",", ":"), ensure_ascii=False,
+    )
+    stable = hashlib.sha256(identity.encode()).hexdigest()
+    context_id, request_id = "ctx-" + stable[:16], "task-" + stable[16:32]
+    prefix = f"profile skill={invocation['skill']} request_sha256="
+    summary = f"{prefix}{digest} task={request_id}"
+    with _PROFILE_CORRELATION_LOCK:
+        existing = next(
+            (str(item.get("text") or "") for item in protocol.load_conversation(context_id, limit=200)
+             if str(item.get("text") or "").startswith(prefix)),
+            "",
+        )
+        if existing and existing != summary:
+            raise ValueError("Idempotency key was already used with a different request.")
+        if not existing:
+            protocol.persist_message(context_id, "user", summary, request_id)
+    return context_id, request_id
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -157,7 +191,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     protocol.metrics.outbound_total += 1
     resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
     if "error" in resp:
-        raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
+        raise ValueError("remote peer returned an error")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
     reply = _reply_text_from_result(payload)
     reply_ctx, state = ctx, ""
@@ -186,11 +220,12 @@ def _send_profile_invocation(agent_label: str, peer: dict, skill: str, input_dat
     headers = _auth_header(peer.get("auth", {}) or {})
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
     card = _fetch_card(peer["url"], headers, min(timeout, 30), False)
-    if card.get("version") != "1.0.0":
-        raise ValueError(f"Peer '{agent_label}' does not advertise A2A card version 1.0.0")
+    if card.get("version") != contract.CONTRACT_VERSION:
+        raise ValueError(
+            f"Peer '{agent_label}' does not advertise A2A card version {contract.CONTRACT_VERSION}"
+        )
     extensions = list(((card.get("capabilities") or {}).get("extensions") or [])) + list(card.get("extensions") or [])
-    if not any(isinstance(ext, dict) and ext.get("uri") == contract.PROFILE_URI and ext.get("required") is True
-               for ext in extensions):
+    if not any(isinstance(ext, dict) and ext.get("uri") == contract.PROFILE_URI for ext in extensions):
         raise ValueError(f"Peer '{agent_label}' does not advertise the Hermes/Yeoman A2A profile")
     descriptor = next((item for item in card.get("skills", []) or []
                        if isinstance(item, dict) and item.get("id") == skill), None)
@@ -206,17 +241,18 @@ def _send_profile_invocation(agent_label: str, peer: dict, skill: str, input_dat
     except contract.ContractViolation as exc:
         raise ValueError("invalid profile input") from exc
     invocation = {"skill": skill, "input": input_data}
-    context_id = protocol.new_context_id()
-    body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
+    context_id, request_id = _profile_correlation(peer, invocation)
+    body = {"jsonrpc": "2.0", "id": request_id, "method": "SendMessage",
             "params": {"message": protocol.structured_message(protocol.ROLE_USER, invocation, context_id)}}
     iface = _select_jsonrpc_interface(card)
     if not iface or str(iface.get("protocolVersion") or "") not in {"1.0", "1.0.0"}:
         raise ValueError(f"Peer '{agent_label}' does not advertise an A2A 1.0 JSON-RPC interface")
     rpc_url = _profile_rpc_url(peer["url"], str(iface["url"]))
-    if tenant := str(iface.get("tenant") if iface else peer.get("tenant") or ""):
+    if tenant := str((iface.get("tenant") if iface else peer.get("tenant")) or ""):
         body["params"]["tenant"] = tenant
     security.audit("outbound", agent_label, body["id"], f"profile skill={skill}")
-    protocol.persist_message(context_id, "user", f"profile skill={skill} task={body['id']}", body["id"])
+    if "idempotency_key" not in input_data:
+        protocol.persist_message(context_id, "user", f"profile skill={skill} task={body['id']}", body["id"])
     response = _http_post_json(rpc_url, body, headers, timeout, False)
     if not isinstance(response, dict) or response.get("jsonrpc") != "2.0" or response.get("id") != body["id"]:
         raise ValueError(f"Peer '{agent_label}' returned a mismatched JSON-RPC response")
@@ -228,7 +264,7 @@ def _send_profile_invocation(agent_label: str, peer: dict, skill: str, input_dat
         if (not isinstance(error, dict) or set(error) != {"code", "message"} or isinstance(error["code"], bool)
                 or not isinstance(error["code"], int) or not isinstance(error["message"], str)):
             raise ValueError(f"Peer '{agent_label}' returned an invalid JSON-RPC error")
-        raise ValueError(f"Peer '{agent_label}' returned an error: {error['message']}")
+        raise ValueError("remote peer returned an error")
     task = protocol.unwrap_send_message_response(response.get("result", {}))
     if not isinstance(task, dict) or not task.get("id") or task.get("contextId") != context_id:
         raise ValueError(f"Peer '{agent_label}' returned a task with mismatched correlation")
@@ -271,8 +307,8 @@ def _send_profile_invocation(agent_label: str, peer: dict, skill: str, input_dat
     return {"result": result, "context_id": task.get("contextId", context_id), "state": state}
 
 
-_AUTH_ERR = "Error: peer '{agent}' rejected auth (HTTP {code}). Check the configured token."
-_HTTP_CALL_ERRORS = {401: _AUTH_ERR, 403: _AUTH_ERR, 429: "Error: peer '{agent}' rate limited us (HTTP 429). Retry later."}
+_AUTH_ERR = "Error: remote peer rejected auth (HTTP {code}). Check the configured token."
+_HTTP_CALL_ERRORS = {401: _AUTH_ERR, 403: _AUTH_ERR, 429: "Error: remote peer rate limited us (HTTP 429). Retry later."}
 
 def a2a_discover(args: dict, **_: Any) -> str:
     """Fetch and summarize the Agent Card at ``url``."""
@@ -282,9 +318,10 @@ def a2a_discover(args: dict, **_: Any) -> str:
     try:
         card = _fetch_card(url, {}, _DEFAULT_TIMEOUT)
     except urllib.error.HTTPError as e:
-        return f"Error: discovery failed — HTTP {e.code} from {url}."
-    except Exception as e:
-        return f"Error: could not reach {url} — {e}."
+        return f"Error: discovery failed — HTTP {e.code}."
+    except Exception as exc:
+        logger.warning("A2A discovery failed (%s)", type(exc).__name__)
+        return "Error: discovery failed."
     caps = card.get("capabilities", {}) or {}
     skills = card.get("skills", []) or []
     auth = "yes" if card.get("security") else "no"
@@ -314,11 +351,10 @@ def a2a_call(args: dict, **_: Any) -> str:
     try:
         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
     except urllib.error.HTTPError as e:
-        return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
-    except ValueError as e:
-        return str(e)
-    except Exception as e:
-        return f"Error: call to '{agent}' failed — {e}."
+        return _HTTP_CALL_ERRORS.get(e.code, "Error: A2A call failed — HTTP {code}.").format(code=e.code)
+    except Exception as exc:
+        logger.warning("A2A call failed (%s)", type(exc).__name__)
+        return "Error: A2A call failed."
     short_state = state.replace("TASK_STATE_", "").replace("_", "-").lower()  # v0.3 states pass through
     header = f"[{agent} · context {reply_ctx}" + (f" · {short_state}" if state else "") + "]"
     body = reply or "(no text reply)"
@@ -339,10 +375,12 @@ def a2a_skill_call(args: dict, **_: Any) -> str:
         return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
     try:
         return json.dumps(_send_profile_invocation(agent, peer, skill, input_data), ensure_ascii=False)
-    except contract.ContractViolation:
-        return f"Error: profile call to '{agent}' failed — invalid profile input."
-    except Exception as e:
-        return f"Error: profile call to '{agent}' failed — {e}."
+    except contract.ContractViolation as exc:
+        logger.warning("A2A profile call failed (%s)", type(exc).__name__)
+        return "Error: profile call failed — invalid profile input."
+    except Exception as exc:
+        logger.warning("A2A profile call failed (%s)", type(exc).__name__)
+        return "Error: profile call failed."
 
 
 def a2a_list(args: dict | None = None, **_: Any) -> str:
@@ -396,8 +434,9 @@ def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id:
     try:
         reply, _ctx, _state = _send_task(agent_name, _peer_from_entry(peer_entry), message, context_id)
         return (agent_name, reply or "(no reply)")
-    except Exception as e:
-        return (agent_name, f"Error: {e}")
+    except Exception as exc:
+        logger.warning("A2A orchestrated call failed (%s)", type(exc).__name__)
+        return (agent_name, "Error: A2A call failed.")
 
 
 def a2a_orchestrate(args: dict, **_: Any) -> str:

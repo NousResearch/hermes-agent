@@ -101,7 +101,7 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
             base = f"{window.label}: {max(0, round(100 - used))}% remaining ({max(0, round(used))}% used)"
         if window.reset_at:
             base += f" • resets {_format_reset(window.reset_at)}"
-        elif window.detail:
+        if window.detail:
             base += f" • {window.detail}"
         lines.append(base)
     lines.extend(snapshot.details)
@@ -557,9 +557,101 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_OLLAMA_SESSION_EPOCH = 1786500000  # 2026-08-12 02:00 UTC anchor; resets land on 01/06/11/16/21:00 UTC (measured Sep 5 2026)
+_OLLAMA_SESSION_PERIOD = 5 * 3600  # 5h fixed blocks
+
+
+def _ollama_next_session_reset(now: Optional[datetime] = None) -> datetime:
+    """Next 5h session-quota boundary. The API exposes no reset clock, so this
+    is derived from the measured fixed grid (see tracker notes); if Ollama ever
+    ships a reset timestamp in /api/usage, prefer that instead."""
+    moment = now or _utc_now()
+    k = math.floor((moment.timestamp() - _OLLAMA_SESSION_EPOCH) / _OLLAMA_SESSION_PERIOD) + 1
+    return datetime.fromtimestamp(_OLLAMA_SESSION_EPOCH + k * _OLLAMA_SESSION_PERIOD, tz=timezone.utc)
+
+
+def _ollama_weekly_reset_estimate() -> Optional[datetime]:
+    """7-day trailing window: usage decays continuously, so the practical
+    'reset' is when the oldest in-window usage exits. Without a server clock
+    we can't name it; report None (rendered as no reset hint) rather than guess."""
+    return None
+
+
+def _fetch_ollama_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch Ollama Cloud quota windows from https://ollama.com/api/usage.
+
+    The endpoint reports legacy-plan rolling windows (session + weekly) as
+    usage fractions, plus per-model request counts and PAYG activity cost.
+    """
+    runtime = resolve_runtime_provider(
+        requested="ollama-cloud",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    base = str(runtime.get("base_url", "") or "").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get(f"{base}/api/usage", headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    limits = payload.get("limits") or {}
+    session_reset: Optional[datetime] = None
+    if "session" in limits:
+        session_reset = _ollama_next_session_reset()
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("session", "Session (rolling)"), ("weekly", "Weekly")):
+        window = limits.get(key) or {}
+        usage = window.get("usage")
+        if not isinstance(usage, (int, float)):
+            continue
+        model_counts = window.get("models") or []
+        parts = [
+            f"{m.get('name')} x{m.get('request_count')}"
+            for m in model_counts
+            if isinstance(m, dict) and m.get("name")
+        ]
+        reset_at = session_reset if key == "session" else _ollama_weekly_reset_estimate()
+        windows.append(
+            AccountUsageWindow(
+                label=label,
+                used_percent=float(usage) * 100.0,
+                reset_at=reset_at,
+                detail=" • ".join(parts) if parts else None,
+            )
+        )
+    details: list[str] = []
+    activity = payload.get("activity") or {}
+    cost = activity.get("cost")
+    try:
+        cost_value = float(cost)
+    except (TypeError, ValueError):
+        cost_value = 0.0
+    if cost_value > 0:
+        period = str((activity.get("period") or {}).get("type") or "period")
+        details.append(f"PAYG activity ({period}): ${cost_value:.2f}")
+    return AccountUsageSnapshot(
+        provider="ollama-cloud",
+        source="usage_api",
+        fetched_at=_utc_now(),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "ollama-cloud": _fetch_ollama_account_usage,
 }
 
 

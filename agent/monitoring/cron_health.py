@@ -25,6 +25,12 @@ _KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown", "supe
 _KNOWN_SOURCES = {"builtin", "direct", "external"}
 _KNOWN_DELIVERY_OUTCOMES = {"queued", "delivered", "failed", "suppressed", "suppressed_acked", "not_configured"}
 _TERMINAL_STATUSES = {"completed", "failed", "unknown", "superseded"}
+# SUPERSEDED is terminal and NON-ALARMING: the attempt's work was not lost, a newer fire owns the
+# job record (cron/attempt_outcome.py), so it is never counted as a failure and never opens an
+# alert. It still carries its OWN error_class instead of None, so dashboards and counts can tell
+# "replaced by a newer attempt" apart from "failed" and from a genuinely unknown status
+# (WH-CREATED-5A4D2A184BBA AC1).
+SUPERSEDED_ERROR_CLASS = "superseded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +66,20 @@ def classify_cron_error(raw: Any) -> str:
     return next((label for match, label in _CRON_ERROR_RULES if match(text)), "unknown")
 
 
+def classify_cron_status(status: str, raw_error: Any) -> Optional[str]:
+    """``error_class`` for a ledger row, or ``None`` when the status carries no error semantics.
+
+    ``superseded`` is classified by STATUS, never by patterns in its error text: the row is not a
+    failure at all, and running the failure patterns over it would label an already-replaced
+    attempt ``interrupted``/``timeout``/… purely because the bookkeeping text mentions one.
+    """
+    if status == SUPERSEDED_ERROR_CLASS:
+        return SUPERSEDED_ERROR_CLASS
+    if status in {"failed", "unknown"}:
+        return classify_cron_error(raw_error)
+    return None
+
+
 def _parse_time(raw: Any) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(str(raw)) if raw else None
@@ -90,7 +110,7 @@ def project_execution_event(record: dict[str, Any], *, delivery_outcome: Optiona
         source=source if source in _KNOWN_SOURCES or source == "unknown" else "external",
         duration_ms=_duration_ms(record),
         delivery_outcome=outcome if outcome in _KNOWN_DELIVERY_OUTCOMES else None,
-        error_class=classify_cron_error(record.get("error")) if status in {"failed", "unknown"} else None,
+        error_class=classify_cron_status(status, record.get("error")),
     )
 
 

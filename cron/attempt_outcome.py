@@ -36,6 +36,20 @@ SUPERSEDED_ERROR = (
 )
 
 
+# SUPERSEDED and the JOB RECORD — the behaviour is deliberate, not an oversight
+# (WH-CREATED-5A4D2A184BBA AC3):
+#   * `classify_post_delivery_outcome` returns SUPERSEDED whenever a newer attempt (or a completed
+#     sibling of the same `scheduled_instant`) owns the outcome.
+#   * `cron/scheduler.py` passes `owns_job_record=False` on every SUPERSEDED branch, so
+#     `mark_job_run` is NOT called: `last_status` keeps the value the owning attempt wrote and
+#     `failure_streak` is neither advanced nor reset.
+#   * Why: the job record describes ONE attempt's outcome, so letting a superseded attempt write it
+#     would clobber a newer attempt's real status — the same fail-closed rule that
+#     `job_status_write_blocked` encodes and `finish_kwargs` applies.
+#   * Accepted consequence, written down so it is not rediscovered as a bug: consecutive superseded
+#     fires cannot trip the auto-stop `failure_streak` on their own. They stay visible in the
+#     executions ledger and in telemetry (agent/monitoring/cron_health.py maps status `superseded`
+#     to the informational error_class `superseded`), and a stale fire claim is recovered by TTL.
 def classify_post_delivery_outcome(
     *, delivered: bool, owns_job_record: bool, occurrence_completed: bool,
 ) -> str:

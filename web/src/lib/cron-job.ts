@@ -122,6 +122,11 @@ const CRON_LAST_RESULT_TONE: Record<string, CronLastResultTone> = {
   ok: "success",
   delivery_failed: "warning",
   blocked_config: "warning",
+  // `superseded`: this run was replaced by a newer attempt of the same job
+  // (cron/attempt_outcome.py) — the work was not lost, so it is amber rather than the red
+  // error tone, and it must never fall through to the unknown-looking default
+  // (WH-CREATED-5A4D2A184BBA AC2).
+  superseded: "warning",
   error: "destructive",
 };
 
@@ -135,6 +140,8 @@ export function cronLastResult(
   const detail =
     status === "delivery_failed"
       ? asString(job.last_delivery_error).trim() || asString(job.last_error).trim()
-      : asString(job.last_error).trim() || asString(job.last_delivery_error).trim();
+      : status === "superseded"
+        ? asString(job.last_error).trim() || "run replaced by a newer attempt"
+        : asString(job.last_error).trim() || asString(job.last_delivery_error).trim();
   return { status, tone, detail: detail || null };
 }

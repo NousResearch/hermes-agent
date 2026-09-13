@@ -407,12 +407,21 @@ def finish_execution(
     return record
 
 
+# Newest-attempt ordering. `claimed_at` is WALL CLOCK and `id` is a random uuid4, so the previous
+# `ORDER BY claimed_at DESC, id DESC` ordered two fires that landed inside the same clock tick
+# ARBITRARILY: whichever uuid happened to sort higher looked "newest", so the attempt trusted to
+# own the job record could be the OLDER one (WH-CREATED-5A4D2A184BBA AC4). `rowid` is SQLite's
+# monotonically increasing insert counter, so equal timestamps fall back to true insertion order.
+# Every recency decision (newest_attempt_id -> attempt_is_newest -> attempt_owns_job_record /
+# job_status_write_blocked) inherits this tiebreak.
+_ATTEMPT_RECENCY_ORDER = "ORDER BY claimed_at DESC, rowid DESC"
+
+
 def newest_attempt_id(job_id: str) -> Optional[str]:
     """Id of this job's newest attempt, or ``None`` when it has none."""
     with _transaction() as conn:
         row = conn.execute(
-            "SELECT id FROM executions WHERE job_id=? "
-            "ORDER BY claimed_at DESC, id DESC LIMIT 1",
+            "SELECT id FROM executions WHERE job_id=? " + _ATTEMPT_RECENCY_ORDER + " LIMIT 1",
             (str(job_id),),
         ).fetchone()
     return str(row["id"]) if row is not None else None

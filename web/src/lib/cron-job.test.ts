@@ -199,4 +199,16 @@ describe("cronLastResult", () => {
       cronLastResult({ last_status: "blocked_config", last_error: "missing API key" }),
     ).toEqual({ status: "blocked_config", tone: "warning", detail: "missing API key" });
   });
+
+  it("is amber for superseded (the run was replaced by a newer attempt)", () => {
+    expect(
+      cronLastResult({ last_status: "superseded", last_error: "fire claim ownership lost" }),
+    ).toEqual({ status: "superseded", tone: "warning", detail: "fire claim ownership lost" });
+    // Without an error text the badge still explains itself instead of showing a bare status.
+    expect(cronLastResult({ last_status: "superseded" })).toEqual({
+      status: "superseded",
+      tone: "warning",
+      detail: "run replaced by a newer attempt",
+    });
+  });
 });

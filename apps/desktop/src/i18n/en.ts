@@ -3667,6 +3667,7 @@ export const en: Translations = {
       sentMessage: count => `${count} log entr${count === 1 ? 'y' : 'ies'} added to composer`
     },
     web: {
+      embeddedPreviewHint: 'Some sites block embedded previews. Open the original page in a browser tab.',
       appFailedToBoot: 'Preview app failed to boot',
       serverNotFound: 'Server not found',
       remoteLoopback:

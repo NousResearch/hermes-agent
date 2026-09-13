@@ -19,7 +19,7 @@ from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
-_BACKEND_PURPOSES = ("serve", "dashboard")
+_WEB_SERVER_PURPOSES = ("serve", "dashboard", "webapp")
 
 
 def _try_call(fn, log_message: str, *log_args, default=None):
@@ -241,7 +241,9 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
 
     def _is_entry(i: int, token: str) -> bool:
         low = token.lower().strip('"')
-        return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
+        normalized = low.replace("\\", "/")
+        return (low == "hermes_cli.main" and i > 0 and tokens[i - 1] == "-m") or (
+            normalized == "hermes_cli/main.py" or normalized.endswith("/hermes_cli/main.py")) or (
             low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
@@ -359,9 +361,9 @@ def _refuse_gateway_ancestor_tree_kill(pids: list[int], *, gateway_mode: bool) -
 
 
 def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[dict]:
-    """Full ledger entries for venv holders that are MANUAL serve/dashboard backends.
+    """Full ledger entries for venv holders that are manual web-server backends.
 
-    Positive identity only: self-registered purpose serve/dashboard, live (pid, create_time), recorded spawner
+    Positive identity only: self-registered purpose serve/dashboard/webapp, live (pid, create_time), recorded spawner
     NOT alive (a Desktop-owned backend keeps its live Electron spawner and must keep the refusal — the app would
     respawn what we kill). Full entries let the relauncher rebuild from host/port/profile, not argv."""
     try:
@@ -371,7 +373,7 @@ def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[di
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
     return [
         entry for entry in ledger_entries()
-        if entry.get("purpose") in _BACKEND_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
+        if entry.get("purpose") in _WEB_SERVER_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
         and spawner_is_dead(entry) is not False  # False = live Desktop supervisor owns it; keep refusing
     ]
 
@@ -413,19 +415,35 @@ def _relaunch_stopped_serves(token: dict) -> None:
     skipped = len(entries) - len(commands)
     failed: list = []
     if commands:
-        print("  ⟲ Relaunching stopped serve/dashboard backend(s)")
+        print("  ⟲ Relaunching stopped serve/dashboard/webapp backend(s)")
         failed = _m()._respawn_dashboard_processes(commands)
     if skipped or failed:
-        print("  ⚠ Some stopped backends could not be relaunched automatically; restart them manually (hermes serve --host <ip> --port <port>).")
+        print("  ⚠ Some stopped backends could not be relaunched automatically; restart them manually with their original web-server command.")
     _record_update_step(
         "serve_relaunch", not failed and not skipped,
         f"relaunched={len(commands) - len(failed)} failed={len(failed)} skipped={skipped}",
     )
 
 
-def _is_backend_argv(argv_low: str) -> bool:
-    """Whether a lower-cased argv is a Desktop backend (``hermes_cli.main`` running ``serve``/``dashboard``)."""
-    return "hermes_cli.main" in argv_low and (" serve" in argv_low or " dashboard" in argv_low)
+def _pause_manual_web_servers(matches: list[tuple[int, str, str]]) -> dict | None:
+    """Stop ledger-identified manual web servers and arm exact relaunch."""
+    from hermes_cli.update_cmd import _m, _record_update_step
+    entries = _ledger_manual_serve_holders(matches)
+    if not entries:
+        return None
+    print(
+        f"  ⚠ {len(entries)} manual serve/dashboard/webapp backend(s) hold "
+        "the venv; stopping them for the update (they will be relaunched on "
+        "their recorded endpoints)"
+    )
+    _m()._stop_process_trees([int(entry["pid"]) for entry in entries])
+    token = {"pending": True, "entries": entries}
+    _record_update_step("serve_pause", True, f"stopped={len(entries)}")
+    import atexit
+    atexit.register(_relaunch_stopped_serves, token)
+    return token
+
+
 
 
 def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
@@ -469,7 +487,7 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         low = _live_argv_low(psutil, pid, cmdline)
         if low is None:
             continue  # exited between scan and classification — nothing to reap
-        if not _is_backend_argv(low):
+        if not _looks_like_desktop_control_plane(low):
             remaining.append(int(pid))
             continue
         try:
@@ -546,7 +564,7 @@ def _handoff_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         low = _live_argv_low(psutil, pid, cmdline)
         if low is None:
             continue  # exited — nothing to reap
-        if not _is_backend_argv(low):
+        if not _looks_like_desktop_control_plane(low):
             return None  # unexpected non-backend holder: refuse the whole set
         roots.append(int(pid))
     return roots or None
@@ -590,7 +608,7 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     A cmdline whose subcommand cannot be determined is NOT a control plane — callers must not guess
     ownership. See #90778, #91869.
     """
-    return "hermes_cli.main" in (cmdline or "").lower() and _hermes_holder_subcommand(cmdline) in _BACKEND_PURPOSES
+    return "hermes_cli.main" in (cmdline or "").lower() and _hermes_holder_subcommand(cmdline) in _WEB_SERVER_PURPOSES
 
 
 def _desktop_owns_gateway_lifecycle() -> bool:
@@ -605,7 +623,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
     from hermes_cli.update_cmd import _m
     with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
-        if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
+        if any(e.get("purpose") in _WEB_SERVER_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
     for pid, _name, cmdline in _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
@@ -1231,21 +1249,11 @@ def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gatew
     ):
         if holders and (backends := classifier(holders)):
             holders = _reap_and_rescan(f"  ⚠ {len(backends)} {message}; stopping their trees", backends)
-    # Manual serve/dashboard rung (e.g. `hermes serve --host <ip>` for a REMOTE Desktop): ledger identity
-    # only (spawner dead; Desktop-owned keep the refusal). Stop and register an idempotent atexit relaunch
-    # on the SAME host/port/profile — success or failure.
-    if holders and (serve_entries := _m()._ledger_manual_serve_holders(holders)):
-        def _stop_and_park(pids):
-            _m()._stop_process_trees(pids)
-            _record_update_step("serve_pause", True, f"stopped={len(serve_entries)}")
-            import atexit as _serve_atexit
-            _serve_atexit.register(_m()._relaunch_stopped_serves, {"pending": True, "entries": serve_entries})
-
-        holders = _reap_and_rescan(
-            f"  ⚠ {len(serve_entries)} manual serve/dashboard backend(s) hold the venv; stopping them for "
-            "the update (they will be relaunched on their recorded endpoints)",
-            [int(e["pid"]) for e in serve_entries], stop=_stop_and_park,
-        )
+    # Ledger-identified manual web servers relaunch on the same host/port/profile
+    # on both success and rollback; live Desktop supervisors retain ownership.
+    if holders and _pause_manual_web_servers(holders):
+        _time.sleep(1.0)
+        holders = _m()._detect_venv_python_processes()
     # Final rung: in a GUI hand-off the Desktop is contractually gone; surviving `serve` backends are leaks
     # even with a live parent (which made the orphan-only rung bail and hang) — reap by cmdline.
     if holders and _in_handoff_without_live_shim(args) and (handoff_backends := _m()._handoff_reapable_backend_pids(holders)):

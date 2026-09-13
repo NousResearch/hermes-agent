@@ -450,7 +450,12 @@ class TestHttpSessionLifecycle:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
             await adapter.disconnect()
 
-        mock_run.assert_called_once_with(
+        # ``adapter.subprocess`` is the process-wide subprocess module. The OS
+        # lane also imports tui_gateway.server, whose daemon update check may
+        # issue an unrelated git probe while this patch is active. Assert the
+        # taskkill contract without treating that known cross-talk as a second
+        # bridge termination.
+        mock_run.assert_any_call(
             ["taskkill", "/PID", "12345", "/T"],
             capture_output=True,
             text=True,

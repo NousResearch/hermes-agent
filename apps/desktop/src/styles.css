@@ -3580,3 +3580,13 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
 }
+
+/* CSS zoom scales viewport units too; browser shells must fit their parent. */
+html[data-hermes-desktop-host='browser'] [data-contrib-shell] {
+  width: 100%;
+  height: 100%;
+}
+
+html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
+  height: 100%;
+}

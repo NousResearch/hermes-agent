@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
+import pytest
+
 
 def _profile_layout(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / ".hermes"
@@ -26,9 +28,62 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
     for alias in (default_home.name, "hermes"):
         assert server._response_profile_name(alias) == "default"
     assert server._session_info(None, {"profile_home": str(default_home)})["profile_name"] == "default"
-    # "hermes" is a legal profile id: a REAL named profile of that name is never swallowed by the alias.
-    (default_home / "profiles" / "hermes").mkdir(parents=True)
+    # An existing named profile takes precedence over the legacy basename alias.
+    named_home = default_home / "profiles" / "hermes"
+    named_home.mkdir(parents=True)
     assert server._response_profile_name("hermes") == "hermes"
+    assert server._profile_home("hermes") == named_home
+
+    # Existing reserved-name profiles remain readable, but not after retirement.
+    from hermes_cli import profiles
+
+    with pytest.raises(ValueError, match="reserved"):
+        profiles.validate_profile_name("hermes")
+    marker = default_home / "profiles" / ".deleted" / "hermes"
+    marker.parent.mkdir()
+    marker.write_text("deleted\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        server._profile_home("hermes")
+    for invalid in ("../worker", "worker/child", "worker\\child"):
+        with pytest.raises(FileNotFoundError):
+            server._profile_home(invalid)
+
+
+@pytest.mark.parametrize("fence", ["tombstone", "retired"])
+def test_deleted_legacy_alias_never_routes_to_default(tmp_path, monkeypatch, fence):
+    from hermes_cli import profiles
+    from tui_gateway import server
+    from tui_gateway.profile_lifecycle import ProfileLifecycleFence
+
+    default_home, launch_home = _profile_layout(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(server, "_profile_lifecycle", ProfileLifecycleFence())
+    (default_home / "config.yaml").write_text("terminal:\n  cwd: /default\n", encoding="utf-8")
+    before = (default_home / "config.yaml").read_bytes()
+    deleted_home = default_home / "profiles" / "hermes"
+
+    # Only a never-used legacy basename can be an alias for default.
+    assert server._profile_home("hermes") == default_home
+    if fence == "tombstone":
+        marker = profiles.profile_deletion_marker(deleted_home)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("deleted\n", encoding="utf-8")
+    else:
+        with server._sessions_lock:
+            server._profile_lifecycle.retire(deleted_home)
+
+    assert not deleted_home.exists()
+    for name in ("hermes", "HERMES"):
+        with pytest.raises(FileNotFoundError):
+            server._methods["config.set"](1, {"profile": name, "key": "terminal.cwd", "value": "/wrong-profile"})
+        assert (default_home / "config.yaml").read_bytes() == before
+        with pytest.raises(FileNotFoundError):
+            with server._profile_db({"profile": name}):
+                pytest.fail("deleted profile reached a database")
+        # Response decoration remains safe after a profile disappears.
+        assert server._response_profile_name(name) == "worker"
 
 
 def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):

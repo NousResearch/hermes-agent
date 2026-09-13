@@ -133,6 +133,8 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             home = Path(entry.path)
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
+            if profiles_mod.profile_home_is_tombstoned(home):
+                continue
             profiles.append(_fallback_profile_entry(
                 profiles_mod, entry.name, home, is_default=False,
                 has_env=_safe(lambda: (home / ".env").exists(), False),

@@ -389,6 +389,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     """
     old_agent = session.get("agent")
     profile_home = session.get("profile_home")
+    profile_incarnation = session.get("profile_incarnation")
     session_db = getattr(old_agent, "_session_db", None)
     # No live agent to inherit from (rebuild before the deferred build ran): open the profile's store the
     # same FAIL-CLOSED way _start_agent_build does rather than letting _make_agent reach for the launch db.
@@ -398,7 +399,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         # Resolve fallible config before allocating a replacement or moving its handle.
         config_model_seen = _config_model_target()
         if opened:
-            session_db = _open_profile_session_db(profile_home)
+            with _profile_home_lease(profile_home, profile_incarnation):
+                session_db = (
+                    _open_profile_session_db(profile_home) if profile_incarnation is None else
+                    _open_profile_session_db(profile_home, expected_profile_incarnation=profile_incarnation))
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:
@@ -410,15 +414,28 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
             _release_build_profile_scopes(scopes)
     # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
     # _transfer_db_to_agent refuses it.
-    with _sessions_lock:
-        session.update(agent=agent, config_model_seen=config_model_seen)
-        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
-        if owned and _transfer_db_to_agent(agent, session_db):
-            if old_agent is not None:
-                old_agent._owns_session_db = False
-        elif opened:
+    try:
+        with _profile_home_lease(profile_home, profile_incarnation), _sessions_lock:
+            if (_sessions.get(sid) is not session or session.get("_closing")
+                    or session.get("agent") is not old_agent
+                    or not _session_profile_identity_matches(session, profile_home, profile_incarnation)):
+                raise RuntimeError("session changed during agent rebuild")
+            session.update(agent=agent, config_model_seen=config_model_seen)
+            owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+            if owned and _transfer_db_to_agent(agent, session_db):
+                if old_agent is not None:
+                    old_agent._owns_session_db = False
+            elif opened:
+                with contextlib.suppress(Exception):
+                    session_db.close()
+    except BaseException:
+        # A rejected replacement never acquired the old agent's handle; only a fresh open is ours.
+        with contextlib.suppress(Exception):
+            agent.close()
+        if opened and session_db is not None:
             with contextlib.suppress(Exception):
                 session_db.close()
+        raise
     return agent
 
 

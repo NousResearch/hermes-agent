@@ -25,7 +25,7 @@ def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
 
 class TestCredentialExclusion:
 
-    def test_named_profile_export_excludes_auth(self, tmp_path, monkeypatch):
+    def test_named_profile_export_excludes_auth_and_incarnation(self, tmp_path, monkeypatch):
         """Named profile export must not contain auth.json or .env."""
         profiles_root = tmp_path / "profiles"
         profile_dir = profiles_root / "testprofile"
@@ -35,6 +35,7 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml").write_text("model: gpt-4\n")
         (profile_dir / "auth.json").write_text('{"tokens": {"access": "sk-secret"}}')
         (profile_dir / ".env").write_text("OPENROUTER_API_KEY=sk-secret-key\n")
+        (profile_dir / ".profile-incarnation").write_text("0" * 32 + "\n", encoding="utf-8")
         (profile_dir / "SOUL.md").write_text("I am helpful.\n")
         (profile_dir / "memories").mkdir()
         (profile_dir / "memories" / "MEMORY.md").write_text("# Memories\n")
@@ -52,6 +53,7 @@ class TestCredentialExclusion:
         assert any("SOUL.md" in n for n in names), "SOUL.md should be in export"
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
+        assert not any(".profile-incarnation" in n for n in names)
 
 
 class TestExportSecretScrub:

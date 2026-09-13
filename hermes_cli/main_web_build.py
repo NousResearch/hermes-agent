@@ -90,7 +90,7 @@ def _web_dist_dir(web_dir: Path) -> Path:
     return _web_project_root(web_dir) / "hermes_cli" / "web_dist"
 
 
-def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
+def _hash_source_tree(project_root: Path, tree_dir: Path, *additional_trees: Path) -> str:
     """SHA-256 over *tree_dir* plus the root ``package.json`` / ``package-lock.json``.
 
     Ignored paths (``node_modules/``, ``dist/``, ``*.pyc``, ...) are skipped via
@@ -122,12 +122,13 @@ def _hash_source_tree(project_root: Path, tree_dir: Path) -> str:
             _hash_file(p)
 
     # Prune ignored directories in place so we never descend into them.
-    for dirpath, dirnames, filenames in os.walk(tree_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if not _ignored(Path(dirpath) / d)]
-        for fn in sorted(filenames):
-            fp = Path(dirpath) / fn
-            if not _ignored(fp):
-                _hash_file(fp)
+    for source_dir in (tree_dir, *additional_trees):
+        for dirpath, dirnames, filenames in os.walk(source_dir, topdown=True):
+            dirnames[:] = sorted(d for d in dirnames if not _ignored(Path(dirpath) / d))
+            for fn in sorted(filenames):
+                fp = Path(dirpath) / fn
+                if not _ignored(fp):
+                    _hash_file(fp)
 
     return h.hexdigest()
 
@@ -392,31 +393,66 @@ def _missing_web_build_tool(output: str) -> str | None:
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-    """Build the web UI if npm is available, serialized across processes by flock: one builds, the
-    rest serve the existing dist (stale is fine) or block until the first build exists. Staleness is
-    checked inside :func:`_do_build_web_ui` after the lock is held."""
+    """Build the web UI frontend if npm is available, serializing across processes.
+
+    Concurrent dashboard boots (e.g. the desktop app's retry loop after a
+    readiness timeout) used to each spawn their own ``npm install`` +
+    ``vite build`` over the same tree; the parallel builds starved each
+    other, none finished, the dist sentinel never advanced, and every new
+    boot re-triggered the build. One process builds under an exclusive
+    flock; the rest serve the existing dist (stale is acceptable) or, when
+    no dist exists yet, block until the builder finishes.
+
+    Staleness is checked once, inside :func:`_do_build_web_ui`, after the
+    lock is held — so a process that queued behind the builder skips the
+    rebuild, and the (os.walk-based) check runs at most once per boot.
+    """
     if not (web_dir / "package.json").exists():
         return True
-    try:
-        import fcntl
-    except ImportError:
-        # Windows: no flock — fall through to the unserialized build.
-        return _do_build_web_ui(web_dir, fatal=fatal)
     project_root = _web_project_root(web_dir)
+    lock_path = project_root / ".web_ui_build.lock"
+    dist_index = _web_dist_dir(web_dir) / "index.html"
     try:
-        lock_file = open(project_root / ".web_ui_build.lock", "a", encoding="utf-8")
+        from hermes_cli.webapp import (
+            WebappBuildError,
+            _exclusive_build_lock,
+            _try_file_lock,
+            _unlock_file,
+        )
+    except ImportError:
+        return _do_build_web_ui(web_dir, fatal=fatal)
+
+    try:
+        contender = lock_path.open("a+b")
     except OSError:
         return _do_build_web_ui(web_dir, fatal=fatal)
     try:
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            if (_web_dist_dir(web_dir) / "index.html").exists():
-                return True  # another process is building — serve the current dist
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)  # first-ever build: wait
-        return _do_build_web_ui(web_dir, fatal=fatal)
+        if os.name == "nt":
+            contender.seek(0, os.SEEK_END)
+            if contender.tell() == 0:
+                contender.write(b"\0")
+                contender.flush()
+        if _try_file_lock(contender):
+            try:
+                return _do_build_web_ui(web_dir, fatal=fatal)
+            finally:
+                _unlock_file(contender)
+        if dist_index.exists():
+            # Preserve Dashboard's non-blocking warm-start behavior while a
+            # Webapp or another Dashboard process reifies root node_modules.
+            return True
     finally:
-        lock_file.close()
+        contender.close()
+
+    try:
+        # First build has no usable dist: wait for the shared workspace owner,
+        # then recheck/build under the same cross-platform lock.
+        with _exclusive_build_lock(lock_path):
+            return _do_build_web_ui(web_dir, fatal=fatal)
+    except WebappBuildError:
+        # Preserve the historical best-effort fallback on unusual read-only
+        # installs where the lock file cannot be opened.
+        return _do_build_web_ui(web_dir, fatal=fatal)
 
 
 def _relay_npm_output(result: subprocess.CompletedProcess) -> None:

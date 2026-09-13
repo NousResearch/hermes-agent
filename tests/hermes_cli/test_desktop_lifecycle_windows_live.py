@@ -142,3 +142,29 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
         lambda: [fake_holders()[1]],
     )
     assert update_cmd._desktop_owns_gateway_lifecycle() is False
+
+
+@pytest.mark.windows_only
+def test_manual_webapp_holder_has_positive_stop_identity(sleeper, monkeypatch, tmp_path):
+    import psutil
+
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / ".hermes").mkdir()
+    webapp = sleeper("-m", "hermes_cli.main", "webapp", "--port", "9119")
+    entry = _entry(webapp, purpose="webapp")
+    entry["spawner_pid"] = None
+    entry["spawner_create"] = None
+    entry.update({"host": "127.0.0.1", "port": 9119, "profile": ""})
+    _write_ledger([entry])
+    process = psutil.Process(webapp.pid)
+    holders = [(webapp.pid, process.name(), " ".join(process.cmdline()))]
+
+    identified = update_cmd._ledger_manual_serve_holders(holders)
+
+    assert [row["pid"] for row in identified] == [webapp.pid]
+    assert identified[0]["purpose"] == "webapp"
+    update_cmd._stop_process_trees([webapp.pid])
+    webapp.wait(timeout=10)
+    assert webapp.returncode is not None

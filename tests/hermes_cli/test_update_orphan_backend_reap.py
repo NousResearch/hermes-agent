@@ -71,6 +71,15 @@ _SERVE_ARGV = [
     "127.0.0.1",
 ]
 
+_WEBAPP_ARGV = [
+    "C:\\hermes\\venv\\Scripts\\python.exe",
+    "-m",
+    "hermes_cli.main",
+    "webapp",
+    "--host",
+    "127.0.0.1",
+]
+
 
 def _holders(pid=200, cmdline="python.exe -m hermes_cli.main serve"):
     return [(pid, "python.exe", cmdline)]
@@ -86,6 +95,14 @@ def test_orphan_backend_dead_parent_qualifies():
     fake = _fake_psutil({200: backend})
     with patch.dict(sys.modules, {"psutil": fake}):
         assert cli_main._orphaned_desktop_backend_pids(_holders()) == [(200, 10000)]
+
+
+def test_orphan_webapp_dead_parent_qualifies():
+    backend = _proc(200, _WEBAPP_ARGV, ppid=999)
+    fake = _fake_psutil({200: backend})
+    holders = _holders(cmdline="python.exe -m hermes_cli.main webapp")
+    with patch.dict(sys.modules, {"psutil": fake}):
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [(200, 10000)]
 
 
 def test_backend_with_live_parent_keeps_refusal():

@@ -1,7 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -158,6 +158,9 @@ const COMPARED_FIELDS = [
   'asyncResult',
   'id',
   'role',
+  // A newly hydrated classification must replace the cached prefix fallback.
+  'userOriginated',
+  'runtimeTurnStartedAt',
   'pending',
   'error',
   // Structured failure layer — drives the error card's title and action row,
@@ -269,6 +272,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.role !== b.role ||
+    a.userOriginated !== b.userOriginated ||
+    a.runtimeTurnStartedAt !== b.runtimeTurnStartedAt ||
     a.pending !== b.pending ||
     a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
@@ -456,15 +461,30 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  * or lagging inflight shell must not discard a fuller local pending reply
  * (#75825).
  *
- * Gateway bookkeeping markers (the model-switch / personality notices written
- * by tui_gateway/server.py) are persisted as role=user but are not user turns.
- * They must not take part in ordinal pairing on either side: a stored marker
- * between two real user turns shifts every later user ordinal, so the optimistic
- * row misses its committed copy and is appended a second time at the end of the
- * transcript — the duplicated user bubble of #67603.
+ * Runtime scaffolding is persisted on role=user to preserve model-facing role
+ * alternation. These rows remain visible in the transcript, but they are not
+ * human turns and must not participate in ordinal or live-turn reconciliation.
  */
-const isGatewaySystemMarker = (message: ChatMessage): boolean =>
-  message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+const SYNTHETIC_USER_PREFIXES = [
+  '[System:',
+  '[Your active task list was preserved across context compression]',
+  '[IMPORTANT: Background process '
+] as const
+
+const isSyntheticUserMarker = (message: ChatMessage): boolean => {
+  if (message.role !== 'user') {
+    return false
+  }
+
+  if (typeof message.userOriginated === 'boolean') {
+    return !message.userOriginated
+  }
+
+  // Older gateways and cached rows do not carry the backend classification.
+  const text = chatMessageText(message).trimStart()
+
+  return SYNTHETIC_USER_PREFIXES.some(prefix => text.startsWith(prefix))
+}
 
 /**
  * Does the row carry anything a viewer would miss — streamed answer text, or
@@ -513,6 +533,10 @@ const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage):
 const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessage): ChatMessage => {
   const merged: ChatMessage = { ...local, pending: authoritative.pending === true }
 
+  if (authoritative.runtimeTurnStartedAt !== undefined) {
+    merged.runtimeTurnStartedAt = authoritative.runtimeTurnStartedAt
+  }
+
   if (local.rowId === undefined && authoritative.rowId !== undefined) {
     merged.rowId = authoritative.rowId
   }
@@ -536,7 +560,7 @@ export function preserveLocalPendingTurnMessages(
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
   for (const message of nextMessages) {
-    if (isGatewaySystemMarker(message)) {
+    if (isSyntheticUserMarker(message)) {
       continue
     }
 
@@ -582,14 +606,17 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+  const latestAuthoritativeUser = [...nextMessages]
+    .reverse()
+    .find(message => message.role === 'user' && !isSyntheticUserMarker(message))
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
 
   for (const message of previousMessages) {
-    if (isGatewaySystemMarker(message)) {
+    if (isSyntheticUserMarker(message)) {
       continue
     }
 
@@ -745,13 +772,19 @@ export function preserveLocalPendingTurnMessages(
  * of growing duplicate rows.
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
+const safelyUnpersistedInflightUser = Symbol('safelyUnpersistedInflightUser')
 
-type LiveSessionProjection = Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'> & {
+type LiveSessionProjection = Pick<
+  SessionResumeResponse,
+  'inflight' | 'queued' | 'session_id' | 'turn_started_at'
+> & {
   [safelyPersistedInflightUser]?: true
+  [safelyUnpersistedInflightUser]?: true
 }
 
 type ReconciledSessionResumeResponse = SessionResumeResponse & {
   [safelyPersistedInflightUser]?: true
+  [safelyUnpersistedInflightUser]?: true
 }
 
 export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
@@ -807,11 +840,58 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // rows (#73793), so collect the run by walking back over the live tail:
   // user rows count, live-tail assistant rows are skipped, and a committed
   // assistant reply ends the turn.
-  const latestUserIndex = messages.map(message => message.role).lastIndexOf('user')
+  let latestUserIndex = -1
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user' && !isSyntheticUserMarker(messages[index])) {
+      latestUserIndex = index
+
+      break
+    }
+  }
+
+  const turnStartedAt =
+    typeof projection.turn_started_at === 'number' && Number.isFinite(projection.turn_started_at)
+      ? projection.turn_started_at
+      : null
+
+  // Hydrated rows do not retain the renderer's `pending` bit, so an assistant
+  // already flushed by the CURRENT turn looks settled. The gateway and agent
+  // stamp these values from the same wall clock: `turn_started_at` is recorded
+  // before run_conversation stamps its user row. Use that boundary only for
+  // turn membership, never transcript ordering (SQLite row ids own ordering).
+  const belongsToCurrentTurn = (message: ChatMessage): boolean =>
+    turnStartedAt !== null &&
+    typeof message.timestamp === 'number' &&
+    Number.isFinite(message.timestamp) &&
+    message.timestamp >= turnStartedAt
+
+  // A same-text prompt can legitimately start a new turn. If the latest human
+  // row is followed by a completed reply from BEFORE this live turn, it is
+  // historical and must not suppress the newly accepted inflight copy. Missing
+  // timestamps fail toward preserving the prompt: a duplicate can reconcile on
+  // the next hydrate, while a dropped accepted turn cannot be recovered.
+  const hasPriorCompletedReplyAfterLatestUser =
+    latestUserIndex >= 0 &&
+    messages.slice(latestUserIndex + 1).some(
+      message => message.role === 'assistant' && !isLiveTailRow(message) && !belongsToCurrentTurn(message)
+    )
+
+  const latestUserBelongsToCurrentTurn =
+    latestUserIndex >= 0 &&
+    projection[safelyUnpersistedInflightUser] !== true &&
+    (projection[safelyPersistedInflightUser] === true ||
+      belongsToCurrentTurn(messages[latestUserIndex]) ||
+      !hasPriorCompletedReplyAfterLatestUser)
+
   const latestUserRun: ChatMessage[] = []
 
-  for (let index = latestUserIndex; index >= 0; index -= 1) {
+  for (let index = latestUserBelongsToCurrentTurn ? latestUserIndex : -1; index >= 0; index -= 1) {
     const candidate = messages[index]
+
+    if (isSyntheticUserMarker(candidate)) {
+      continue
+    }
 
     if (candidate.role === 'user') {
       latestUserRun.unshift(candidate)
@@ -819,7 +899,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       continue
     }
 
-    if (candidate.role === 'assistant' && isLiveTailRow(candidate)) {
+    if (candidate.role === 'assistant' && (isLiveTailRow(candidate) || belongsToCurrentTurn(candidate))) {
       continue
     }
 
@@ -831,15 +911,51 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
     )
 
-  const inflightUserAlreadyPersisted =
-    projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
+  // A runtime wake can itself be the running turn. Keep its visible notice,
+  // but match it separately so it never occupies a human-turn ordinal. Use
+  // hydration for typed timeline events, just as the persisted row does.
+  const runtimeInflight = projection.inflight?.user_originated === false
+
+  const runtimeBoundary = runtimeInflight && turnStartedAt !== null
+    ? { runtimeTurnStartedAt: turnStartedAt }
+    : {}
+
+  const runtimeNotice = runtimeInflight && inflightUser
+    ? toChatMessages([{
+        role: 'user',
+        content: inflightUser,
+        display_kind: projection.inflight?.display_kind,
+        user_originated: false,
+        ...(turnStartedAt !== null ? { timestamp: turnStartedAt } : {})
+      }])[0]
+    : undefined
+
+  const runtimeNoticeIndex = runtimeNotice
+    ? messages.findLastIndex(message =>
+        message.role === runtimeNotice.role &&
+        (message.role !== 'user' || message.userOriginated === false) &&
+        belongsToCurrentTurn(message) &&
+        normalizedMessageText(message) === normalizedMessageText(runtimeNotice)
+      )
+    : -1
+
+  const inflightUserAlreadyPersisted = runtimeInflight
+    ? runtimeNoticeIndex >= 0
+    : projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    projected.push({
-      id: `user-inflight-${sessionId}`,
-      role: 'user',
-      parts: [textPart(inflightUser)]
-    })
+    if (runtimeInflight) {
+      if (runtimeNotice) {
+        projected.push({ ...runtimeNotice, ...runtimeBoundary, id: `user-inflight-${sessionId}` })
+      }
+    } else {
+      projected.push({
+        id: `user-inflight-${sessionId}`,
+        role: 'user',
+        parts: [textPart(inflightUser)],
+        ...(projection.inflight?.user_originated === true ? { userOriginated: true } : {})
+      })
+    }
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -860,12 +976,18 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       return byStreamId
     }
 
-    // Assistants after the latest user row belong to this turn's tail.
-    if (latestUserIndex < 0) {
-      return null
+    // Runtime wakes have their own boundary, independent of human ordinals.
+    const turnUserIndex = runtimeInflight ? runtimeNoticeIndex : latestUserIndex
+
+    if (turnUserIndex < 0) {
+      // A hidden runtime wake has no displayed user boundary. Backend-clock
+      // timestamps still prove which hydrated assistant belongs to its turn.
+      return runtimeInflight
+        ? messages.findLast(message => message.role === 'assistant' && belongsToCurrentTurn(message)) ?? null
+        : null
     }
 
-    for (let index = messages.length - 1; index > latestUserIndex; index -= 1) {
+    for (let index = messages.length - 1; index > turnUserIndex; index -= 1) {
       if (messages[index].role === 'assistant') {
         return messages[index]
       }
@@ -877,7 +999,13 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   const turnAlreadyStructured = Boolean(
     liveAssistantOfCurrentTurn &&
     hasStructuralParts(liveAssistantOfCurrentTurn) &&
-    isLiveTailRow(liveAssistantOfCurrentTurn)
+    (isLiveTailRow(liveAssistantOfCurrentTurn) ||
+      (runtimeInflight && belongsToCurrentTurn(liveAssistantOfCurrentTurn) &&
+        // A flushed tool-only scaffold precedes the new answer; it is not a
+        // cached live reply. Reasoning-bearing rows still suppress flat dumps
+        // even before answer text exists (#76444).
+        (liveAssistantOfCurrentTurn.parts.some(part => part.type === 'reasoning') ||
+          chatMessageText(liveAssistantOfCurrentTurn).trim().length > 0)))
   )
 
   const wantsAssistantRow = Boolean(
@@ -894,6 +1022,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projected.push({
       id: `user-inflight-correction-${index}-${sessionId}`,
       role: 'user',
+      ...runtimeBoundary,
       parts: [textPart(correction)]
     })
   }
@@ -919,6 +1048,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         projected.push({
           id: `inflight-assistant-segment-${index}-${sessionId}`,
           role: 'assistant',
+          ...runtimeBoundary,
           parts: [assistantTextPart(segment)],
           pending: false,
           interim: true
@@ -934,6 +1064,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projected.push({
       id: liveStreamId,
       role: 'assistant',
+      ...runtimeBoundary,
       parts: tail.trim() ? [assistantTextPart(tail)] : [],
       pending: inflightStreaming
     })
@@ -942,6 +1073,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       projected.push({
         id: liveStreamId,
         role: 'assistant',
+        ...runtimeBoundary,
         parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,
         ...(inflightError ? { error: inflightError } : {}),
@@ -962,7 +1094,28 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     })
   }
 
-  return projected.length ? [...messages, ...projected] : messages
+  // Hydrated current-runtime rows can already contain the structured reply
+  // that suppresses the flat projection. Mark those rows too: the journal must
+  // not walk behind this runtime turn looking for an earlier human prompt.
+  let withRuntimeBoundary = messages
+
+  if (runtimeBoundary.runtimeTurnStartedAt !== undefined) {
+    withRuntimeBoundary = messages.map((message, index) => {
+      if (index !== runtimeNoticeIndex && !belongsToCurrentTurn(message)) {
+        return message
+      }
+
+      return {
+        ...message,
+        ...runtimeBoundary,
+        ...(message === liveAssistantOfCurrentTurn && turnAlreadyStructured
+          ? { pending: inflightStreaming }
+          : {})
+      }
+    })
+  }
+
+  return projected.length ? [...withRuntimeBoundary, ...projected] : withRuntimeBoundary
 }
 
 function normalizedMessageText(message: ChatMessage): string {
@@ -972,6 +1125,10 @@ function normalizedMessageText(message: ChatMessage): string {
 function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
   if (a.role !== b.role) {
     return false
+  }
+
+  if (a.rowId !== undefined && b.rowId !== undefined) {
+    return a.rowId === b.rowId
   }
 
   const aText = normalizedMessageText(a)
@@ -1004,15 +1161,35 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
 export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
-  projection: SessionResumeResponse
+  projection: SessionResumeResponse,
+  localMessages: ChatMessage[] = []
 ): ReconciledSessionResumeResponse {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
-  if (!inflightUser) {
+  const hasAuthoritativeTurnBoundary =
+    typeof projection.turn_started_at === 'number' && Number.isFinite(projection.turn_started_at)
+
+  // Modern gateways provide the backend-clock boundary needed to classify
+  // hydrated rows in appendLiveSessionProjection. Do not let this older-
+  // gateway text fallback override that stronger evidence.
+  if (!inflightUser || hasAuthoritativeTurnBoundary) {
     return projection
   }
 
   let suffixStart = 0
+  let localLiveIntervalProven = false
+
+  // `omit_messages` is the normal Desktop resume shape, so an older gateway
+  // can provide neither runtime history nor turn_started_at. The local view is
+  // still useful evidence: removing the exact optimistic-user + stream pair
+  // leaves the committed prefix that existed before this live turn. Anchor
+  // that prefix in REST and only consider the newer suffix. This is what keeps
+  // a historical identical prompt OUT of the dedupe domain.
+  const localCommittedPrefix = localMessages.length
+    ? removeRepresentedLocalLiveProjection(localMessages, projection)
+    : localMessages
+
+  const removedLocalLiveProjection = localCommittedPrefix.length < localMessages.length
 
   if (runtimeMessages.length) {
     const runtimeAnchor = runtimeMessages[runtimeMessages.length - 1]
@@ -1031,16 +1208,78 @@ export function dedupeInflightUserAgainstTranscript(
     }
 
     suffixStart = persistedAnchorIndex + 1
+    localLiveIntervalProven = removedLocalLiveProjection
+  } else if (removedLocalLiveProjection) {
+    // Renderer-owned optimistic/projection rows and synthetic role=user
+    // notices cannot prove a durable prefix boundary. Walk backward over the
+    // remaining local transcript until a real persisted row maps into REST.
+    const anchorCandidates = localCommittedPrefix.filter(
+      message =>
+        !isSyntheticUserMarker(message) &&
+        (!message.id.startsWith('user-') || message.rowId !== undefined || message.timestamp !== undefined) &&
+        !isLiveTailRow(message)
+    )
+
+    let persistedAnchorIndex = -1
+
+    for (let localIndex = anchorCandidates.length - 1; localIndex >= 0; localIndex -= 1) {
+      const localAnchor = anchorCandidates[localIndex]
+
+      for (let index = persistedMessages.length - 1; index >= 0; index -= 1) {
+        if (transcriptAnchorMatches(persistedMessages[index], localAnchor)) {
+          persistedAnchorIndex = index
+
+          break
+        }
+      }
+
+      if (persistedAnchorIndex >= 0) {
+        break
+      }
+    }
+
+    if (persistedAnchorIndex < 0 && anchorCandidates.length) {
+      return projection
+    }
+
+    suffixStart = persistedAnchorIndex + 1
+    localLiveIntervalProven = true
   }
 
   const persistedTail = persistedMessages.slice(suffixStart)
   const lastPersistedMessage = persistedTail[persistedTail.length - 1]
+  let latestHumanUserIndex = -1
 
-  const persistedUserPresent =
-    lastPersistedMessage?.role === 'user' && normalizedMessageText(lastPersistedMessage) === inflightUser
+  for (let index = persistedTail.length - 1; index >= 0; index -= 1) {
+    if (persistedTail[index].role === 'user' && !isSyntheticUserMarker(persistedTail[index])) {
+      latestHumanUserIndex = index
+
+      break
+    }
+  }
+
+  // On old gateways the local pair can prove where the live interval starts,
+  // but it cannot prove that a same-text REST turn inside that interval is the
+  // newly accepted one. A completed assistant after that user may belong to an
+  // older repeated prompt missing from the stale local prefix. Fail toward
+  // preserving the optimistic prompt; modern gateways disambiguate current
+  // assistant rows with turn_started_at in appendLiveSessionProjection.
+  const latestHumanUserHasCompletedReply =
+    latestHumanUserIndex >= 0 &&
+    persistedTail
+      .slice(latestHumanUserIndex + 1)
+      .some(message => message.role === 'assistant' && !isLiveTailRow(message))
+
+  const persistedUserPresent = localLiveIntervalProven
+    ? latestHumanUserIndex >= 0 &&
+      normalizedMessageText(persistedTail[latestHumanUserIndex]) === inflightUser &&
+      !latestHumanUserHasCompletedReply
+    : lastPersistedMessage?.role === 'user' && normalizedMessageText(lastPersistedMessage) === inflightUser
 
   if (!persistedUserPresent) {
-    return projection
+    return localLiveIntervalProven
+      ? { ...projection, [safelyUnpersistedInflightUser]: true }
+      : projection
   }
 
   return { ...projection, [safelyPersistedInflightUser]: true }
@@ -1079,26 +1318,37 @@ export function removeRepresentedLocalLiveProjection(
     }
   }
 
-  const inflightUserIndex = previousMessages.findIndex(
-    (message, index) =>
-      index >= openTailStart &&
-      message.role === 'user' &&
-      message.id.startsWith('user-') &&
-      normalizedMessageText(message) === inflightUser
-  )
+  let inflightUserIndex = -1
 
-  const assistantIndex = inflightUserIndex + 1
-  const assistant = previousMessages[assistantIndex]
+  // Repeated prompts are valid. Match the newest complete optimistic-user +
+  // stream boundary rather than the first same-text user in the open tail;
+  // an older interrupted prompt may otherwise shadow the live pair.
+  for (let index = previousMessages.length - 2; index >= openTailStart; index -= 1) {
+    const user = previousMessages[index]
+    const assistant = previousMessages[index + 1]
+    const assistantText = assistant ? normalizedMessageText(assistant) : ''
 
-  const assistantMatches =
-    inflightUserIndex >= openTailStart &&
-    assistant?.role === 'assistant' &&
-    assistant.id.startsWith('assistant-stream-') &&
-    normalizedMessageText(assistant) === inflightAssistant
+    if (
+      user.role === 'user' &&
+      user.id.startsWith('user-') &&
+      normalizedMessageText(user) === inflightUser &&
+      assistant?.role === 'assistant' &&
+      assistant.id.startsWith('assistant-stream-') &&
+      (assistantText === inflightAssistant ||
+        isStrictAnswerTextExtension(inflightAssistant, assistantText) ||
+        isStrictAnswerTextExtension(assistantText, inflightAssistant))
+    ) {
+      inflightUserIndex = index
 
-  if (!assistantMatches) {
+      break
+    }
+  }
+
+  if (inflightUserIndex < 0) {
     return previousMessages
   }
+
+  const assistantIndex = inflightUserIndex + 1
 
   let queuedUserIndex = -1
 
@@ -1148,8 +1398,18 @@ export function overlayConcurrentMessageChanges(
     const nextIndex = nextIndexById.get(current.id)
 
     if (nextIndex !== undefined) {
-      if (!chatMessagesEquivalent(overlaid[nextIndex], current)) {
-        overlaid[nextIndex] = current
+      // A concurrent reaction can have copied the older unclassified row.
+      // Retain newly hydrated provenance only for this exact matching id.
+      let merged = current.userOriginated === undefined && overlaid[nextIndex].userOriginated !== undefined
+        ? { ...current, userOriginated: overlaid[nextIndex].userOriginated }
+        : current
+
+      if (merged.runtimeTurnStartedAt === undefined && overlaid[nextIndex].runtimeTurnStartedAt !== undefined) {
+        merged = { ...merged, runtimeTurnStartedAt: overlaid[nextIndex].runtimeTurnStartedAt }
+      }
+
+      if (!chatMessagesEquivalent(overlaid[nextIndex], merged)) {
+        overlaid[nextIndex] = merged
         changed = true
       }
 

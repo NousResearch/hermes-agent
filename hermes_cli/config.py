@@ -623,12 +623,30 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton was created this process. Only successful passes are
-# recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
-_HERMES_HOME_ENSURED: set = set()
+# Named homes need a persisted generation: filesystems can reuse inode and ctime together.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
+
+
+def _hermes_home_identity(
+    home: Path, *, named_profile: bool,
+) -> tuple[int, int, int, str | None] | None:
+    try:
+        value = home.stat()
+        incarnation = None
+        if named_profile:
+            from hermes_cli.profile_incarnation import read_profile_incarnation
+
+            incarnation = read_profile_incarnation(home)
+            # Legacy homes remain usable, but cannot prove a reusable cache identity.
+            # Do not backfill here: config reads must not acquire the lifecycle lock.
+            if incarnation is None:
+                return None
+    except OSError:
+        return None
+    return (value.st_dev, value.st_ino, value.st_ctime_ns if named_profile else 0, incarnation)
 
 
 def ensure_hermes_home():
@@ -640,9 +658,14 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
+    from hermes_constants import named_profile_home_is_unavailable, profile_deletion_marker_path
+    named_profile = profile_deletion_marker_path(home) is not None
+    if named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(
+            f"Named profile home does not exist because it is missing or being deleted: {home}. "
+            "Create the profile explicitly before using it.")
+    current_identity = _hermes_home_identity(home, named_profile=named_profile)
+    if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
         return
     from hermes_cli.config_home import initialize_home
     initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
@@ -1972,7 +1995,12 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
+    from hermes_constants import profile_deletion_marker_path
     require_readable_config_before_write(config_path)
+    kwargs.setdefault(
+        "create_parent",
+        profile_deletion_marker_path(config_path.parent) is None,
+    )
     atomic_yaml_write(config_path, data, **kwargs)
 
 
@@ -2346,7 +2374,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        atomic_config_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
@@ -3417,7 +3445,7 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_config_write(config_path, user_config, sort_keys=False)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

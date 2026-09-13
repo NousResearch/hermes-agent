@@ -149,10 +149,31 @@ def _write_bytes(output_path: str, audio_bytes: bytes) -> str:
     return output_path
 
 
-def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str], **extra: Any):
-    """Streaming ``requests.post`` with the shared 60s timeout (body read via the bounded readers)."""
+DEFAULT_TTS_REQUEST_TIMEOUT = 60
+
+
+def _resolve_request_timeout(tts_config: Optional[Dict[str, Any]] = None) -> int:
+    """Read timeout for a TTS HTTP request: ``tts.request_timeout``, else 60s.
+
+    Generation time scales with script length, so a legitimately long reply can
+    exceed a fixed 60s and fail with ``Read timed out`` after the provider has
+    already been billed for the work. Configurable so long-form speech is a
+    setting rather than a rebuild. Non-positive / non-int values fall through to
+    the default so a broken config cannot disable the timeout entirely.
+    """
+    value = (tts_config or {}).get("request_timeout")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return DEFAULT_TTS_REQUEST_TIMEOUT
+
+
+def _post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str],
+               *, timeout: Optional[int] = None, **extra: Any):
+    """Streaming ``requests.post`` (body read via the bounded readers)."""
     import requests
-    return requests.post(url, headers=headers, json=payload, timeout=60, stream=True, **extra)
+    return requests.post(url, headers=headers, json=payload,
+                         timeout=timeout or DEFAULT_TTS_REQUEST_TIMEOUT,
+                         stream=True, **extra)
 
 
 # --- Auxiliary-model speech-tag rewrites ---
@@ -335,7 +356,8 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         payload["text_normalization"] = True
     response = _post_json(f"{base_url}/tts", payload, {
         "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-        "User-Agent": hermes_xai_user_agent()})
+        "User-Agent": hermes_xai_user_agent()},
+        timeout=_resolve_request_timeout(tts_config))
     response.raise_for_status()
     return _write_bytes(output_path, _read_tts_response_bytes(response, label="xAI TTS"))
 
@@ -419,7 +441,8 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     else:
         payload = {"model": model, "text": text, "voice_id": voice_id}
     response = _post_json(base_url, payload, {
-        "Content-Type": "application/json", "Authorization": f"Bearer {runtime.api_key}"})
+        "Content-Type": "application/json", "Authorization": f"Bearer {runtime.api_key}"},
+        timeout=_resolve_request_timeout(tts_config))
     if is_t2a_v2:
         response.raise_for_status()
         result = _read_tts_response_json(response, label="MiniMax TTS")
@@ -595,7 +618,8 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         except Exception:
             version = "0.0.0"
         headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
-    response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key})
+    response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers,
+                          timeout=_resolve_request_timeout(tts_config), params={"key": api_key})
     if response.status_code != 200:
         raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")
     try:

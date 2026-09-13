@@ -327,7 +327,13 @@ class GatewayVoiceMixin:
                 return
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
-            audio_path = build_auto_tts_output_path(event.source.platform)
+            # The (platform, chat) pair tags the filename so concurrent conversations writing into
+            # the shared hermes_voice directory stay attributable. Derived from the event rather
+            # than the session store: this path must not gain a collaborator it does not otherwise
+            # need, and the artifact is per-conversation, not per-session-row.
+            audio_path = build_auto_tts_output_path(
+                event.source.platform,
+                f"{event.source.platform.value}_{event.source.chat_id}")
             raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
                                           output_path=audio_path)
             try:

@@ -998,6 +998,10 @@ DEFAULT_CONFIG = {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        # Seconds to wait for a provider's HTTP response. Generation time scales
+        # with script length, so long-form speech can exceed the 60s default and
+        # fail with "Read timed out" after the provider already did the work.
+        "request_timeout": 60,
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
             "voice": "en-US-AriaNeural",

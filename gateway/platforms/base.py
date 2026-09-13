@@ -180,7 +180,7 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     return is_voice or normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
 
 
-def build_auto_tts_output_path(platform) -> str:
+def build_auto_tts_output_path(platform, session_id: "Optional[str]" = None) -> str:
     """Unique temp output path for gateway auto-TTS: ``.ogg`` for ``OPUS_VOICE_PLATFORMS``
     (the tool's ``_repair_ogg_container`` then guarantees real Opus bytes), else ``.mp3``.
     Platform-awareness lives HERE because ``_clear_session_env`` wipes the TTS tool's
@@ -190,11 +190,22 @@ def build_auto_tts_output_path(platform) -> str:
     single source of truth) get an explicit ``.ogg`` path; the tool's central container repair
     (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every provider, including MP3-only
     backends like Edge TTS. Everything else keeps the MP3 default. See #36685, #57049.
+
+    *session_id*, when given, is embedded in the filename. One gateway serves many
+    concurrent sessions into one shared directory, so an anonymous ``tts_reply_<uuid>``
+    cannot be attributed after the fact: log correlation, cleanup of a specific session's
+    leftovers, and external tooling that watches this directory all have to guess, and a
+    watcher guessing by mtime alone can pick up another session's audio. The uuid is kept
+    so uniqueness never depends on the session id being present or distinct.
     """
     from tools.tts_tool import OPUS_VOICE_PLATFORMS
     ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
-    audio_path = os.path.join(
-        tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
+    # Session ids are internally generated, but this value becomes a path segment, so
+    # constrain it rather than trusting the shape: filesystem-safe chars only, bounded
+    # length, and an empty result degrades to the plain uuid form.
+    tag = re.sub(r"[^\w.-]", "_", session_id)[:64].strip("._-") if session_id else ""
+    stem = f"tts_reply_{tag}_{uuid.uuid4().hex[:12]}" if tag else f"tts_reply_{uuid.uuid4().hex[:12]}"
+    audio_path = os.path.join(tempfile.gettempdir(), "hermes_voice", f"{stem}.{ext}")
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
     return audio_path
 
@@ -3639,10 +3650,12 @@ class BasePlatformAdapter(ABC):
             hi = _or_default(lambda: int(os.getenv("HERMES_HUMAN_DELAY_MAX_MS", str(hi))), hi)
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
+    async def _synthesize_auto_tts(self, text_content: str,
+                                   session_key: "Optional[str]" = None) -> Tuple[List[str], Optional[str]]:
         """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
+        post-handler. *session_key* tags the filename so concurrent sessions sharing the
+        ``hermes_voice`` directory stay attributable."""
         paths: List[str] = []
         requested_path = None
         try:
@@ -3652,7 +3665,7 @@ class BasePlatformAdapter(ABC):
                 speech_text = self.prepare_tts_text(text_content)
                 if not speech_text:
                     raise ValueError("Empty text after markdown cleanup")
-                requested_path = build_auto_tts_output_path(self.platform)
+                requested_path = build_auto_tts_output_path(self.platform, session_key)
                 tts_data = _json.loads(await asyncio.to_thread(
                     text_to_speech_tool, text=speech_text, output_path=requested_path))
                 if tts_data.get("success", True):
@@ -4018,7 +4031,8 @@ class BasePlatformAdapter(ABC):
                 _tts_paths, _tts_requested_path = [], None
                 if self._wants_auto_tts(
                         event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(
+                        text_content, session_key)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

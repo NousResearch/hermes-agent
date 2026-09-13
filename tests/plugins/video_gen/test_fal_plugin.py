@@ -81,6 +81,30 @@ def test_minimax_h3_int_duration_and_resolution_alias():
     assert hi["resolution"] == "2K"
 
 
+def test_h3_max_turbo_static_key_and_1080p_alias():
+    """H3 Max Turbo requires prompt_expansion_mode on both endpoints, adds a real
+    1080P tier (unlike Max, which caps at 768P), and its i2v drops aspect_ratio."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    meta = FAL_FAMILIES["minimax-h3-max-turbo"]
+    t2v = _build_payload(
+        meta, prompt="x", image_url=None, duration=7, aspect_ratio="16:9",
+        resolution="1080p", negative_prompt=None, audio=None, seed=11,
+    )
+    assert t2v["prompt_expansion_mode"] == "balanced"
+    assert t2v["resolution"] == "1080P"
+    assert t2v["duration"] == 7 and isinstance(t2v["duration"], int)
+    assert t2v["seed"] == 11
+
+    i2v = _build_payload(
+        meta, prompt="x", image_url="https://example.com/i.png", duration=5,
+        aspect_ratio="16:9", resolution="480p", negative_prompt=None, audio=None, seed=None,
+    )
+    assert i2v["prompt_expansion_mode"] == "balanced"
+    assert "aspect_ratio" not in i2v
+    assert i2v["image_url"] == "https://example.com/i.png"
+
+
 def test_image_drop_keys_strips_aspect_ratio_on_i2v():
     """Seedance 2.5 / MiniMax H3 / Grok 1.5 i2v endpoints derive the
     aspect ratio from the input image; sending the key is rejected."""

@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -86,22 +85,20 @@ def _call_logged(cb: Callable[[dict], None], frame: dict, failure: str) -> None:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    # NOT os.kill(pid, 0): on Windows that is NOT a no-op probe. CPython maps
+    # sig=0 to GenerateConsoleCtrlEvent(0, pid), broadcasting Ctrl+C to the
+    # target's whole console process group (bpo-14484). Callers here are
+    # read-only status checks — a probe must never be able to kill anything.
+    # gateway.status._pid_exists is the repo's canonical no-kill cross-platform
+    # probe (psutil-backed, ctypes handle fallback on Windows).
     try:
-        os.kill(pid, 0)
-        return True
-    except Exception as exc:
-        return isinstance(exc, PermissionError)
-
-
-def _signal_pid(pid: int, sig: int, label: str) -> bool:
-    """Send ``sig``; False when the pid is gone or the signal failed (logged)."""
-    try:
-        os.kill(pid, sig)
-        return True
-    except ProcessLookupError:
-        return False
+        from gateway.status import _pid_exists
     except Exception:
-        logger.debug("failed to %s compute host pid=%s", label, pid, exc_info=True)
+        logger.debug("gateway.status unavailable for pid probe", exc_info=True)
+        return False
+    try:
+        return bool(_pid_exists(pid))
+    except Exception:
         return False
 
 
@@ -467,14 +464,36 @@ class HostSupervisor:
     _pid_matches_compute_host = staticmethod(is_compute_host_identity)
 
     def _terminate_pid(self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS) -> None:
-        if not _signal_pid(pid, signal.SIGTERM, "SIGTERM"):
+        # Route termination through gateway.status.terminate_pid so Windows
+        # gets a real tree-kill (taskkill /T /F) instead of bare signals:
+        # signal.SIGKILL does not exist on Windows (AttributeError at import
+        # time), and raw SIGTERM there does not cascade to child processes.
+        # Force-kill captures start time first: current terminate_pid refuses
+        # Windows taskkill without that identity guard (#89614).
+        try:
+            from gateway.status import get_process_start_time, terminate_pid as _do_terminate
+        except Exception:
+            logger.debug("gateway.status unavailable for pid terminate", exc_info=True)
+            return
+        start_time = get_process_start_time(pid)
+        try:
+            _do_terminate(pid)
+        except ProcessLookupError:
+            return
+        except Exception:
+            logger.debug("failed to SIGTERM compute host pid=%s", pid, exc_info=True)
             return
         deadline = time.monotonic() + timeout
-        while _pid_alive(pid):
-            if time.monotonic() >= deadline:
-                _signal_pid(pid, signal.SIGKILL, "SIGKILL")
+        while time.monotonic() < deadline:
+            if not _pid_alive(pid):
                 return
             time.sleep(0.05)
+        try:
+            _do_terminate(pid, force=True, expected_start_time=start_time)
+        except ProcessLookupError:
+            return
+        except Exception:
+            logger.debug("failed to force-kill compute host pid=%s", pid, exc_info=True)
 
     def _terminate_process(self, proc: subprocess.Popen[str]) -> None:
         if proc.poll() is not None:

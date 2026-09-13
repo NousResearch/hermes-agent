@@ -130,9 +130,15 @@ loop. `hermes -p coder gateway stop` refuses the same way (exit 78) when coder h
 gateway of its own — there is nothing to stop but the multiplexer, which
 `hermes gateway stop` on the default profile takes down for every served profile.
 The dashboard and Desktop app follow the CLI: for a served profile the "Start" and
-"Stop" gateway actions answer `409` with the same explanation, and "Restart"
-restarts the multiplexer (the process that actually serves the profile) instead of
-spawning a `-p coder gateway restart` that could only fail.
+"Stop" gateway actions answer `409` with the same explanation (rendered as an inline
+notice on the System page), and "Restart" restarts the multiplexer (the process that
+actually serves the profile) instead of spawning a `-p coder gateway restart` that
+could only fail. Because that restart reconnects every bot on the device, both apps
+first ask *"Restart the shared gateway? All bots on this device reconnect: default,
+coder, research"* (the list is the running gateway's `served_profiles`) and report
+*"Shared gateway restarted (3 bots)"* when it completes. A standalone profile keeps
+the plain restart. `/api/status?profile=coder` carries the same list as
+`gateway_shared_with` (null for a standalone gateway).
 "Served" is read from the running gateway's own record (`served_profiles` in the
 default home's `gateway_state.json`), so it stays correct when the multiplexer was
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
@@ -253,8 +259,13 @@ Inbound callback URLs on the shared listener:
 ```
 
 `hermes gateway status` and `hermes status` on the default profile list the same
-URLs per served profile, and the dashboard's Channels page shows them as each
-platform's `ingress_url` when viewing that profile. A per-profile
+URLs per served profile, and the dashboard's Channels page and the Desktop
+Messaging page show them as each platform's `ingress_url` when viewing that
+profile. The default's own `api_server` and `webhook` are reported the same way
+for a served profile — as **connected** with `ingress_url`
+`http://127.0.0.1:8642/p/coder/v1` (respectively `.../p/coder/webhooks/<route>`) —
+since the profile has no adapter of its own for them; it is the default's listener
+answering under the `/p/coder/` prefix. A per-profile
 `SMS_WEBHOOK_PORT`, `LINE_PORT`, `TEAMS_PORT`, … in a secondary's `.env` is
 ignored under the multiplexer (nothing binds); it applies again the moment that
 profile runs its own standalone gateway.
@@ -791,7 +802,23 @@ preflight:
   fix and the one-liner to run later. Nothing is changed.
 
 Single-profile installs are never migrated (there is nothing to gain), and an
-install that is already multiplexing is left alone.
+install that is already multiplexing is left alone. `hermes update` also does
+nothing when no secondary profile runs its own gateway — it never flips modes
+on an install where nothing was running.
+
+The explicit command is different: `hermes gateway migrate --multiplex` with
+two or more profiles and **no** standalone secondary gateway still applies the
+one remaining step — it sets `gateway.multiplex_profiles: true`, (re)starts the
+default gateway and writes the same rollback manifest (with an empty
+`secondaries` list), so `--standalone` undoes it. You asked for multiplex; you
+get multiplex.
+
+:::tip Clones do not carry channels
+`hermes profile create --clone` leaves the source's bot tokens and allowlists
+behind (see [Profiles → messaging channels are never cloned](./profiles.md#messaging-channels-are-never-cloned---clone-channels-to-opt-in)),
+so a fleet of clones no longer trips the duplicate-credential blocker below.
+Older clones that still carry them are flagged by `hermes profile list`.
+:::
 
 ### What the migration does
 

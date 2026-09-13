@@ -202,74 +202,39 @@ def _compress_session_history(
     before_messages: list | None = None, history_version: int | None = None,
 ) -> tuple[int, dict]:
     """Single choke point for all manual-compress routes. ``focus_topic`` is the RAW argument string after
-    ``/compress``, parsed HERE (not per-route) so boundary forms (``here [N]``, ``up to here``, ``--keep N``)
-    trigger a partial compress on EVERY route instead of a FULL compress focused on the literal text.
-
-    It is parsed here with :func:`parse_partial_compress_args` so boundary-aware forms (``here [N]``, ``up
-    to here``, ``--keep N``) trigger a partial compress — head summarized, most recent ``keep_last``
-    exchanges kept verbatim — on EVERY route, mirroring cli.py's ``_manual_compress`` and
-    gateway/slash_commands.py (PR #35252).
-    """
+    ``/compress``; the shared core (``agent.conversation_compression_manual``) parses boundary forms
+    (``here [N]``, ``up to here``, ``--keep N``) so a partial compress triggers on EVERY route instead of a
+    FULL compress focused on the literal text. ``--preview`` returns without touching history."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
-    from agent.model_metadata import estimate_request_tokens_rough
-    from hermes_cli.partial_compress import (
-        parse_partial_compress_args, rejoin_compressed_head_and_tail, split_history_for_partial_compress,
-    )
+    from agent.conversation_compression_manual import (
+        AGGRESSIVE_UNSUPPORTED, MIN_MESSAGES, compress_now, parse_compress_args)
     agent = session["agent"]
     # Snapshot under the lock so the LLM-bound compression call does NOT hold history_lock for the
     # request — otherwise prompt.submit etc. block on the dispatcher loop while compaction runs.
     if before_messages is None or history_version is None:
         with session["history_lock"]:
             before_messages, history_version = list(session.get("history", [])), int(session.get("history_version", 0))
-    history = before_messages
-    if len(history) < 4:
+    if len(before_messages) < MIN_MESSAGES:
         return 0, _get_usage(agent)
-    partial, keep_last, focus_topic = parse_partial_compress_args(focus_topic or "")
-    # Only the head is summarized; the last `keep_last` exchanges ride along verbatim. A degenerate
-    # split (empty tail) falls back to full compression so the user still gets an action.
-    head, tail = split_history_for_partial_compress(history, keep_last) if partial else (history, [])
-    if not tail:
-        head = history
-    if approx_tokens is None:
-        # Include system prompt + tool schemas so the figure reflects real request pressure.
-        # Include system prompt + tool schemas in the estimate — a transcript-only number understates real
-        # request pressure and can even appear to grow after compression because a dense handoff summary
-        # replaces many short turns (#6217).
-        approx_tokens = estimate_request_tokens_rough(
-            history, system_prompt=getattr(agent, "_cached_system_prompt", "") or "", tools=getattr(agent, "tools", None) or None
-        )
-    # system_message=None: passing the cached prompt (already holding the identity block) would append the
-    # identity twice. force=True: manual /compress bypasses the summary-failure cooldown like CLI/gateway.
-    # Pass system_message=None so AIAgent._compress_context rebuilds the system prompt cleanly via
-    # _build_system_prompt(None). Mirrors the CLI's _manual_compress fix for issue #15281. force=True: every
-    # caller of this helper is a manual /compress path (session.compress RPC, slash compress/compact,
-    # slash-worker mirror) — auto-compaction runs inside the agent loop, not here.
-    try:
-        compressed, _ = agent._compress_context(
-            head, None, approx_tokens=approx_tokens, focus_topic=focus_topic or None, force=True,
-            defer_context_engine_notification=True,
-        )
-    except Exception:
-        finalize_context_engine_compression_notification(agent, committed=False)
-        raise
+    request = parse_compress_args(focus_topic or "")
+    if request.aggressive:
+        raise ValueError(AGGRESSIVE_UNSUPPORTED)
+    result = compress_now(agent, before_messages, request)
+    if result.status == "preview":
+        return 0, _get_usage(agent)
     # Lock-skipped: raise so callers surface a clear message instead of "No changes from compression".
-    # Type-pinned (is True / str) because bare truthiness is fooled by MagicMock auto-attrs.
-    _lock_skipped = getattr(agent, "_compression_skipped_due_to_lock", None)
-    if _lock_skipped is True or isinstance(_lock_skipped, str):
-        agent._compression_skipped_due_to_lock = None
-        # No boundary committed; discard the pending deferred notification (exactly-once, no-op safe).
-        finalize_context_engine_compression_notification(agent, committed=False)
-        raise CompressionLockHeld(_lock_skipped if isinstance(_lock_skipped, str) else None)
-    if tail:
-        compressed = rejoin_compressed_head_and_tail(compressed, tail)
+    if result.status == "lock_skipped":
+        raise CompressionLockHeld(result.lock_holder)
+    if result.status != "compressed":
+        return 0, _get_usage(agent)
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the result so we don't clobber concurrent edits.
             finalize_context_engine_compression_notification(agent, committed=False)
             return 0, _get_usage(agent)
-        session["history"] = compressed
+        session["history"] = result.after_messages
         session["history_version"] = history_version + 1
-    return len(history) - len(compressed), _get_usage(agent)
+    return result.removed, _get_usage(agent)
 
 
 def _sync_session_key_after_compress(

@@ -170,7 +170,8 @@ def _commit_model_switch(
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
     if persist_global:
-        _persist_global_switch(cli, result)
+        from hermes_cli.model_switch import persist_model_selection
+        persist_model_selection(result)
         _cprint("    Saved to config.yaml (--global)" if picker else "    Saved to config.yaml")
     elif one_turn:
         _cprint("    (next turn only — restores after one response)")
@@ -180,24 +181,6 @@ def _commit_model_switch(
     # stale creation-time model); --once is restored after one turn and never touches the row.
     if not one_turn:
         HermesCLI._persist_model_switch_to_session(cli, result)
-
-
-def _persist_global_switch(cli, result) -> None:
-    """Write the switched route to config.yaml (--global). base_url/api_mode are freshly resolved
-    for the target provider, so sync them every time (None clears a value the new provider doesn't
-    need) — otherwise the OLD provider's endpoint/wire-protocol lingers in config.yaml."""
-    from cli import HermesCLI, save_config_value
-    HermesCLI._clear_persisted_context_for_model_switch(cli, result)
-    save_config_value("model.default", result.new_model)
-    save_config_value("model.provider", result.target_provider)
-    # base_url/api_mode were previously never persisted here, so a global switch left the OLD provider's
-    # endpoint/wire-protocol in config.yaml. result.base_url/api_mode are always freshly resolved for the
-    # target provider (see model_switch.py), so sync them every time; None clears a value the new provider
-    # doesn't need (#25106).
-    # See _apply_model_switch_result above for why base_url/api_mode must be synced on every global switch
-    # (#25106).
-    save_config_value("model.base_url", result.base_url or None)
-    save_config_value("model.api_mode", result.api_mode or None)
 
 
 def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
@@ -544,24 +527,6 @@ class CLIModelSwitchMixin:
         elif selected >= scroll_offset + visible:
             scroll_offset = selected - visible + 1
         return max(0, min(scroll_offset, n - visible)), visible
-
-    def _clear_persisted_context_for_model_switch(self, result) -> None:
-        """Drop a global context pin when its configured owner changes."""
-        from cli import save_config_value
-        try:
-            from hermes_cli.config import load_config_readonly
-            from hermes_cli.route_identity import should_clear_context_pin
-            config = load_config_readonly()
-            model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
-            if not isinstance(model_cfg, dict) or "context_length" not in model_cfg:
-                return
-            if should_clear_context_pin(
-                model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-                model_cfg.get("base_url"), result.base_url,
-                model_cfg.get("provider"), result.target_provider):
-                save_config_value("model.context_length", None)
-        except Exception:
-            save_config_value("model.context_length", None)
 
     def _stage_and_swap_model(self, result, old_model) -> bool:
         """Stage ``result`` onto the CLI fields, then swap the live agent in place.

@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
+from utils import atomic_write_bytes
 
 VAULT_KINDS = ("login", "payment", "address")
 
@@ -282,24 +283,8 @@ class VaultStore:
         self._ensure_dir()
         payload = json.dumps({"version": 1, "items": items}).encode("utf-8")
         blob = self._fernet().encrypt(payload)
-        tmp = self._vault_path.with_suffix(".enc.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, blob)
-            os.fsync(fd)  # the blob must be on disk before the rename makes it THE vault
-        finally:
-            os.close(fd)
-        os.replace(tmp, self._vault_path)
-        with suppress(OSError):  # directory entry durable too (power loss between rename and next sync)
-            dfd = os.open(self._base, os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
-        try:
-            os.chmod(self._vault_path, 0o600)
-        except OSError:
-            pass
+        # fsync_dir: the directory entry must be durable too (power loss between rename and next sync).
+        atomic_write_bytes(self._vault_path, blob, mode=0o600, fsync_dir=True)
 
     # -- public API ----------------------------------------------------------
 

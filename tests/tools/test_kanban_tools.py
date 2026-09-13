@@ -9,6 +9,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
@@ -931,7 +932,7 @@ def _sub_index(subs):
     return out
 
 
-def test_create_subscribes_gateway_session(monkeypatch, worker_env):
+def test_create_missing_delivery_mode_keeps_notify_wake_compatibility(monkeypatch, worker_env):
     """A gateway session (platform + chat_id set) gets auto-subscribed
     to its own kanban_create result, and the response surfaces the
     ``subscribed`` flag so the orchestrator can react."""
@@ -962,6 +963,104 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["user_id_alt"] == "alt-user-9"
     assert s["chat_type"] == "forum"
     assert s["delivery_mode"] == "notify+wake"
+
+
+@pytest.mark.parametrize("delivery_mode", ("notify", "notify+wake", "wake"))
+def test_create_applies_supported_auto_subscribe_delivery_mode(monkeypatch, worker_env, delivery_mode):
+    """Each configured delivery mode is persisted for a new gateway creator row."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "load_config", lambda: {
+        "kanban": {
+            "auto_subscribe_on_create": True,
+            "auto_subscribe_delivery_mode": delivery_mode,
+        },
+    })
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+
+    created = json.loads(kt._handle_create({
+        "title": f"auto-sub {delivery_mode}",
+        "assignee": "peer",
+    }))
+
+    assert created["subscribed"] is True
+    assert _list_subs_for_task(created["task_id"])[0]["delivery_mode"] == delivery_mode
+
+
+def test_create_invalid_delivery_mode_skips_creator_subscription(monkeypatch, worker_env, caplog):
+    """A bad explicit mode must not create a visible fallback notification."""
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "load_config", lambda: {
+        "kanban": {
+            "auto_subscribe_on_create": True,
+            "auto_subscribe_delivery_mode": "interrupt-everyone",
+        },
+    })
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+
+    with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
+        created = json.loads(kt._handle_create({
+            "title": "invalid creator delivery mode",
+            "assignee": "peer",
+        }))
+
+    assert created["ok"] is True
+    assert created["subscribed"] is False
+    assert _list_subs_for_task(created["task_id"]) == []
+    assert "kanban.auto_subscribe_delivery_mode='interrupt-everyone' is invalid" in caplog.text
+
+
+def test_create_reads_delivery_mode_from_profile_config(monkeypatch, worker_env, tmp_path):
+    """The active profile's config, not another profile's settings, chooses the mode."""
+    home = tmp_path / "wake-profile" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_delivery_mode: wake\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+
+    from tools import kanban_tools as kt
+    created = json.loads(kt._handle_create({
+        "title": "profile-local delivery mode",
+        "assignee": "peer",
+    }))
+
+    assert created["subscribed"] is True
+    assert _list_subs_for_task(created["task_id"])[0]["delivery_mode"] == "wake"
+
+
+def test_idempotent_create_preserves_existing_creator_subscription_policy(monkeypatch, worker_env):
+    """A create retry must not replace an existing row's mode or cursor."""
+    from tools import kanban_tools as kt
+
+    config = {"kanban": {
+        "auto_subscribe_on_create": True,
+        "auto_subscribe_delivery_mode": "notify",
+    }}
+    monkeypatch.setattr(kt, "load_config", lambda: config)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+    args = {
+        "title": "idempotent creator subscription",
+        "assignee": "peer",
+        "idempotency_key": "creator-subscription-retry",
+    }
+
+    first = json.loads(kt._handle_create(args))
+    before = _list_subs_for_task(first["task_id"])[0]
+    config["kanban"]["auto_subscribe_delivery_mode"] = "wake"
+    retry = json.loads(kt._handle_create(args))
+    after = _list_subs_for_task(first["task_id"])[0]
+
+    assert retry["task_id"] == first["task_id"]
+    assert retry["subscribed"] is True
+    assert after["delivery_mode"] == before["delivery_mode"] == "notify"
+    assert after["last_event_id"] == before["last_event_id"]
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):

@@ -11,6 +11,7 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 """
 
 import asyncio
+import json
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -40,6 +41,16 @@ class FailingWakeAdapter(RecordingAdapter):
     async def handle_message(self, event):
         self.handled.append(event)
         raise RuntimeError("simulated wake failure")
+
+
+class RecoveringWakeAdapter(RecordingAdapter):
+    """Push adapter which fails one wake, then admits its retry."""
+
+    async def handle_message(self, event):
+        self.handled.append(event)
+        if len(self.handled) == 1:
+            raise RuntimeError("simulated first wake failure")
+        event._gateway_accepted = True
 
 
 async def _run_one_notifier_tick(monkeypatch, runner):
@@ -156,6 +167,47 @@ def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner2))
     assert len(adapter.handled) == 2, "event must be redelivered next tick"
     assert list(runner2._kanban_sub_fail_counts.values()) == [2]
+
+
+def test_creator_wake_mode_recovers_without_passive_ping(tmp_path, monkeypatch):
+    """The creator setting writes wake mode, which retries and recovers as one delivery."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "creator-wake.db"))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-1")
+    kb.init_db()
+
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt, "load_config", lambda: {
+        "kanban": {
+            "auto_subscribe_on_create": True,
+            "auto_subscribe_delivery_mode": "wake",
+        },
+    })
+    created = kt._handle_create({"title": "creator wake", "assignee": "worker"})
+    tid = json.loads(created)["task_id"]
+    assert _subs(tid)[0]["delivery_mode"] == "wake"
+
+    conn = kbc.connect()
+    try:
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecoveringWakeAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert adapter.sent == []
+    assert len(adapter.handled) == 1
+    assert len(_unseen_terminal_events(tid)) == 1
+
+    retry_runner = _make_runner(adapter)
+    retry_runner._kanban_sub_fail_counts = runner._kanban_sub_fail_counts
+    asyncio.run(_run_one_notifier_tick(monkeypatch, retry_runner))
+    assert adapter.sent == []
+    assert len(adapter.handled) == 2
+    assert _unseen_terminal_events(tid) == []
+    assert retry_runner._kanban_sub_fail_counts == {}
 
 
 def test_notify_wake_failure_retries_without_repeating_ping(tmp_path, monkeypatch):

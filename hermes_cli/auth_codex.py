@@ -270,12 +270,19 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
 
 
 def _codex_quota_exhausted_error(retry_after: Optional[int]) -> AuthError:
-    message = (
-        f"Codex provider quota exhausted (429); retry after {retry_after}s. "
-        "Credentials are still valid."
-        if retry_after is not None else
-        "Codex provider quota exhausted (429). Credentials are still valid; "
-        "retry after the usage limit resets.")
+    if retry_after is not None:
+        # Humanize the raw seconds the API reports: "retry after 79m" instead of
+        # "retry after 4767s" (format_duration_compact keeps <60s as "Ns").
+        from agent.usage_pricing import format_duration_compact
+        message = (
+            f"Codex provider quota exhausted (429); retry after "
+            f"{format_duration_compact(float(retry_after))}. "
+            "Credentials are still valid."
+        )
+    else:
+        message = (
+            "Codex provider quota exhausted (429). Credentials are still valid; "
+            "retry after the usage limit resets.")
     return _codex_err(message, CODEX_RATE_LIMITED_CODE, relogin=False)
 
 
@@ -704,9 +711,11 @@ def _codex_login_rate_limited_error(response: "httpx.Response", *, during: str =
     # callers surface a "retry later" notice instead of a misleading "run hermes auth" prompt (see issue
     # #32790).
     retry_after = _parse_retry_after_seconds(getattr(response, "headers", None))
-    wait_hint = (
-        f" Try again in about {retry_after}s." if retry_after is not None
-        else " Wait a minute and run the login again.")
+    if retry_after is not None:
+        from agent.usage_pricing import format_duration_compact
+        wait_hint = f" Try again in about {format_duration_compact(float(retry_after))}."
+    else:
+        wait_hint = " Wait a minute and run the login again."
     return _codex_err(
         f"OpenAI is rate-limiting Codex login requests (HTTP 429){during}. "
         f"This is a temporary throttle on OpenAI's side, not a credential problem.{wait_hint}",

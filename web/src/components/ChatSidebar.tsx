@@ -468,7 +468,7 @@ export function ChatSidebar({
             size="sm"
             onClick={() => setModelOpen(true)}
             className={cn(
-              "max-w-full min-w-0 px-0 py-0",
+              "min-h-11 max-w-full min-w-0 px-0 py-0",
               "self-start normal-case tracking-normal text-sm font-medium",
               "hover:underline disabled:no-underline",
             )}

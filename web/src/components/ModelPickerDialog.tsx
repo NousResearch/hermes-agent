@@ -351,13 +351,18 @@ export function ModelPickerDialog(props: Props) {
   // Toast.tsx for the same pattern.
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
+      className="fixed inset-0 z-[100] flex items-end justify-center bg-background/85 p-0 sm:items-center sm:p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="model-picker-title"
     >
-      <div className={cn(themedBody, "relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col")}>
+      <div
+        className={cn(
+          themedBody,
+          "relative flex max-h-[92dvh] w-full flex-col border border-border bg-card shadow-2xl sm:max-h-[80vh] sm:max-w-3xl",
+        )}
+      >
         <Button
           ghost
           size="icon"
@@ -368,7 +373,7 @@ export function ModelPickerDialog(props: Props) {
           <X />
         </Button>
 
-        <header className="p-5 pb-3 border-b border-border">
+        <header className="border-b border-border p-4 pb-3 sm:p-5 sm:pb-3">
           <h2
             id="model-picker-title"
             className="font-mondwest text-display text-base tracking-wider"
@@ -381,7 +386,7 @@ export function ModelPickerDialog(props: Props) {
           </p>
         </header>
 
-        <div className="px-5 pt-3 pb-2 border-b border-border">
+        <div className="border-b border-border px-4 pb-2 pt-3 sm:px-5">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
@@ -394,7 +399,7 @@ export function ModelPickerDialog(props: Props) {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 grid grid-cols-[200px_1fr] overflow-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(7.5rem,0.85fr)_minmax(0,1.15fr)] overflow-hidden sm:grid-cols-[200px_minmax(0,1fr)]">
           <ProviderColumn
             loading={loading}
             error={error}
@@ -428,7 +433,7 @@ export function ModelPickerDialog(props: Props) {
           />
         </div>
 
-        <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
+        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border p-3">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
               Saves to config.yaml — applies to new sessions.
@@ -452,19 +457,29 @@ export function ModelPickerDialog(props: Props) {
             </div>
           )}
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="ml-auto flex w-full flex-wrap justify-end gap-2 sm:w-auto">
             <Button
               outlined
               onClick={refreshOptions}
               disabled={applying || loading || refreshing}
+              className="flex-1 sm:flex-none"
             >
               {refreshing ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
               Refresh Models
             </Button>
-            <Button outlined onClick={onClose} disabled={applying}>
+            <Button
+              outlined
+              onClick={onClose}
+              disabled={applying}
+              className="flex-1 sm:flex-none"
+            >
               Cancel
             </Button>
-            <Button onClick={confirm} disabled={!canConfirm}>
+            <Button
+              onClick={confirm}
+              disabled={!canConfirm}
+              className="flex-1 sm:flex-none"
+            >
               {applying ? <Spinner /> : "Switch"}
             </Button>
           </div>

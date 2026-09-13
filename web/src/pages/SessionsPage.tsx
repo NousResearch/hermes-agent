@@ -537,7 +537,7 @@ function SessionRow({
           title={t.sessions.resumeInChat}
           onClick={(e) => {
             e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            navigate(`/mobile-chat?session=${encodeURIComponent(session.id)}&profile=${encodeURIComponent(session.profile ?? "")}`);
           }}
         >
           <Play />

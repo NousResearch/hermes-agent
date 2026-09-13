@@ -353,24 +353,29 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 
 
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
-                            on_done=None, on_error=None) -> None:
+                            on_done=None, on_error=None, continued_desktop_work=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _run_prompt_submit(
+            rid, sid, session, prompt, continued_desktop_work=continued_desktop_work)
         if on_done is not None:
             on_done()
     except Exception as exc:
         if on_error is not None:
             on_error()
+        if continued_desktop_work is not None:
+            from tui_gateway.desktop_work import finish
+            finish(continued_desktop_work, _emit, {"interrupted": True})
         _hook_failure(what, exc)
         with session["history_lock"]:
             session["running"] = False
 
 
 def _run_post_turn_followups(
-    rid, sid: str, session: dict, result: Any, goal_followup: str | None) -> None:
+    rid, sid: str, session: dict, result: Any, goal_followup: str | None,
+    desktop_work=None) -> None:
     """Chain whatever should run after ``running`` was released.  Order: a mid-turn user
     prompt wins over every auto follow-up (drain it, skip the rest); a leftover /steer is
     requeued first so it isn't dropped; then goal continuation, then completion
@@ -380,13 +385,23 @@ def _run_post_turn_followups(
         with session["history_lock"]:
             _enqueue_prompt(session, steer, session.get("transport"))
     if _drain_queued_prompt(rid, sid, session):
+        if desktop_work is not None:
+            from tui_gateway.desktop_work import finish
+            finish(desktop_work, _emit, {"interrupted": True})
         return
     if goal_followup:
         with session["history_lock"]:
-            if session.get("running"):
-                return  # user already sent something — their turn wins
-            session["running"] = True
-        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+            user_turn_won = bool(session.get("running"))
+            if not user_turn_won:
+                session["running"] = True
+        if user_turn_won:
+            if desktop_work is not None:
+                from tui_gateway.desktop_work import finish
+                finish(desktop_work, _emit, {"interrupted": True})
+            return  # user already sent something — their turn wins
+        _dispatch_followup_turn(
+            rid, sid, session, goal_followup, "goal continuation dispatch",
+            continued_desktop_work=desktop_work)
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.
@@ -792,12 +807,29 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    desktop_work: dict | None = None,
+    continued_desktop_work=None,
+    admitted_desktop_work=None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
+    from tui_gateway.desktop_work import admit, finish, current_work
+    work = admitted_desktop_work
+    if (work is None and continued_desktop_work is not None
+            and continued_desktop_work.sid == sid and continued_desktop_work.session is session
+            and not continued_desktop_work.closed):
+        work = continued_desktop_work
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
+        if work is not None and not work.closed:
+            work.emit(_emit, "started")
+            finish(work, _emit, {"interrupted": True})
         return False
     images, agent = admitted
+    if work is None:
+        work = admit(sid, session, desktop_work, display_kind)
+
+    if work is not None and work is not admitted_desktop_work:
+        work.begin_turn()
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -815,10 +847,13 @@ def _run_prompt_submit(
     _emit("message.start", sid)
 
     def run():
+        if work is not None:
+            work.emit(_emit, "started")
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
         # before any tool can commission a child (delegate_task captures it as authority).
         transport_token = bind_transport(session.get("transport"))
         runtime_session_token = _current_runtime_session_record.set(session)
+        work_token = current_work.set(work)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
@@ -850,7 +885,12 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            # Snapshot this turn's classification before releasing admission. A
+            # newer user turn may replace inflight_turn as soon as running=False.
+            terminal_surface = ((session.get("inflight_turn") or {}).get("error_surface")
+                                if st.error_retained else None)
             _finish_turn(sid, session, st)
+            current_work.reset(work_token)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
             # A stale interim closure must not fire during a later turn.
@@ -882,7 +922,9 @@ def _run_prompt_submit(
                     session.pop("_hosted_room_task", None)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, st.agent)
-        _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
+            finish(work, _emit, st.result, uncertain=bool(goal_followup or st.error_retained),
+                   terminal_surface=terminal_surface)
+        _run_post_turn_followups(rid, sid, session, st.result, goal_followup, work)
     run_thread = threading.Thread(target=run, daemon=True)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
@@ -899,6 +941,9 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+        if work is not None:
+            work.emit(_emit, "started")
+            finish(work, _emit, {"interrupted": True})
     return can_start
 
 

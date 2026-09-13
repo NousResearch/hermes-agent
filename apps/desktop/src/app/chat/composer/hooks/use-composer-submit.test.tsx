@@ -435,6 +435,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('ordinary question', {
         attachments: [],
+        desktopWork: { origin: 'desktop_user', root_id: expect.any(String) },
         composerScope: 'stored-session'
       })
     )

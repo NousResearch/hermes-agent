@@ -16,6 +16,28 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def is_forgiving_schema(schema: Dict[str, Any]) -> bool:
+    """True when the schema is essentially unconstrained — accepts ANY JSON object.
+
+    An empty ``{}`` (or a schema that only sets non-restricting keys like ``title`` /
+    ``description`` / ``$schema``) lets any JSON object through. For these, the
+    contract is "produce a JSON object", not "produce *this* shape". When the child
+    returns prose instead of JSON, we wrap the prose rather than reject the whole
+    answer — the work is real, and a contract violation should not silently eat
+    the partial output (see delegate_task bug: "活干了但汇报被吞").
+    """
+    if not isinstance(schema, dict) or not schema:
+        return True
+    # Anything that imposes a constraint is NOT forgiving — must validate strictly.
+    _CONSTRAINING = {"type", "properties", "required", "patternProperties",
+                     "additionalProperties", "items", "prefixItems", "minProperties",
+                     "maxProperties", "minItems", "maxItems", "uniqueItems",
+                     "allOf", "anyOf", "oneOf", "not", "if", "then", "else",
+                     "dependentSchemas", "dependentRequired", "contains",
+                     "propertyNames", "unevaluatedProperties", "unevaluatedItems"}
+    return not any(k in schema for k in _CONSTRAINING)
+
+
 def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """``(schema, None)`` when usable, ``(None, error)`` when not; ``None`` input
     passes through as ``(None, None)`` (no schema requested)."""
@@ -76,14 +98,24 @@ def extract_json_candidate(text: str) -> str:
     return raw
 
 
-def validate_output(text: str, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """``(True, [])`` or ``(False, errors)`` with strings suitable for the retry turn."""
+def validate_output(text: str, schema: Dict[str, Any]) -> tuple[bool, List[str]]:
+    """``(True, [])`` or ``(False, errors)`` with strings suitable for the retry turn.
+
+    Forgiving schemas (empty ``{}`` or non-constraining keys only) wrap prose
+    into ``{"final_response": <text>}`` and accept it — the contract is
+    "produce *a* JSON object", so the partial output is preserved instead of
+    being eaten by a strict parse error.
+    """
     candidate = extract_json_candidate(text or "")
     if not candidate.strip():
         return False, ["Response was empty — expected a JSON object matching the schema."]
     try:
         parsed = json.loads(candidate)
     except (ValueError, TypeError) as exc:
+        if is_forgiving_schema(schema):
+            # Forgiving schema + prose: the work is real, wrap it. Caller decides
+            # whether to surface this as a warning; the validator MUST NOT eat it.
+            return True, [f"non_json_wrapped: {exc}"]
         return False, [f"Response is not valid JSON: {exc}"]
     try:
         from jsonschema.validators import validator_for  # type: ignore[import-untyped]

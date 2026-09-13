@@ -389,18 +389,45 @@ class _SchemaOutcome:
     valid: Optional[bool]
     errors: List[str]
     retries: int
+    # Non-fatal validator notes the caller MAY surface to users without
+    # flipping status to "failed" (e.g. "non_json_wrapped" when a forgiving
+    # schema accepted a prose answer). Empty for strict happy-path validation.
+    warnings: List[str] = field(default_factory=list)
+    # True when the child's final text was not a JSON object and the validator
+    # wrapped it. Lets the result-entry builder label the status accurately
+    # (completed_with_warnings vs completed).
+    answer_was_wrapped: bool = False
 
 def _validate_child_output_schema(
     child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
-    dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
+    dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical.
+
+    Forgiving schemas (``{}`` or non-constraining keys only) wrap prose answers into
+    a JSON object instead of triggering a retry — the contract is "produce *a* JSON
+    object", and re-prompting the child for JSON would waste a turn on work that is
+    already done.
+    """
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
-    from tools.delegation_output_schema import build_retry_message, validate_output
+    from tools.delegation_output_schema import (
+        build_retry_message,
+        is_forgiving_schema,
+        validate_output,
+    )
     _first_text = result.get("final_response") or ""
     _schema_valid, _schema_errors = validate_output(_first_text, _output_schema)
+    _answer_was_wrapped = bool(_schema_errors) and any(
+        e.startswith("non_json_wrapped") for e in _schema_errors
+    )
+    # Forgiving-schema + prose: accept immediately, no retry, no failure.
+    if _answer_was_wrapped:
+        return _SchemaOutcome(
+            _output_schema, True, [], 0,
+            warnings=_schema_errors, answer_was_wrapped=True,
+        )
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
@@ -425,6 +452,15 @@ def _validate_child_output_schema(
         if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
             result["messages"] = result["messages"] + _retry_messages
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
+        # Forgiving-schema + retry-prose: same path, wrap the retry answer.
+        _retry_wrapped = bool(_schema_errors) and any(
+            e.startswith("non_json_wrapped") for e in _schema_errors
+        )
+        if _retry_wrapped:
+            return _SchemaOutcome(
+                _output_schema, True, [], 1,
+                warnings=_schema_errors, answer_was_wrapped=True,
+            )
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 
 def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
@@ -469,8 +505,22 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    # Branch order matters (every branch is exclusive):
+    #   1. Explicit cooperative interrupt — a deliberate user signal that wins
+    #      over every other heuristic, including the schema-wrap promotion.
+    #   2. Forgiving-schema + prose answer — the validator already accepted the
+    #      work via wrap, so a downstream `result["failed"]=True` (provider
+    #      rate-limit, transport glitch racing the last turn) MUST NOT flip
+    #      status to "failed" and hide the real work in `summary`. This is
+    #      the v0.21.3 "活干了但汇报被吞" fix in its strict form.
+    #   3. Genuine child-loop failure (no usable summary / structured error
+    #      not explained by #2) — status="failed", exit_reason="error".
+    #   4. Schema-valid answer or no schema → "completed".
+    #   5. Constraining schema violated after bounded retry → "failed".
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+    elif schema.answer_was_wrapped and usable_summary:
+        status, exit_reason = "completed_with_warnings", "completed"
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -480,6 +530,17 @@ def _build_result_entry(
         # failure = budget exhaustion. A declared schema still violated after the bounded retry makes the summary
         # unusable under the contract, so status must not say completed (orchestrators reading only status/icon would
         # accept an empty verdict).
+        #
+        # CONTRACT (v0.21.3, see tools/delegation_output_schema.is_forgiving_schema):
+        #   * ``completed``              — schema-valid OR no schema requested.
+        #   * ``completed_with_warnings``— forgiving schema + prose answer that the validator wrapped. The work is
+        #                                  done and the summary is preserved; the status just signals "the answer was
+        #                                  not a JSON object as the contract asked" so callers can render a ⚠ icon.
+        #                                  (resolved ABOVE this branch so an upstream child-loop failed/error flag
+        #                                  cannot override it.)
+        #   * ``failed``                 — constraining schema violated after the bounded retry, OR child genuinely
+        #                                  failed (no summary / structured error).
+        #   * ``interrupted``            — cooperative interrupt.
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
         status = "completed" if schema.valid is not False and usable_summary else "failed"
 
@@ -524,6 +585,16 @@ def _build_result_entry(
         _failure_reason = result.get("failure_reason")
         if isinstance(_failure_reason, str) and _failure_reason:
             entry["failure_reason"] = _failure_reason
+    elif status == "completed_with_warnings" and (result.get("failed") or result.get("error")):
+        # Validator already accepted the work via wrap, so status stays
+        # `completed_with_warnings` — but the upstream transport / provider
+        # error is a real signal the parent should see (rate-limit, billing,
+        # mid-turn timeout that still left prose). Surface as a non-verdict
+        # field so dashboards can warn without flipping status back to failed.
+        entry["_upstream_error"] = result.get("error") or "child loop reported failure"
+        _failure_reason = result.get("failure_reason")
+        if isinstance(_failure_reason, str) and _failure_reason:
+            entry["failure_reason"] = _failure_reason
 
     # Schema-validation outcome — emitted ONLY when a schema was requested, so
     # legacy (schema-less) payloads keep their exact shape.
@@ -533,6 +604,13 @@ def _build_result_entry(
             entry["schema_retries"] = schema.retries
         if not schema.valid and schema.errors:
             entry["schema_errors"] = schema.errors
+        if schema.warnings:
+            # Non-fatal validator notes (e.g. "non_json_wrapped" — the answer was
+            # prose that a forgiving schema accepted via wrap). Distinct from
+            # schema_errors so consumers can distinguish "rejected" from "wrapped".
+            entry["schema_warnings"] = list(schema.warnings)
+        if schema.answer_was_wrapped:
+            entry["answer_was_wrapped"] = True
 
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.

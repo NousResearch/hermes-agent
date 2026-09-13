@@ -42,6 +42,27 @@ def test_desktop_local_serve_shape_spares_fixed_port_and_non_serve():
     )
 
 
+def test_desktop_local_serve_shape_rejects_argv_substring_matches():
+    """Regression: 'serve' as a substring of other words must not match (#107631)."""
+    # --preserve-cache contains "serve" in "preserve"
+    assert not _is_desktop_local_serve_cmdline(
+        "python -m hermes_cli.main kanban --preserve-cache --host 127.0.0.1 --port 0"
+    )
+    # Path containing "server"
+    assert not _is_desktop_local_serve_cmdline(
+        "/home/u/hermes-server/venv/bin/python -m hermes_cli.main dashboard "
+        "--host 127.0.0.1 --port 0"
+    )
+    # Subcommand is "dashboard", not "serve"
+    assert not _is_desktop_local_serve_cmdline(
+        "hermes dashboard --host 127.0.0.1 --port 0"
+    )
+    # Subcommand is "observer" (hypothetical), not "serve"
+    assert not _is_desktop_local_serve_cmdline(
+        "hermes observer --host 127.0.0.1 --port 0"
+    )
+
+
 def test_reap_only_kills_ppid1_local_serves():
     scanned = [
         (111, "hermes serve --host 127.0.0.1 --port 0"),  # orphan local

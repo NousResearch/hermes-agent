@@ -860,6 +860,9 @@ class TurnRunner:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
+                    pre_delivery_gate = getattr(self._runner, "pre_delivery_gate", None)
+                    if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict":
+                        consumer_cfg.buffer_only = True
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
@@ -873,7 +876,14 @@ class TurnRunner:
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
+        strict_pre_delivery = (
+            getattr(self._runner, "pre_delivery_gate", None) is not None
+            and getattr(getattr(self._runner, "pre_delivery_gate", None), "mode", "legacy") == "strict"
+        )
+        if strict_pre_delivery and stream_consumer is not None:
+            stream_consumer.quarantine_content_delivery()
+        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None),
+                                     (None if strict_pre_delivery else stts)) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
             def stream_delta_cb(text: Optional[str]) -> None:
@@ -1547,6 +1557,22 @@ class TurnRunner:
                 clear_session(session_key)
             reset_current_session_key(token)
 
+    @staticmethod
+    def _evaluator_turn_id(ctx: TurnContext) -> Optional[str]:
+        """Return a globally scoped immutable identity for one gateway turn."""
+        session_key = getattr(ctx, "session_key", None)
+        run_generation = getattr(ctx, "run_generation", None)
+        if not isinstance(session_key, str) or not session_key or run_generation is None:
+            return None
+        source = getattr(ctx, "source", None)
+        return json.dumps({
+            "platform": str(getattr(source, "platform", "")),
+            "chat_id": str(getattr(source, "chat_id", "")),
+            "session_key": session_key,
+            "run_generation": run_generation,
+            "inbound_message_id": str(getattr(ctx, "inbound_message_id", "") or ""),
+        }, sort_keys=True, separators=(",", ":"))
+
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx
         # Canonicalize a model-emitted computer-use screenshot path at the common result boundary so
@@ -1556,13 +1582,9 @@ class TurnRunner:
                 result["final_response"], result.get("messages", []), history_offset=len(agent_history),
             )
         ctx.result_holder[0] = result
-        if stream_consumer is None:
-            return
-        # Pass final_response as the authoritative finalize payload: it includes post-stream
-        # augmentation (verifier footer, explainer) the accumulator never saw. Adopt ONLY a genuinely
-        # completed final: interrupt paths return {interrupted: True, completed: False} with a
-        # DIAGNOSTIC final_response — adopting it would seal the partial answer over with the
-        # diagnostic AND suppress the gateway's own error delivery.
+        # Strict pre-delivery validation runs before finish() so no buffered final can be sent
+        # without approval. The gate is injected by the host; absent gate preserves legacy behavior.
+        pre_delivery_gate = getattr(self._runner, "pre_delivery_gate", None)
         _final_for_stream = None
         if (
             isinstance(result, dict) and not result.get("failed") and not result.get("interrupted")
@@ -1571,7 +1593,44 @@ class TurnRunner:
             fr = result.get("final_response")
             if isinstance(fr, str) and fr.strip() and fr != "(empty)":
                 _final_for_stream = fr
+        if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "shadow" and _final_for_stream is not None:
+            turn_id = self._evaluator_turn_id(ctx)
+            decision = pre_delivery_gate.evaluate_sync(
+                final_text=_final_for_stream,
+                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id), "turn_id": turn_id},
+            )
+            logger.info(
+                "Pre-delivery shadow result: status=%s evidence_ref=%s reason=%s",
+                decision.status, decision.evidence_ref, decision.reason,
+            )
+            result["pre_delivery_shadow_status"] = decision.status
+            result["pre_delivery_shadow_evidence_ref"] = decision.evidence_ref
+        if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict" and _final_for_stream is not None:
+            turn_id = self._evaluator_turn_id(ctx)
+            decision = pre_delivery_gate.evaluate_sync(
+                final_text=_final_for_stream,
+                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id), "turn_id": turn_id},
+            )
+            if not decision.allowed:
+                if stream_consumer is not None:
+                    suppress = getattr(stream_consumer, "suppress_final_delivery", None)
+                    if callable(suppress):
+                        suppress()
+                result["final_response"] = "⚠️ Response withheld because pre-delivery validation did not pass."
+                result["pre_delivery_blocked"] = True
+                if stream_consumer is not None:
+                    stream_consumer.finish()
+                return
+            if isinstance(decision.final_text, str):
+                _final_for_stream = decision.final_text
+                result["final_response"] = decision.final_text
+        if stream_consumer is None:
+            return
         if _final_for_stream is None:
+            if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict":
+                suppress = getattr(stream_consumer, "suppress_final_delivery", None)
+                if callable(suppress):
+                    suppress()
             stream_consumer.finish()
             return
         # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().

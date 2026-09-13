@@ -50,6 +50,7 @@ _TOOL_PROGRESS = object()
 _FINAL_TEXT = object()
 _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
+_RELEASE_CONTENT = object()
 _REOPEN_SEED = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 
@@ -84,6 +85,7 @@ class _Tick:
     got_flush: bool = False
     flush_event: Any = None
     got_reopen_seed: bool = False
+    got_release_content: bool = False
     approval_boundary: Optional[tuple] = None  # (future, cancelled_flag)
     commentary_text: Optional[str] = None
     # Set by _push_update for _finalize_turn / _end_segment.
@@ -156,6 +158,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        self._suppress_final_delivery = False
+        self._quarantine_content_delivery = False
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -522,7 +526,24 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         loop adopts it as the finalize payload.  Interrupt/error paths call ``finish()`` bare."""
         if final_text is not None:
             self._queue.put((_FINAL_TEXT, final_text))
+            # Keep the approved final and its release barrier in producer order.
+            # Otherwise the consumer can observe quarantine opening before the
+            # approved final exists in the queue.
+            if self._quarantine_content_delivery:
+                self._queue.put(_RELEASE_CONTENT)
         self._queue.put(_DONE)
+
+    def suppress_final_delivery(self) -> None:
+        """Prevent the buffered final answer from reaching the platform."""
+        self._suppress_final_delivery = True
+
+    def quarantine_content_delivery(self) -> None:
+        """Hold every assistant-content egress until an external gate approves it."""
+        self._quarantine_content_delivery = True
+
+    def release_content_delivery(self) -> None:
+        """Queue an ordered release after already-enqueued content is examined."""
+        self._queue.put(_RELEASE_CONTENT)
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
@@ -544,9 +565,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 if tick.got_reopen_seed:
                     await self._eager_reopen_seed()
                     continue
+                if tick.got_release_content:
+                    self._quarantine_content_delivery = False
+                    continue
 
                 if tick.got_done:
                     self._flush_think_buffer()
+                    if self._suppress_final_delivery:
+                        return
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
@@ -554,7 +580,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         await self._suppress_silence_marker()
                         return
 
-                if self._should_edit(tick) and (
+                if self._should_edit(tick) and not self._quarantine_content_delivery and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
                 ):
                     # Overflow split.  Native streaming bypasses this: the adapter
@@ -570,9 +596,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     await self._finalize_turn(tick)
                     return
 
-                if tick.commentary_text is not None:
+                if tick.commentary_text is not None and not self._quarantine_content_delivery:
                     await self._deliver_commentary(tick.commentary_text)
-                if tick.got_segment_break:
+                if tick.got_segment_break and not self._quarantine_content_delivery:
                     await self._end_segment(tick)
 
                 # Done last so the waiter unblocks only once everything queued
@@ -640,6 +666,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if item is _REOPEN_SEED:
                 tick.got_reopen_seed = True
                 return tick
+            if item is _RELEASE_CONTENT:
+                tick.got_release_content = True
+                return tick
             kind = item[0] if isinstance(item, tuple) and item else None
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
@@ -699,6 +728,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _should_edit(self, tick: "_Tick") -> bool:
         """Decide whether this tick flushes an edit/frame."""
+        if self._quarantine_content_delivery:
+            return False
         if not tick.is_interim:
             return True
         if self.cfg.buffer_only:
@@ -910,6 +941,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         Only a successful edit confirms delivery — a partial send may be just "Let me
         search…", not the answer."""
         best_effort_ok = False
+        if self._quarantine_content_delivery:
+            return
         if self._accumulated and self._message_id:
             with contextlib.suppress(Exception):
                 best_effort_ok = bool(await self._send_or_edit(

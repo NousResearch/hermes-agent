@@ -1291,6 +1291,25 @@ class SessionSessionsMixin:
             s["unread"] = self.session_unread(s)
         return sessions
 
+    def delegate_child_session_ids(self, session_ids: List[str]) -> set[str]:
+        """Return requested ids whose durable rows carry ``_delegate_from``.
+
+        Gateway live-session pickers use this narrow lookup to keep delegated
+        child watch windows out of their sibling set.  It intentionally does
+        not infer child-ness from ``parent_session_id``: branches and
+        compression continuations have parents too, while the creation marker
+        is the durable delegate-specific contract.
+        """
+        ids = [str(session_id) for session_id in (session_ids or []) if session_id]
+        if not ids:
+            return set()
+        rows = self._read_all(
+            f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(ids)}) "
+            f"AND {_delegate_from_json('model_config')} IS NOT NULL",
+            ids,
+        )
+        return {str(row["id"]) for row in rows}
+
     def session_lifecycle_statuses(self, session_ids: List[str]) -> Dict[str, str]:
         """``{session_id: status}`` from each session's LAST message row (``'empty'`` when none); one
         query, MAX(id) per session joined back — never scans transcripts."""

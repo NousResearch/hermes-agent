@@ -1137,6 +1137,29 @@ class TestGitHubTokenCheck:
         assert "60 req/hr" in out
 
 
+    def test_dedicated_hermes_bot_token_shows_ok_without_shared_token(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".env").write_text("HERMES_GITHUB_BOT_TOKEN=bot-secret\n", encoding="utf-8")
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+        monkeypatch.delenv("HERMES_GITHUB_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token configured (mrkillbobbot)" in out
+        assert "No GITHUB_TOKEN" not in out
+        assert "bot-secret" not in out
+
+
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)

@@ -6,6 +6,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { botSelectionKey } from './data'
+import { botsText } from './i18n'
 import { displayName } from './labels'
 import { BotScreenPane } from './screen-pane'
 import { ID } from './shared'
@@ -19,7 +20,7 @@ export function screenPaneId(bot: RosterRow): string {
 
 export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
   if (typeof host.openWorkspace !== 'function') {
-    host.notify({ kind: 'info', message: 'Update Hermes Desktop to open bot screens.' })
+    host.notify({ kind: 'info', message: botsText().screen.openNeedsUpdate })
 
     return
   }
@@ -33,7 +34,7 @@ export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
   }
 
   const close = host.openWorkspace(`${ID}:screen:${key}`, {
-    title: `${displayName(bot, meta ?? null)} · Screen`,
+    title: `${displayName(bot, meta ?? null)} · ${botsText().screen.title}`,
     minWidth: '28rem',
     render: () => <BotScreenPane bot={bot} />,
     onClose: () => {

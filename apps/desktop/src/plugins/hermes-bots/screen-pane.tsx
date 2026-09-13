@@ -247,18 +247,25 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     }
   }, [attach, bot, conn, viewer?.id])
 
-  const handBack = useCallback(async () => {
-    setBusy(true)
+  // `force` is the escape hatch for a lease this window no longer owns (a reload
+  // minted a fresh viewer id; the old one still holds): the server refuses a
+  // plain release from anyone but the holder.
+  const handBack = useCallback(
+    async (force = false) => {
+      setBusy(true)
 
-    try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', { viewer_id: viewer?.id })
-      setScreenLease(bot, result.lease)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }, [bot, viewer?.id])
+      try {
+        const params = force ? { force: true } : { viewer_id: viewer?.id }
+        const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', params)
+        setScreenLease(bot, result.lease)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [bot, viewer?.id]
+  )
 
   if (state?.unavailable) {
     return <EmptyState description={t.screen.portalUnavailable} title={t.screen.unavailableTitle} />
@@ -319,9 +326,16 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             <Codicon name="debug-continue" /> {t.screen.handBack}
           </Button>
         ) : (
-          <Button disabled={busy || conn === 'attaching'} onClick={() => void takeOver()} size="sm">
-            <Codicon name="record-keys" /> {t.screen.takeOver}
-          </Button>
+          <>
+            {humanOther ? (
+              <Button disabled={busy} onClick={() => void handBack(true)} size="sm" title={t.screen.handBackForceHint} variant="secondary">
+                <Codicon name="debug-continue" /> {t.screen.handBackForce}
+              </Button>
+            ) : null}
+            <Button disabled={busy || conn === 'attaching'} onClick={() => void takeOver()} size="sm">
+              <Codicon name="record-keys" /> {t.screen.takeOver}
+            </Button>
+          </>
         )}
         <Button disabled={conn === 'attaching'} onClick={() => void attach()} size="sm" title={t.screen.reconnect} variant="ghost">
           <Codicon name="refresh" />

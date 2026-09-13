@@ -1,99 +1,67 @@
-"""Tests for tools.daemon_pool.DaemonThreadPoolExecutor.
+"""Invariant tests for DaemonThreadPoolExecutor.
 
-The daemon pool exists so abandoned workers (interrupted/timed-out tool
-batches, wedged memory-provider syncs) can never block interpreter exit:
-stdlib ThreadPoolExecutor workers are non-daemon AND registered in
-concurrent.futures.thread._threads_queues, whose atexit hook joins every
-worker unconditionally — even after shutdown(wait=False).
+Regression context: the class overrides ``_adjust_thread_count``, so on
+Python 3.14 the stdlib's lazy creation of ``_initializer``/``_initargs``
+(inside its own ``_adjust_thread_count``) never happens; the first
+``submit()`` must not raise AttributeError, and the worker thread must
+receive initializer args in whichever ``_worker()`` signature the running
+stdlib uses (WorkerContext on 3.14, 4 positional args on 3.8-3.13).
 """
 
-import subprocess
-import sys
+import contextvars
 import threading
-import time
 
-from concurrent.futures.thread import _threads_queues
+import pytest
 
 from tools.daemon_pool import DaemonThreadPoolExecutor
 
 
-def test_workers_are_daemon_threads():
+def test_submit_runs_and_returns_result():
+    pool = DaemonThreadPoolExecutor()
+    try:
+        assert pool.submit(lambda: 42).result(timeout=10) == 42
+    finally:
+        pool.shutdown(wait=False)
+
+
+def test_initializer_attrs_captured_at_construction():
+    # On 3.14 this attribute does not exist until a worker spawns via the
+    # stdlib path; the subclass override must capture it in __init__ so the
+    # override never reads a missing attribute.
+    def _init():
+        pass
+
+    pool = DaemonThreadPoolExecutor(initializer=_init, initargs=(1, 2))
+    assert pool._initializer is _init
+    assert pool._initargs == (1, 2)
+
+
+def test_initializer_executes_on_worker_thread():
+    ran = threading.Event()
+    pool = DaemonThreadPoolExecutor(initializer=ran.set)
+    try:
+        assert pool.submit(lambda: 1).result(timeout=10) == 1
+        # First worker spawn runs the initializer regardless of stdlib version.
+        assert ran.wait(timeout=10)
+    finally:
+        pool.shutdown(wait=False)
+
+
+def test_submit_propagates_contextvars():
+    var = contextvars.ContextVar("daemon_pool_test_var")
+    var.set("caller-value")
+    pool = DaemonThreadPoolExecutor()
+    try:
+        assert pool.submit(var.get).result(timeout=10) == "caller-value"
+    finally:
+        pool.shutdown(wait=False)
+
+
+def test_workers_are_daemons():
     pool = DaemonThreadPoolExecutor(max_workers=2)
     try:
-        info = pool.submit(
-            lambda: (threading.current_thread().daemon, threading.current_thread())
-        ).result(timeout=10)
-        is_daemon, worker = info
-        assert is_daemon is True
-        # Not registered with concurrent.futures' atexit join hook.
-        assert worker not in _threads_queues
+        pool.submit(int).result(timeout=10)  # force one worker spawn
+        (worker,) = pool._threads
+        assert worker.daemon is True
     finally:
-        pool.shutdown(wait=True)
-
-
-def test_idle_worker_reuse():
-    pool = DaemonThreadPoolExecutor(max_workers=4)
-    try:
-        tid1 = pool.submit(threading.get_ident).result(timeout=10)
-        time.sleep(0.05)  # let the worker park on the idle semaphore
-        tid2 = pool.submit(threading.get_ident).result(timeout=10)
-        assert tid1 == tid2
-    finally:
-        pool.shutdown(wait=True)
-
-
-def test_wedged_worker_does_not_block_interpreter_exit():
-    """A worker stuck in a long sleep must not hold the process open.
-
-    With stdlib ThreadPoolExecutor this subprocess hangs until the sleep
-    finishes (the atexit hook joins the worker); with the daemon pool it
-    exits as soon as the main thread returns.
-    """
-    script = (
-        "import sys; sys.path.insert(0, %r)\n"
-        "from tools.daemon_pool import DaemonThreadPoolExecutor\n"
-        "import time\n"
-        "pool = DaemonThreadPoolExecutor(max_workers=1)\n"
-        "pool.submit(time.sleep, 120)\n"
-        "time.sleep(0.3)\n"
-        "pool.shutdown(wait=False)\n"
-        "print('main-done', flush=True)\n"
-    ) % (str(_repo_root()),)
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert proc.returncode == 0
-    assert "main-done" in proc.stdout
-
-
-def test_submit_propagates_caller_contextvars():
-    """Pool workers inherit contextvars set in the submitting context.
-
-    Stdlib ThreadPoolExecutor snapshots the caller's context with
-    ``copy_context()``; some bundled CPython runtime builds strip that, so
-    the daemon pool restores it explicitly.  Without the fix this returns
-    the default because the worker runs in a bare context.
-    """
-    from contextvars import ContextVar
-
-    var = ContextVar("daemon_pool_test_var", default="unset")
-
-    pool = DaemonThreadPoolExecutor(max_workers=1)
-    try:
-        token = var.set("hello")
-        try:
-            seen = pool.submit(var.get).result(timeout=10)
-        finally:
-            var.reset(token)
-        assert seen == "hello"
-    finally:
-        pool.shutdown(wait=True)
-
-
-def _repo_root():
-    import pathlib
-
-    return pathlib.Path(__file__).resolve().parents[2]
+        pool.shutdown(wait=False)

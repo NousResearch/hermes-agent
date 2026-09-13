@@ -851,7 +851,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
         stream.subscribers.discard(q)
-        if not stream.subscribers:
+        if (not stream.subscribers
+                and self._run_statuses.get(run_id, {}).get("status") in TERMINAL_STATUSES):
             _drop_run_transport(self, run_id)
     return response
 

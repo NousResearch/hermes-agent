@@ -125,6 +125,35 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     assert seen["platform"] is None
 
 
+def test_do_list_includes_gated_and_plugin_skills(monkeypatch, hub_env):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    rows = [
+        {"name": "local-skill", "category": "x", "description": "local",
+         "platform_compatible": True, "environment_compatible": True},
+        {"name": "mac-only", "category": "x", "description": "mac",
+         "platform_compatible": False, "environment_compatible": True},
+        {"name": "probe:duplicate", "category": "x", "description": "tree wins",
+         "platform_compatible": True, "environment_compatible": True},
+        {"name": "probe:plugin-skill", "category": "plugin", "description": "plugin",
+         "platform_compatible": True, "environment_compatible": True,
+         "_source_type": "plugin", "_source_display": "plugin:probe"},
+    ]
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: rows)
+
+    output = _capture()
+
+    assert "local-skill" in output
+    assert "mac-only" in output
+    assert "platform-gated" in output
+    assert "probe:plugin-skill" in output
+    assert "1 plugin" in output
+
+
 # ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #

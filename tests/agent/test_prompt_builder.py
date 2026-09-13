@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import os
 import sys
@@ -393,6 +394,106 @@ class TestBuildSkillsSystemPrompt:
 
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
+
+    def test_includes_namespaced_plugin_skills_once_with_descriptions(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        tree = tmp_path / "skills" / "general" / "tree-skill"
+        tree.mkdir(parents=True)
+        (tree / "SKILL.md").write_text(
+            "---\nname: tree-skill\ndescription: Tree description\n---\n"
+        )
+        plugins = [
+            {"name": "probe:plugin-skill", "description": "Plugin description", "category": "plugin", "frontmatter": {}, "list_in_awareness": True},
+            {"name": "probe:plugin-skill", "description": "Duplicate", "category": "plugin", "frontmatter": {}, "list_in_awareness": True},
+        ]
+
+        result = build_skills_system_prompt(plugin_skills=plugins)
+
+        assert "tree-skill" in result
+        assert result.count("probe:plugin-skill") == 1
+        assert "Plugin description" in result
+
+    def test_plugin_skills_default_to_explicit_load_only(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir()
+
+        result = build_skills_system_prompt(plugin_skills=[{
+            "name": "probe:explicit", "description": "Explicit only", "frontmatter": {},
+        }])
+
+        assert "probe:explicit" not in result
+
+    def test_plugin_skills_obey_environment_toolset_and_session_gates(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir()
+        monkeypatch.setattr("agent.skill_utils._ENV_DETECTORS", {"kanban": lambda: False})
+        plugins = [
+            {"name": "probe:visible", "description": "Visible", "frontmatter": {}, "list_in_awareness": True},
+            {"name": "probe:env", "description": "Env", "frontmatter": {"environments": ["kanban"]}, "list_in_awareness": True},
+            {"name": "probe:toolset", "description": "Toolset", "frontmatter": {"metadata": {"hermes": {"requires_toolsets": ["terminal"]}}}, "list_in_awareness": True},
+            {"name": "probe:teams", "description": "Teams", "frontmatter": {"metadata": {"hermes": {"session_platforms": ["teams"]}}}, "list_in_awareness": True},
+        ]
+
+        result = build_skills_system_prompt(
+            available_tools=set(), available_toolsets=set(), plugin_skills=plugins,
+            session_platform="cli",
+        )
+
+        assert "probe:visible" in result
+        assert "probe:env" not in result
+        assert "probe:toolset" not in result
+        assert "probe:teams" not in result
+
+    def test_plugin_prompt_cache_tracks_environment_changes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir()
+        active = {"kanban": False}
+        monkeypatch.setattr("agent.skill_utils._ENV_DETECTORS", {"kanban": lambda: active["kanban"]})
+        plugins = [{
+            "name": "probe:kanban", "description": "Kanban", "frontmatter": {"environments": ["kanban"]},
+            "list_in_awareness": True,
+        }]
+
+        assert "probe:kanban" not in build_skills_system_prompt(plugin_skills=plugins)
+        active["kanban"] = True
+        assert "probe:kanban" in build_skills_system_prompt(plugin_skills=plugins)
+
+    def test_bare_disabled_name_does_not_hide_namespaced_plugin(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir()
+        (tmp_path / "config.yaml").write_text("skills:\n  disabled: [plugin-skill]\n")
+
+        result = build_skills_system_prompt(plugin_skills=[{
+            "name": "probe:plugin-skill", "description": "Plugin", "frontmatter": {},
+            "list_in_awareness": True,
+        }])
+
+        assert "probe:plugin-skill" in result
+
+    def test_snapshot_preserves_environment_compatibility(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "review" / "env-only"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: env-only\ndescription: Env only\nenvironments: [kanban]\n---\n"
+        )
+        monkeypatch.setattr("agent.skill_utils._ENV_DETECTORS", {"kanban": lambda: False})
+
+        first = build_skills_system_prompt(skills_dir_override=tmp_path / "skills")
+        assert "env-only" not in first
+        snapshot = json.loads((tmp_path / ".skills_prompt_snapshot.json").read_text())
+        assert snapshot["skills"][0]["environments"] == ["kanban"]
+        assert snapshot["skills"][0]["description"] == "Env only"
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        second = build_skills_system_prompt(skills_dir_override=tmp_path / "skills")
+        assert "env-only" not in second
+
+        monkeypatch.setattr("agent.skill_utils._ENV_DETECTORS", {"kanban": lambda: True})
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+        third = build_skills_system_prompt(skills_dir_override=tmp_path / "skills")
+        assert "env-only: Env only" in third
 
 
 # =========================================================================
@@ -1001,6 +1102,14 @@ class TestEnvironmentHints:
 class TestSkillShouldShow:
     def test_no_filter_info_always_shows(self):
         assert _skill_should_show({}, None, None) is True
+
+    def test_session_platform_condition_fails_open_when_unknown(self):
+        conditions = {"session_platforms": ["teams"]}
+        assert _skill_should_show(conditions, set(), set(), None) is True
+
+    def test_explicit_session_platform_hides_incompatible_skill(self):
+        conditions = {"session_platforms": ["teams"]}
+        assert _skill_should_show(conditions, set(), set(), "cli") is False
 
     def test_empty_conditions_always_shows(self):
         assert _skill_should_show(

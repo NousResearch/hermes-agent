@@ -67,10 +67,10 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_inspect.add_argument("identifier", help="Skill identifier")
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
-    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
+    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local", "plugin"])
     _flag(skills_list, "--enabled-only",
-        help="Hide disabled skills. Use with -p <profile> to see exactly "
-        "which skills will load for that profile.")
+        help="Hide disabled and gated skills. Use with -p <profile> to see exactly "
+        "which skills are currently offered for that profile.")
 
     skills_check = skills_subparsers.add_parser(
         "check", help="Check installed hub skills for updates")

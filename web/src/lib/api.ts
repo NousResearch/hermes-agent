@@ -2350,6 +2350,9 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  available?: boolean;
+  gated_by?: "platform" | "environment" | null;
+  provenance?: "hub" | "bundled" | "agent" | "plugin";
 }
 
 export interface SkillContent {

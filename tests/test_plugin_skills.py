@@ -8,6 +8,7 @@ Covers:
 
 import json
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -92,6 +93,87 @@ class TestPluginSkillRegistry:
         assert pm.list_plugin_skills("myplugin") == ["bar", "baz", "foo"]
         assert pm.list_plugin_skills("other") == []
 
+    def test_skills_list_hides_environment_gated_plugin_skill(self, pm, tmp_path, monkeypatch, caplog):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginContext, PluginManifest
+        from tools import skills_tool
+
+        skill_md = tmp_path / "env" / "SKILL.md"
+        skill_md.parent.mkdir()
+        skill_md.write_text(
+            "---\nname: env\ndescription: Environment skill\n"
+            "environments: [kanban]\n---\n"
+        )
+        ctx = PluginContext(
+            PluginManifest(name="myplugin", version="1", description="test", source="user"), pm
+        )
+        ctx.register_skill("env", skill_md)
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: [])
+        monkeypatch.setattr("agent.skill_utils._ENV_DETECTORS", {"kanban": lambda: False})
+
+        with caplog.at_level(logging.DEBUG, logger="tools.skills_tool"):
+            result = json.loads(skills_tool.skills_list())
+
+        assert result["skills"] == []
+        assert pm.list_plugin_skill_metadata()[0]["name"] == "myplugin:env"
+        assert not any("Plugin skill listing failed" in record.message for record in caplog.records)
+
+    def test_skills_list_deduplicates_plugin_identity_already_in_tree(self, pm, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from tools import skills_tool
+
+        pm._plugin_skills["myplugin:one"] = {
+            "path": tmp_path / "SKILL.md", "plugin": "myplugin", "bare_name": "one",
+            "description": "Plugin", "frontmatter": {},
+        }
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: [{
+            "name": "myplugin:one", "description": "Tree", "category": "local",
+        }])
+
+        result = json.loads(skills_tool.skills_list())
+
+        assert [skill["name"] for skill in result["skills"]] == ["myplugin:one"]
+        assert result["count"] == 1
+
+    def test_inventory_helper_includes_plugin_with_source_and_gate_state(self, pm, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from tools import skills_tool
+
+        pm._plugin_skills["myplugin:one"] = {
+            "path": tmp_path / "SKILL.md", "plugin": "myplugin", "bare_name": "one",
+            "description": "Plugin", "frontmatter": {},
+        }
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(skills_tool, "_skill_search_dirs", lambda: ([], [], tmp_path))
+        skills_tool._SKILLS_CACHE.clear()
+
+        [row] = skills_tool._find_all_skills(skip_disabled=True)
+
+        assert row["name"] == "myplugin:one"
+        assert row["_source_type"] == "plugin"
+        assert row["platform_compatible"] is True
+        assert row["environment_compatible"] is True
+
+    def test_skills_list_truncates_plugin_description_without_frontmatter(self, pm, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from tools import skills_tool
+
+        pm._plugin_skills["myplugin:long"] = {
+            "path": tmp_path / "SKILL.md", "plugin": "myplugin", "bare_name": "long",
+            "description": "word " * 400, "frontmatter": {"secret-shaped": "not exposed"},
+        }
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: [])
+
+        [row] = json.loads(skills_tool.skills_list())["skills"]
+
+        assert row["description"].endswith("...")
+        assert len(row["description"]) == 1024
+        assert "frontmatter" not in row
+        assert "list_in_awareness" not in row
+
     def test_remove_plugin_skill(self, pm, tmp_path):
         md = tmp_path / "SKILL.md"
         md.write_text("---\nname: x\n---\n")
@@ -127,6 +209,58 @@ class TestPluginContextRegisterSkill:
 
         ctx.register_skill("my-skill", skill_md, "A test skill")
         assert ctx._manager.find_plugin_skill("testplugin:my-skill") == skill_md
+
+    def test_omitted_metadata_is_hydrated_from_skill_frontmatter(self, ctx, tmp_path):
+        skill_md = tmp_path / "skills" / "hydrated" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text(
+            "---\nname: hydrated\ndescription: Hydrated description\n"
+            "platforms: [linux, macos, windows]\n"
+            "metadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\nBody.\n"
+        )
+
+        ctx.register_skill("hydrated", skill_md, list_in_awareness=True)
+
+        [metadata] = ctx._manager.list_plugin_skill_metadata()
+        assert metadata["name"] == "testplugin:hydrated"
+        assert metadata["description"] == "Hydrated description"
+        assert metadata["list_in_awareness"] is True
+        assert metadata["frontmatter"]["platforms"] == ["linux", "macos", "windows"]
+        assert metadata["frontmatter"]["metadata"]["hermes"]["requires_toolsets"] == ["terminal"]
+
+    def test_explicit_metadata_wins_while_missing_description_is_hydrated(self, ctx, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: file-name\ndescription: File description\n---\n")
+
+        ctx.register_skill("explicit", skill_md, frontmatter={"name": "explicit-name"})
+
+        [metadata] = ctx._manager.list_plugin_skill_metadata()
+        assert metadata["description"] == "File description"
+        assert metadata["frontmatter"] == {"name": "explicit-name"}
+
+    def test_awareness_listing_is_opt_in(self, ctx, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: explicit\ndescription: Explicit\n---\n")
+
+        ctx.register_skill("explicit", skill_md)
+
+        [metadata] = ctx._manager.list_plugin_skill_metadata()
+        assert metadata["list_in_awareness"] is False
+
+    def test_hydration_failure_warns_and_preserves_registration(self, ctx, tmp_path, caplog):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: broken\n---\n")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"),
+            patch("pathlib.Path.read_text", side_effect=OSError("read failed")),
+        ):
+            ctx.register_skill("broken", skill_md)
+
+        [metadata] = ctx._manager.list_plugin_skill_metadata()
+        assert metadata["name"] == "testplugin:broken"
+        assert metadata["description"] == ""
+        assert any("Could not hydrate plugin skill metadata" in record.message for record in caplog.records)
 
     def test_rejects_colon_in_name(self, ctx, tmp_path):
         md = tmp_path / "SKILL.md"

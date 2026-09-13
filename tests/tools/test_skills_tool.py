@@ -583,6 +583,35 @@ class TestFindAllSkillsPlatformFiltering:
         # Skills without a platforms field appear on every platform.
         assert win == {"universal-skill"}
 
+    def test_skip_disabled_returns_installed_rows_with_compatibility_state(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.sys") as mock_sys,
+        ):
+            _make_skill(tmp_path, "universal-skill")
+            _make_skill(tmp_path, "mac-only", frontmatter_extra="platforms: [macos]\n")
+            mock_sys.platform = "linux"
+
+            rows = {row["name"]: row for row in _find_all_skills(skip_disabled=True)}
+
+        assert set(rows) == {"universal-skill", "mac-only"}
+        assert rows["universal-skill"]["platform_compatible"] is True
+        assert rows["mac-only"]["platform_compatible"] is False
+        assert rows["mac-only"]["environment_compatible"] is True
+
+    def test_inventory_cache_tracks_environment_changes(self, tmp_path, monkeypatch):
+        active = {"kanban": False}
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "kanban-only", frontmatter_extra="environments: [kanban]\n")
+            monkeypatch.setattr("agent.skill_utils._ENV_DETECTORS", {"kanban": lambda: active["kanban"]})
+
+            first = _find_all_skills(skip_disabled=True)
+            active["kanban"] = True
+            second = _find_all_skills(skip_disabled=True)
+
+        assert first[0]["environment_compatible"] is False
+        assert second[0]["environment_compatible"] is True
+
     def test_multi_platform_skill(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

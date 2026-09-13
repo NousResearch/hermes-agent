@@ -1259,7 +1259,11 @@ class TestEventBridgePollE2E:
         conn.commit()
         conn.close()
         # Touch the DB file to update mtime (WAL mode may not update mtime on small writes)
-        os.utime(db_path, None)
+        # Use an explicit future timestamp — os.utime(None) sets "now", which can
+        # land in the same filesystem timestamp slot as the file's creation and
+        # leave mtime unchanged, silently failing the poll gate below (flaky).
+        _future = time.time() + 2.0
+        os.utime(db_path, (_future, _future))
 
         # Update sessions.json updated_at to trigger re-check
         sessions_data["agent:main:telegram:dm:new"]["updated_at"] = "2026-03-29T15:00:10"
@@ -1374,7 +1378,11 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        # Bump mtime so the poll gate opens — explicit future timestamp, not
+        # os.utime(None): "now" can equal the creation-time mtime (same fs
+        # timestamp slot), leaving the gate closed and the event undelivered.
+        _future = time.time() + 2.0
+        os.utime(db_path, (_future, _future))  # bump mtime so the poll gate opens
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1412,7 +1420,10 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        # Explicit future mtime (not os.utime(None)) so the poll gate reliably
+        # opens — "now" can equal the file's creation mtime in the same fs slot.
+        _future = time.time() + 2.0
+        os.utime(db_path, (_future, _future))
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]

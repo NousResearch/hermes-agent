@@ -865,9 +865,14 @@ def _(rid, params: dict) -> dict:
         if (_resolve_session_source(_str_param(params, "source") or None) in {"desktop", "tui"}
                 and (ctx.found or {}).get("source") not in {"tool", "kanban"}):
             try:
-                manager, _, _ = _conversation_worktree_manager(profile_home=ctx.profile_home, db=ctx.db)
+                manager, _, _ = _conversation_worktree_manager(
+                    profile_home=ctx.profile_home, db=ctx.db, session_cwd=ctx.recorded_cwd
+                )
                 binding = (_resolve_conversation_worktree_for_resume(
-                    ctx.target, profile_home=ctx.profile_home, db=ctx.db) if manager is not None else None)
+                    ctx.target,
+                    profile_home=ctx.profile_home,
+                    db=ctx.db,
+                ) if manager is not None else None)
                 if binding is not None:
                     ctx.conversation_worktree = _conversation_worktree_metadata(binding)
                     ctx.conversation_root_lease = _acquire_conversation_root_lease(
@@ -2171,7 +2176,11 @@ def _(rid, params: dict, session: dict) -> dict:
         try:
             if source in {"desktop", "tui"}:
                 binding = _bind_conversation_worktree_for_new_root(
-                    new_key, profile_home=session.get("profile_home"), db=db)
+                    new_key,
+                    profile_home=session.get("profile_home"),
+                    db=db,
+                    session_cwd=_session_cwd(session),
+                )
                 if binding is not None:
                     conversation_worktree = _conversation_worktree_metadata(binding)
                     conversation_root_lease = _acquire_conversation_root_lease(binding, surface=source)

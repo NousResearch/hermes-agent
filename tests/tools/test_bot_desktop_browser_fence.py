@@ -9,6 +9,8 @@ import pytest
 
 from tools.bot_desktop import lease, runtime
 
+pytestmark = pytest.mark.linux_only
+
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):

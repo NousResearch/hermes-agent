@@ -46,6 +46,7 @@ def test_recycled_pid_is_not_our_launcher(tmp_path, monkeypatch):
     assert runtime._launcher_pid() == os.getpid()
 
 
+@pytest.mark.linux_only
 def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypatch):
     """After profile A stops, B may take A's number; A restarting must pick another rather than
     unlink B's socket and lock."""

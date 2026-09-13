@@ -8,6 +8,8 @@ import json
 import pytest
 
 from tools.bot_desktop import lease
+
+pytestmark = pytest.mark.linux_only
 from tools.bot_desktop.rfb_filter import RfbClientFilter
 
 _HANDSHAKE = b"RFB 003.008\n" + b"\x01" + b"\x00"

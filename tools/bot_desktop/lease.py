@@ -27,8 +27,8 @@ from hermes_constants import get_hermes_home, hermes_home_key
 
 try:
     import fcntl
-except ImportError:  # Windows/macOS without fcntl: computer_use imports this module on every call, and no
-    fcntl = None     # multi-process Bot Desktop exists there, so the cross-process lock degrades to a no-op.
+except ImportError:  # pragma: no cover - native Windows (and any host without fcntl)
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,15 @@ _POLL_SECONDS = 0.25
 
 class HumanHasControl(RuntimeError):
     """Raised by screen-driving tools while a human holds the lease."""
+
+
+class LeaseLockUnavailable(RuntimeError):
+    """Lease mutations need a Unix fcntl lock. Bot Desktop does not run on this host.
+
+    Reads (``get``, ``assert_agent_may_act``) stay available so ordinary Windows
+    ``computer_use`` and ``display.status`` can import this module. Writes must
+    not proceed without the lock — a missing ``fcntl`` is not an in-process fallback.
+    """
 
 
 @dataclass
@@ -103,7 +112,9 @@ class _locked:
 
     def __enter__(self):
         if fcntl is None:
-            return self
+            raise LeaseLockUnavailable(
+                "Bot Desktop lease changes need a Unix fcntl lock; this host does not run Bot Desktop"
+            )
         self._lockfile.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self._lockfile, "a+", encoding="utf-8")  # noqa: SIM115 — closed in __exit__
         fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)

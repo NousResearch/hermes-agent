@@ -12,6 +12,8 @@ import pytest
 from hermes_cli.web_routers import display
 from tools.bot_desktop import lease
 
+pytestmark = pytest.mark.linux_only
+
 
 class _Ws:
     """Just enough of a Starlette WebSocket: one disconnect message with the given close code."""

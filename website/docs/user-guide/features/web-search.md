@@ -57,6 +57,8 @@ Backends return raw page markdown, which can be huge (forum threads, docs sites,
 
 The per-page budget is configurable via `web.extract_char_limit` in `config.yaml` (default `15000`, clamped to 2 000–500 000), and the agent can raise it per-call with the tool's `char_limit` argument.
 
+Each provider dispatch is also bounded by a wall-clock timeout (`web.extract_timeout` in `config.yaml`, default `120` seconds; `0` disables it). A backend that keeps the response open without finishing returns per-URL timeout errors instead of stalling the tool call indefinitely.
+
 ### When truncation gets in the way
 
 If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree (subject to its own snapshot cap on huge pages).

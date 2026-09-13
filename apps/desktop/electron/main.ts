@@ -504,6 +504,13 @@ let f12Blocked = false
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
 
+// Chromium's built-in async DNS resolver (c-ares) has a fatal parsing bug in
+// Electron 40.10.2 causing a SIGTRAP (ares_dns_rr_get_ttl on macOS,
+// string_view::substr out-of-range on Linux Wayland) during periods of heavy
+// event loop blocking / timeout retries. Fall back to the OS getaddrinfo
+// resolver to avoid the crash. Fixes #100573, #69247.
+app.commandLine.appendSwitch('disable-features', 'AsyncDns')
+
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the
 // wire, so the window flashes during scroll/streaming/animation. Local

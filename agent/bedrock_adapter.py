@@ -846,6 +846,9 @@ def stream_converse_with_callbacks(
                 if on_tool_start:
                     on_tool_start(current_tool["name"])
         elif "contentBlockDelta" in event:
+            # Text and reasoning blocks can stream without a contentBlockStart; the delta's own index is the
+            # only thing that keeps text after a toolUse from being written into the toolUse block.
+            current_block_index = event["contentBlockDelta"].get("contentBlockIndex", current_block_index)
             delta = event["contentBlockDelta"].get("delta", {})
             if "text" in delta:
                 text = delta["text"]

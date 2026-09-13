@@ -111,3 +111,35 @@ def test_bedrock_transport_preserves_reasoning_and_order(streaming):
         "reasoningContent", "toolUse", "reasoningContent", "toolUse"
     ]
     assert [block["reasoningContent"]["redactedContent"] for block in blocks if "reasoningContent" in block] == [b"r1", b"r2"]
+
+
+def test_streamed_text_after_tool_use_keeps_its_own_block():
+    """Text blocks stream without a contentBlockStart. Text that follows a toolUse must land in its own
+    block: written into the toolUse block, the replay reads it back as text only, the toolUse is lost, and
+    the next request fails with "number of toolResult blocks exceeds the number of toolUse blocks"."""
+    from agent.bedrock_adapter import normalize_converse_stream_events, convert_messages_to_converse
+    from agent.transports.bedrock import BedrockTransport
+
+    sys.modules.setdefault("requests", ModuleType("requests"))
+    from agent.chat_completion_helpers import build_assistant_message
+
+    raw = {"stream": [
+        {"messageStart": {"role": "assistant"}},
+        {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "Let me check."}}},
+        {"contentBlockStop": {"contentBlockIndex": 0}},
+        {"contentBlockStart": {"contentBlockIndex": 1, "start": {"toolUse": {"toolUseId": "t1", "name": "one"}}}},
+        {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"toolUse": {"input": '{"n":1}'}}}},
+        {"contentBlockStop": {"contentBlockIndex": 1}},
+        {"contentBlockDelta": {"contentBlockIndex": 2, "delta": {"text": "Reading it now."}}},
+        {"contentBlockStop": {"contentBlockIndex": 2}},
+        {"messageStop": {"stopReason": "tool_use"}},
+    ]}
+    normalized = BedrockTransport().normalize_response(normalize_converse_stream_events(raw))
+    history = build_assistant_message(_FakeAgent(), normalized, "tool_calls")
+    results = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]
+    _system, messages = convert_messages_to_converse([{"role": "user", "content": "go"}, history, *results])
+
+    assert [next(iter(block)) for block in messages[1]["content"]] == ["text", "toolUse", "text"]
+    tool_uses = [b["toolUse"]["toolUseId"] for m in messages for b in m["content"] if "toolUse" in b]
+    tool_results = [b["toolResult"]["toolUseId"] for m in messages for b in m["content"] if "toolResult" in b]
+    assert tool_uses == tool_results == ["t1"]

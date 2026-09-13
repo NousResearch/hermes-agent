@@ -171,6 +171,19 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
+    default_home = next((home for profile, home in profile_homes if profile == "default"), None)
+
+    def _service_names(home: object) -> list[str]:
+        if default_home is None:
+            return []
+        from hermes_cli.gateway import _profile_suffix
+
+        suffix = _profile_suffix(home, default_home)
+        return [
+            f"hermes-gateway-{suffix}" if suffix else "hermes-gateway",
+            f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway",
+        ]
+
     with _probe("Gateway-state inventory"):
         from gateway.status import _pid_exists, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
@@ -194,14 +207,20 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                     continue
                 seen.add(pid)
                 sup = supervisor(pid)
-            plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
+            plan.runtimes.append(_runtime(
+                "gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version"),
+                detail={"service_names": _service_names(home)},
+            ))
     with _probe("PID-file gateway inventory"):
         from hermes_cli.gateway import find_profile_gateway_processes
 
         for proc in find_profile_gateway_processes():
             if proc.pid not in seen:
                 seen.add(proc.pid)
-                plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
+                plan.runtimes.append(_runtime(
+                    "gateway", proc.profile, proc.pid, supervisor(proc.pid),
+                    detail={"service_names": _service_names(proc.path)},
+                ))
 
 
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
@@ -306,7 +325,15 @@ def _gateway_service_matches_profile(profile: str, service: object) -> bool:
 def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
     # Gateway-only vocabulary: a serve/dashboard that merely shares the profile is a
     # different process. Exact label match (systemd + launchd + s6), not substring.
-    return any(_gateway_service_matches_profile(r.profile, name) for name in names)
+    expected = {
+        str(service).removesuffix(".service").rsplit("/", 1)[-1]
+        for service in r.detail.get("service_names", [])
+    }
+    return any(
+        str(name).removesuffix(".service").rsplit("/", 1)[-1] in expected
+        or _gateway_service_matches_profile(r.profile, name)
+        for name in names
+    )
 
 
 def match_runtime_outcomes(

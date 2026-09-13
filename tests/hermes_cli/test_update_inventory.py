@@ -65,6 +65,30 @@ class TestCollectInventory:
             by_profile["work"].restart_via, "work"
         )
 
+    def test_custom_default_home_reconciles_only_its_exact_hashed_unit(self, fleet):
+        plan = ui.collect_runtime_inventory()
+        runtime = next(r for r in plan.runtimes if r.profile == "default")
+        systemd_name = next(
+            name for name in runtime.detail["service_names"]
+            if name.startswith("hermes-gateway")
+        )
+        assert systemd_name != "hermes-gateway"
+
+        common = dict(
+            plan=ui.UpdatePlan(runtimes=[runtime]), relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        )
+        matched = ui.match_runtime_outcomes(
+            restarted_services=[f"user/{systemd_name}.service"], **common,
+        )
+        other_hash = "00000000" if not systemd_name.endswith("00000000") else "11111111"
+        unmatched = ui.match_runtime_outcomes(
+            restarted_services=[f"hermes-gateway-{other_hash}.service"], **common,
+        )
+
+        assert matched[0]["outcome"] == "restarted"
+        assert unmatched[0]["outcome"] == "unaccounted"
+
     def test_docker_install_not_updatable_in_place(self, fleet, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "docker")
         monkeypatch.setattr(

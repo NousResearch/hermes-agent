@@ -1948,7 +1948,10 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
     return None
 
 
-def _profile_suffix() -> str:
+def _profile_suffix(
+    hermes_home: str | Path | None = None,
+    default_root: str | Path | None = None,
+) -> str:
     """Service-name suffix for HERMES_HOME: "" for the platform-native default home (``~/.hermes``), the
     profile name for ``<root>/profiles/<name>``, else a short hash of the path.
 
@@ -1959,10 +1962,11 @@ def _profile_suffix() -> str:
     bare one."""
     import hashlib
     from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
-    home = get_hermes_home().resolve()
+    home = Path(hermes_home or get_hermes_home()).resolve()
     if home == _get_platform_default_hermes_home().resolve():
         return ""
-    name = _profile_name_from_home(home, get_default_hermes_root().resolve())
+    root = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
+    name = _profile_name_from_home(home, root)
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 

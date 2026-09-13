@@ -4,7 +4,19 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from tools.bot_desktop import runtime, thumbnail
+
+
+@pytest.mark.parametrize("pm", sorted(runtime.PACKAGES))
+def test_every_required_binary_maps_to_an_installed_package(pm):
+    """Each binary the launcher execs must come from a package the distro list actually installs; dnf5
+    refuses the whole transaction on one retired name, so the map is the contract, not the list."""
+    mapping = runtime.BINARY_PACKAGES[pm]
+    assert set(mapping) == set(runtime.REQUIRED_BINARIES)
+    assert set(mapping.values()) <= set(runtime.PACKAGES[pm])
+    assert not {"xorg-x11-server-utils", "xorg-x11-utils"} & set(runtime.PACKAGES["dnf"]), "retired on Fedora"
 
 
 def test_no_running_screen_returns_none_without_grabbing(monkeypatch):

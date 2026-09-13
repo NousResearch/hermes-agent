@@ -270,8 +270,10 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       ref={ref}
       {...props}
     >
+      {/* Keep one direct no-drag boundary around every tab control. Electron can
+          lose deeper carve-outs when a titlebar strip owns the drag region. */}
       <div
-        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-app-region:no-drag] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         ref={listRef}
         role="tablist"
       >

@@ -1,13 +1,31 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { PaneTab, PaneTabLabel } from './pane-tab'
+import { PaneTab, PaneTabLabel, PaneTabStrip } from './pane-tab'
 
 afterEach(cleanup)
 
 /** The tab shell's own classes, independent of its label's internal layout. */
 const classesOf = (label: string): string[] =>
   screen.getByText(label).closest('[data-slot="pane-tab"]')!.className.split(/\s+/).filter(Boolean)
+
+describe('PaneTabStrip titlebar interaction', () => {
+  it('carves the complete tab list out of the native window drag region', () => {
+    render(
+      <PaneTabStrip titlebar>
+        <PaneTab>
+          <PaneTabLabel>tab</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const tablist = screen.getByRole('tablist')
+    const strip = tablist.parentElement!
+
+    expect(strip.className).toContain('[-webkit-app-region:drag]')
+    expect(tablist.className).toContain('[-webkit-app-region:no-drag]')
+  })
+})
 
 describe('PaneTab close gestures', () => {
   it('middle-click closes — pointer events only, no auxclick', () => {

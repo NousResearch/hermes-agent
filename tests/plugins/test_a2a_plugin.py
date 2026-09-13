@@ -16,6 +16,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import Future
@@ -1727,3 +1728,40 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+
+
+# --------------------------------------------------------------------------
+# Observation timeout is not a terminal A2A state (§3.1.3 / #1237)
+# --------------------------------------------------------------------------
+
+class TestObservationTimeoutNotFailed:
+    def test_await_reply_keeps_waiting_after_deadline_then_completes(self, monkeypatch):
+        """A live session that answers late must not be TASK_STATE_FAILED."""
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "0.05")
+        adapter = _bare_adapter()
+        fut = Future()
+        pending = {"future": fut, "started": time.time() - 1.0}
+
+        def complete_late():
+            time.sleep(0.2)
+            fut.set_result((protocol.STATE_COMPLETED, "late answer"))
+
+        thread = threading.Thread(target=complete_late)
+        thread.start()
+        state, reply = adapter._await_reply(pending)
+        thread.join(timeout=2)
+        assert (state, reply) == (protocol.STATE_COMPLETED, "late answer")
+        assert state != protocol.STATE_FAILED
+
+    def test_watchdog_skips_tasks_with_live_waiters(self):
+        adapter = _bare_adapter()
+        adapter.tasks.create("task-live", "ctx", "peer")
+        adapter.tasks._tasks["task-live"]["created_at"] = time.time() - 600
+        adapter._add_pending("task-live", "ctx")
+        with adapter._pending_lock:
+            live = set(adapter._pending)
+        failed = adapter.tasks.fail_orphans(timeout_seconds=300, skip_ids=live)
+        rec = adapter.tasks.get("task-live")
+        assert failed == []
+        assert rec is not None
+        assert rec["state"] != protocol.STATE_FAILED
